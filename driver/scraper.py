@@ -544,7 +544,7 @@ def post_id(p):
     # Caption if there is one, else the media description up to the first comma ("Photo  of  by X").
     key = p["caption"][:200] if p["caption"] else re.sub(r"\d+", "", p["alt"].split(",")[0])
     # No kind here: a header-less video card has no media description to infer it from.
-    raw = f'{p["username"]}|{key}'
+    raw = f"{p['username']}|{key}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
