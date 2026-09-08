@@ -1,0 +1,2 @@
+ignored:
+  - DL3008 # apt package pinning is impractical for android-tools-adb on debian slim
