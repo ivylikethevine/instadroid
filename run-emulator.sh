@@ -4,7 +4,7 @@
 set -euo pipefail
 AVD="${AVD:-Pixel_10}"
 EMU="${ANDROID_HOME:-$HOME/Android/Sdk}/emulator/emulator"
-exec "$EMU" -avd "$AVD" \
+exec "$EMU" -avd "$AVD" -port "${EMU_PORT:-5556}" \
   -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
   -gpu "${EMU_GPU:-host}" \
   -memory "${EMU_MEMORY:-2048}" -cores "${EMU_CORES:-2}" \
