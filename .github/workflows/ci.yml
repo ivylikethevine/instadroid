@@ -75,7 +75,7 @@ jobs:
         with:
           dockerfile: ${{ matrix.component }}/Dockerfile
           failure-threshold: warning
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.component }}
