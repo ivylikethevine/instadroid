@@ -1,0 +1,25 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node class="android.widget.FrameLayout" package="com.instagram.android" resource-id="" bounds="[0,0][1080,2424]">
+    <node class="android.widget.FrameLayout" package="com.instagram.android" resource-id="com.instagram.android:id/action_bar_container" bounds="[0,142][1080,289]" />
+    <node class="androidx.recyclerview.widget.RecyclerView" package="com.instagram.android" resource-id="android:id/list" bounds="[0,142][1080,2235]">
+      <!-- top card: header already scrolled off, only its bottom is visible -->
+      <node class="android.widget.FrameLayout" resource-id="com.instagram.android:id/media_group" bounds="[0,142][1080,900]" />
+      <node class="android.widget.FrameLayout" resource-id="com.instagram.android:id/row_feed_photo_imageview" content-desc="Reel by Someone Nice, Liked by a_friend and others, 6 comments, August 29" bounds="[0,142][1080,900]" />
+      <node class="android.view.ViewGroup" resource-id="com.instagram.android:id/row_feed_button_share" content-desc="Send post. Button." bounds="[390,900][453,1021]" />
+      <node class="com.instagram.ui.widget.textview.IgTextLayoutView" text="someone_nice Top card caption… more" bounds="[32,1030][1080,1100]" />
+      <node class="android.widget.TextView" text="3 days ago" content-desc="3 days ago" bounds="[32,1100][300,1140]" />
+      <!-- full card -->
+      <node class="android.view.ViewGroup" resource-id="com.instagram.android:id/row_feed_profile_header" content-desc="other_user posted a carousel in San Diego, California 21 hours ago" bounds="[0,1150][1080,1287]" />
+      <node class="android.widget.Button" resource-id="com.instagram.android:id/row_feed_photo_profile_name" text="other_user" bounds="[128,1150][965,1222]" />
+      <node class="android.widget.FrameLayout" resource-id="com.instagram.android:id/carousel_media_group" bounds="[0,1287][1080,2000]">
+        <node class="android.widget.FrameLayout" resource-id="com.instagram.android:id/carousel_image" content-desc="Photo 1 of 7 by Other User, 317 likes, 10 comments" bounds="[0,1287][1080,2000]" />
+      </node>
+      <node class="android.view.ViewGroup" resource-id="com.instagram.android:id/row_feed_button_share" content-desc="Send post. 27 shares. Button." bounds="[390,2000][453,2121]" />
+      <node class="com.instagram.ui.widget.textview.IgTextLayoutView" text="other_user Second caption" bounds="[32,2130][1080,2200]" />
+      <!-- sponsored card: header text does not match, must be ignored -->
+      <node class="android.view.ViewGroup" resource-id="com.instagram.android:id/row_feed_profile_header" content-desc="Sponsored" bounds="[0,2200][1080,2235]" />
+      <node class="android.view.ViewGroup" resource-id="com.instagram.android:id/row_feed_button_share" bounds="[390,2235][453,2235]" />
+    </node>
+  </node>
+</hierarchy>

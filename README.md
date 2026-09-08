@@ -1,4 +1,4 @@
-# instagram-rss
+# instadroid (instagram via redroid to rss)
 
 A real, logged-in Instagram Android app running in a headless Android emulator,
 driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom for FreshRSS.
@@ -57,6 +57,34 @@ If a run reports `no posts parsed on first screen`, look at `data/debug/last_hie
 and `last_screen.png`, then adjust `SELECTORS`.
 `docker compose exec driver python scraper.py dump` grabs a fresh dump any time.
 
+## How a scrape works
+
+1. Log in if needed, open the Following feed (the switcher is retried; cold starts are slow).
+2. Walk the accessibility tree screen by screen. A post is registered only once the bottom of its
+   card (share button + caption/timestamp) is on screen, so it has a stable identity.
+3. For each new post: crop the media from a screenshot, then tap Share → "Copy link" and read the
+   clipboard. The shortcode becomes the post id and the feed links straight to the post. If the
+   sheet fails to open it is retried on the next screen, then the post falls back to a content hash.
+4. Stop after `STOP_AFTER_SEEN` consecutive already-stored posts or `MAX_SCROLLS` screens.
+
+Taps are always made from a hierarchy dump taken immediately beforehand, and nothing is ever tapped
+inside an open sheet except "Copy link" (a stray tap there could message a contact).
+
+## Development
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt -r driver/requirements.txt -r feed/requirements.txt
+ruff check . && ruff format --check .
+PYTHONPATH=driver pytest driver/tests -q     # parser tests against a synthetic hierarchy fixture
+PYTHONPATH=feed pytest feed/tests -q         # feed endpoint tests against a temp SQLite db
+```
+
+CI (`.github/workflows/ci.yml`) runs ruff, both test suites, `pip-audit` on every requirements
+file (also weekly), shellcheck on the scripts, hadolint plus a build and smoke test of both images,
+`docker compose config` for both profiles, and gitleaks. Dependabot watches pip, Docker base images
+and GitHub Actions.
+
 ## FreshRSS
 
 Subscribe to `http://<host>:8000/instagram.xml` (set `PUBLIC_URL` in compose to whatever
@@ -67,17 +95,16 @@ FreshRSS can reach so image links resolve). Per-account feeds: `/instagram.xml?u
 
 - Keep `POLL_MIN_HOURS` ≥ 2. Instagram tolerates a phone that checks in a few times a day; it does not
   tolerate one that scrolls every 15 minutes with metronome timing.
-- `MAX_SCROLLS` 25 is roughly 15–20 posts per run on this feed layout. If you follow more than that
+- `MAX_SCROLLS` 25 is roughly 10–15 posts per run on this feed layout (each new post costs a
+  share-sheet round trip). If you follow more than that
   posts-per-3-hours, raise the poll frequency slowly rather than scroll depth.
 - Occasionally open `scrcpy` and poke around yourself; it helps, and you'll need it anyway for
   the "confirm it's you" challenges that appear a few times a year.
 
 ## Known limitations of v1
 
-- Post identity is a hash of author + kind + caption + media description (dates are relative in
-  the app and like counts change, so those are excluded), not the real shortcode. An edited caption
-  shows up twice; two caption-less posts by one author with identical media text collapse into one.
-  Adding "Share → Copy link" + clipboard read fixes this.
+- When "Copy link" fails twice for a post, its id is a hash of author + caption (or media
+  description); such a post can be stored twice if its caption is later edited.
 - Images are screenshot crops of whatever was on screen (first carousel slide, video poster frame,
   including any in-app overlay such as the audio label on videos).
 - Videos/Reels get a still only.

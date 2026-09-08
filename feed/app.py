@@ -1,16 +1,17 @@
 """Serves the scraped posts as Atom feeds for FreshRSS.
 
-  /instagram.xml            -> everything
-  /instagram.xml?user=NAME  -> one account
-  /media/<file>             -> cropped post images
+/instagram.xml            -> everything
+/instagram.xml?user=NAME  -> one account
+/media/<file>             -> cropped post images
 """
+
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
 from feedgen.feed import FeedGenerator
 
@@ -45,7 +46,7 @@ def feed(user: str | None = None, limit: int = 200):
     fg.id(f"{PUBLIC_URL}/instagram.xml" + (f"?user={user}" if user else ""))
     fg.title(title)
     fg.link(href=fg.id(), rel="self")
-    fg.updated(datetime.now(timezone.utc))
+    fg.updated(datetime.now(UTC))
 
     for r in rows(user, limit):
         fe = fg.add_entry(order="append")
@@ -53,15 +54,20 @@ def feed(user: str | None = None, limit: int = 200):
         caption = r["caption"] or ""
         first_line = caption.split("\n", 1)[0][:90] or r["kind"] or "post"
         fe.title(f"{r['username']}: {first_line}")
-        fe.link(href=f"https://www.instagram.com/{r['username']}/")
+        keys = r.keys()  # sqlite3.Row has no __contains__
+        url = r["url"] if "url" in keys and r["url"] else f"https://www.instagram.com/{r['username']}/"
+        fe.link(href=url)
         fe.author(name=r["username"])
         fe.updated(datetime.fromisoformat(r["scraped_at"]))
         html = ""
         if r["media_file"]:
             html += f'<p><img src="{PUBLIC_URL}/media/{r["media_file"]}" alt="" /></p>'
         html += f"<p>{escape(caption).replace(chr(10), '<br/>')}</p>"
-        if r["posted_date"]:
-            html += f"<p><small>Posted {escape(r['posted_date'])}</small></p>"
+        meta = [f"Posted {escape(r['posted_date'])}"] if r["posted_date"] else []
+        if "place" in keys and r["place"]:
+            meta.append(f"at {escape(r['place'])}")
+        meta.append(f'<a href="{escape(url)}">open on Instagram</a>')
+        html += f"<p><small>{' · '.join(meta)}</small></p>"
         fe.content(html, type="html")
 
     return Response(fg.atom_str(pretty=True), media_type="application/atom+xml")

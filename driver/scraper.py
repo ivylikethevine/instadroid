@@ -7,15 +7,15 @@ tree for post cards, store new ones, stop once we hit posts we've already seen.
 Selectors live in the SELECTORS dict below. Instagram changes its UI a few times a year;
 when a run fails, look at the hierarchy dump in $DEBUG_DIR and adjust them.
 """
+
 import hashlib
-import io
 import os
 import random
 import re
 import sqlite3
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import adbutils
@@ -47,10 +47,35 @@ SELECTORS = {
         r" (?P<date>\d+ (?:second|minute|hour|day|week)s? ago|[A-Z][a-z]+ \d{1,2}(?:, \d{4})?|Yesterday)$"
     ),
     # Resource-id substrings marking the media area of a card (used for the screenshot crop).
-    "media_ids": ("carousel_media_group", "media_group", "row_feed_photo_imageview", "zoomable_view_container"),
+    "media_ids": (
+        "carousel_media_group",
+        "media_group",
+        "row_feed_photo_imageview",
+        "zoomable_view_container",
+    ),
     # Content-desc on the media itself ("Reel by Nykky Hex, Liked by ..., August 29" / "Photo 1 of 7 by ...").
     "media_alt": re.compile(r"^(Photo|Video|Reel|Image|Carousel)\b", re.I),
     "username_id": "row_feed_photo_profile_name",
+    # Caption widget ("<user> text… more"), share button, and the share sheet's Copy link entry.
+    "caption_class": "com.instagram.ui.widget.textview.IgTextLayoutView",
+    "timestamp": re.compile(
+        r"^(\d+ (?:second|minute|hour|day|week)s? ago|[A-Z][a-z]+ \d{1,2}(?:, \d{4})?|Yesterday)$"
+    ),
+    # Map the media description's leading word to the header's kind vocabulary.
+    "alt_kind": {
+        "reel": "video",
+        "video": "video",
+        "photo": "photo",
+        "image": "photo",
+        "carousel": "carousel",
+    },
+    "share_id": "row_feed_button_share",
+    "copy_link_desc": "Copy link",
+    # Anything that means a share/bottom sheet is open. We never interact inside one except to
+    # tap "Copy link"; a stray tap there could message a contact.
+    "sheet_markers_text": ["Write a message…"],
+    "sheet_markers_desc": ["New group"],
+    "permalink": re.compile(r"https://www\.instagram\.com/(?P<type>p|reel|reels|tv)/(?P<code>[\w-]+)"),
     # The "Home ⌄" title button at the top of the feed opens the Following/Favorites chooser.
     "feed_switcher_desc": "Instagram Home Feed",
     "following_text": "Following",
@@ -58,7 +83,12 @@ SELECTORS = {
     "following_title_id": "action_bar_title",
     # Login screen. Instagram renames these occasionally; several candidates each.
     "login_username_ids": ["login_username", "username"],
-    "login_username_hints": ["Mobile number or email", "Username, email or mobile number", "Phone number, username or email", "Username, email address or mobile number"],
+    "login_username_hints": [
+        "Mobile number or email",
+        "Username, email or mobile number",
+        "Phone number, username or email",
+        "Username, email address or mobile number",
+    ],
     "login_password_ids": ["password"],
     "login_password_hints": ["Password"],
     "login_button_texts": ["Log in", "Log In"],
@@ -66,8 +96,15 @@ SELECTORS = {
     # Post-login interstitials and the buttons that dismiss them.
     "dismiss_texts": ["Not now", "Not Now", "Skip", "Save", "Continue", "Don’t allow", "Cancel", "OK"],
     # Anything matching these means a human has to intervene.
-    "challenge_texts": ["confirmation code", "Confirm it's you", "Suspicious login", "security code",
-                        "Enter the code", "We Detected An Unusual Login", "Help us confirm it's you"],
+    "challenge_texts": [
+        "confirmation code",
+        "Confirm it's you",
+        "Suspicious login",
+        "security code",
+        "Enter the code",
+        "We Detected An Unusual Login",
+        "Help us confirm it's you",
+    ],
 }
 # ------------------------------------------------------------------------------------
 
@@ -90,6 +127,11 @@ def db_init():
             scraped_at TEXT NOT NULL
         )"""
     )
+    cols = {r[1] for r in con.execute("PRAGMA table_info(posts)")}
+    for col in ("hash", "url", "place"):
+        if col not in cols:
+            con.execute(f"ALTER TABLE posts ADD COLUMN {col} TEXT")
+    con.execute("CREATE INDEX IF NOT EXISTS posts_hash ON posts(hash)")
     con.commit()
     return con
 
@@ -112,8 +154,9 @@ def human_scroll(d):
     w, h = d.window_size()
     x = random.randint(int(w * 0.3), int(w * 0.7))
     y1 = random.randint(int(h * 0.65), int(h * 0.8))
-    y2 = y1 - random.randint(int(h * 0.35), int(h * 0.55))
-    d.swipe(x, y1, x, y2, duration=random.uniform(0.25, 0.6))
+    y2 = y1 - random.randint(int(h * 0.3), int(h * 0.45))
+    # Slow enough not to fling: a fling scrolls several screens and skips whole posts.
+    d.swipe(x, y1, x, y2, duration=random.uniform(0.6, 1.0))
 
 
 def _first(d, **kinds):
@@ -151,7 +194,9 @@ def _dismiss_interstitials(d, rounds=4):
 def _login_form(d):
     """Return (username_field, password_field) or None. Instagram's login screen is Jetpack
     Compose: the labels are plain Views and the two EditTexts carry no id, so we go by order."""
-    if not _first(d, text=SELECTORS["login_username_hints"]) and not _first(d, text=SELECTORS["login_password_hints"]):
+    if not _first(d, text=SELECTORS["login_username_hints"]) and not _first(
+        d, text=SELECTORS["login_password_hints"]
+    ):
         return None
     edits = d(className="android.widget.EditText")
     if edits.count < 2:
@@ -171,7 +216,8 @@ def ensure_logged_in(d):
     human_pause(4, 6)
     ok = d(text="OK")  # stray "Enter your password" style alert from a previous attempt
     if ok.exists(timeout=1):
-        ok.click(); human_pause()
+        ok.click()
+        human_pause()
     if c := _challenge_present(d):
         _dump_debug(d, "login")
         raise RuntimeError(f"Instagram wants a human: '{c}' screen; see {DEBUG_DIR}")
@@ -186,11 +232,17 @@ def ensure_logged_in(d):
         raise RuntimeError("login screen shown but IG_USERNAME/IG_PASSWORD not set")
     user_field, pw_field = form
     log("login screen detected; entering credentials as", IG_USERNAME)
-    user_field.click(); human_pause(0.5, 1.2)
-    user_field.set_text(IG_USERNAME); human_pause(1, 2)
-    pw_field.click(); human_pause(0.5, 1.2)
-    pw_field.set_text(IG_PASSWORD); human_pause(1, 2)
-    btn = _first(d, description=SELECTORS["login_button_texts"]) or _first(d, text=SELECTORS["login_button_texts"])
+    user_field.click()
+    human_pause(0.5, 1.2)
+    user_field.set_text(IG_USERNAME)
+    human_pause(1, 2)
+    pw_field.click()
+    human_pause(0.5, 1.2)
+    pw_field.set_text(IG_PASSWORD)
+    human_pause(1, 2)
+    btn = _first(d, description=SELECTORS["login_button_texts"]) or _first(
+        d, text=SELECTORS["login_button_texts"]
+    )
     if btn:
         btn.click()
     else:
@@ -219,9 +271,10 @@ def open_following_feed(d):
         d.app_start(IG_PKG, stop=False)
         human_pause(3, 5)
     _dismiss_interstitials(d)  # notification / location / "set up on new device" prompts
+    close_sheets(d)
     w, h = d.window_size()
     sw = d(description=SELECTORS["feed_switcher_desc"])
-    for attempt in range(3):
+    for attempt in range(4):
         # The action bar hides while scrolled; pull back to the top so we can see where we are.
         for _ in range(12):
             if sw.exists(timeout=1) or _on_following_feed(d):
@@ -229,43 +282,67 @@ def open_following_feed(d):
             d.swipe(w // 2, int(h * 0.3), w // 2, int(h * 0.8), duration=0.3)
             human_pause(0.8, 1.5)
         if _on_following_feed(d):
-            # Already there (left over from the last run). Leave and re-enter so the feed is fresh.
+            if attempt > 0:
+                return True  # we navigated here a moment ago; the screen just took a while
+            # Left over from the last run: leave and re-enter so the feed is fresh.
             d.press("back")
             human_pause(2, 3)
             continue
         if sw.exists(timeout=3):
-            sw.click()
-            human_pause(2, 3)
-            f = d(text=SELECTORS["following_text"])
-            if f.exists(timeout=5):
-                f.click()
-                human_pause(3, 5)
-                if _on_following_feed(d):
-                    return True
-            else:
-                d.press("back")
+            try:
+                f = d(text=SELECTORS["following_text"])
+                for tap in range(4):  # taps get swallowed while the app is still warming up
+                    sw.click()
+                    if f.exists(timeout=5):
+                        break
+                    log(f"feed switch attempt {attempt}: switcher tap {tap} opened nothing")
+                if f.exists(timeout=1):
+                    f.click()
+                    human_pause(3, 5)
+                    for _ in range(6):  # cold starts can take a while to build the screen
+                        if _on_following_feed(d):
+                            return True
+                        time.sleep(2)
+                    log(f"feed switch attempt {attempt}: clicked Following but title not found")
+                else:
+                    _dump_debug(d, f"feed_switch_menu{attempt}")
+                    d.press("back")
+            except Exception as e:  # the header can scroll away between exists() and click()
+                log("WARN: feed switcher click failed, retrying:", repr(e))
         else:
             d.press("back")  # some other screen; step out and retry
             human_pause(1, 2)
-    log("WARN: could not open Following feed; scraping whatever feed is showing")
+    log("WARN: could not open Following feed; scraping whatever feed is showing (dump saved)")
+    _dump_debug(d, "feed_switch")
     return False
 
 
-def _card_of(node):
-    """Walk up to the feed RecyclerView's direct child that contains this node."""
-    n = node
-    while n is not None:
-        parent = n.getparent()
-        if parent is not None and parent.get("resource-id") == "android:id/list":
-            return n
-        n = parent
-    return node.getparent()
+def _new_post(user, kind, date, place, clip_top):
+    return {
+        "kind": kind,
+        "username": user,
+        "posted_date": date,
+        "place": place,
+        "caption": "",
+        "bounds": None,
+        "share_bounds": None,
+        "clip_top": clip_top,
+        "alt": "",
+        "headless": False,
+        "complete": False,
+    }
 
 
 def parse_hierarchy(xml: str):
-    """Return a list of post dicts found in the current screen's accessibility tree."""
+    """Return a list of post dicts found in the current screen's accessibility tree.
+
+    A post is several sibling rows in the feed RecyclerView (header+media, buttons, caption...),
+    so we walk the tree in document order: a header starts a post and everything up to the next
+    header belongs to it. Rows that appear before the first header belong to a post whose header
+    has already scrolled off the top; we identify that one from its caption ("<user> text") and
+    media description instead."""
     root = etree.fromstring(xml.encode())
-    posts = []
+    posts, cur = [], None
     # The action bar floats over the list; remember where it ends so crops can skip it.
     clip_top = 0
     for n in root.iter("node"):
@@ -274,40 +351,200 @@ def parse_hierarchy(xml: str):
             if m:
                 clip_top = int(m.group(4))
             break
-    for hdr in root.iter("node"):
-        if not (hdr.get("resource-id") or "").endswith(SELECTORS["header_id"]):
+    in_list = False
+    for n in root.iter("node"):
+        rid = (n.get("resource-id") or "").split("/")[-1]
+        desc = n.get("content-desc") or ""
+        text = n.get("text") or ""
+        if n.get("resource-id") == "android:id/list":
+            in_list = True
+            cur = _new_post("", "", "", "", clip_top)  # provisional: the header-less top card
+            cur["headless"] = True
+            posts.append(cur)
             continue
-        m = SELECTORS["header_desc"].match(hdr.get("content-desc") or "")
-        if not m:
-            continue  # sponsored / suggested cards have a different header
-        card = _card_of(hdr)
-        media_bounds, alt, caption = None, "", ""
-        for n in card.iter("node"):
-            rid = (n.get("resource-id") or "").split("/")[-1]
-            desc = n.get("content-desc") or ""
-            text = n.get("text") or ""
-            if media_bounds is None and rid in SELECTORS["media_ids"]:
-                media_bounds = n.get("bounds")
-            if not alt and SELECTORS["media_alt"].match(desc):
-                alt = desc
-            if not caption and text and n.get("class") == "android.view.ViewGroup" and rid == "":
-                caption = text
-        posts.append({
-            "kind": m.group("kind").lower(),
-            "username": m.group("user"),
-            "posted_date": m.group("date"),
-            "place": m.group("place") or "",
-            "caption": caption,
-            "bounds": media_bounds,
-            "clip_top": clip_top,
-            "alt": alt,
-        })
-    return posts
+        if not in_list:
+            continue
+        if rid == SELECTORS["header_id"]:
+            if cur is not None and cur["share_bounds"]:
+                cur["complete"] = True  # we saw the whole bottom of the previous card
+            m = SELECTORS["header_desc"].match(desc)
+            cur = None
+            if m:  # sponsored / suggested cards have a different header and are skipped
+                cur = _new_post(
+                    m.group("user"),
+                    m.group("kind").lower(),
+                    m.group("date"),
+                    m.group("place") or "",
+                    clip_top,
+                )
+                posts.append(cur)
+            continue
+        if cur is None:
+            continue
+        if cur["bounds"] is None and rid in SELECTORS["media_ids"]:
+            cur["bounds"] = n.get("bounds")
+        elif cur["share_bounds"] is None and rid == SELECTORS["share_id"]:
+            cur["share_bounds"] = n.get("bounds")
+        elif cur["headless"] and cur["kind"] in ("", "post") and desc.startswith("Turn sound"):
+            cur["kind"] = "video"  # reels have a mute toggle and no media description
+        elif not cur["alt"] and SELECTORS["media_alt"].match(desc):
+            cur["alt"] = desc
+            if cur["headless"] and not cur["kind"]:
+                cur["kind"] = SELECTORS["alt_kind"].get(desc.split()[0].lower(), "")
+        elif not cur["caption"] and text and n.get("class") == SELECTORS["caption_class"]:
+            if cur["headless"] and not cur["username"]:
+                cur["username"] = text.split(" ", 1)[0]
+            cur["caption"] = clean_caption(text, cur["username"])
+            if cur["share_bounds"]:
+                cur["complete"] = True
+        elif SELECTORS["timestamp"].match(text) and cur["share_bounds"]:
+            if cur["headless"] and not cur["posted_date"]:
+                cur["posted_date"] = text
+            cur["complete"] = True  # the timestamp row sits below the caption
+    # The provisional top card only counts if we could identify it.
+    for p in posts:
+        if p["headless"] and not p["kind"]:
+            p["kind"] = "post"
+    return [p for p in posts if not p["headless"] or (p["username"] and (p["caption"] or p["alt"]))]
+
+
+def clean_caption(text: str, user: str) -> str:
+    """'user Caption text… more' -> 'Caption text…'. The app truncates long captions itself."""
+    text = text.replace("\u00a0", " ").strip()
+    if text.startswith(user + " "):
+        text = text[len(user) + 1 :]
+    return re.sub(r"\s*(?:…|\.\.\.)?\s*more$", "…", text).strip()
+
+
+def bounds_center(bounds: str):
+    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
+    if not m:
+        return None
+    x1, y1, x2, y2 = map(int, m.groups())
+    return (x1 + x2) // 2, (y1 + y2) // 2
+
+
+def _sheet_open(d):
+    if d(description=SELECTORS["copy_link_desc"]).exists(timeout=0.3):
+        return True
+    if any(d(text=t).exists(timeout=0.3) for t in SELECTORS["sheet_markers_text"]):
+        return True
+    return any(d(description=t).exists(timeout=0.3) for t in SELECTORS["sheet_markers_desc"])
+
+
+def close_sheets(d, max_back=2):
+    """Back out of any open share/bottom sheet without touching its contents."""
+    for i in range(max_back):
+        if not _sheet_open(d) or d.app_current().get("package") != IG_PKG:
+            break
+        if i > 0 and _on_feed(d):
+            break  # feed rows visible: the marker is a false positive, another Back would exit
+        d.press("back")
+        human_pause(1.5, 2)
+    if d.app_current().get("package") != IG_PKG:
+        log("WARN: left Instagram while closing a sheet; relaunching")
+        d.app_start(IG_PKG, stop=False)
+        human_pause(3, 5)
+    return not _sheet_open(d)
+
+
+def _on_feed(d):
+    """True when a feed list with post rows is showing (title bars hide while scrolled, so
+    they are not a reliable signal)."""
+    return d(resourceIdMatches=f".*:id/{SELECTORS['share_id']}").exists(timeout=0.5) or d(
+        resourceIdMatches=f".*:id/{SELECTORS['header_id']}"
+    ).exists(timeout=0.5)
+
+
+def _on_home_feed(d):
+    """The Home feed keeps the bottom tab bar; the Following screen does not."""
+    return d(resourceIdMatches=".*:id/feed_tab").exists(timeout=0.5)
+
+
+def _back_to_feed(d, tries=2):
+    """If a tap opened a profile/hashtag/etc., back out until a feed is showing again. Never
+    backs out of the app: if we somehow left it, relaunch instead."""
+    for _ in range(tries):
+        if d.app_current().get("package") != IG_PKG:
+            d.app_start(IG_PKG, stop=False)
+            human_pause(3, 5)
+            return _on_feed(d)
+        if _on_feed(d) and not _sheet_open(d):
+            return True
+        d.press("back")
+        human_pause(1, 1.5)
+    return _on_feed(d)
+
+
+_last_url = ""
+
+
+def fetch_permalink(d, post_hash: str):
+    """Open the share sheet for the post with this hash, pick 'Copy link', read the clipboard.
+
+    Re-dumps the hierarchy right before tapping and clicks the share *element* (not stale
+    coordinates) because the feed can shift a few hundred px between a dump and a tap.
+    Returns the canonical URL or None."""
+    if not close_sheets(d):
+        log("WARN: a sheet is stuck open; skipping permalink")
+        return None
+    fresh = next((p for p in parse_hierarchy(d.dump_hierarchy()) if post_id(p) == post_hash), None)
+    if not fresh or not fresh["share_bounds"]:
+        log("WARN: card moved before the share tap; no permalink")
+        return None
+    link = d(description=SELECTORS["copy_link_desc"])
+    for _tap in range(2):  # the first tap is occasionally swallowed by the video overlay
+        # Coordinate tap from the fresh dump: element-based clicks on this (non-clickable)
+        # ViewGroup are unreliable on video cards.
+        d.click(*bounds_center(fresh["share_bounds"]))
+        human_pause(2, 3)
+        if link.exists(timeout=10):
+            break
+    if not link.exists(timeout=1):
+        log("WARN: no share sheet with 'Copy link'; dump saved")
+        _dump_debug(d, "share_sheet")
+        close_sheets(d)
+        _back_to_feed(d)
+        return None
+    # Note: clearing the clipboard first (d.set_clipboard) makes the next read come back empty.
+    # Staleness is caught below by comparing with the last link we handed out.
+    human_pause(0.8, 1.2)  # let the sheet finish animating
+    try:
+        b = link.info.get("bounds") or {}
+        cx, cy = (b["left"] + b["right"]) // 2, (b["top"] + b["bottom"]) // 2
+    except Exception as e:  # the sheet re-rendered and the node vanished
+        log("WARN: Copy link vanished before click:", repr(e))
+        close_sheets(d)
+        _back_to_feed(d)
+        return None
+    d.click(cx, cy)
+    human_pause(1.5, 2.5)
+    url = ""
+    try:
+        url = d.clipboard or ""
+    except Exception as e:
+        log("WARN: clipboard read failed:", repr(e))
+    global _last_url
+    if url and url == _last_url:
+        log("WARN: clipboard still holds the previous post's link; copy failed")
+        url = ""
+    elif url:
+        _last_url = url
+    close_sheets(d)  # sheet usually closes itself after Copy link; make sure
+    _back_to_feed(d)
+    m = SELECTORS["permalink"].match(url)
+    if not m:
+        log("WARN: clipboard did not contain a permalink:", repr(url[:80]))
+    return f"https://www.instagram.com/{m.group('type')}/{m.group('code')}/" if m else None
 
 
 def post_id(p):
-    alt = re.sub(r"\d+", "", p["alt"])  # strip like/comment counts
-    raw = f'{p["username"]}|{p["kind"]}|{p["caption"][:200]}|{alt[:120]}'
+    """Cheap identity for the first-pass 'have we stored this' check. Must not depend on anything
+    that changes while the post sits in the feed: like counts, relative dates, carousel index."""
+    # Caption if there is one, else the media description up to the first comma ("Photo  of  by X").
+    key = p["caption"][:200] if p["caption"] else re.sub(r"\d+", "", p["alt"].split(",")[0])
+    # No kind here: a header-less video card has no media description to infer it from.
+    raw = f'{p["username"]}|{key}'
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -318,10 +555,11 @@ def crop_media(d, bounds: str, pid: str, clip_top: int = 0):
         return None
     x1, y1, x2, y2 = map(int, m.groups())
     w, h = d.window_size()
-    if y1 < 0 or y2 > h or (y2 - y1) < 200:
-        return None  # partially off-screen; skip rather than save a sliver
-    if y1 < clip_top < y2:
-        y1 = clip_top  # trim the floating action bar rather than bake it into the image
+    full = y2 - y1
+    y1, y2 = max(y1, clip_top), min(y2, h)  # trim the floating action bar / screen edge
+    if full < 200 or (y2 - y1) < 0.4 * full:
+        log(f"no crop: media bounds {bounds} mostly off-screen")
+        return None
     img: Image.Image = d.screenshot()
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     fn = f"{pid}.jpg"
@@ -331,39 +569,96 @@ def crop_media(d, bounds: str, pid: str, clip_top: int = 0):
 
 def scrape_once(d, con):
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    global _last_url
+    try:
+        _last_url = d.clipboard or ""  # whatever is there now is stale by definition
+    except Exception:
+        _last_url = ""
     open_following_feed(d)
     new, seen_streak, this_run = 0, 0, set()
-    for i in range(MAX_SCROLLS):
+    link_failures: dict[str, int] = {}  # hash -> failed share-sheet attempts
+    screens = 0
+    while screens < MAX_SCROLLS:
         xml = d.dump_hierarchy()
         posts = parse_hierarchy(xml)
-        if i == 0 and not posts:
+        if screens == 0 and not posts:
             (DEBUG_DIR / "last_hierarchy.xml").write_text(xml)
             d.screenshot().save(DEBUG_DIR / "last_screen.png")
             log("no posts parsed on first screen — selectors probably need updating; dump saved")
+        touched = False
         for p in posts:
-            pid = post_id(p)
-            if pid in this_run:
+            h = post_id(p)
+            if h in this_run:
                 continue  # still on screen from the previous scroll
-            this_run.add(pid)
-            if con.execute("SELECT 1 FROM posts WHERE id=?", (pid,)).fetchone():
+            if not p["complete"]:
+                continue  # wait until the whole bottom of the card is on screen (stable identity)
+            if con.execute("SELECT 1 FROM posts WHERE hash=? OR id=?", (h, h)).fetchone():
+                this_run.add(h)
                 seen_streak += 1
                 continue
+            media = crop_media(d, p["bounds"], h, p.get("clip_top", 0))  # before any sheet opens
+            if not media and not p["bounds"]:
+                log("no crop: media node not found for card")
+            url = fetch_permalink(d, h)
+            touched = True
+            if not url and link_failures.get(h, 0) < 1:
+                # The sheet sometimes fails to open; try once more on the next screen.
+                link_failures[h] = link_failures.get(h, 0) + 1
+                if media:
+                    (MEDIA_DIR / media).unlink(missing_ok=True)
+                break
+            this_run.add(h)
+            if _on_home_feed(d) or not _on_feed(d):
+                log("WARN: not on the Following feed any more; reopening it")
+                open_following_feed(d)
+                this_run.discard(h)  # let the card be handled again where it appears
+            pid = url.rstrip("/").rsplit("/", 1)[-1] if url else h
+            row = con.execute("SELECT username FROM posts WHERE id=?", (pid,)).fetchone() if url else None
+            if row and row[0] != p["username"]:
+                log(
+                    f"WARN: permalink {pid} belongs to {row[0]}, not {p['username']}; stale clipboard, dropping it"
+                )
+                url, pid = None, h
+            elif row:
+                seen_streak += 1  # same post, caption edited since we stored it
+                con.execute("UPDATE posts SET hash=? WHERE id=?", (h, pid))
+                con.commit()
+                if media:
+                    (MEDIA_DIR / media).unlink(missing_ok=True)
+                break
             seen_streak = 0
-            media = crop_media(d, p["bounds"], pid, p.get("clip_top", 0))
+            if media and pid != h:
+                (MEDIA_DIR / media).rename(MEDIA_DIR / f"{pid}.jpg")
+                media = f"{pid}.jpg"
             con.execute(
-                "INSERT INTO posts VALUES (?,?,?,?,?,?,?)",
-                (pid, p["username"], p["kind"], p["posted_date"], p["caption"] or p["alt"],
-                 media, datetime.now(timezone.utc).isoformat()),
+                "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash, url, place)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    pid,
+                    p["username"],
+                    p["kind"],
+                    p["posted_date"],
+                    p["caption"] or p["alt"],
+                    media,
+                    datetime.now(UTC).isoformat(),
+                    h,
+                    url,
+                    p["place"],
+                ),
             )
             con.commit()
             new += 1
-            log(f"new post: {p['username']} ({p['kind']}) {p['posted_date']}")
-        log(f"screen {i}: {len(posts)} cards, {new} new so far, seen-streak {seen_streak}")
+            log(f"new post: {p['username']} ({p['kind']}) {p['posted_date']} {url or '(no permalink)'}")
+            break  # the screen may have shifted; re-dump before handling the next card
+        if touched:
+            continue
+        log(f"screen {screens}: {len(posts)} cards, {new} new so far, seen-streak {seen_streak}")
         if seen_streak >= STOP_AFTER_SEEN:
             log("hit already-seen posts; stopping")
             break
         human_scroll(d)
         human_pause(1.5, 4.0)
+        screens += 1
     # Leave the app in a natural state
     d.press("home")
     return new
