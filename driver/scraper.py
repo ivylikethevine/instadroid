@@ -54,6 +54,8 @@ SELECTORS = {
     # The "Home ⌄" title button at the top of the feed opens the Following/Favorites chooser.
     "feed_switcher_desc": "Instagram Home Feed",
     "following_text": "Following",
+    # The Following feed is its own screen: Back button + action_bar_title "Following".
+    "following_title_id": "action_bar_title",
     # Login screen. Instagram renames these occasionally; several candidates each.
     "login_username_ids": ["login_username", "username"],
     "login_username_hints": ["Mobile number or email", "Username, email or mobile number", "Phone number, username or email", "Username, email address or mobile number"],
@@ -206,29 +208,45 @@ def ensure_logged_in(d):
     return True
 
 
+def _on_following_feed(d):
+    t = d(resourceIdMatches=f".*:id/{SELECTORS['following_title_id']}$", text=SELECTORS["following_text"])
+    return t.exists(timeout=1)
+
+
 def open_following_feed(d):
     ensure_logged_in(d)
     if d.app_current().get("package") != IG_PKG:
         d.app_start(IG_PKG, stop=False)
         human_pause(3, 5)
     _dismiss_interstitials(d)  # notification / location / "set up on new device" prompts
-    # The title bar hides while scrolled; pull back to the top until the switcher is visible.
     w, h = d.window_size()
     sw = d(description=SELECTORS["feed_switcher_desc"])
-    for _ in range(12):
-        if sw.exists(timeout=1):
-            break
-        d.swipe(w // 2, int(h * 0.3), w // 2, int(h * 0.8), duration=0.3)
-        human_pause(0.8, 1.5)
-    if sw.exists(timeout=3):
-        sw.click()
-        human_pause(2, 3)
-        f = d(text=SELECTORS["following_text"])
-        if f.exists(timeout=5):
-            f.click()
-            human_pause(3, 5)
-            return True
-        d.press("back")
+    for attempt in range(3):
+        # The action bar hides while scrolled; pull back to the top so we can see where we are.
+        for _ in range(12):
+            if sw.exists(timeout=1) or _on_following_feed(d):
+                break
+            d.swipe(w // 2, int(h * 0.3), w // 2, int(h * 0.8), duration=0.3)
+            human_pause(0.8, 1.5)
+        if _on_following_feed(d):
+            # Already there (left over from the last run). Leave and re-enter so the feed is fresh.
+            d.press("back")
+            human_pause(2, 3)
+            continue
+        if sw.exists(timeout=3):
+            sw.click()
+            human_pause(2, 3)
+            f = d(text=SELECTORS["following_text"])
+            if f.exists(timeout=5):
+                f.click()
+                human_pause(3, 5)
+                if _on_following_feed(d):
+                    return True
+            else:
+                d.press("back")
+        else:
+            d.press("back")  # some other screen; step out and retry
+            human_pause(1, 2)
     log("WARN: could not open Following feed; scraping whatever feed is showing")
     return False
 
@@ -248,6 +266,14 @@ def parse_hierarchy(xml: str):
     """Return a list of post dicts found in the current screen's accessibility tree."""
     root = etree.fromstring(xml.encode())
     posts = []
+    # The action bar floats over the list; remember where it ends so crops can skip it.
+    clip_top = 0
+    for n in root.iter("node"):
+        if (n.get("resource-id") or "").endswith("action_bar_container"):
+            m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", n.get("bounds") or "")
+            if m:
+                clip_top = int(m.group(4))
+            break
     for hdr in root.iter("node"):
         if not (hdr.get("resource-id") or "").endswith(SELECTORS["header_id"]):
             continue
@@ -273,6 +299,7 @@ def parse_hierarchy(xml: str):
             "place": m.group("place") or "",
             "caption": caption,
             "bounds": media_bounds,
+            "clip_top": clip_top,
             "alt": alt,
         })
     return posts
@@ -284,7 +311,7 @@ def post_id(p):
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
-def crop_media(d, bounds: str, pid: str):
+def crop_media(d, bounds: str, pid: str, clip_top: int = 0):
     """Screenshot the visible post image. Returns filename or None."""
     m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
     if not m:
@@ -293,6 +320,8 @@ def crop_media(d, bounds: str, pid: str):
     w, h = d.window_size()
     if y1 < 0 or y2 > h or (y2 - y1) < 200:
         return None  # partially off-screen; skip rather than save a sliver
+    if y1 < clip_top < y2:
+        y1 = clip_top  # trim the floating action bar rather than bake it into the image
     img: Image.Image = d.screenshot()
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     fn = f"{pid}.jpg"
@@ -320,7 +349,7 @@ def scrape_once(d, con):
                 seen_streak += 1
                 continue
             seen_streak = 0
-            media = crop_media(d, p["bounds"], pid)
+            media = crop_media(d, p["bounds"], pid, p.get("clip_top", 0))
             con.execute(
                 "INSERT INTO posts VALUES (?,?,?,?,?,?,?)",
                 (pid, p["username"], p["kind"], p["posted_date"], p["caption"] or p["alt"],
@@ -329,6 +358,7 @@ def scrape_once(d, con):
             con.commit()
             new += 1
             log(f"new post: {p['username']} ({p['kind']}) {p['posted_date']}")
+        log(f"screen {i}: {len(posts)} cards, {new} new so far, seen-streak {seen_streak}")
         if seen_streak >= STOP_AFTER_SEEN:
             log("hit already-seen posts; stopping")
             break

@@ -26,7 +26,7 @@ services:
     network_mode: host         # so it can reach the emulator's ADB port on the host loopback
     env_file: .env             # IG_USERNAME / IG_PASSWORD for automated login
     environment:
-      ADB_ADDR: ${ADB_ADDR:-127.0.0.1:5557}   # emulator-5556 -> adb port 5557; redroid: 127.0.0.1:5555
+      ADB_ADDR: ${ADB_ADDR:-127.0.0.1:5557}   # run-emulator.sh pins emulator-5556 -> adb port 5557; redroid: 127.0.0.1:5555
       DB_PATH: /db/posts.sqlite
       MEDIA_DIR: /media
       DEBUG_DIR: /debug
