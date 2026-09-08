@@ -1,0 +1,54 @@
+services:
+  # Optional: containerised Android. On x86_64 hosts Instagram (arm64-only) crashes under
+  # redroid's libndk translation, so the default is the Android Studio emulator on the host
+  # (see README). Start with: docker compose --profile redroid up -d
+  redroid:
+    image: abing7k/redroid:a11_ndk_amd   # Android 11 + libndk ARM translation
+    container_name: ig-redroid
+    profiles: [redroid]
+    privileged: true
+    restart: unless-stopped
+    volumes:
+      - ./data/android:/data
+    ports:
+      - "127.0.0.1:5555:5555"   # ADB, for scrcpy / manual login from the host
+    command:
+      - androidboot.redroid_gpu_mode=guest
+      - androidboot.redroid_width=1080
+      - androidboot.redroid_height=2340
+      - androidboot.redroid_dpi=420
+      - androidboot.redroid_fps=30
+
+  driver:
+    build: ./driver
+    container_name: ig-driver
+    restart: unless-stopped
+    network_mode: host         # so it can reach the emulator's ADB port on the host loopback
+    env_file: .env             # IG_USERNAME / IG_PASSWORD for automated login
+    environment:
+      ADB_ADDR: ${ADB_ADDR:-127.0.0.1:5557}   # emulator-5556 -> adb port 5557; redroid: 127.0.0.1:5555
+      DB_PATH: /db/posts.sqlite
+      MEDIA_DIR: /media
+      DEBUG_DIR: /debug
+      POLL_MIN_HOURS: "2.5"
+      POLL_MAX_HOURS: "4.5"
+      MAX_SCROLLS: "25"
+      STOP_AFTER_SEEN: "4"        # stop after N consecutive already-seen posts
+    volumes:
+      - ./data/db:/db
+      - ./data/media:/media
+      - ./data/debug:/debug
+
+  feed:
+    build: ./feed
+    container_name: ig-feed
+    restart: unless-stopped
+    environment:
+      DB_PATH: /db/posts.sqlite
+      MEDIA_DIR: /media
+      PUBLIC_URL: http://localhost:8000   # what FreshRSS can reach
+    volumes:
+      - ./data/db:/db:ro
+      - ./data/media:/media:ro
+    ports:
+      - "8000:8000"
