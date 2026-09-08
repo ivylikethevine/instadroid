@@ -303,7 +303,7 @@ def crop_media(d, bounds: str, pid: str):
 def scrape_once(d, con):
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     open_following_feed(d)
-    new, seen_streak = 0, 0
+    new, seen_streak, this_run = 0, 0, set()
     for i in range(MAX_SCROLLS):
         xml = d.dump_hierarchy()
         posts = parse_hierarchy(xml)
@@ -313,6 +313,9 @@ def scrape_once(d, con):
             log("no posts parsed on first screen — selectors probably need updating; dump saved")
         for p in posts:
             pid = post_id(p)
+            if pid in this_run:
+                continue  # still on screen from the previous scroll
+            this_run.add(pid)
             if con.execute("SELECT 1 FROM posts WHERE id=?", (pid,)).fetchone():
                 seen_streak += 1
                 continue

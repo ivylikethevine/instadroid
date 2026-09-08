@@ -1,0 +1,16 @@
+# markdown-oxide (LSP) settings. markdownlint (.markdownlint.yaml) is the
+# linter of record; this only keeps oxide from disagreeing with it.
+
+# oxide resolves `[text](path)` against the vault root and keeps punctuation in
+# heading slugs (neither is configurable). GitHub and MD051 resolve relative to
+# the file and strip punctuation, so every `../README.md` and GLOSSARY anchor
+# is "unresolved" to oxide while correct everywhere else. Noise, so off.
+unresolved_diagnostics = false
+
+# dist/ holds the packaging stage, a second copy of README.md and settings/.
+excluded_folders = ["dist"]
+
+# Write links the way the docs spell them: .md extension, headings as slugs.
+include_md_extension_md_link = true
+include_md_extension_wikilink = true
+heading_slug = true

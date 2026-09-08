@@ -1,7 +1,7 @@
 # instagram-rss (redroid edition)
 
 A real, logged-in Instagram Android app running inside a `redroid` container,
-driven by `uiautomator2`, publishing the chronological *Following* feed as Atom for FreshRSS.
+driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom for FreshRSS.
 
 ```
 redroid (Android 12 + Instagram APK)  <--ADB--  driver (uiautomator2, every 2.5-4.5h)
@@ -13,14 +13,14 @@ redroid (Android 12 + Instagram APK)  <--ADB--  driver (uiautomator2, every 2.5-
 
 ## Host requirements
 
-* Linux host with binder support. Either the `binder_linux` module
+- Linux host with binder support. Either the `binder_linux` module
   (`sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"`; Debian/Ubuntu/Fedora stock kernels)
   or a kernel with the built-in Rust binder + binderfs (Arch 7.x: `grep binder /proc/filesystems`
   shows `binder`; redroid mounts binderfs itself, nothing to do). Proxmox LXC and macOS/Docker Desktop
   generally don't work.
-* `adb` on the host. `scrcpy` is optional — only needed if Instagram throws a 2FA / "confirm it's you"
+- `adb` on the host. `scrcpy` is optional — only needed if Instagram throws a 2FA / "confirm it's you"
   challenge; `adb exec-out screencap -p > shot.png` is enough for checking state.
-* On an x86_64 host, install the **x86_64** Instagram APK variant from apkmirror (Instagram publishes
+- On an x86_64 host, install the **x86_64** Instagram APK variant from apkmirror (Instagram publishes
   one). Docker Hub has no libndk/houdini redroid tags, so an arm64-only APK will not run. On an ARM
   host use the arm64-v8a build.
 
@@ -54,16 +54,16 @@ FreshRSS can reach so image links resolve). Per-account feeds: `/instagram.xml?u
 
 ## Staying under the radar
 
-* Keep `POLL_MIN_HOURS` ≥ 2. Instagram tolerates a phone that checks in a few times a day; it does not
+- Keep `POLL_MIN_HOURS` ≥ 2. Instagram tolerates a phone that checks in a few times a day; it does not
   tolerate one that scrolls every 15 minutes with metronome timing.
-* `MAX_SCROLLS` 25 is roughly 40–60 posts per run. If you follow more than that posts-per-3-hours, raise
+- `MAX_SCROLLS` 25 is roughly 40–60 posts per run. If you follow more than that posts-per-3-hours, raise
   the poll frequency slowly rather than scroll depth.
-* Occasionally open `scrcpy` and poke around yourself; it helps, and you'll need it anyway for
+- Occasionally open `scrcpy` and poke around yourself; it helps, and you'll need it anyway for
   the "confirm it's you" challenges that appear a few times a year.
 
 ## Known limitations of v1
 
-* Post identity is a hash of author + date + caption, not the real shortcode, so a post edited
+- Post identity is a hash of author + date + caption, not the real shortcode, so a post edited
   after scraping shows up twice. Adding "Share → Copy link" + clipboard read fixes this.
-* Images are screenshot crops of whatever was on screen (first carousel slide, video poster frame).
-* Videos/Reels get a still only.
+- Images are screenshot crops of whatever was on screen (first carousel slide, video poster frame).
+- Videos/Reels get a still only.
