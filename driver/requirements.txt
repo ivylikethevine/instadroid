@@ -1,4 +1,4 @@
-uiautomator2>=3.2
+uiautomator2>=3.7.0
 adbutils>=2.8
 lxml>=5.0
 pillow>=10.0
