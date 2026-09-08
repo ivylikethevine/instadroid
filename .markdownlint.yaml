@@ -1,0 +1,17 @@
+# Source - https://stackoverflow.com/a/74551354 (Gabriel M. Silva, retrieved
+# 2026-08-14, CC BY-SA 4.0)
+default: true
+
+# MD049 "consistent" would infer the emphasis style per file; naming it makes
+# the answer the same everywhere. Underscore is what the docs already use;
+# **bold** is MD050's business and stays asterisks.
+MD049:
+  style: underscore
+
+# MD013/line-length
+MD013:
+  line_length: 9999
+  tables: false
+  stern: false
+  code_blocks: false
+  heading_line_length: 9999
