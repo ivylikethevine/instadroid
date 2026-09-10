@@ -1,13 +1,16 @@
 services:
-  # Optional: containerised Android. On x86_64 hosts Instagram (arm64-only) crashes under
-  # redroid's libndk translation, so the default is the Android Studio emulator on the host
-  # (see README). Start with: docker compose --profile redroid up -d
+  # Optional: containerised Android. On x86_64 hosts Instagram (arm64-only) crashed under
+  # redroid's Android-11 libndk translation across 3 tested APK versions, so the default is the
+  # Android Studio emulator on the host (see README). This image is Android 13 + Google's NDK
+  # translation as shipped in ChromeOS's ARC++ (untested here — see CLAUDE.md before ever running
+  # this service: starting it previously caused a kernel panic on this host).
+  # Start with: docker compose --profile redroid up -d
   redroid:
-    image: abing7k/redroid:a11_ndk_amd   # Android 11 + libndk ARM translation
+    image: erstt/redroid:13.0.0_ndk_ChromeOS
     container_name: ig-redroid
     profiles: [redroid]
     privileged: true
-    restart: unless-stopped
+    restart: "no"
     volumes:
       - ./data/android:/data
     ports:
@@ -22,7 +25,7 @@ services:
   driver:
     build: ./driver
     container_name: ig-driver
-    restart: unless-stopped
+    restart: "no"
     network_mode: host         # so it can reach the emulator's ADB port on the host loopback
     env_file: .env             # IG_USERNAME / IG_PASSWORD for automated login
     environment:
@@ -45,16 +48,17 @@ services:
   feed:
     build: ./feed
     container_name: ig-feed
-    restart: unless-stopped
+    restart: "no"
+    depends_on: [driver]   # so the posts table exists before feed's first request, not just the DB file
     environment:
       DB_PATH: /db/posts.sqlite
       MEDIA_DIR: /media
-      PUBLIC_URL: http://localhost:8000   # what FreshRSS can reach
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8000}   # what FreshRSS can reach
     volumes:
       - ./data/db:/db:ro
       - ./data/media:/media:ro
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"   # loopback only; override if FreshRSS needs LAN access
     mem_limit: 256m
     cpus: 0.5
     healthcheck:

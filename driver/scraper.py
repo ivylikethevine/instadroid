@@ -1,5 +1,5 @@
 """
-Instagram -> SQLite scraper driving a real Instagram app inside redroid via uiautomator2.
+Instagram -> SQLite scraper driving a real Instagram app inside an Android emulator via uiautomator2.
 
 Strategy: open the chronological "Following" feed, scroll slowly, parse the accessibility
 tree for post cards, store new ones, stop once we hit posts we've already seen.
@@ -23,7 +23,7 @@ import uiautomator2 as u2
 from lxml import etree
 from PIL import Image
 
-ADB_ADDR = os.environ.get("ADB_ADDR", "redroid:5555")
+ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5557")  # run-emulator.sh's ADB port; redroid: 127.0.0.1:5555
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", "/debug"))
@@ -149,7 +149,10 @@ def parse_posted_at(text: str, now: datetime) -> tuple[datetime, int] | None:
         except ValueError:
             return None
         if not m.group(3) and dt > now:  # bare "Month Day" with no year: assume the past
-            dt = dt.replace(year=year - 1)
+            try:
+                dt = dt.replace(year=year - 1)
+            except ValueError:  # "February 29" rolled back into a non-leap year
+                return None
         return dt, 86400
     return None
 
@@ -205,48 +208,61 @@ def db_init():
     return con
 
 
+def _safe_parse_posted_at(posted_date, scraped_at_iso):
+    """parse_posted_at(), tolerant of a malformed/legacy scraped_at that fromisoformat rejects.
+    Returns (None, None) instead of raising, so one corrupt row can't abort the whole migration."""
+    try:
+        now = datetime.fromisoformat(scraped_at_iso)
+    except TypeError, ValueError:
+        return None, None
+    return parse_posted_at(posted_date, now) or (None, None)
+
+
 def _migrate_dedupe(con):
     """One-time cleanup, guarded by PRAGMA user_version so it runs exactly once: backfill
     posted_at for rows written before that column existed, then merge any rows same_post()
     considers duplicates — the bug that let a card get stored twice when its caption hadn't
     rendered on the first pass. Uses the same merge path as a live scrape (_find_duplicate /
-    _merged_fields / _write_merged)."""
+    _merged_fields / _write_merged). Each row is handled defensively: a single corrupt row must
+    not turn into a permanent boot loop (user_version is only bumped once every row is done)."""
     if con.execute("PRAGMA user_version").fetchone()[0] >= 1:
         return
     log("running one-time dedupe migration")
     for r in con.execute("SELECT id, posted_date, scraped_at FROM posts WHERE posted_at IS NULL"):
-        parsed = parse_posted_at(r["posted_date"], datetime.fromisoformat(r["scraped_at"]))
-        if parsed:
-            con.execute("UPDATE posts SET posted_at=? WHERE id=?", (parsed[0].isoformat(), r["id"]))
+        posted_at, _ = _safe_parse_posted_at(r["posted_date"], r["scraped_at"])
+        if posted_at:
+            con.execute("UPDATE posts SET posted_at=? WHERE id=?", (posted_at.isoformat(), r["id"]))
     con.commit()
     merged = 0
     for (rid,) in con.execute("SELECT id FROM posts ORDER BY scraped_at").fetchall():
         r = con.execute("SELECT * FROM posts WHERE id=?", (rid,)).fetchone()
         if r is None:
             continue  # already merged away as another row's duplicate
-        parsed = parse_posted_at(r["posted_date"], datetime.fromisoformat(r["scraped_at"]))
-        posted_at, precision = parsed if parsed else (None, None)
-        dup = _find_duplicate(con, r["username"], posted_at, precision, r["caption"], exclude_id=r["id"])
-        if not dup:
-            continue
-        final_id, fields, media_to_drop = _merged_fields(
-            dup,
-            r["id"],
-            r["url"],
-            r["hash"],
-            r["kind"],
-            r["posted_date"],
-            r["place"],
-            r["caption"],
-            r["media_file"],
-            posted_at,
-        )
-        if media_to_drop:
-            (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
-        if final_id != r["id"]:
-            con.execute("DELETE FROM posts WHERE id=?", (r["id"],))
-        _write_merged(con, dup["id"], final_id, fields)
-        merged += 1
+        try:
+            posted_at, precision = _safe_parse_posted_at(r["posted_date"], r["scraped_at"])
+            dup = _find_duplicate(con, r["username"], posted_at, precision, r["caption"], exclude_id=r["id"])
+            if not dup:
+                continue
+            final_id, fields, media_to_drop = _merged_fields(
+                dup,
+                r["id"],
+                r["url"],
+                r["hash"],
+                r["kind"],
+                r["posted_date"],
+                r["place"],
+                r["caption"],
+                r["media_file"],
+                posted_at,
+            )
+            if media_to_drop:
+                (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
+            if final_id != r["id"]:
+                con.execute("DELETE FROM posts WHERE id=?", (r["id"],))
+            _write_merged(con, dup["id"], final_id, fields)
+            merged += 1
+        except Exception as e:  # a single corrupt/unexpected row must not block every future start
+            log(f"WARN: dedupe migration skipped row {rid!r}:", repr(e))
     con.execute("PRAGMA user_version = 1")
     con.commit()
     log(f"dedupe migration: merged {merged} duplicate row(s)")
@@ -372,9 +388,11 @@ def _prune_debug_dumps():
             (DEBUG_DIR / f"{stem}{ext}").unlink(missing_ok=True)
 
 
-def _dump_debug(d, name):
+def _dump_debug(d, name, xml=None):
+    """Save a hierarchy + screenshot pair for later inspection. Pass `xml` when the caller
+    already has a fresh dump, to avoid a redundant device round-trip."""
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-    (DEBUG_DIR / f"{name}_hierarchy.xml").write_text(d.dump_hierarchy())
+    (DEBUG_DIR / f"{name}_hierarchy.xml").write_text(xml if xml is not None else d.dump_hierarchy())
     d.screenshot().convert("RGB").save(DEBUG_DIR / f"{name}_screen.jpg", quality=70)
     _prune_debug_dumps()
 
@@ -794,7 +812,9 @@ def _prune_old_posts(con):
     if not MEDIA_DIR.exists():
         return
     kept = {r[0] for r in con.execute("SELECT media_file FROM posts WHERE media_file IS NOT NULL")}
-    orphans = [f for f in MEDIA_DIR.iterdir() if f.is_file() and f.name not in kept]
+    # Only ever written media_file names are *.jpg (crop_media()); restrict the sweep to those so
+    # pointing MEDIA_DIR at the wrong directory can't delete unrelated files.
+    orphans = [f for f in MEDIA_DIR.glob("*.jpg") if f.name not in kept]
     for f in orphans:
         f.unlink(missing_ok=True)
     if orphans:
@@ -816,9 +836,7 @@ def scrape_once(d, con):
         xml = d.dump_hierarchy()
         posts = parse_hierarchy(xml)
         if screens == 0 and not posts:
-            (DEBUG_DIR / "last_hierarchy.xml").write_text(xml)
-            d.screenshot().convert("RGB").save(DEBUG_DIR / "last_screen.jpg", quality=70)
-            _prune_debug_dumps()
+            _dump_debug(d, "last", xml=xml)
             log("no posts parsed on first screen — selectors probably need updating; dump saved")
         touched = False
         for p in posts:
@@ -938,9 +956,7 @@ if __name__ == "__main__":
         print("logged in:", ensure_logged_in(connect_device()))
     elif len(sys.argv) > 1 and sys.argv[1] == "dump":
         d = connect_device()
-        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-        (DEBUG_DIR / "manual_hierarchy.xml").write_text(d.dump_hierarchy())
-        d.screenshot().convert("RGB").save(DEBUG_DIR / "manual_screen.jpg", quality=70)
+        _dump_debug(d, "manual")
         print("wrote", DEBUG_DIR)
     else:
         main()
