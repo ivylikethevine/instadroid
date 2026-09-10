@@ -7,40 +7,63 @@
 
 import os
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
+from hashlib import sha1
 from html import escape
 from pathlib import Path
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 from feedgen.feed import FeedGenerator
 
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
 MEDIA_DIR = os.environ.get("MEDIA_DIR", "/media")
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://localhost:8000").rstrip("/")
+MAX_LIMIT = 500
 
 app = FastAPI()
 Path(MEDIA_DIR).mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 
 
+def _connect():
+    # The compose mount is already read-only; open read-only here too so a lock held by the
+    # driver's writer never blocks a request.
+    return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+
+
 def rows(user: str | None, limit: int):
     if not Path(DB_PATH).exists():
         return []
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    q = "SELECT * FROM posts"
-    args: list = []
-    if user:
-        q += " WHERE username = ?"
-        args.append(user)
-    q += " ORDER BY scraped_at DESC LIMIT ?"
-    args.append(limit)
-    return con.execute(q, args).fetchall()
+    with closing(_connect()) as con:
+        con.row_factory = sqlite3.Row
+        q = "SELECT * FROM posts"
+        args: list = []
+        if user:
+            q += " WHERE username = ?"
+            args.append(user)
+        q += " ORDER BY COALESCE(posted_at, scraped_at) DESC LIMIT ?"
+        args.append(max(1, min(limit, MAX_LIMIT)))
+        return con.execute(q, args).fetchall()
+
+
+def _stats():
+    """(post count, latest scraped_at) - cheap aggregate used for /health and the feed's ETag,
+    so a poll that hasn't seen new data doesn't cost a full row scan or feed render."""
+    if not Path(DB_PATH).exists():
+        return 0, ""
+    with closing(_connect()) as con:
+        return con.execute("SELECT COUNT(*), COALESCE(MAX(scraped_at), '') FROM posts").fetchone()
 
 
 @app.get("/instagram.xml")
-def feed(user: str | None = None, limit: int = 200):
+def feed(request: Request, user: str | None = None, limit: int = 200):
+    count, latest = _stats()
+    etag = f'"{sha1(f"{user}|{limit}|{count}|{latest}".encode()).hexdigest()}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+
     fg = FeedGenerator()
     title = f"Instagram — {user}" if user else "Instagram — Following"
     fg.id(f"{PUBLIC_URL}/instagram.xml" + (f"?user={user}" if user else ""))
@@ -59,6 +82,8 @@ def feed(user: str | None = None, limit: int = 200):
         fe.link(href=url)
         fe.author(name=r["username"])
         fe.updated(datetime.fromisoformat(r["scraped_at"]))
+        if "posted_at" in keys and r["posted_at"]:
+            fe.published(datetime.fromisoformat(r["posted_at"]))
         html = ""
         if r["media_file"]:
             html += f'<p><img src="{PUBLIC_URL}/media/{r["media_file"]}" alt="" /></p>'
@@ -70,14 +95,18 @@ def feed(user: str | None = None, limit: int = 200):
         html += f"<p><small>{' · '.join(meta)}</small></p>"
         fe.content(html, type="html")
 
-    return Response(fg.atom_str(pretty=True), media_type="application/atom+xml")
+    return Response(fg.atom_str(pretty=True), media_type="application/atom+xml", headers={"ETag": etag})
 
 
 @app.get("/users")
 def users():
-    return sorted({r["username"] for r in rows(None, 5000)})
+    if not Path(DB_PATH).exists():
+        return []
+    with closing(_connect()) as con:
+        return [r[0] for r in con.execute("SELECT DISTINCT username FROM posts ORDER BY username")]
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "posts": len(rows(None, 100000))}
+    count, _ = _stats()
+    return {"ok": True, "posts": count}

@@ -12,17 +12,21 @@ def make_app(tmp_path, monkeypatch):
     con = sqlite3.connect(db)
     con.execute(
         "CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,"
-        " media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT)"
+        " media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT)"
     )
+    # Scraped in the order a run actually finds them (newest post first), so scraped_at DESC
+    # would get the order backwards; posted_at DESC must recover the true chronological order.
     con.execute(
         "INSERT INTO posts VALUES ('ABC', 'someone', 'photo', '2 days ago', 'Hi <there>', 'ABC.jpg',"
-        " '2026-09-08T10:00:00+00:00', 'h1', 'https://www.instagram.com/p/ABC/', 'San Diego')"
+        " '2026-09-08T08:00:00+00:00', 'h1', 'https://www.instagram.com/p/ABC/', 'San Diego',"
+        " '2026-09-08T09:00:00+00:00')"
     )
     con.execute(
         "INSERT INTO posts VALUES ('h2', 'other', 'video', 'August 1', '', NULL,"
-        " '2026-09-07T10:00:00+00:00', 'h2', NULL, NULL)"
+        " '2026-09-08T10:00:00+00:00', 'h2', NULL, NULL, '2026-09-07T09:00:00+00:00')"
     )
     con.commit()
+    con.close()
     import importlib
 
     import app
@@ -41,7 +45,7 @@ def test_feed_lists_posts_with_permalinks_and_escaping(tmp_path, monkeypatch):
     assert "http://feed.test/media/ABC.jpg" in body
     assert "&lt;there&gt;" in body and "<there>" not in body
     assert "San Diego" in body
-    assert body.index("someone") < body.index("other")  # newest scraped first
+    assert body.index("someone") < body.index("other")  # posted_at order, not scrape order
 
 
 def test_user_filter_and_users_endpoint(tmp_path, monkeypatch):
@@ -50,3 +54,17 @@ def test_user_filter_and_users_endpoint(tmp_path, monkeypatch):
     body = client.get("/instagram.xml", params={"user": "other"}).text
     assert "other" in body and "someone" not in body
     assert client.get("/health").json() == {"ok": True, "posts": 2}
+
+
+def test_limit_is_clamped(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)
+    r = client.get("/instagram.xml", params={"limit": 999999})
+    assert r.status_code == 200  # doesn't try to scan an unbounded result set
+
+
+def test_conditional_get_returns_304_when_unchanged(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)
+    first = client.get("/instagram.xml")
+    etag = first.headers["etag"]
+    second = client.get("/instagram.xml", headers={"if-none-match": etag})
+    assert second.status_code == 304

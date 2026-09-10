@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,18 @@ def test_full_card_fields():
     assert card["alt"].startswith("Photo 1 of 7")
     assert card["caption"] == "Second caption"
     assert card["complete"] is True
+
+
+def test_card_without_caption_or_alt_is_excluded():
+    # A header with neither a caption nor a media description can't be identified (post_id()
+    # would hash nothing but the username); it should be left out rather than stored empty.
+    xml = """<hierarchy><node><node resource-id="android:id/list">
+      <node resource-id="com.instagram.android:id/row_feed_profile_header"
+            content-desc="ghostuser posted a photo 2 hours ago" />
+      <node resource-id="com.instagram.android:id/row_feed_button_share" bounds="[0,0][1,1]" />
+      <node text="2 hours ago" />
+    </node></node></hierarchy>"""
+    assert scraper.parse_hierarchy(xml) == []
 
 
 def test_post_id_ignores_counts_dates_and_kind():
@@ -68,8 +81,83 @@ def test_clean_caption_strips_user_and_more():
     assert scraper.clean_caption("user Short", "user") == "Short"
 
 
+def test_clean_caption_strips_nbsp():
+    assert scraper.clean_caption("user Hello there", "user") == "Hello there"
+
+
 def test_permalink_regex_accepts_reel_and_p_with_tracking_params():
     rx = scraper.SELECTORS["permalink"]
     assert rx.match("https://www.instagram.com/reel/DdCSb4WsvUs/?stkn=abc").group("code") == "DdCSb4WsvUs"
     assert rx.match("https://www.instagram.com/p/Dc9fdRTSKE5/").group("type") == "p"
     assert rx.match("https://www.instagram.com/someone/") is None
+
+
+NOW = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected", "precision"),
+    [
+        ("30 minutes ago", datetime(2026, 9, 8, 11, 30, tzinfo=UTC), 60),
+        ("3 hours ago", datetime(2026, 9, 8, 9, 0, tzinfo=UTC), 3600),
+        ("2 days ago", datetime(2026, 9, 6, 12, 0, tzinfo=UTC), 86400),
+        ("Yesterday", datetime(2026, 9, 7, 12, 0, tzinfo=UTC), 86400),
+        ("September 1", datetime(2026, 9, 1, 0, 0, tzinfo=UTC), 86400),
+        ("August 29, 2024", datetime(2024, 8, 29, 0, 0, tzinfo=UTC), 86400),
+    ],
+)
+def test_parse_posted_at(text, expected, precision):
+    assert scraper.parse_posted_at(text, NOW) == (expected, precision)
+
+
+def test_parse_posted_at_bare_date_rolls_back_a_year_if_in_the_future():
+    # "now" is Sep 8; a bare "December 25" with no year must mean last December, not next.
+    dt, _ = scraper.parse_posted_at("December 25", NOW)
+    assert dt.year == 2025
+
+
+def test_parse_posted_at_rejects_unknown_formats():
+    assert scraper.parse_posted_at("", NOW) is None
+    assert scraper.parse_posted_at("sometime", NOW) is None
+
+
+def test_same_post_merges_a_weak_caption_placeholder_into_the_real_row():
+    real = {"username": "club", "caption": "Attendance check! see you there", "posted_at": NOW}
+    weak = {
+        "username": "club",
+        "caption": "Photo 1 of 2 by Club, 113 likes, 10 comments",
+        "posted_at": NOW,
+        "posted_at_precision": 86400,
+    }
+    assert scraper.same_post(real, weak) is True  # weak candidate merges into the real row
+    assert scraper.same_post(weak, {**real, "posted_at_precision": 86400}) is True  # or vice versa
+
+
+def test_same_post_refuses_two_real_differing_captions_same_day():
+    a = {"username": "club", "caption": "First post of the day", "posted_at": NOW}
+    b = {
+        "username": "club",
+        "caption": "Second, unrelated post",
+        "posted_at": NOW,
+        "posted_at_precision": 86400,
+    }
+    assert scraper.same_post(a, b) is False
+
+
+def test_same_post_respects_time_tolerance():
+    from datetime import timedelta
+
+    existing = {"username": "u", "caption": "", "posted_at": NOW}
+    far = {
+        "username": "u",
+        "caption": "",
+        "posted_at": NOW - timedelta(hours=3),
+        "posted_at_precision": 60,
+    }
+    assert scraper.same_post(existing, far) is False  # 3h apart, 60s-precision candidate
+
+
+def test_same_post_requires_matching_username():
+    a = {"username": "alice", "caption": "", "posted_at": NOW}
+    b = {"username": "bob", "caption": "", "posted_at": NOW, "posted_at_precision": 60}
+    assert scraper.same_post(a, b) is False

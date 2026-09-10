@@ -34,10 +34,13 @@ services:
       POLL_MAX_HOURS: "4.5"
       MAX_SCROLLS: "25"
       STOP_AFTER_SEEN: "4"        # stop after N consecutive already-seen posts
+      RETAIN_DAYS: "60"           # delete posts (and their media) older than this; 0 keeps forever
     volumes:
       - ./data/db:/db
       - ./data/media:/media
       - ./data/debug:/debug
+    mem_limit: 512m
+    cpus: 1.0
 
   feed:
     build: ./feed
@@ -52,3 +55,11 @@ services:
       - ./data/media:/media:ro
     ports:
       - "8000:8000"
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
