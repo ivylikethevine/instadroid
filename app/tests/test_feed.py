@@ -89,6 +89,53 @@ def test_missing_posts_table_returns_empty_instead_of_500(tmp_path, monkeypatch)
     assert client.get("/health").json() == {"ok": True, "posts": 0}
 
 
+def test_etag_changes_when_a_row_is_merged_in_place(tmp_path, monkeypatch):
+    # A driver-side merge (e.g. a placeholder caption replaced once the real one renders) updates
+    # an existing row without changing its scraped_at or the post count — updated_at is what the
+    # ETag must key off, or FreshRSS keeps getting a 304 with the stale caption.
+    db = tmp_path / "posts.sqlite"
+    monkeypatch.setenv("DB_PATH", str(db))
+    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT,"
+        " caption TEXT, media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT,"
+        " posted_at TEXT, updated_at TEXT)"
+    )
+    con.execute(
+        "INSERT INTO posts VALUES ('ABC', 'someone', 'carousel', '2 days ago',"
+        " 'Photo 1 of 2 by Someone, 5 likes', NULL, '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL,"
+        " '2026-09-08T09:00:00+00:00', '2026-09-08T08:00:00+00:00')"
+    )
+    con.commit()
+    con.close()
+    import importlib
+
+    import app
+
+    importlib.reload(app)
+    client = TestClient(app.app)
+
+    first = client.get("/instagram.xml")
+    assert "Photo 1 of 2 by Someone" in first.text
+    etag = first.headers["etag"]
+
+    # Simulate the merge: real caption in, updated_at bumped, scraped_at/count untouched.
+    con = sqlite3.connect(db)
+    con.execute(
+        "UPDATE posts SET caption = 'The real caption', updated_at = '2026-09-08T12:00:00+00:00'"
+        " WHERE id = 'ABC'"
+    )
+    con.commit()
+    con.close()
+
+    second = client.get("/instagram.xml", headers={"if-none-match": etag})
+    assert second.status_code == 200
+    assert "The real caption" in second.text
+    assert second.headers["etag"] != etag
+
+
 def test_dt_handles_naive_and_malformed_timestamps(tmp_path, monkeypatch):
     make_app(tmp_path, monkeypatch)  # ensures app is importable with env set
     import app

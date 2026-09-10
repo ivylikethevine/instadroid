@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   lint:
+    if: github.event.pull_request.draft != true
     name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
@@ -24,38 +25,34 @@ jobs:
       - run: ruff format --check .
 
   test:
+    if: github.event.pull_request.draft != true
     name: Unit tests
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        component: [driver, feed]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
           cache: pip
-      - run: pip install -r ${{ matrix.component }}/requirements.txt -r scripts/requirements-dev.txt
-      - run: python -m pytest ${{ matrix.component }}/tests -q
+      - run: pip install -r app/requirements.txt -r scripts/requirements-dev.txt
+      - run: python -m pytest app/tests -q
         env:
-          PYTHONPATH: ${{ matrix.component }}
+          PYTHONPATH: app
 
   audit:
+    if: github.event.pull_request.draft != true
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        component: [driver, feed]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       - run: pip install -r scripts/requirements-dev.txt
-      - run: pip-audit -r ${{ matrix.component }}/requirements.txt --strict
+      - run: pip-audit -r app/requirements.txt --strict
 
   shell:
+    if: github.event.pull_request.draft != true
     name: Shell scripts (shellcheck)
     runs-on: ubuntu-latest
     steps:
@@ -64,43 +61,39 @@ jobs:
       - run: shellcheck -S warning ./scripts/*.sh
 
   docker:
+    if: github.event.pull_request.draft != true
     name: Docker (hadolint + build + compose config)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        component: [driver, feed]
     steps:
       - uses: actions/checkout@v7
       - uses: hadolint/hadolint-action@v3.5.0
         with:
-          dockerfile: ${{ matrix.component }}/Dockerfile
+          dockerfile: app/Dockerfile
           failure-threshold: warning
       - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7
         with:
-          context: ${{ matrix.component }}
+          context: app
           push: false
           load: true
-          tags: instadroid-${{ matrix.component }}:ci
+          tags: instadroid-app:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Image smoke test
         run: |
-          if [ "${{ matrix.component }}" = feed ]; then
-            docker run --rm -d --name feed -p 8000:8000 instadroid-feed:ci
-            for i in $(seq 1 20); do curl -fs localhost:8000/health && break; sleep 1; done
-            curl -fs localhost:8000/health | grep -q '"ok":true'
-            docker rm -f feed
-          else
-            docker run --rm instadroid-driver:ci python -c "import scraper; print('import ok')"
-          fi
+          docker run --rm instadroid-app:ci python -c "import scraper; print('import ok')"
+          # network=host: the feed binds 127.0.0.1 by default, same as the compose service.
+          docker run --rm -d --name app --network host instadroid-app:ci
+          for i in $(seq 1 20); do curl -fs localhost:8000/health && break; sleep 1; done
+          curl -fs localhost:8000/health | grep -q '"ok":true'
+          docker rm -f app
       - name: Validate compose file
         run: |
           cp .env.example .env
           docker compose config -q
-          docker compose --profile redroid config -q
 
   secrets:
+    if: github.event.pull_request.draft != true
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     permissions:

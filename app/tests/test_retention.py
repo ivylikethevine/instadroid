@@ -64,6 +64,65 @@ def test_prune_old_posts_removes_orphaned_media_regardless_of_retain_days(con_an
     assert {f.name for f in media.iterdir()} == {"kept.jpg"}
 
 
+def test_merge_bumps_updated_at_without_touching_scraped_at(con_and_media):
+    # The feed's ETag keys off updated_at precisely so a merge like this is visible even though
+    # scraped_at (when the post was first seen) never changes.
+    con, media = con_and_media
+    scraped_at = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    con.execute(
+        "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at,"
+        " hash, url, place, posted_at, updated_at)"
+        " VALUES ('h1','club','carousel','3 days ago','Photo 1 of 2 by Club, 5 likes',NULL,?,"
+        "'h1',NULL,NULL,?,?)",
+        (scraped_at, scraped_at, scraped_at),
+    )
+    con.commit()
+
+    existing = con.execute("SELECT * FROM posts WHERE id='h1'").fetchone()
+    now = datetime.now(UTC)
+    final_id, fields, media_to_drop = scraper._merged_fields(
+        existing, "h1", None, "h2", "carousel", "3 days ago", None, "The real caption", None, None, now
+    )
+    scraper._write_merged(con, existing["id"], final_id, fields)
+    con.commit()
+
+    row = con.execute("SELECT * FROM posts WHERE id=?", (final_id,)).fetchone()
+    assert row["caption"] == "The real caption"
+    assert row["scraped_at"] == scraped_at  # unchanged: still when it was first seen
+    assert row["updated_at"] == now.isoformat()  # changed: this is when the content changed
+    assert media_to_drop is None
+
+
+def test_db_init_backfills_updated_at_for_rows_from_before_the_column_existed(tmp_path, monkeypatch):
+    db = tmp_path / "posts.sqlite"
+    media = tmp_path / "media"
+    media.mkdir()
+    monkeypatch.setattr(scraper, "DB_PATH", str(db))
+    monkeypatch.setattr(scraper, "MEDIA_DIR", media)
+
+    con = sqlite3.connect(db)
+    con.execute(
+        """CREATE TABLE posts (
+            id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
+            caption TEXT, media_file TEXT, scraped_at TEXT NOT NULL,
+            hash TEXT, url TEXT, place TEXT, posted_at TEXT
+        )"""
+    )
+    scraped_at = datetime.now(UTC).isoformat()
+    con.execute(
+        "INSERT INTO posts VALUES ('h1','u','photo','x','cap',NULL,?,'h1',NULL,NULL,?)",
+        (scraped_at, scraped_at),
+    )
+    con.execute("PRAGMA user_version = 1")  # already past the one-time dedupe migration
+    con.commit()
+    con.close()
+
+    con = scraper.db_init()
+
+    row = con.execute("SELECT updated_at FROM posts WHERE id='h1'").fetchone()
+    assert row["updated_at"] == scraped_at
+
+
 def test_db_init_migration_merges_legacy_duplicate_rows(tmp_path, monkeypatch):
     db = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
