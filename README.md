@@ -24,9 +24,11 @@ scrape run, permalink capture, cropped media) with zero issues. `docker compose 
 up -d` with `ADB_ADDR=127.0.0.1:5555` is a validated, working alternative to the host emulator, and
 being a plain container it's lighter-weight (no GPU-backed emulator required). One known rendering
 quirk: the Following-feed switcher's bottom sheet doesn't open under this image's default
-`androidboot.redroid_gpu_mode=guest`, so the driver falls back to scraping the Home feed — trying
-`=host` (mirroring the AVD's own `-gpu host` requirement for bottom sheets) is the natural next
-thing to test.
+`androidboot.redroid_gpu_mode=guest`, so the driver falls back to scraping the Home feed.
+`androidboot.redroid_gpu_mode=host` was tried (with `/dev/dri` passed through) and does engage the
+real host GLES renderer, but boot became much slower and the user decided against pursuing it
+further — other clients of this GPU mode may not support it. `guest` remains the mode in
+`docker-compose.yml`; see `CLAUDE.md` for the full writeup.
 
 Also tried, and **not** working: `erstt/redroid:15.0.0_ndk_AVD` (Android 15, a different NDK
 translation build). `hwservicemanager` and `servicemanager` — Android's core binder-registration
