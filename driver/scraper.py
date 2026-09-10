@@ -23,7 +23,7 @@ import uiautomator2 as u2
 from lxml import etree
 from PIL import Image
 
-ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5557")  # run-emulator.sh's ADB port; redroid: 127.0.0.1:5555
+ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5557")  # scripts/run-emulator.sh's ADB port; redroid: 127.0.0.1:5555
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", "/debug"))
