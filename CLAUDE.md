@@ -26,6 +26,12 @@ not something to ask permission for each time.
   made no difference, ruling out memory as the cause — this is a binder ABI mismatch between that
   image and this host's kernel binder driver. Not worth retrying without a new hypothesis.
 - No Android 14 NDK build exists upstream (`erstt/redroid` only publishes 11/12/13/15).
+  `aureliolo/redroid:14.0.0_amd64_with_gapps` (the only Android-14 redroid image found) boots fine
+  and is host-safe, but ships **no ARM translation at all** — confirmed by both a device-side check
+  (no `libndk_translation.so`/`libhoudini.so`/native-bridge property anywhere) and empirically:
+  launching Instagram crashes the linker outright (`dlopen failed: ... EM_AARCH64 ... instead of
+  EM_X86_64`). Not fixable by config; this image class just can't run arm64 apps. `erstt/redroid`
+  is the only source found with confirmed, working ARM translation.
 - `abing7k/redroid:a11_ndk_amd` (Android 11, the original image) crashed Instagram at native
   startup across 3 tested APK versions — separate from and predating the kernel-panic incident.
 
