@@ -48,4 +48,40 @@ identical command has also gone through). That's independent of this file and no
 it changes — if it happens, don't try to route around it; say so and let the user run the command or
 grant a Bash permission rule.
 
+## appops.xml corruption from switching redroid image versions
+
+On 2026-09-10, starting redroid (any gpu_mode) hit a system_server crash loop: `Zygote failed to
+write to system_server FD`, `AndroidRuntime: *** FATAL EXCEPTION IN SYSTEM PROCESS`, caused by
+`AppOpsService.readUidOps` throwing `IllegalArgumentException: Bad operation #123` while parsing
+the persisted `/data/system/appops.xml`. Root cause: `docker-compose.yml`'s redroid service mounts
+one shared host path (`./local/data/android`) as `/data` regardless of which image tag is running,
+and this host previously pointed that same service at `erstt/redroid:15.0.0_ndk_AVD` to test
+Android 15 (see above). Android 15 wrote an app-op id into `appops.xml` that Android 13's
+`AppOpsService` (the image now in `docker-compose.yml`) doesn't recognize, so system_server has
+crashed on every boot since, in a tight ~5s respawn loop — container itself stays up and
+host-safe, so this was easy to miss as "redroid still works, just slow."
+
+Fix applied: `adb root` (this image's adbd runs unauthenticated, `ro.adb.secure=0`), then
+`adb shell mv /data/system/appops.xml /data/system/appops.xml.corrupt-bak` and restart the
+container; Android regenerates a fresh `appops.xml` on next boot with no data loss to app state
+(the login session, installed APK, etc. live elsewhere in `/data`). Confirmed fixed: system_server
+now runs cleanly through boot with zero `Bad operation` errors.
+
+**Takeaway: never point two different Android major-version redroid images at the same `/data`
+volume.** If a different Android version needs testing again, give it its own volume path (e.g.
+`./local/data/android-15`) rather than reusing `./local/data/android`.
+
+## Host GPU mode tried and rejected
+
+Also on 2026-09-10, tried `androidboot.redroid_gpu_mode=host` (with `/dev/dri` passed through to
+the container) to see if it would fix the Following-feed switcher's bottom sheet not opening under
+guest mode. It technically worked at the graphics level — `ro.hardware.egl` became `mesa` and
+`dumpsys SurfaceFlinger` showed the real host Intel Mesa GLES renderer instead of ANGLE/guest — but
+boot took much longer (~340s vs ~35s) and hit a `WindowManager: BOOT TIMEOUT: forcing display
+enabled` path. The user stopped this line of investigation before it was evaluated further:
+**do not use host GPU mode for redroid** — the reasoning given was that FreshRSS/other clients
+consuming this feed may not support whatever that mode changes. `docker-compose.yml` is back to
+`androidboot.redroid_gpu_mode=guest`, the validated default. Don't retry `=host` without the user
+raising it again.
+
 See `README.md`'s "Which Android?" section for the fuller compatibility history.
