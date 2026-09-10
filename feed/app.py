@@ -33,6 +33,19 @@ def _connect():
     return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
 
 
+def _dt(value):
+    """Parse a stored ISO timestamp, tolerant of a missing/malformed value and of a naive one
+    (feedgen rejects those) — returns None rather than raising, so one bad row can't 500 the
+    whole feed."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
 def rows(user: str | None, limit: int):
     if not Path(DB_PATH).exists():
         return []
@@ -45,7 +58,10 @@ def rows(user: str | None, limit: int):
             args.append(user)
         q += " ORDER BY COALESCE(posted_at, scraped_at) DESC LIMIT ?"
         args.append(max(1, min(limit, MAX_LIMIT)))
-        return con.execute(q, args).fetchall()
+        try:
+            return con.execute(q, args).fetchall()
+        except sqlite3.OperationalError:
+            return []  # e.g. the driver hasn't run db_init() yet and the table doesn't exist
 
 
 def _stats():
@@ -54,7 +70,10 @@ def _stats():
     if not Path(DB_PATH).exists():
         return 0, ""
     with closing(_connect()) as con:
-        return con.execute("SELECT COUNT(*), COALESCE(MAX(scraped_at), '') FROM posts").fetchone()
+        try:
+            return con.execute("SELECT COUNT(*), COALESCE(MAX(scraped_at), '') FROM posts").fetchone()
+        except sqlite3.OperationalError:
+            return 0, ""
 
 
 @app.get("/instagram.xml")
@@ -81,9 +100,9 @@ def feed(request: Request, user: str | None = None, limit: int = 200):
         url = r["url"] if "url" in keys and r["url"] else f"https://www.instagram.com/{r['username']}/"
         fe.link(href=url)
         fe.author(name=r["username"])
-        fe.updated(datetime.fromisoformat(r["scraped_at"]))
-        if "posted_at" in keys and r["posted_at"]:
-            fe.published(datetime.fromisoformat(r["posted_at"]))
+        fe.updated(_dt(r["scraped_at"]) or datetime.now(UTC))
+        if "posted_at" in keys and _dt(r["posted_at"]):
+            fe.published(_dt(r["posted_at"]))
         html = ""
         if r["media_file"]:
             html += f'<p><img src="{PUBLIC_URL}/media/{r["media_file"]}" alt="" /></p>'
@@ -103,7 +122,10 @@ def users():
     if not Path(DB_PATH).exists():
         return []
     with closing(_connect()) as con:
-        return [r[0] for r in con.execute("SELECT DISTINCT username FROM posts ORDER BY username")]
+        try:
+            return [r[0] for r in con.execute("SELECT DISTINCT username FROM posts ORDER BY username")]
+        except sqlite3.OperationalError:
+            return []
 
 
 @app.get("/health")

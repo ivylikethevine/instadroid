@@ -121,6 +121,13 @@ def test_parse_posted_at_rejects_unknown_formats():
     assert scraper.parse_posted_at("sometime", NOW) is None
 
 
+def test_parse_posted_at_leap_day_rollback_into_non_leap_year_does_not_raise():
+    # "now" is a leap year, before Feb 29 has passed: rolling a bare "February 29" back a year
+    # lands on a non-leap year, where Feb 29 doesn't exist. Must return None, not raise.
+    leap_year_now = datetime(2028, 1, 15, tzinfo=UTC)
+    assert scraper.parse_posted_at("February 29", leap_year_now) is None
+
+
 def test_same_post_merges_a_weak_caption_placeholder_into_the_real_row():
     real = {"username": "club", "caption": "Attendance check! see you there", "posted_at": NOW}
     weak = {

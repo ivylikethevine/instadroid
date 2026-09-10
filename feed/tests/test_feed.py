@@ -68,3 +68,35 @@ def test_conditional_get_returns_304_when_unchanged(tmp_path, monkeypatch):
     etag = first.headers["etag"]
     second = client.get("/instagram.xml", headers={"if-none-match": etag})
     assert second.status_code == 304
+
+
+def test_missing_posts_table_returns_empty_instead_of_500(tmp_path, monkeypatch):
+    # e.g. feed starts before the driver's first db_init() has created the table.
+    db = tmp_path / "posts.sqlite"
+    sqlite3.connect(db).close()  # empty file, no table
+    monkeypatch.setenv("DB_PATH", str(db))
+    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
+    import importlib
+
+    import app
+
+    importlib.reload(app)
+    client = TestClient(app.app)
+
+    assert client.get("/instagram.xml").status_code == 200
+    assert client.get("/users").json() == []
+    assert client.get("/health").json() == {"ok": True, "posts": 0}
+
+
+def test_dt_handles_naive_and_malformed_timestamps(tmp_path, monkeypatch):
+    make_app(tmp_path, monkeypatch)  # ensures app is importable with env set
+    import app
+
+    assert app._dt(None) is None
+    assert app._dt("") is None
+    assert app._dt("not-a-timestamp") is None
+    naive = app._dt("2026-09-08T10:00:00")
+    assert naive is not None and naive.tzinfo is not None  # naive input gets UTC attached
+    aware = app._dt("2026-09-08T10:00:00+00:00")
+    assert aware.tzinfo is not None

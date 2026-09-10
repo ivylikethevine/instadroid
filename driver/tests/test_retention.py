@@ -104,6 +104,39 @@ def test_db_init_migration_merges_legacy_duplicate_rows(tmp_path, monkeypatch):
     assert posts[0]["caption"] == "Attendance check! see you there"
     assert posts[0]["media_file"] == "weakhash.jpg"  # the only crop that exists is kept
 
-    # Running db_init() again must not re-merge or error (PRAGMA user_version guards it).
+
+def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(tmp_path, monkeypatch):
+    db = tmp_path / "posts.sqlite"
+    media = tmp_path / "media"
+    media.mkdir()
+    monkeypatch.setattr(scraper, "DB_PATH", str(db))
+    monkeypatch.setattr(scraper, "MEDIA_DIR", media)
+
+    con = sqlite3.connect(db)
+    con.execute(
+        """CREATE TABLE posts (
+            id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
+            caption TEXT, media_file TEXT, scraped_at TEXT NOT NULL,
+            hash TEXT, url TEXT, place TEXT
+        )"""
+    )
+    # One row with an unparseable scraped_at (e.g. hand-edited or corrupted), one normal row.
+    con.execute(
+        "INSERT INTO posts VALUES ('bad','u','photo','2 days ago','cap',NULL,'not-a-timestamp',"
+        "'bad', NULL, NULL)"
+    )
+    con.execute(
+        "INSERT INTO posts VALUES ('good','u2','photo','2 days ago','cap',NULL,?,'good', NULL, NULL)",
+        (datetime.now(UTC).isoformat(),),
+    )
+    con.commit()
+    con.close()
+
+    con = scraper.db_init()  # must not raise, and must not loop forever on the corrupt row
+
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 1
+    ids = {r[0] for r in con.execute("SELECT id FROM posts")}
+    assert ids == {"bad", "good"}  # the corrupt row is left alone, not dropped or crashed on
+
+    # Re-running db_init() (as a real restart would) must be a no-op, not a repeat crash.
     scraper.db_init()
-    assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 1

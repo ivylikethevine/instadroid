@@ -13,10 +13,23 @@ Android emulator (Instagram APK)  <--ADB--  driver (uiautomator2, every 2.5-4.5h
 
 ## Which Android?
 
-Instagram ships arm64 native code only. On an x86_64 host it **crashes at startup under redroid's
-libndk translation** (tested v278, v360, v445), so the default is the Android Studio emulator on the
-host, whose Google ARM translation runs it fine. The `redroid` compose service is kept behind a
-profile for ARM hosts: `docker compose --profile redroid up -d` with `ADB_ADDR=127.0.0.1:5555`.
+Instagram ships arm64 native code only. On an x86_64 host it **crashed at startup under redroid's
+Android-11 libndk translation** across 3 tested APK versions, so the default is the Android Studio
+emulator on the host, whose Google ARM translation runs it fine. The `redroid` compose service is
+kept behind a profile: `docker compose --profile redroid up -d` with `ADB_ADDR=127.0.0.1:5555`. Its
+image has since been bumped to an Android 13 build with Google's NDK translation as shipped in
+ChromeOS's ARC++, which is a reasonable next thing to try — translation layers have matured since
+Android 11 — but it is **untested**, and starting it is not something to do lightly: see the next
+paragraph before ever running it.
+
+**Before running the redroid profile on this host, read `CLAUDE.md`.** Starting it once already
+caused a full kernel panic here, most likely from two binder IPC implementations stacked on this
+kernel (its own built-in Rust binder, plus a since-removed out-of-tree `binder_linux-dkms` module)
+combined with a disclosed kernel race condition in binder's Rust implementation
+(CVE-2025-68260) that triggers under exactly the IPC load a booting Android system generates. No
+agent working in this repo will start `redroid` or any other privileged container on this host; if
+you want to try the updated image yourself, do it by hand, outside Claude Code, so you're at the
+keyboard if it goes wrong again.
 
 ## Host requirements
 
@@ -49,7 +62,7 @@ docker compose exec driver python scraper.py once     # first scrape, watch the 
 
 The driver runs the login step at the start of every scrape, so once the session is saved in the
 AVD it is a no-op. If Instagram asks for a code or "confirm it's you", the run aborts with a
-`login_screen.png` / `login_hierarchy.xml` in `data/debug`; finish that step by hand and re-run.
+`login_screen.jpg` / `login_hierarchy.xml` in `data/debug`; finish that step by hand and re-run.
 First-run interstitials (notifications, location, "set up on new device") are dismissed automatically.
 Login and feed selectors live in `SELECTORS` in `driver/scraper.py`.
 
@@ -96,8 +109,9 @@ FreshRSS can reach so image links resolve). Per-account feeds: `/instagram.xml?u
 - Keep `POLL_MIN_HOURS` ≥ 2. Instagram tolerates a phone that checks in a few times a day; it does not
   tolerate one that scrolls every 15 minutes with metronome timing.
 - `MAX_SCROLLS` 25 is roughly 10–15 posts per run on this feed layout (each new post costs a
-  share-sheet round trip). If you follow more than that
-  posts-per-3-hours, raise the poll frequency slowly rather than scroll depth.
+  share-sheet round trip). If you follow enough accounts to post more than that in a ~3-hour
+  window, raise the poll frequency slowly (lower `POLL_MIN_HOURS`/`POLL_MAX_HOURS`) rather than
+  scroll depth.
 - Occasionally open `scrcpy` and poke around yourself; it helps, and you'll need it anyway for
   the "confirm it's you" challenges that appear a few times a year.
 
