@@ -28,6 +28,15 @@ quirk: the Following-feed switcher's bottom sheet doesn't open under this image'
 `=host` (mirroring the AVD's own `-gpu host` requirement for bottom sheets) is the natural next
 thing to test.
 
+Also tried, and **not** working: `erstt/redroid:15.0.0_ndk_AVD` (Android 15, a different NDK
+translation build). `hwservicemanager` and `servicemanager` — Android's core binder-registration
+daemons — crashed fatally within ~3 seconds of boot, identically across two attempts, the second
+with `mem_limit`/`shm_size` raised well past redroid's usual recommendations — ruling out memory as
+the cause. This is a binder ABI mismatch between this specific image and this host, not an
+Instagram compatibility issue or a resource one; the container exiting cleanly caused no host
+impact either time. No Android 14 NDK build exists upstream (`erstt/redroid` only publishes
+11/12/13/15). Android 13/ChromeOS remains the image in `docker-compose.yml`.
+
 That same first attempt at running redroid **also caused a full kernel panic** on this specific
 host, unrelated to Instagram compatibility — see `CLAUDE.md` for the root cause and the exact,
 now-validated safe procedure before running the redroid profile here (or on any host you haven't
