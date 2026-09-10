@@ -7,7 +7,7 @@ updates:
     directory: /feed
     schedule: { interval: weekly }
   - package-ecosystem: pip
-    directory: /
+    directory: /scripts
     schedule: { interval: weekly }
   - package-ecosystem: docker
     directory: /driver

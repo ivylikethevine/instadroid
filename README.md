@@ -35,7 +35,17 @@ with `mem_limit`/`shm_size` raised well past redroid's usual recommendations —
 the cause. This is a binder ABI mismatch between this specific image and this host, not an
 Instagram compatibility issue or a resource one; the container exiting cleanly caused no host
 impact either time. No Android 14 NDK build exists upstream (`erstt/redroid` only publishes
-11/12/13/15). Android 13/ChromeOS remains the image in `docker-compose.yml`.
+11/12/13/15).
+
+Also tried: `aureliolo/redroid:14.0.0_amd64_with_gapps` (Android 14, the only Android-14 redroid
+image found). It boots cleanly and Instagram installs, but the image ships **no ARM translation at
+all** — `ro.product.cpu.abilist` claims `arm64-v8a` support but no `libndk_translation.so`,
+`libhoudini.so`, or native-bridge property exists on the device. Confirmed empirically: launching
+Instagram crashes the dynamic linker outright — `dlopen failed: "libsuperpack-jni.so" is for
+EM_AARCH64 (183) instead of EM_X86_64 (62)` — a clean, host-safe app crash, not something a
+config change fixes. `erstt/redroid` is the only source found with confirmed, working ARM
+translation, and it doesn't publish an Android 14 build. Android 13/ChromeOS remains the image in
+`docker-compose.yml`.
 
 That same first attempt at running redroid **also caused a full kernel panic** on this specific
 host, unrelated to Instagram compatibility — see `CLAUDE.md` for the root cause and the exact,
@@ -58,13 +68,13 @@ personally tested it on).
 
 ```bash
 cp .env.example .env                 # fill in IG_USERNAME / IG_PASSWORD
-./run-emulator.sh &                  # headless, lean; pins emulator-5556 (ADB on 5557)
+./scripts/run-emulator.sh &          # headless, lean; pins emulator-5556 (ADB on 5557)
 adb -s emulator-5556 wait-for-device shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done'
-./tune-android.sh emulator-5556      # animations off, sync/location off, Google apps disabled
+./scripts/tune-android.sh emulator-5556      # animations off, sync/location off, Google apps disabled
 
-apkeep -a com.instagram.android -d apk-pure .
-unzip -o com.instagram.android.xapk -d xapk
-adb -s emulator-5556 install-multiple xapk/com.instagram.android.apk xapk/config.*.apk
+apkeep -a com.instagram.android -d apk-pure local
+unzip -o local/com.instagram.android.xapk -d local/xapk
+adb -s emulator-5556 install-multiple local/xapk/com.instagram.android.apk local/xapk/config.*.apk
 
 docker compose up -d --build
 docker compose exec driver python scraper.py login    # types the .env credentials into the login form
@@ -73,11 +83,11 @@ docker compose exec driver python scraper.py once     # first scrape, watch the 
 
 The driver runs the login step at the start of every scrape, so once the session is saved in the
 AVD it is a no-op. If Instagram asks for a code or "confirm it's you", the run aborts with a
-`login_screen.jpg` / `login_hierarchy.xml` in `data/debug`; finish that step by hand and re-run.
+`login_screen.jpg` / `login_hierarchy.xml` in `local/data/debug`; finish that step by hand and re-run.
 First-run interstitials (notifications, location, "set up on new device") are dismissed automatically.
 Login and feed selectors live in `SELECTORS` in `driver/scraper.py`.
 
-If a run reports `no posts parsed on first screen`, look at `data/debug/last_hierarchy.xml`
+If a run reports `no posts parsed on first screen`, look at `local/data/debug/last_hierarchy.xml`
 and `last_screen.jpg`, then adjust `SELECTORS`.
 `docker compose exec driver python scraper.py dump` grabs a fresh dump any time.
 
@@ -97,8 +107,8 @@ inside an open sheet except "Copy link" (a stray tap there could message a conta
 ## Development
 
 ```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -r requirements-dev.txt -r driver/requirements.txt -r feed/requirements.txt
+python -m venv local/.venv && . local/.venv/bin/activate
+pip install -r scripts/requirements-dev.txt -r driver/requirements.txt -r feed/requirements.txt
 ruff check . && ruff format --check .
 PYTHONPATH=driver pytest driver/tests -q     # parser tests against a synthetic hierarchy fixture
 PYTHONPATH=feed pytest feed/tests -q         # feed endpoint tests against a temp SQLite db
@@ -138,7 +148,7 @@ The first run after upgrading applies this merge once to the existing database.
 
 Posts (and their media) older than `RETAIN_DAYS` (default 60, `0` keeps everything) are deleted at
 the end of every scrape, along with any media file no row references any more, so disk use stays
-flat. Debug dumps in `data/debug` are saved as JPEG and only the newest 12 are kept.
+flat. Debug dumps in `local/data/debug` are saved as JPEG and only the newest 12 are kept.
 
 ## Known limitations of v1
 

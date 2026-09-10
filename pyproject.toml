@@ -1,7 +1,8 @@
 [tool.ruff]
 line-length = 110
 target-version = "py314"
-extend-exclude = ["data"]
+extend-exclude = ["local"]
+cache-dir = "local/.ruff_cache"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM"]
@@ -9,3 +10,4 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["driver/tests", "feed/tests"]
+cache_dir = "local/.pytest_cache"
