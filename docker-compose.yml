@@ -22,9 +22,11 @@ services:
       - "127.0.0.1:5555:5555"   # ADB, for scrcpy / manual login from the host
     command:
       - androidboot.redroid_gpu_mode=guest
-      - androidboot.redroid_width=1080
-      - androidboot.redroid_height=2340
-      - androidboot.redroid_dpi=420
+      # Raising these makes screenshotted post crops sharper (screen resolution is the ceiling on
+      # crop quality — see MEDIA_QUALITY below), at the cost of slower boot/more memory.
+      - androidboot.redroid_width=${REDROID_WIDTH:-1080}
+      - androidboot.redroid_height=${REDROID_HEIGHT:-2340}
+      - androidboot.redroid_dpi=${REDROID_DPI:-420}
       - androidboot.redroid_fps=30
 
   # Single image: the scraper loop and the feed server run as two processes in one container
@@ -41,11 +43,16 @@ services:
       DB_PATH: /db/posts.sqlite
       MEDIA_DIR: /media
       DEBUG_DIR: /debug
-      POLL_MIN_HOURS: "2.5"
-      POLL_MAX_HOURS: "4.5"
-      MAX_SCROLLS: "25"
-      STOP_AFTER_SEEN: "4"        # stop after N consecutive already-seen posts
-      RETAIN_DAYS: "60"           # delete posts (and their media) older than this; 0 keeps forever
+      POLL_MIN_HOURS: ${POLL_MIN_HOURS:-2.5}
+      POLL_MAX_HOURS: ${POLL_MAX_HOURS:-4.5}
+      MAX_SCROLLS: ${MAX_SCROLLS:-25}
+      STOP_AFTER_SEEN: ${STOP_AFTER_SEEN:-4}   # stop after N consecutive already-seen posts
+      RETAIN_DAYS: ${RETAIN_DAYS:-60}          # delete posts (and their media) older than this; 0 keeps forever
+      SCROLL_SWIPE_MIN: ${SCROLL_SWIPE_MIN:-0.6}   # seconds the swipe gesture itself takes
+      SCROLL_SWIPE_MAX: ${SCROLL_SWIPE_MAX:-1.0}
+      SCROLL_PAUSE_MIN: ${SCROLL_PAUSE_MIN:-1.5}   # seconds idle between scrolls
+      SCROLL_PAUSE_MAX: ${SCROLL_PAUSE_MAX:-4.0}
+      MEDIA_QUALITY: ${MEDIA_QUALITY:-95}          # JPEG quality (1-95) for saved post crops
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8000}   # what FreshRSS can reach
       FEED_HOST: ${FEED_HOST:-127.0.0.1}   # loopback only by default; set to 0.0.0.0 for LAN access
     volumes:
