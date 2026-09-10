@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   lint:
+    if: github.event.pull_request.draft != true
     name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
@@ -24,6 +25,7 @@ jobs:
       - run: ruff format --check .
 
   test:
+    if: github.event.pull_request.draft != true
     name: Unit tests
     runs-on: ubuntu-latest
     steps:
@@ -38,6 +40,7 @@ jobs:
           PYTHONPATH: app
 
   audit:
+    if: github.event.pull_request.draft != true
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-latest
     steps:
@@ -49,6 +52,7 @@ jobs:
       - run: pip-audit -r app/requirements.txt --strict
 
   shell:
+    if: github.event.pull_request.draft != true
     name: Shell scripts (shellcheck)
     runs-on: ubuntu-latest
     steps:
@@ -57,6 +61,7 @@ jobs:
       - run: shellcheck -S warning ./scripts/*.sh
 
   docker:
+    if: github.event.pull_request.draft != true
     name: Docker (hadolint + build + compose config)
     runs-on: ubuntu-latest
     steps:
@@ -88,6 +93,7 @@ jobs:
           docker compose config -q
 
   secrets:
+    if: github.event.pull_request.draft != true
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     permissions:
