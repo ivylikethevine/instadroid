@@ -1,9 +1,8 @@
 services:
-  # Optional: containerised Android. On x86_64 hosts Instagram (arm64-only) crashed under
-  # redroid's Android-11 libndk translation across 3 tested APK versions, so the default is the
-  # Android Studio emulator on the host (see README). This image is Android 13 + Google's NDK
-  # translation as shipped in ChromeOS's ARC++ (untested here — see CLAUDE.md before ever running
-  # this service: starting it previously caused a kernel panic on this host).
+  # Optional: containerised Android, validated working 2026-09-10 (Instagram install/login/scrape
+  # all succeeded). This image is Android 13 + Google's NDK translation as shipped in ChromeOS's
+  # ARC++ — the earlier Android-11 libndk image crashed Instagram at native startup. See CLAUDE.md
+  # for the careful start/monitor procedure before running this, especially with a different image.
   # Start with: docker compose --profile redroid up -d
   redroid:
     image: erstt/redroid:13.0.0_ndk_ChromeOS

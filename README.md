@@ -14,22 +14,24 @@ Android emulator (Instagram APK)  <--ADB--  driver (uiautomator2, every 2.5-4.5h
 ## Which Android?
 
 Instagram ships arm64 native code only. On an x86_64 host it **crashed at startup under redroid's
-Android-11 libndk translation** across 3 tested APK versions, so the default is the Android Studio
-emulator on the host, whose Google ARM translation runs it fine. The `redroid` compose service is
-kept behind a profile: `docker compose --profile redroid up -d` with `ADB_ADDR=127.0.0.1:5555`. Its
-image has since been bumped to an Android 13 build with Google's NDK translation as shipped in
-ChromeOS's ARC++, which is a reasonable next thing to try — translation layers have matured since
-Android 11 — but it is **untested**, and starting it is not something to do lightly: see the next
-paragraph before ever running it.
+Android-11 libndk translation** (`abing7k/redroid:a11_ndk_amd`) across 3 tested APK versions, so
+the Android Studio emulator on the host (Google's own ARM translation) became the default.
 
-**Before running the redroid profile on this host, read `CLAUDE.md`.** Starting it once already
-caused a full kernel panic here, most likely from two binder IPC implementations stacked on this
-kernel (its own built-in Rust binder, plus a since-removed out-of-tree `binder_linux-dkms` module)
-combined with a disclosed kernel race condition in binder's Rust implementation
-(CVE-2025-68260) that triggers under exactly the IPC load a booting Android system generates. No
-agent working in this repo will start `redroid` or any other privileged container on this host; if
-you want to try the updated image yourself, do it by hand, outside Claude Code, so you're at the
-keyboard if it goes wrong again.
+**Update 2026-09-10: redroid works.** Bumping the image to Android 13 with Google's NDK translation
+as shipped in ChromeOS's ARC++ (`erstt/redroid:13.0.0_ndk_ChromeOS`) resolved the native-startup
+crash: Instagram installs, logs in, and scrapes successfully — tested end-to-end (login, a full
+scrape run, permalink capture, cropped media) with zero issues. `docker compose --profile redroid
+up -d` with `ADB_ADDR=127.0.0.1:5555` is a validated, working alternative to the host emulator, and
+being a plain container it's lighter-weight (no GPU-backed emulator required). One known rendering
+quirk: the Following-feed switcher's bottom sheet doesn't open under this image's default
+`androidboot.redroid_gpu_mode=guest`, so the driver falls back to scraping the Home feed — trying
+`=host` (mirroring the AVD's own `-gpu host` requirement for bottom sheets) is the natural next
+thing to test.
+
+That same first attempt at running redroid **also caused a full kernel panic** on this specific
+host, unrelated to Instagram compatibility — see `CLAUDE.md` for the root cause and the exact,
+now-validated safe procedure before running the redroid profile here (or on any host you haven't
+personally tested it on).
 
 ## Host requirements
 
