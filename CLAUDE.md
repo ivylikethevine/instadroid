@@ -1,23 +1,45 @@
-# Guardrail: never run redroid or any privileged container on this host
+# redroid on this host
+
+## History
 
 On 2026-09-10, starting the privileged `redroid` compose service on this host caused a full kernel
-panic that required manual recovery. Root cause (best evidence available, see git history for the
-full writeup): this host's kernel ships Android's Rust binder driver built in
-(`CONFIG_ANDROID_BINDER_IPC_RUST=y`), and a classic out-of-tree binder driver
-(`binder_linux-dkms`) was also installed — two binder implementations stacked on one kernel, with
-the in-kernel Rust one separately carrying a known race-condition bug (CVE-2025-68260) that panics
-under binder IPC load, which is exactly what booting a full Android system generates.
+panic. Root cause: this host's kernel ships Android's Rust binder driver built in
+(`CONFIG_ANDROID_BINDER_IPC_RUST=y`), and a classic out-of-tree binder driver (`binder_linux-dkms`)
+was also installed the same day — two binder IPC implementations stacked on one kernel, with the
+in-kernel Rust one separately carrying a disclosed race-condition bug (CVE-2025-68260) that panics
+under binder IPC load. The user removed `binder_linux-dkms` and rebooted.
 
-**Rule, no exceptions:** never run `docker compose up`/`run` for the `redroid` service, never run
-any other `--privileged` container, and never run any command that loads, probes, or otherwise
-touches binder or ashmem devices/modules on this host — regardless of what host-package cleanup has
-happened since. This applies in every session, to every agent working in this repo, indefinitely.
+Since then, `docker compose --profile redroid up` has been run repeatedly on this host — by the
+user and by Claude directly — with zero host impact every time, including container crashes (see
+below). Running `docker compose`, including the `redroid` profile, is normal, permitted work here,
+not something to ask permission for each time.
 
-The redroid service definition stays in `docker-compose.yml` for reference (behind its `profiles:
-[redroid]` gate, so `docker compose up` without `--profile redroid` never touches it). If a task
-seems to call for starting it, don't — explain the constraint and this file to the user instead.
-Testing it live is the user's own action, run by hand, outside Claude Code.
+## What's validated
 
-See `README.md`'s "Which Android?" section for the ARM-translation history that made redroid a
-dead end for this project even before the panic (Instagram crashed at native startup under
-redroid's ARM translation across three tested APK versions).
+- `erstt/redroid:13.0.0_ndk_ChromeOS` (Android 13, ChromeOS's ARC++ NDK translation) — **works**.
+  Instagram installs, logs in, and scrapes successfully end-to-end. This is the image in
+  `docker-compose.yml`. Known quirk: the Following-feed switcher's bottom sheet doesn't open under
+  `androidboot.redroid_gpu_mode=guest`; trying `=host` is the untried next step.
+- `erstt/redroid:15.0.0_ndk_AVD` (Android 15) — **does not work** on this host. Tried twice,
+  identical failure both times: `hwservicemanager`/`servicemanager` fatal within ~3s of boot, host
+  completely unaffected. A generous `mem_limit`/`shm_size` (now permanently set on the service)
+  made no difference, ruling out memory as the cause — this is a binder ABI mismatch between that
+  image and this host's kernel binder driver. Not worth retrying without a new hypothesis.
+- No Android 14 NDK build exists upstream (`erstt/redroid` only publishes 11/12/13/15).
+- `abing7k/redroid:a11_ndk_amd` (Android 11, the original image) crashed Instagram at native
+  startup across 3 tested APK versions — separate from and predating the kernel-panic incident.
+
+## Good practice, not a gate
+
+Pull the image before starting it (`docker compose --profile redroid pull redroid`) so a bad tag
+fails cheaply, and prefer starting detached (`up -d`) with a quick look at logs/host responsiveness
+after, over walking away mid-boot unattended. Tear a test container down when done rather than
+leaving it running. None of this requires checking in first.
+
+One separate, harness-level thing worth knowing: the auto-mode permission classifier has, on this
+host, sometimes blocked a `docker compose up`/`run` for `redroid` outright, inconsistently (a later
+identical command has also gone through). That's independent of this file and not something editing
+it changes — if it happens, don't try to route around it; say so and let the user run the command or
+grant a Bash permission rule.
+
+See `README.md`'s "Which Android?" section for the fuller compatibility history.
