@@ -9,17 +9,17 @@ was also installed the same day — two binder IPC implementations stacked on on
 in-kernel Rust one separately carrying a disclosed race-condition bug (CVE-2025-68260) that panics
 under binder IPC load. The user removed `binder_linux-dkms` and rebooted.
 
-Since then, `docker compose --profile redroid up` has been run repeatedly on this host — by the
-user and by Claude directly — with zero host impact every time, including container crashes (see
-below). Running `docker compose`, including the `redroid` profile, is normal, permitted work here,
-not something to ask permission for each time.
+Since then, `docker compose up` (which starts redroid) has been run repeatedly on this host — by
+the user and by Claude directly — with zero host impact every time, including container crashes
+(see below). Running `docker compose`, including redroid, is normal, permitted work here, not
+something to ask permission for each time.
 
 ## What's validated
 
 - `erstt/redroid:13.0.0_ndk_ChromeOS` (Android 13, ChromeOS's ARC++ NDK translation) — **works**.
   Instagram installs, logs in, and scrapes successfully end-to-end. This is the image in
   `docker-compose.yml`. Known quirk: the Following-feed switcher's bottom sheet doesn't open under
-  `androidboot.redroid_gpu_mode=guest`; trying `=host` is the untried next step.
+  `androidboot.redroid_gpu_mode=guest`; `=host` was tried and rejected (see below) — stay on `guest`.
 - `erstt/redroid:15.0.0_ndk_AVD` (Android 15) — **does not work** on this host. Tried twice,
   identical failure both times: `hwservicemanager`/`servicemanager` fatal within ~3s of boot, host
   completely unaffected. A generous `mem_limit`/`shm_size` (now permanently set on the service)
@@ -37,7 +37,7 @@ not something to ask permission for each time.
 
 ## Good practice, not a gate
 
-Pull the image before starting it (`docker compose --profile redroid pull redroid`) so a bad tag
+Pull the image before starting it (`docker compose pull redroid`) so a bad tag
 fails cheaply, and prefer starting detached (`up -d`) with a quick look at logs/host responsiveness
 after, over walking away mid-boot unattended. Tear a test container down when done rather than
 leaving it running. None of this requires checking in first.

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # One-time (idempotent) device tuning: turn off animations and disable Google apps the scraper
-# never uses, to cut CPU/RAM inside the emulator. Keeps GMS + WebView (Instagram wants them).
+# never uses, to cut CPU/RAM inside the container. Keeps GMS + WebView (Instagram wants them).
+# Usage: ./scripts/tune-android.sh [device-serial]   (defaults to the first `adb devices` entry,
+# e.g. redroid's 127.0.0.1:5555)
 set -uo pipefail
-S="${1:-$(adb devices | grep -oE 'emulator-[0-9]+' | head -1)}"
+S="${1:-$(adb devices | awk 'NR==2 {print $1}')}"
 A="adb -s $S shell"
 $A settings put global window_animation_scale 0
 $A settings put global transition_animation_scale 0
