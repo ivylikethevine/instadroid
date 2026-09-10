@@ -1,5 +1,5 @@
 """
-Instagram -> SQLite scraper driving a real Instagram app inside an Android emulator via uiautomator2.
+Instagram -> SQLite scraper driving a real Instagram app inside a redroid container via uiautomator2.
 
 Strategy: open the chronological "Following" feed, scroll slowly, parse the accessibility
 tree for post cards, store new ones, stop once we hit posts we've already seen.
@@ -23,9 +23,7 @@ import uiautomator2 as u2
 from lxml import etree
 from PIL import Image
 
-ADB_ADDR = os.environ.get(
-    "ADB_ADDR", "127.0.0.1:5557"
-)  # scripts/run-emulator.sh's ADB port; redroid: 127.0.0.1:5555
+ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5555")  # redroid's forwarded ADB port
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", "/debug"))
@@ -34,6 +32,13 @@ POLL_MAX_H = float(os.environ.get("POLL_MAX_HOURS", "4.5"))
 MAX_SCROLLS = int(os.environ.get("MAX_SCROLLS", "25"))
 STOP_AFTER_SEEN = int(os.environ.get("STOP_AFTER_SEEN", "4"))
 RETAIN_DAYS = int(os.environ.get("RETAIN_DAYS", "60"))  # 0 disables deletion
+# How long the swipe gesture itself takes (a fling scrolls several screens and skips posts) and
+# how long to sit idle between scrolls (both randomized within their range, like a human thumb).
+SCROLL_SWIPE_MIN = float(os.environ.get("SCROLL_SWIPE_MIN", "0.6"))
+SCROLL_SWIPE_MAX = float(os.environ.get("SCROLL_SWIPE_MAX", "1.0"))
+SCROLL_PAUSE_MIN = float(os.environ.get("SCROLL_PAUSE_MIN", "1.5"))
+SCROLL_PAUSE_MAX = float(os.environ.get("SCROLL_PAUSE_MAX", "4.0"))
+MEDIA_QUALITY = int(os.environ.get("MEDIA_QUALITY", "95"))  # JPEG quality for saved post crops
 IG_USERNAME = os.environ.get("IG_USERNAME", "")
 IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
 IG_PKG = "com.instagram.android"
@@ -200,9 +205,11 @@ def db_init():
         )"""
     )
     cols = {r["name"] for r in con.execute("PRAGMA table_info(posts)")}
-    for col in ("hash", "url", "place", "posted_at"):
+    for col in ("hash", "url", "place", "posted_at", "updated_at"):
         if col not in cols:
             con.execute(f"ALTER TABLE posts ADD COLUMN {col} TEXT")
+    # Backfill for rows written before updated_at existed, and a no-op once that's done.
+    con.execute("UPDATE posts SET updated_at = scraped_at WHERE updated_at IS NULL")
     con.execute("CREATE INDEX IF NOT EXISTS posts_hash ON posts(hash)")
     con.execute("CREATE INDEX IF NOT EXISTS posts_username_posted_at ON posts(username, posted_at)")
     con.commit()
@@ -256,6 +263,7 @@ def _migrate_dedupe(con):
                 r["caption"],
                 r["media_file"],
                 posted_at,
+                datetime.now(UTC),
             )
             if media_to_drop:
                 (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
@@ -298,12 +306,13 @@ def _find_duplicate(con, username, posted_at, posted_at_prec, caption, exclude_i
     return None
 
 
-def _merged_fields(existing, pid, url, h, kind, posted_date, place, caption, media, posted_at):
+def _merged_fields(existing, pid, url, h, kind, posted_date, place, caption, media, posted_at, now):
     """Compute the row that should replace `existing` (a sqlite3.Row from posts) once a
     duplicate for the same post is found: keep the permalink id/url over a hash id, a real
     caption over a weak/placeholder one, and whichever media crop already exists. Returns
     (final_id, fields_dict, media_to_drop) — the caller deletes media_to_drop and applies the
-    write via _write_merged."""
+    write via _write_merged. `now` becomes the row's updated_at, so the feed's ETag notices the
+    merge even though scraped_at (when it was first seen) doesn't change."""
     final_id = pid if (url and not existing["url"]) else existing["id"]
     final_caption = (
         caption
@@ -326,6 +335,7 @@ def _merged_fields(existing, pid, url, h, kind, posted_date, place, caption, med
         "url": existing["url"] or url,
         "place": existing["place"] or place,
         "posted_at": existing["posted_at"] or (posted_at.isoformat() if posted_at else None),
+        "updated_at": now.isoformat(),
     }
     return final_id, fields, media_to_drop
 
@@ -361,7 +371,7 @@ def human_scroll(d):
     y1 = random.randint(int(h * 0.65), int(h * 0.8))
     y2 = y1 - random.randint(int(h * 0.3), int(h * 0.45))
     # Slow enough not to fling: a fling scrolls several screens and skips whole posts.
-    d.swipe(x, y1, x, y2, duration=random.uniform(0.6, 1.0))
+    d.swipe(x, y1, x, y2, duration=random.uniform(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX))
 
 
 def _first(d, **kinds):
@@ -791,7 +801,7 @@ def crop_media(d, bounds: str, pid: str, clip_top: int = 0):
     img: Image.Image = d.screenshot()
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     fn = f"{pid}.jpg"
-    img.crop((x1, y1, x2, y2)).convert("RGB").save(MEDIA_DIR / fn, quality=85)
+    img.crop((x1, y1, x2, y2)).convert("RGB").save(MEDIA_DIR / fn, quality=MEDIA_QUALITY)
     return fn
 
 
@@ -888,7 +898,17 @@ def scrape_once(d, con):
             dup = _find_duplicate(con, p["username"], posted_at, posted_at_prec, store_caption)
             if dup:
                 final_id, fields, media_to_drop = _merged_fields(
-                    dup, pid, url, h, p["kind"], p["posted_date"], p["place"], store_caption, media, posted_at
+                    dup,
+                    pid,
+                    url,
+                    h,
+                    p["kind"],
+                    p["posted_date"],
+                    p["place"],
+                    store_caption,
+                    media,
+                    posted_at,
+                    datetime.now(UTC),
                 )
                 if media_to_drop:
                     (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
@@ -900,9 +920,10 @@ def scrape_once(d, con):
             if media and pid != h:
                 (MEDIA_DIR / media).rename(MEDIA_DIR / f"{pid}.jpg")
                 media = f"{pid}.jpg"
+            now_iso = datetime.now(UTC).isoformat()
             con.execute(
                 "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at,"
-                " hash, url, place, posted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " hash, url, place, posted_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     pid,
                     p["username"],
@@ -910,11 +931,12 @@ def scrape_once(d, con):
                     p["posted_date"],
                     store_caption,
                     media,
-                    datetime.now(UTC).isoformat(),
+                    now_iso,
                     h,
                     url,
                     p["place"],
                     posted_at.isoformat() if posted_at else None,
+                    now_iso,
                 ),
             )
             con.commit()
@@ -928,7 +950,7 @@ def scrape_once(d, con):
             log("hit already-seen posts; stopping")
             break
         human_scroll(d)
-        human_pause(1.5, 4.0)
+        human_pause(SCROLL_PAUSE_MIN, SCROLL_PAUSE_MAX)
         screens += 1
     _prune_old_posts(con)
     # Leave the app in a natural state

@@ -2,3 +2,6 @@ uiautomator2>=3.7
 adbutils>=2.12
 lxml>=6.1.3
 pillow>=12.3.0
+fastapi>=0.141.1
+uvicorn>=0.52.4
+feedgen>=1.0

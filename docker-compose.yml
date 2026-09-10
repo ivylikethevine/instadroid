@@ -1,18 +1,17 @@
 services:
-  # Optional: containerised Android. Android 13 + ChromeOS's ARC++ NDK translation is validated
-  # working as of 2026-09-10 (Instagram install/login/scrape all succeeded) — the earlier
-  # Android-11 libndk image crashed Instagram at native startup. erstt/redroid:15.0.0_ndk_AVD
-  # crashed harder: hwservicemanager/servicemanager both fatal within ~3s of boot, twice, unchanged
-  # by generous mem_limit/shm_size (below) — a binder ABI mismatch with this host (host-safe both
-  # times). aureliolo/redroid:14.0.0_amd64_with_gapps boots fine but ships no ARM translation at
-  # all: Instagram's arm64 .so crashes the dynamic linker outright (EM_AARCH64 vs EM_X86_64,
-  # host-safe). erstt/redroid is the only source found with confirmed ARM translation, and it
-  # doesn't publish Android 14. See CLAUDE.md for the careful start/monitor procedure.
-  # Start with: docker compose --profile redroid up -d
+  # The Android side: a containerised device via redroid. Android 13 + ChromeOS's ARC++ NDK
+  # translation is validated working as of 2026-09-10 (Instagram install/login/scrape all
+  # succeeded) — the earlier Android-11 libndk image crashed Instagram at native startup.
+  # erstt/redroid:15.0.0_ndk_AVD crashed harder: hwservicemanager/servicemanager both fatal within
+  # ~3s of boot, twice, unchanged by generous mem_limit/shm_size (below) — a binder ABI mismatch
+  # with this host (host-safe both times). aureliolo/redroid:14.0.0_amd64_with_gapps boots fine but
+  # ships no ARM translation at all: Instagram's arm64 .so crashes the dynamic linker outright
+  # (EM_AARCH64 vs EM_X86_64, host-safe). erstt/redroid is the only source found with confirmed ARM
+  # translation, and it doesn't publish Android 14. See CLAUDE.md for the careful start/monitor
+  # procedure and README.md's "Which Android?" for the full compatibility history.
   redroid:
     image: erstt/redroid:13.0.0_ndk_ChromeOS
     container_name: ig-redroid
-    profiles: [redroid]
     privileged: true
     restart: "no"
     mem_limit: 4g
@@ -23,50 +22,45 @@ services:
       - "127.0.0.1:5555:5555"   # ADB, for scrcpy / manual login from the host
     command:
       - androidboot.redroid_gpu_mode=guest
-      - androidboot.redroid_width=1080
-      - androidboot.redroid_height=2340
-      - androidboot.redroid_dpi=420
+      # Raising these makes screenshotted post crops sharper (screen resolution is the ceiling on
+      # crop quality — see MEDIA_QUALITY below), at the cost of slower boot/more memory.
+      - androidboot.redroid_width=${REDROID_WIDTH:-1080}
+      - androidboot.redroid_height=${REDROID_HEIGHT:-2340}
+      - androidboot.redroid_dpi=${REDROID_DPI:-420}
       - androidboot.redroid_fps=30
 
-  driver:
-    build: ./driver
-    container_name: ig-driver
+  # Single image: the scraper loop and the feed server run as two processes in one container
+  # (see app/entrypoint.sh), so this is the only thing to build/publish alongside redroid.
+  app:
+    build: ./app
+    container_name: ig-app
     restart: "no"
-    network_mode: host         # so it can reach the emulator's ADB port on the host loopback
+    depends_on: [redroid]
+    network_mode: host         # so it can reach redroid's ADB port on the host loopback
     env_file: .env             # IG_USERNAME / IG_PASSWORD for automated login
     environment:
-      ADB_ADDR: ${ADB_ADDR:-127.0.0.1:5557}   # scripts/run-emulator.sh pins emulator-5556 -> adb port 5557; redroid: 127.0.0.1:5555
+      ADB_ADDR: ${ADB_ADDR:-127.0.0.1:5555}   # redroid's forwarded ADB port
       DB_PATH: /db/posts.sqlite
       MEDIA_DIR: /media
       DEBUG_DIR: /debug
-      POLL_MIN_HOURS: "2.5"
-      POLL_MAX_HOURS: "4.5"
-      MAX_SCROLLS: "25"
-      STOP_AFTER_SEEN: "4"        # stop after N consecutive already-seen posts
-      RETAIN_DAYS: "60"           # delete posts (and their media) older than this; 0 keeps forever
+      POLL_MIN_HOURS: ${POLL_MIN_HOURS:-2.5}
+      POLL_MAX_HOURS: ${POLL_MAX_HOURS:-4.5}
+      MAX_SCROLLS: ${MAX_SCROLLS:-25}
+      STOP_AFTER_SEEN: ${STOP_AFTER_SEEN:-4}   # stop after N consecutive already-seen posts
+      RETAIN_DAYS: ${RETAIN_DAYS:-60}          # delete posts (and their media) older than this; 0 keeps forever
+      SCROLL_SWIPE_MIN: ${SCROLL_SWIPE_MIN:-0.6}   # seconds the swipe gesture itself takes
+      SCROLL_SWIPE_MAX: ${SCROLL_SWIPE_MAX:-1.0}
+      SCROLL_PAUSE_MIN: ${SCROLL_PAUSE_MIN:-1.5}   # seconds idle between scrolls
+      SCROLL_PAUSE_MAX: ${SCROLL_PAUSE_MAX:-4.0}
+      MEDIA_QUALITY: ${MEDIA_QUALITY:-95}          # JPEG quality (1-95) for saved post crops
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8000}   # what FreshRSS can reach
+      FEED_HOST: ${FEED_HOST:-127.0.0.1}   # loopback only by default; set to 0.0.0.0 for LAN access
     volumes:
       - ./local/data/db:/db
       - ./local/data/media:/media
       - ./local/data/debug:/debug
-    mem_limit: 512m
-    cpus: 1.0
-
-  feed:
-    build: ./feed
-    container_name: ig-feed
-    restart: "no"
-    depends_on: [driver]   # so the posts table exists before feed's first request, not just the DB file
-    environment:
-      DB_PATH: /db/posts.sqlite
-      MEDIA_DIR: /media
-      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8000}   # what FreshRSS can reach
-    volumes:
-      - ./local/data/db:/db:ro
-      - ./local/data/media:/media:ro
-    ports:
-      - "127.0.0.1:8000:8000"   # loopback only; override if FreshRSS needs LAN access
-    mem_limit: 256m
-    cpus: 0.5
+    mem_limit: 768m
+    cpus: 1.5
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s

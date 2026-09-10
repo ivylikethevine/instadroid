@@ -1,41 +1,43 @@
 # instadroid (instagram via redroid to rss)
 
-A real, logged-in Instagram Android app running in a headless Android emulator,
+A real, logged-in Instagram Android app running in redroid (a containerised Android device),
 driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom for FreshRSS.
 
+The non-Android half ships as one image (`app/`): a scraper process and a feed server running
+side by side in the same container (see `app/entrypoint.sh`).
+
 ```bash
-Android emulator (Instagram APK)  <--ADB--  driver (uiautomator2, every 2.5-4.5h)
-                                                    |
-                                                SQLite + cropped images
-                                                    |
-                                          feed (FastAPI -> /instagram.xml)  <-- FreshRSS
+redroid (Instagram APK)  <--ADB-->  app: scraper (uiautomator2, every 2.5-4.5h)
+                                            |
+                                        SQLite + cropped images
+                                            |
+                                     app: feed (FastAPI -> /instagram.xml)  <-- FreshRSS
 ```
 
 ## Which Android?
 
-Instagram ships arm64 native code only. On an x86_64 host it **crashed at startup under redroid's
-Android-11 libndk translation** (`abing7k/redroid:a11_ndk_amd`) across 3 tested APK versions, so
-the Android Studio emulator on the host (Google's own ARM translation) became the default.
+Instagram ships arm64 native code only, so an x86_64 host needs a redroid image with working ARM
+translation. `abing7k/redroid:a11_ndk_amd` (Android 11) **crashed Instagram at native startup**
+across 3 tested APK versions. `erstt/redroid:13.0.0_ndk_ChromeOS` (Android 13, Google's NDK
+translation as shipped in ChromeOS's ARC++) **works**: Instagram installs, logs in, and scrapes
+successfully — tested end-to-end (login, a full scrape run, permalink capture, cropped media) with
+zero issues. This is the image in `docker-compose.yml`.
 
-**Update 2026-09-10: redroid works.** Bumping the image to Android 13 with Google's NDK translation
-as shipped in ChromeOS's ARC++ (`erstt/redroid:13.0.0_ndk_ChromeOS`) resolved the native-startup
-crash: Instagram installs, logs in, and scrapes successfully — tested end-to-end (login, a full
-scrape run, permalink capture, cropped media) with zero issues. `docker compose --profile redroid
-up -d` with `ADB_ADDR=127.0.0.1:5555` is a validated, working alternative to the host emulator, and
-being a plain container it's lighter-weight (no GPU-backed emulator required). One known rendering
-quirk: the Following-feed switcher's bottom sheet doesn't open under this image's default
-`androidboot.redroid_gpu_mode=guest`, so the driver falls back to scraping the Home feed — trying
-`=host` (mirroring the AVD's own `-gpu host` requirement for bottom sheets) is the natural next
-thing to test.
+One known rendering quirk: the Following-feed switcher's bottom sheet doesn't open under this
+image's default `androidboot.redroid_gpu_mode=guest`, so the scraper falls back to scraping the
+Home feed. `androidboot.redroid_gpu_mode=host` was tried (with `/dev/dri` passed through) and does
+engage the real host GLES renderer, but boot became much slower and the user decided against
+pursuing it further — other clients of this GPU mode may not support it. `guest` remains the mode
+in `docker-compose.yml`; see `CLAUDE.md` for the full writeup.
 
 Also tried, and **not** working: `erstt/redroid:15.0.0_ndk_AVD` (Android 15, a different NDK
-translation build). `hwservicemanager` and `servicemanager` — Android's core binder-registration
-daemons — crashed fatally within ~3 seconds of boot, identically across two attempts, the second
-with `mem_limit`/`shm_size` raised well past redroid's usual recommendations — ruling out memory as
-the cause. This is a binder ABI mismatch between this specific image and this host, not an
-Instagram compatibility issue or a resource one; the container exiting cleanly caused no host
-impact either time. No Android 14 NDK build exists upstream (`erstt/redroid` only publishes
-11/12/13/15).
+translation build — the `AVD` in that tag is upstream's own naming, unrelated to this project).
+`hwservicemanager` and `servicemanager` — Android's core binder-registration daemons — crashed
+fatally within ~3 seconds of boot, identically across two attempts, the second with
+`mem_limit`/`shm_size` raised well past redroid's usual recommendations — ruling out memory as the
+cause. This is a binder ABI mismatch between this specific image and this host, not an Instagram
+compatibility issue or a resource one; the container exiting cleanly caused no host impact either
+time. No Android 14 NDK build exists upstream (`erstt/redroid` only publishes 11/12/13/15).
 
 Also tried: `aureliolo/redroid:14.0.0_amd64_with_gapps` (Android 14, the only Android-14 redroid
 image found). It boots cleanly and Instagram installs, but the image ships **no ARM translation at
@@ -49,17 +51,13 @@ translation, and it doesn't publish an Android 14 build. Android 13/ChromeOS rem
 
 That same first attempt at running redroid **also caused a full kernel panic** on this specific
 host, unrelated to Instagram compatibility — see `CLAUDE.md` for the root cause and the exact,
-now-validated safe procedure before running the redroid profile here (or on any host you haven't
-personally tested it on).
+now-validated safe procedure before running redroid here (or on any host you haven't personally
+tested it on).
 
 ## Host requirements
 
-- Android Studio SDK with the emulator and a Play Store system image (`~/Android/Sdk`), an AVD
-  (default name `Pixel_10`, override with `AVD=...`), KVM, and a GPU the emulator can use
-  (`-gpu host`; the software renderer leaves Instagram's bottom sheets blank, so the feed
-  switcher never opens).
-- Docker + compose for the driver and feed containers. The driver uses host networking to reach
-  the emulator's ADB port.
+- Docker + compose, privileged containers allowed, for redroid and the `app` container. `app` uses
+  host networking to reach redroid's ADB port.
 - `adb` on the host. `scrcpy` is optional; `adb exec-out screencap -p > shot.png` is enough for checks.
 - [`apkeep`](https://github.com/EFForg/apkeep) to fetch the Instagram APK from APKPure (apkmirror
   blocks scripted downloads).
@@ -68,28 +66,30 @@ personally tested it on).
 
 ```bash
 cp .env.example .env                 # fill in IG_USERNAME / IG_PASSWORD
-./scripts/run-emulator.sh &          # headless, lean; pins emulator-5556 (ADB on 5557)
-adb -s emulator-5556 wait-for-device shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done'
-./scripts/tune-android.sh emulator-5556      # animations off, sync/location off, Google apps disabled
+docker compose pull redroid
+docker compose up -d redroid
+adb connect 127.0.0.1:5555
+adb -s 127.0.0.1:5555 wait-for-device shell 'while ! pm list packages >/dev/null 2>&1; do sleep 2; done'
+./scripts/tune-android.sh 127.0.0.1:5555     # animations off, sync/location off, Google apps disabled
 
 apkeep -a com.instagram.android -d apk-pure local
 unzip -o local/com.instagram.android.xapk -d local/xapk
-adb -s emulator-5556 install-multiple local/xapk/com.instagram.android.apk local/xapk/config.*.apk
+adb -s 127.0.0.1:5555 install-multiple local/xapk/com.instagram.android.apk local/xapk/config.*.apk
 
 docker compose up -d --build
-docker compose exec driver python scraper.py login    # types the .env credentials into the login form
-docker compose exec driver python scraper.py once     # first scrape, watch the output
+docker compose exec app python scraper.py login      # types the .env credentials into the login form
+docker compose exec app python scraper.py once        # first scrape, watch the output
 ```
 
-The driver runs the login step at the start of every scrape, so once the session is saved in the
-AVD it is a no-op. If Instagram asks for a code or "confirm it's you", the run aborts with a
+The scraper runs the login step at the start of every scrape, so once the session is saved on the
+device it is a no-op. If Instagram asks for a code or "confirm it's you", the run aborts with a
 `login_screen.jpg` / `login_hierarchy.xml` in `local/data/debug`; finish that step by hand and re-run.
 First-run interstitials (notifications, location, "set up on new device") are dismissed automatically.
-Login and feed selectors live in `SELECTORS` in `driver/scraper.py`.
+Login and feed selectors live in `SELECTORS` in `app/scraper.py`.
 
 If a run reports `no posts parsed on first screen`, look at `local/data/debug/last_hierarchy.xml`
 and `last_screen.jpg`, then adjust `SELECTORS`.
-`docker compose exec driver python scraper.py dump` grabs a fresh dump any time.
+`docker compose exec app python scraper.py dump` grabs a fresh dump any time.
 
 ## How a scrape works
 
@@ -108,16 +108,15 @@ inside an open sheet except "Copy link" (a stray tap there could message a conta
 
 ```bash
 python -m venv local/.venv && . local/.venv/bin/activate
-pip install -r scripts/requirements-dev.txt -r driver/requirements.txt -r feed/requirements.txt
+pip install -r scripts/requirements-dev.txt -r app/requirements.txt
 ruff check . && ruff format --check .
-PYTHONPATH=driver pytest driver/tests -q     # parser tests against a synthetic hierarchy fixture
-PYTHONPATH=feed pytest feed/tests -q         # feed endpoint tests against a temp SQLite db
+PYTHONPATH=app pytest app/tests -q     # parser + feed tests, against a fixture / temp SQLite db
 ```
 
-CI (`.github/workflows/ci.yml`) runs ruff, both test suites, `pip-audit` on every requirements
-file (also weekly), shellcheck on the scripts, hadolint plus a build and smoke test of both images,
-`docker compose config` for both profiles, and gitleaks. Dependabot watches pip, Docker base images
-and GitHub Actions.
+CI (`.github/workflows/ci.yml`) runs ruff, the test suite, `pip-audit` on the requirements file
+(also weekly), shellcheck on the scripts, hadolint plus a build and smoke test of the image,
+`docker compose config`, and gitleaks. Dependabot watches pip, Docker base images and GitHub
+Actions.
 
 ## FreshRSS
 
@@ -144,7 +143,10 @@ what the feed and DB are ordered by — not `scraped_at`, since the newest post 
 author within a close time window; if either side's caption hasn't rendered yet (empty, or a bare
 media description like "Photo 1 of 2 by X, 113 likes"), the two are treated as one post and merged
 rather than stored twice — this is what previously caused ~30% of stored posts to be duplicates.
-The first run after upgrading applies this merge once to the existing database.
+The first run after upgrading applies this merge once to the existing database. A merge like this
+bumps the row's `updated_at` (even though `scraped_at`, when it was first seen, doesn't change) —
+the feed's ETag keys off `updated_at`, so a caption correction like this actually reaches FreshRSS
+instead of getting cached away as a 304.
 
 Posts (and their media) older than `RETAIN_DAYS` (default 60, `0` keeps everything) are deleted at
 the end of every scrape, along with any media file no row references any more, so disk use stays

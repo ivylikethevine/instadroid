@@ -65,15 +65,23 @@ def rows(user: str | None, limit: int):
 
 
 def _stats():
-    """(post count, latest scraped_at) - cheap aggregate used for /health and the feed's ETag,
-    so a poll that hasn't seen new data doesn't cost a full row scan or feed render."""
+    """(post count, latest change) - cheap aggregate used for /health and the feed's ETag, so a
+    poll that hasn't seen new data doesn't cost a full row scan or feed render. updated_at also
+    moves when an existing row is merged/edited in place (e.g. a placeholder caption gets
+    replaced once the real one renders), which scraped_at alone would miss."""
     if not Path(DB_PATH).exists():
         return 0, ""
     with closing(_connect()) as con:
         try:
+            return con.execute(
+                "SELECT COUNT(*), COALESCE(MAX(COALESCE(updated_at, scraped_at)), '') FROM posts"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            pass  # e.g. driver hasn't added the updated_at column to this table yet
+        try:
             return con.execute("SELECT COUNT(*), COALESCE(MAX(scraped_at), '') FROM posts").fetchone()
         except sqlite3.OperationalError:
-            return 0, ""
+            return 0, ""  # e.g. the driver hasn't run db_init() yet and the table doesn't exist
 
 
 @app.get("/instagram.xml")
