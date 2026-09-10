@@ -9,5 +9,5 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 ignore = ["E501"]
 
 [tool.pytest.ini_options]
-testpaths = ["driver/tests", "feed/tests"]
+testpaths = ["app/tests"]
 cache_dir = "local/.pytest_cache"

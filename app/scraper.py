@@ -1,5 +1,5 @@
 """
-Instagram -> SQLite scraper driving a real Instagram app inside an Android emulator via uiautomator2.
+Instagram -> SQLite scraper driving a real Instagram app inside a redroid container via uiautomator2.
 
 Strategy: open the chronological "Following" feed, scroll slowly, parse the accessibility
 tree for post cards, store new ones, stop once we hit posts we've already seen.
@@ -23,9 +23,7 @@ import uiautomator2 as u2
 from lxml import etree
 from PIL import Image
 
-ADB_ADDR = os.environ.get(
-    "ADB_ADDR", "127.0.0.1:5557"
-)  # scripts/run-emulator.sh's ADB port; redroid: 127.0.0.1:5555
+ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5555")  # redroid's forwarded ADB port
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", "/debug"))
@@ -200,9 +198,11 @@ def db_init():
         )"""
     )
     cols = {r["name"] for r in con.execute("PRAGMA table_info(posts)")}
-    for col in ("hash", "url", "place", "posted_at"):
+    for col in ("hash", "url", "place", "posted_at", "updated_at"):
         if col not in cols:
             con.execute(f"ALTER TABLE posts ADD COLUMN {col} TEXT")
+    # Backfill for rows written before updated_at existed, and a no-op once that's done.
+    con.execute("UPDATE posts SET updated_at = scraped_at WHERE updated_at IS NULL")
     con.execute("CREATE INDEX IF NOT EXISTS posts_hash ON posts(hash)")
     con.execute("CREATE INDEX IF NOT EXISTS posts_username_posted_at ON posts(username, posted_at)")
     con.commit()
@@ -256,6 +256,7 @@ def _migrate_dedupe(con):
                 r["caption"],
                 r["media_file"],
                 posted_at,
+                datetime.now(UTC),
             )
             if media_to_drop:
                 (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
@@ -298,12 +299,13 @@ def _find_duplicate(con, username, posted_at, posted_at_prec, caption, exclude_i
     return None
 
 
-def _merged_fields(existing, pid, url, h, kind, posted_date, place, caption, media, posted_at):
+def _merged_fields(existing, pid, url, h, kind, posted_date, place, caption, media, posted_at, now):
     """Compute the row that should replace `existing` (a sqlite3.Row from posts) once a
     duplicate for the same post is found: keep the permalink id/url over a hash id, a real
     caption over a weak/placeholder one, and whichever media crop already exists. Returns
     (final_id, fields_dict, media_to_drop) — the caller deletes media_to_drop and applies the
-    write via _write_merged."""
+    write via _write_merged. `now` becomes the row's updated_at, so the feed's ETag notices the
+    merge even though scraped_at (when it was first seen) doesn't change."""
     final_id = pid if (url and not existing["url"]) else existing["id"]
     final_caption = (
         caption
@@ -326,6 +328,7 @@ def _merged_fields(existing, pid, url, h, kind, posted_date, place, caption, med
         "url": existing["url"] or url,
         "place": existing["place"] or place,
         "posted_at": existing["posted_at"] or (posted_at.isoformat() if posted_at else None),
+        "updated_at": now.isoformat(),
     }
     return final_id, fields, media_to_drop
 
@@ -888,7 +891,17 @@ def scrape_once(d, con):
             dup = _find_duplicate(con, p["username"], posted_at, posted_at_prec, store_caption)
             if dup:
                 final_id, fields, media_to_drop = _merged_fields(
-                    dup, pid, url, h, p["kind"], p["posted_date"], p["place"], store_caption, media, posted_at
+                    dup,
+                    pid,
+                    url,
+                    h,
+                    p["kind"],
+                    p["posted_date"],
+                    p["place"],
+                    store_caption,
+                    media,
+                    posted_at,
+                    datetime.now(UTC),
                 )
                 if media_to_drop:
                     (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
@@ -900,9 +913,10 @@ def scrape_once(d, con):
             if media and pid != h:
                 (MEDIA_DIR / media).rename(MEDIA_DIR / f"{pid}.jpg")
                 media = f"{pid}.jpg"
+            now_iso = datetime.now(UTC).isoformat()
             con.execute(
                 "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at,"
-                " hash, url, place, posted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " hash, url, place, posted_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     pid,
                     p["username"],
@@ -910,11 +924,12 @@ def scrape_once(d, con):
                     p["posted_date"],
                     store_caption,
                     media,
-                    datetime.now(UTC).isoformat(),
+                    now_iso,
                     h,
                     url,
                     p["place"],
                     posted_at.isoformat() if posted_at else None,
+                    now_iso,
                 ),
             )
             con.commit()
