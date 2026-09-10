@@ -54,7 +54,7 @@ First-run interstitials (notifications, location, "set up on new device") are di
 Login and feed selectors live in `SELECTORS` in `driver/scraper.py`.
 
 If a run reports `no posts parsed on first screen`, look at `data/debug/last_hierarchy.xml`
-and `last_screen.png`, then adjust `SELECTORS`.
+and `last_screen.jpg`, then adjust `SELECTORS`.
 `docker compose exec driver python scraper.py dump` grabs a fresh dump any time.
 
 ## How a scrape works
@@ -101,10 +101,24 @@ FreshRSS can reach so image links resolve). Per-account feeds: `/instagram.xml?u
 - Occasionally open `scrcpy` and poke around yourself; it helps, and you'll need it anyway for
   the "confirm it's you" challenges that appear a few times a year.
 
+## Storage and retention
+
+Every post also gets a `posted_at` column (parsed from its relative/absolute timestamp), which is
+what the feed and DB are ordered by — not `scraped_at`, since the newest post is always scraped
+*first* within a run. Before storing a new card, the driver checks for an existing post by the same
+author within a close time window; if either side's caption hasn't rendered yet (empty, or a bare
+media description like "Photo 1 of 2 by X, 113 likes"), the two are treated as one post and merged
+rather than stored twice — this is what previously caused ~30% of stored posts to be duplicates.
+The first run after upgrading applies this merge once to the existing database.
+
+Posts (and their media) older than `RETAIN_DAYS` (default 60, `0` keeps everything) are deleted at
+the end of every scrape, along with any media file no row references any more, so disk use stays
+flat. Debug dumps in `data/debug` are saved as JPEG and only the newest 12 are kept.
+
 ## Known limitations of v1
 
 - When "Copy link" fails twice for a post, its id is a hash of author + caption (or media
-  description); such a post can be stored twice if its caption is later edited.
+  description) instead of the permalink shortcode.
 - Images are screenshot crops of whatever was on screen (first carousel slide, video poster frame,
   including any in-app overlay such as the audio label on videos).
 - Videos/Reels get a still only.

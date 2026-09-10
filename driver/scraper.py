@@ -15,7 +15,7 @@ import re
 import sqlite3
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import adbutils
@@ -31,9 +31,11 @@ POLL_MIN_H = float(os.environ.get("POLL_MIN_HOURS", "2.5"))
 POLL_MAX_H = float(os.environ.get("POLL_MAX_HOURS", "4.5"))
 MAX_SCROLLS = int(os.environ.get("MAX_SCROLLS", "25"))
 STOP_AFTER_SEEN = int(os.environ.get("STOP_AFTER_SEEN", "4"))
+RETAIN_DAYS = int(os.environ.get("RETAIN_DAYS", "60"))  # 0 disables deletion
 IG_USERNAME = os.environ.get("IG_USERNAME", "")
 IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
 IG_PKG = "com.instagram.android"
+DEBUG_KEEP = 12  # debug dump pairs to retain; older ones are pruned on every new dump
 
 # --- Selectors (the fragile part) ---------------------------------------------------
 SELECTORS = {
@@ -108,14 +110,79 @@ SELECTORS = {
 }
 # ------------------------------------------------------------------------------------
 
+# A caption is "weak" when it's really just the media description Instagram shows before the
+# real caption has rendered ("Photo 1 of 2 by X, 113 likes, 10 comments"), or empty. Two cards
+# with a weak caption on either side are treated as the same post if the time/author also match;
+# real, differing captions never are. See same_post().
+_WEAK_CAPTION = re.compile(r"^(Photo|Video|Reel|Image|Carousel)\b.*\bby\b", re.I)
+
+_RELATIVE_AGO = re.compile(r"^(\d+) (second|minute|hour|day|week)s? ago$")
+_ABSOLUTE_DATE = re.compile(r"^([A-Z][a-z]+) (\d{1,2})(?:, (\d{4}))?$")
+_UNIT_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
+
 
 def log(*a):
     print(datetime.now().strftime("%H:%M:%S"), *a, flush=True)
 
 
+def parse_posted_at(text: str, now: datetime) -> tuple[datetime, int] | None:
+    """Convert a header/timestamp string ("3 days ago", "August 29", "Yesterday") into an
+    absolute UTC instant plus the granularity of that instant in seconds (e.g. 3600 for an
+    hours-ago value, 86400 for a bare date). Returns None if the text isn't a format we know."""
+    if not text:
+        return None
+    text = text.strip()
+    if text == "Yesterday":
+        return now - timedelta(days=1), 86400
+    if m := _RELATIVE_AGO.match(text):
+        unit = m.group(2)
+        seconds = _UNIT_SECONDS[unit]
+        return now - timedelta(seconds=int(m.group(1)) * seconds), seconds
+    if m := _ABSOLUTE_DATE.match(text):
+        try:
+            month = datetime.strptime(m.group(1), "%B").month
+        except ValueError:
+            return None
+        year = int(m.group(3)) if m.group(3) else now.year
+        try:
+            dt = datetime(year, month, int(m.group(2)), tzinfo=UTC)
+        except ValueError:
+            return None
+        if not m.group(3) and dt > now:  # bare "Month Day" with no year: assume the past
+            dt = dt.replace(year=year - 1)
+        return dt, 86400
+    return None
+
+
+def _is_weak_caption(caption: str) -> bool:
+    return not caption or bool(_WEAK_CAPTION.match(caption))
+
+
+def same_post(existing: dict, candidate: dict) -> bool:
+    """True if `existing` (a stored post: username, caption, posted_at) and `candidate` (a
+    freshly parsed card: username, caption, posted_at, posted_at_precision) are the same
+    Instagram post seen twice — typically because a card was captured before its caption widget
+    had rendered, so it got identified by the media description instead. Requires the same
+    author and posted times within the candidate's own granularity (floor 1h); captions must
+    then agree, or one side must be a weak/placeholder caption."""
+    if existing["username"] != candidate["username"]:
+        return False
+    ea, ca = existing.get("posted_at"), candidate.get("posted_at")
+    if ea is None or ca is None:
+        return False
+    tolerance = max(candidate.get("posted_at_precision") or 0, 3600)
+    if abs((ea - ca).total_seconds()) > tolerance:
+        return False
+    ecap, ccap = existing.get("caption") or "", candidate.get("caption") or ""
+    if _is_weak_caption(ecap) or _is_weak_caption(ccap):
+        return True
+    return ecap[:200] == ccap[:200]
+
+
 def db_init():
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
     con.execute(
         """CREATE TABLE IF NOT EXISTS posts (
             id TEXT PRIMARY KEY,
@@ -127,13 +194,133 @@ def db_init():
             scraped_at TEXT NOT NULL
         )"""
     )
-    cols = {r[1] for r in con.execute("PRAGMA table_info(posts)")}
-    for col in ("hash", "url", "place"):
+    cols = {r["name"] for r in con.execute("PRAGMA table_info(posts)")}
+    for col in ("hash", "url", "place", "posted_at"):
         if col not in cols:
             con.execute(f"ALTER TABLE posts ADD COLUMN {col} TEXT")
     con.execute("CREATE INDEX IF NOT EXISTS posts_hash ON posts(hash)")
+    con.execute("CREATE INDEX IF NOT EXISTS posts_username_posted_at ON posts(username, posted_at)")
     con.commit()
+    _migrate_dedupe(con)
     return con
+
+
+def _migrate_dedupe(con):
+    """One-time cleanup, guarded by PRAGMA user_version so it runs exactly once: backfill
+    posted_at for rows written before that column existed, then merge any rows same_post()
+    considers duplicates — the bug that let a card get stored twice when its caption hadn't
+    rendered on the first pass. Uses the same merge path as a live scrape (_find_duplicate /
+    _merged_fields / _write_merged)."""
+    if con.execute("PRAGMA user_version").fetchone()[0] >= 1:
+        return
+    log("running one-time dedupe migration")
+    for r in con.execute("SELECT id, posted_date, scraped_at FROM posts WHERE posted_at IS NULL"):
+        parsed = parse_posted_at(r["posted_date"], datetime.fromisoformat(r["scraped_at"]))
+        if parsed:
+            con.execute("UPDATE posts SET posted_at=? WHERE id=?", (parsed[0].isoformat(), r["id"]))
+    con.commit()
+    merged = 0
+    for (rid,) in con.execute("SELECT id FROM posts ORDER BY scraped_at").fetchall():
+        r = con.execute("SELECT * FROM posts WHERE id=?", (rid,)).fetchone()
+        if r is None:
+            continue  # already merged away as another row's duplicate
+        parsed = parse_posted_at(r["posted_date"], datetime.fromisoformat(r["scraped_at"]))
+        posted_at, precision = parsed if parsed else (None, None)
+        dup = _find_duplicate(con, r["username"], posted_at, precision, r["caption"], exclude_id=r["id"])
+        if not dup:
+            continue
+        final_id, fields, media_to_drop = _merged_fields(
+            dup,
+            r["id"],
+            r["url"],
+            r["hash"],
+            r["kind"],
+            r["posted_date"],
+            r["place"],
+            r["caption"],
+            r["media_file"],
+            posted_at,
+        )
+        if media_to_drop:
+            (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
+        if final_id != r["id"]:
+            con.execute("DELETE FROM posts WHERE id=?", (r["id"],))
+        _write_merged(con, dup["id"], final_id, fields)
+        merged += 1
+    con.execute("PRAGMA user_version = 1")
+    con.commit()
+    log(f"dedupe migration: merged {merged} duplicate row(s)")
+
+
+def _find_duplicate(con, username, posted_at, posted_at_prec, caption, exclude_id=None):
+    """Look up a stored row that same_post() considers the same post as this freshly-parsed
+    card, within a coarse SQL time window (same_post itself applies the exact tolerance)."""
+    if posted_at is None:
+        return None
+    window = timedelta(seconds=max(posted_at_prec or 0, 3600) * 2)
+    candidate = {
+        "username": username,
+        "caption": caption,
+        "posted_at": posted_at,
+        "posted_at_precision": posted_at_prec,
+    }
+    for r in con.execute(
+        "SELECT * FROM posts WHERE username=? AND posted_at BETWEEN ? AND ?",
+        (username, (posted_at - window).isoformat(), (posted_at + window).isoformat()),
+    ):
+        if exclude_id and r["id"] == exclude_id:
+            continue
+        existing = {
+            "username": r["username"],
+            "caption": r["caption"],
+            "posted_at": datetime.fromisoformat(r["posted_at"]) if r["posted_at"] else None,
+        }
+        if same_post(existing, candidate):
+            return r
+    return None
+
+
+def _merged_fields(existing, pid, url, h, kind, posted_date, place, caption, media, posted_at):
+    """Compute the row that should replace `existing` (a sqlite3.Row from posts) once a
+    duplicate for the same post is found: keep the permalink id/url over a hash id, a real
+    caption over a weak/placeholder one, and whichever media crop already exists. Returns
+    (final_id, fields_dict, media_to_drop) — the caller deletes media_to_drop and applies the
+    write via _write_merged."""
+    final_id = pid if (url and not existing["url"]) else existing["id"]
+    final_caption = (
+        caption
+        if not _is_weak_caption(caption) and _is_weak_caption(existing["caption"] or "")
+        else existing["caption"]
+    )
+    final_media, media_to_drop = existing["media_file"], None
+    if media and existing["media_file"] and media != existing["media_file"]:
+        media_to_drop = media  # existing crop wins; the new one is redundant
+    elif media and not existing["media_file"]:
+        final_media = media
+    fields = {
+        "username": existing["username"],
+        "kind": existing["kind"] or kind,
+        "posted_date": existing["posted_date"] or posted_date,
+        "caption": final_caption,
+        "media_file": final_media,
+        "scraped_at": existing["scraped_at"],
+        "hash": h,
+        "url": existing["url"] or url,
+        "place": existing["place"] or place,
+        "posted_at": existing["posted_at"] or (posted_at.isoformat() if posted_at else None),
+    }
+    return final_id, fields, media_to_drop
+
+
+def _write_merged(con, old_id, final_id, fields):
+    """Apply a _merged_fields() result: replace `old_id`'s row with one at `final_id`."""
+    if final_id != old_id:
+        con.execute("DELETE FROM posts WHERE id=?", (old_id,))
+    cols = ["id", *fields.keys()]
+    con.execute(
+        f"INSERT OR REPLACE INTO posts ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+        (final_id, *fields.values()),
+    )
 
 
 def connect_device():
@@ -176,10 +363,20 @@ def _challenge_present(d):
     return None
 
 
+def _prune_debug_dumps():
+    hierarchies = sorted(DEBUG_DIR.glob("*_hierarchy.xml"), key=lambda p: p.stat().st_mtime)
+    for old in hierarchies[:-DEBUG_KEEP]:
+        stem = old.name.removesuffix("_hierarchy.xml")
+        old.unlink(missing_ok=True)
+        for ext in ("_screen.jpg", "_screen.png"):
+            (DEBUG_DIR / f"{stem}{ext}").unlink(missing_ok=True)
+
+
 def _dump_debug(d, name):
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     (DEBUG_DIR / f"{name}_hierarchy.xml").write_text(d.dump_hierarchy())
-    d.screenshot().save(DEBUG_DIR / f"{name}_screen.png")
+    d.screenshot().convert("RGB").save(DEBUG_DIR / f"{name}_screen.jpg", quality=70)
+    _prune_debug_dumps()
 
 
 def _dismiss_interstitials(d, rounds=4):
@@ -405,12 +602,15 @@ def parse_hierarchy(xml: str):
     for p in posts:
         if p["headless"] and not p["kind"]:
             p["kind"] = "post"
-    return [p for p in posts if not p["headless"] or (p["username"] and (p["caption"] or p["alt"]))]
+    # A card with neither a caption nor a media description can't be identified (post_id() would
+    # hash nothing but the username); leave it out and it will be picked up on a later dump once
+    # more of it has rendered, instead of being stored as an empty placeholder.
+    return [p for p in posts if p["username"] and (p["caption"] or p["alt"])]
 
 
 def clean_caption(text: str, user: str) -> str:
     """'user Caption text… more' -> 'Caption text…'. The app truncates long captions itself."""
-    text = text.replace("\u00a0", " ").strip()
+    text = text.replace(" ", " ").strip()
     if text.startswith(user + " "):
         text = text[len(user) + 1 :]
     return re.sub(r"\s*(?:…|\.\.\.)?\s*more$", "…", text).strip()
@@ -518,13 +718,21 @@ def fetch_permalink(d, post_hash: str):
         _back_to_feed(d)
         return None
     d.click(cx, cy)
-    human_pause(1.5, 2.5)
-    url = ""
-    try:
-        url = d.clipboard or ""
-    except Exception as e:
-        log("WARN: clipboard read failed:", repr(e))
+    # Poll instead of a single fixed-delay read: the clipboard write can lag the tap by more
+    # than a beat, and the old one-shot read missed it more often than not.
     global _last_url
+    url = ""
+    deadline = time.time() + 4
+    while time.time() < deadline:
+        time.sleep(0.4)
+        try:
+            candidate = d.clipboard or ""
+        except Exception as e:
+            log("WARN: clipboard read failed:", repr(e))
+            continue
+        if candidate and candidate != _last_url and SELECTORS["permalink"].match(candidate):
+            url = candidate
+            break
     if url and url == _last_url:
         log("WARN: clipboard still holds the previous post's link; copy failed")
         url = ""
@@ -567,6 +775,32 @@ def crop_media(d, bounds: str, pid: str, clip_top: int = 0):
     return fn
 
 
+def _prune_old_posts(con):
+    """Delete posts older than RETAIN_DAYS (0 disables) and any media file no row references any
+    more, so disk use stays flat instead of growing forever."""
+    if RETAIN_DAYS > 0:
+        cutoff = (datetime.now(UTC) - timedelta(days=RETAIN_DAYS)).isoformat()
+        gone = con.execute(
+            "SELECT media_file FROM posts"
+            " WHERE COALESCE(posted_at, scraped_at) < ? AND media_file IS NOT NULL",
+            (cutoff,),
+        ).fetchall()
+        cur = con.execute("DELETE FROM posts WHERE COALESCE(posted_at, scraped_at) < ?", (cutoff,))
+        con.commit()
+        for (fn,) in gone:
+            (MEDIA_DIR / fn).unlink(missing_ok=True)
+        if cur.rowcount:
+            log(f"retention: removed {cur.rowcount} post(s) older than {RETAIN_DAYS}d")
+    if not MEDIA_DIR.exists():
+        return
+    kept = {r[0] for r in con.execute("SELECT media_file FROM posts WHERE media_file IS NOT NULL")}
+    orphans = [f for f in MEDIA_DIR.iterdir() if f.is_file() and f.name not in kept]
+    for f in orphans:
+        f.unlink(missing_ok=True)
+    if orphans:
+        log(f"retention: removed {len(orphans)} orphaned media file(s)")
+
+
 def scrape_once(d, con):
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     global _last_url
@@ -583,7 +817,8 @@ def scrape_once(d, con):
         posts = parse_hierarchy(xml)
         if screens == 0 and not posts:
             (DEBUG_DIR / "last_hierarchy.xml").write_text(xml)
-            d.screenshot().save(DEBUG_DIR / "last_screen.png")
+            d.screenshot().convert("RGB").save(DEBUG_DIR / "last_screen.jpg", quality=70)
+            _prune_debug_dumps()
             log("no posts parsed on first screen — selectors probably need updating; dump saved")
         touched = False
         for p in posts:
@@ -627,23 +862,39 @@ def scrape_once(d, con):
                     (MEDIA_DIR / media).unlink(missing_ok=True)
                 break
             seen_streak = 0
+            store_caption = p["caption"] or p["alt"]
+            parsed = parse_posted_at(p["posted_date"], datetime.now(UTC))
+            posted_at, posted_at_prec = parsed if parsed else (None, None)
+            dup = _find_duplicate(con, p["username"], posted_at, posted_at_prec, store_caption)
+            if dup:
+                final_id, fields, media_to_drop = _merged_fields(
+                    dup, pid, url, h, p["kind"], p["posted_date"], p["place"], store_caption, media, posted_at
+                )
+                if media_to_drop:
+                    (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
+                _write_merged(con, dup["id"], final_id, fields)
+                con.commit()
+                seen_streak += 1
+                log(f"merged duplicate: {p['username']} -> {final_id}")
+                break
             if media and pid != h:
                 (MEDIA_DIR / media).rename(MEDIA_DIR / f"{pid}.jpg")
                 media = f"{pid}.jpg"
             con.execute(
-                "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash, url, place)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at,"
+                " hash, url, place, posted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     pid,
                     p["username"],
                     p["kind"],
                     p["posted_date"],
-                    p["caption"] or p["alt"],
+                    store_caption,
                     media,
                     datetime.now(UTC).isoformat(),
                     h,
                     url,
                     p["place"],
+                    posted_at.isoformat() if posted_at else None,
                 ),
             )
             con.commit()
@@ -659,6 +910,7 @@ def scrape_once(d, con):
         human_scroll(d)
         human_pause(1.5, 4.0)
         screens += 1
+    _prune_old_posts(con)
     # Leave the app in a natural state
     d.press("home")
     return new
@@ -688,7 +940,7 @@ if __name__ == "__main__":
         d = connect_device()
         DEBUG_DIR.mkdir(parents=True, exist_ok=True)
         (DEBUG_DIR / "manual_hierarchy.xml").write_text(d.dump_hierarchy())
-        d.screenshot().save(DEBUG_DIR / "manual_screen.png")
+        d.screenshot().convert("RGB").save(DEBUG_DIR / "manual_screen.jpg", quality=70)
         print("wrote", DEBUG_DIR)
     else:
         main()
