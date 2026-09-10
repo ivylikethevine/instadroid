@@ -32,6 +32,13 @@ POLL_MAX_H = float(os.environ.get("POLL_MAX_HOURS", "4.5"))
 MAX_SCROLLS = int(os.environ.get("MAX_SCROLLS", "25"))
 STOP_AFTER_SEEN = int(os.environ.get("STOP_AFTER_SEEN", "4"))
 RETAIN_DAYS = int(os.environ.get("RETAIN_DAYS", "60"))  # 0 disables deletion
+# How long the swipe gesture itself takes (a fling scrolls several screens and skips posts) and
+# how long to sit idle between scrolls (both randomized within their range, like a human thumb).
+SCROLL_SWIPE_MIN = float(os.environ.get("SCROLL_SWIPE_MIN", "0.6"))
+SCROLL_SWIPE_MAX = float(os.environ.get("SCROLL_SWIPE_MAX", "1.0"))
+SCROLL_PAUSE_MIN = float(os.environ.get("SCROLL_PAUSE_MIN", "1.5"))
+SCROLL_PAUSE_MAX = float(os.environ.get("SCROLL_PAUSE_MAX", "4.0"))
+MEDIA_QUALITY = int(os.environ.get("MEDIA_QUALITY", "95"))  # JPEG quality for saved post crops
 IG_USERNAME = os.environ.get("IG_USERNAME", "")
 IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
 IG_PKG = "com.instagram.android"
@@ -364,7 +371,7 @@ def human_scroll(d):
     y1 = random.randint(int(h * 0.65), int(h * 0.8))
     y2 = y1 - random.randint(int(h * 0.3), int(h * 0.45))
     # Slow enough not to fling: a fling scrolls several screens and skips whole posts.
-    d.swipe(x, y1, x, y2, duration=random.uniform(0.6, 1.0))
+    d.swipe(x, y1, x, y2, duration=random.uniform(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX))
 
 
 def _first(d, **kinds):
@@ -794,7 +801,7 @@ def crop_media(d, bounds: str, pid: str, clip_top: int = 0):
     img: Image.Image = d.screenshot()
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     fn = f"{pid}.jpg"
-    img.crop((x1, y1, x2, y2)).convert("RGB").save(MEDIA_DIR / fn, quality=85)
+    img.crop((x1, y1, x2, y2)).convert("RGB").save(MEDIA_DIR / fn, quality=MEDIA_QUALITY)
     return fn
 
 
@@ -943,7 +950,7 @@ def scrape_once(d, con):
             log("hit already-seen posts; stopping")
             break
         human_scroll(d)
-        human_pause(1.5, 4.0)
+        human_pause(SCROLL_PAUSE_MIN, SCROLL_PAUSE_MAX)
         screens += 1
     _prune_old_posts(con)
     # Leave the app in a natural state
