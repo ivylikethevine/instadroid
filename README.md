@@ -35,7 +35,17 @@ with `mem_limit`/`shm_size` raised well past redroid's usual recommendations —
 the cause. This is a binder ABI mismatch between this specific image and this host, not an
 Instagram compatibility issue or a resource one; the container exiting cleanly caused no host
 impact either time. No Android 14 NDK build exists upstream (`erstt/redroid` only publishes
-11/12/13/15). Android 13/ChromeOS remains the image in `docker-compose.yml`.
+11/12/13/15).
+
+Also tried: `aureliolo/redroid:14.0.0_amd64_with_gapps` (Android 14, the only Android-14 redroid
+image found). It boots cleanly and Instagram installs, but the image ships **no ARM translation at
+all** — `ro.product.cpu.abilist` claims `arm64-v8a` support but no `libndk_translation.so`,
+`libhoudini.so`, or native-bridge property exists on the device. Confirmed empirically: launching
+Instagram crashes the dynamic linker outright — `dlopen failed: "libsuperpack-jni.so" is for
+EM_AARCH64 (183) instead of EM_X86_64 (62)` — a clean, host-safe app crash, not something a
+config change fixes. `erstt/redroid` is the only source found with confirmed, working ARM
+translation, and it doesn't publish an Android 14 build. Android 13/ChromeOS remains the image in
+`docker-compose.yml`.
 
 That same first attempt at running redroid **also caused a full kernel panic** on this specific
 host, unrelated to Instagram compatibility — see `CLAUDE.md` for the root cause and the exact,
