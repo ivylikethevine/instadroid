@@ -153,6 +153,7 @@ class FakeDevice:
         self.clipboard = ""
         self.history = [start]
         self.taps, self.presses, self.swipes, self.typed, self.launches = [], [], [], [], []
+        self.shell_calls = []
 
     # --- state --------------------------------------------------------------------------------
     def _go(self, screen):
@@ -199,6 +200,7 @@ class FakeDevice:
 
     def shell(self, cmd):
         joined = " ".join(cmd) if isinstance(cmd, list) else cmd
+        self.shell_calls.append(joined)
         if "resolve-activity" in joined:
             return Out(f"priority=0 preferredOrder=0\n{IG_PKG}/com.instagram.mainactivity.LauncherActivity")
         if joined.startswith("dumpsys package"):
