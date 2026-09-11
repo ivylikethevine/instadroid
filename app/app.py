@@ -66,6 +66,56 @@ def rows(user: str | None, limit: int):
             return []  # e.g. the driver hasn't run db_init() yet and the table doesn't exist
 
 
+def _media_rows(post_ids: list) -> dict:
+    """{post_id: [extra slide filenames, in order]} for the given posts. Empty (not an error) if
+    the media table doesn't exist yet — a post's cover in media_file still renders on its own."""
+    if not post_ids:
+        return {}
+    with closing(_connect()) as con:
+        placeholders = ",".join("?" * len(post_ids))
+        try:
+            out: dict[str, list] = {}
+            for post_id, file in con.execute(
+                f"SELECT post_id, file FROM media WHERE post_id IN ({placeholders}) ORDER BY post_id, idx",
+                post_ids,
+            ):
+                out.setdefault(post_id, []).append(file)
+            return out
+        except sqlite3.OperationalError:
+            return {}
+
+
+def _avatar_files() -> dict:
+    """{username: avatar_file}. Empty if the accounts table doesn't exist yet or has no avatars."""
+    with closing(_connect()) as con:
+        try:
+            return dict(
+                con.execute("SELECT username, avatar_file FROM accounts WHERE avatar_file IS NOT NULL")
+            )
+        except sqlite3.OperationalError:
+            return {}
+
+
+def _media_accounts_signal():
+    """(media row count, latest avatar refresh) - extra ETag input alongside _stats() so a newly
+    captured carousel slide or avatar invalidates a cached feed even when the post count and
+    updated_at haven't moved. Same defensive OperationalError handling as _stats()."""
+    if not Path(DB_PATH).exists():
+        return 0, ""
+    with closing(_connect()) as con:
+        try:
+            media_count = con.execute("SELECT COUNT(*) FROM media").fetchone()[0]
+        except sqlite3.OperationalError:
+            media_count = 0
+        try:
+            latest_avatar = con.execute(
+                "SELECT COALESCE(MAX(avatar_updated_at), '') FROM accounts"
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            latest_avatar = ""
+        return media_count, latest_avatar
+
+
 def _stats():
     """(post count, latest change) - cheap aggregate used for /health and the feed's ETag, so a
     poll that hasn't seen new data doesn't cost a full row scan or feed render. updated_at also
@@ -89,7 +139,9 @@ def _stats():
 @app.get("/instagram.xml")
 def feed(request: Request, user: str | None = None, limit: int = 200):
     count, latest = _stats()
-    etag = f'"{sha1(f"{user}|{limit}|{count}|{latest}".encode()).hexdigest()}"'
+    media_count, latest_avatar = _media_accounts_signal()
+    etag_input = f"{user}|{limit}|{count}|{latest}|{media_count}|{latest_avatar}"
+    etag = f'"{sha1(etag_input.encode()).hexdigest()}"'
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers={"ETag": etag})
 
@@ -100,7 +152,11 @@ def feed(request: Request, user: str | None = None, limit: int = 200):
     fg.link(href=fg.id(), rel="self")
     fg.updated(datetime.now(UTC))
 
-    for r in rows(user, limit):
+    entries = rows(user, limit)
+    extra_slides = _media_rows([r["id"] for r in entries])
+    avatars = _avatar_files()
+
+    for r in entries:
         fe = fg.add_entry(order="append")
         fe.id(f"{PUBLIC_URL}/post/{r['id']}")
         caption = r["caption"] or ""
@@ -114,8 +170,11 @@ def feed(request: Request, user: str | None = None, limit: int = 200):
         if "posted_at" in keys and _dt(r["posted_at"]):
             fe.published(_dt(r["posted_at"]))
         html = ""
-        if r["media_file"]:
-            html += f'<p><img src="{PUBLIC_URL}/media/{r["media_file"]}" alt="" /></p>'
+        avatar = avatars.get(r["username"])
+        if avatar:
+            html += f'<p><img src="{PUBLIC_URL}/media/{avatar}" alt="" width="48" height="48" /></p>'
+        for slide in ([r["media_file"]] if r["media_file"] else []) + extra_slides.get(r["id"], []):
+            html += f'<p><img src="{PUBLIC_URL}/media/{slide}" alt="" /></p>'
         html += f"<p>{escape(caption).replace(chr(10), '<br/>')}</p>"
         # Both dates are also on the entry itself (<published>/<updated>) for readers that sort by
         # those, but spelling them out here means sorting-by-eye works in any reader.
@@ -214,6 +273,17 @@ def _duration(run) -> str:
     return f"{m}m {s}s" if m else f"{s}s"
 
 
+def _link_failures(run) -> str:
+    """ "sheet/clipboard" failure counts for a run, or "—" against a runs row from before these
+    columns existed (SELECT * omits columns the table doesn't have, rather than nulling them)."""
+    keys = run.keys()
+    if "link_sheet_failures" not in keys and "link_clipboard_failures" not in keys:
+        return "—"
+    sheet = run["link_sheet_failures"] if "link_sheet_failures" in keys else None
+    clip = run["link_clipboard_failures"] if "link_clipboard_failures" in keys else None
+    return f"{sheet or 0} sheet / {clip or 0} clipboard"
+
+
 @app.get("/status", response_class=HTMLResponse)
 def status_page():
     total, _ = _stats()
@@ -255,6 +325,7 @@ def status_page():
     runs_rows = "".join(
         f"<tr><td>{escape(r['started_at'])}</td><td>{_duration(r)}</td>"
         f"<td>{r['new_posts'] if r['new_posts'] is not None else '—'}</td>"
+        f"<td>{escape(_link_failures(r))}</td>"
         f'<td class="{"err" if r["error"] else ""}">'
         f"{escape(_short_error(r['error']) if r['error'] else 'ok')}</td></tr>"
         for r in runs
@@ -284,7 +355,7 @@ td, th {{ text-align: left; padding: 0.25rem 0.6rem; border-bottom: 1px solid #d
 <h2>Last scrape</h2>
 {latest_html}
 <h2>Recent runs</h2>
-<table><tr><th>Started</th><th>Duration</th><th>New</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="4">none</td></tr>'}</table>
+<table><tr><th>Started</th><th>Duration</th><th>New</th><th>Link fails</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="5">none</td></tr>'}</table>
 <h2>Totals</h2>
 <p>{total} post(s) stored across {len(users)} account(s)</p>
 <table><tr><th>Account</th><th>Posts</th><th>Latest</th></tr>{users_rows or '<tr><td colspan="3">none</td></tr>'}</table>

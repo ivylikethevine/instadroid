@@ -32,6 +32,13 @@ def test_full_card_fields():
     assert card["alt"].startswith("Photo 1 of 7")
     assert card["caption"] == "Second caption"
     assert card["complete"] is True
+    assert card["header_bounds"] == "[0,1150][1080,1287]"
+
+
+def test_headless_top_card_has_no_header_bounds():
+    # Its header already scrolled off before this dump; the avatar can't be captured from it.
+    top = scraper.parse_hierarchy(FIXTURE)[0]
+    assert top["header_bounds"] is None
 
 
 def test_card_without_caption_or_alt_is_excluded():
@@ -168,3 +175,35 @@ def test_same_post_requires_matching_username():
     a = {"username": "alice", "caption": "", "posted_at": NOW}
     b = {"username": "bob", "caption": "", "posted_at": NOW, "posted_at_precision": 60}
     assert scraper.same_post(a, b) is False
+
+
+def test_carousel_count_parses_slide_total():
+    assert scraper.carousel_count("Photo 1 of 7 by Other User, 317 likes, 10 comments") == 7
+    assert scraper.carousel_count("Video 3 of 3 by X") == 3
+
+
+def test_carousel_count_defaults_to_one_for_non_carousel_alt():
+    assert scraper.carousel_count("Reel by Someone Nice, Liked by a_friend and others") == 1
+    assert scraper.carousel_count("") == 1
+
+
+def test_safe_filename_accepts_plausible_handles():
+    assert scraper._safe_filename("some.user_92") == "some.user_92"
+
+
+@pytest.mark.parametrize("bad", ["../etc/passwd", "..", ".", "", "has space", "has/slash"])
+def test_safe_filename_rejects_unsafe_input(bad):
+    assert scraper._safe_filename(bad) is None
+
+
+def test_avatar_bounds_crops_a_square_inside_the_header():
+    box = scraper._avatar_bounds("[0,1150][1080,1287]")
+    x1, y1, x2, y2 = box
+    assert 0 < x1 < x2 <= 1080
+    assert 1150 < y1 < y2 <= 1287
+    assert (x2 - x1) == (y2 - y1)  # square crop
+
+
+@pytest.mark.parametrize("bad", [None, "", "not-bounds"])
+def test_avatar_bounds_returns_none_for_missing_or_malformed_bounds(bad):
+    assert scraper._avatar_bounds(bad) is None

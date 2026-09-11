@@ -190,6 +190,37 @@ def test_record_run_writes_a_row(con_and_media):
     assert row["error"] is None
     assert row["android_release"] == "13"
     assert row["device_product"] is None  # not in the snapshot dict
+    assert row["link_sheet_failures"] == 0  # default when the caller doesn't pass any
+
+
+def test_record_run_stores_link_failure_counts(con_and_media):
+    con, _ = con_and_media
+    started = datetime.now(UTC).isoformat()
+    finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
+
+    scraper.record_run(con, started, finished, 1, None, {}, link_sheet_failures=2, link_clipboard_failures=1)
+
+    row = con.execute("SELECT * FROM runs").fetchone()
+    assert row["link_sheet_failures"] == 2
+    assert row["link_clipboard_failures"] == 1
+
+
+def test_launch_app_falls_back_to_monkey_launch_without_recursing_forever():
+    # resolve-activity failing used to recurse into _launch_app itself instead of falling back,
+    # which is unbounded recursion, not a fallback.
+    class FakeDevice:
+        def __init__(self):
+            self.app_start_calls = []
+
+        def shell(self, args):
+            raise RuntimeError("resolve-activity unavailable")
+
+        def app_start(self, pkg, activity=None, stop=None):
+            self.app_start_calls.append((pkg, activity, stop))
+
+    d = FakeDevice()
+    scraper._launch_app(d)  # must not raise RecursionError
+    assert d.app_start_calls == [(scraper.IG_PKG, None, False)]
 
 
 def test_device_snapshot_tolerates_shell_failures():
@@ -230,9 +261,164 @@ def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(tmp_path, mon
 
     con = scraper.db_init()  # must not raise, and must not loop forever on the corrupt row
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 2  # dedupe (v1) then accounts (v2)
     ids = {r[0] for r in con.execute("SELECT id FROM posts")}
     assert ids == {"bad", "good"}  # the corrupt row is left alone, not dropped or crashed on
 
     # Re-running db_init() (as a real restart would) must be a no-op, not a repeat crash.
     scraper.db_init()
+
+
+def test_migration_backfills_an_accounts_row_for_every_existing_username(tmp_path, monkeypatch):
+    db = tmp_path / "posts.sqlite"
+    media = tmp_path / "media"
+    media.mkdir()
+    monkeypatch.setattr(scraper, "DB_PATH", str(db))
+    monkeypatch.setattr(scraper, "MEDIA_DIR", media)
+
+    con = sqlite3.connect(db)
+    con.execute(
+        """CREATE TABLE posts (
+            id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
+            caption TEXT, media_file TEXT, scraped_at TEXT NOT NULL,
+            hash TEXT, url TEXT, place TEXT, posted_at TEXT, updated_at TEXT
+        )"""
+    )
+    now = datetime.now(UTC).isoformat()
+    con.execute(
+        "INSERT INTO posts VALUES ('h1','club','photo','x','cap','h1.jpg',?,'h1',NULL,NULL,?,?)",
+        (now, now, now),
+    )
+    con.execute("PRAGMA user_version = 1")  # already past the dedupe migration
+    con.commit()
+    con.close()
+
+    con = scraper.db_init()
+
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert con.execute("SELECT username FROM accounts WHERE username='club'").fetchone() is not None
+    # media_file / the media table are untouched: no backfill needed there.
+    assert con.execute("SELECT media_file FROM posts WHERE id='h1'").fetchone()[0] == "h1.jpg"
+    assert con.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 0
+
+    scraper.db_init()  # re-run must be a no-op
+
+
+def test_prune_old_posts_also_removes_extra_carousel_media(con_and_media, monkeypatch):
+    con, media = con_and_media
+    monkeypatch.setattr(scraper, "RETAIN_DAYS", 30)
+    _insert(con, media, "old", days_old=45, media_file="old.jpg")
+    (media / "old_1.jpg").write_bytes(b"x")
+    con.execute("INSERT INTO media (post_id, idx, file) VALUES ('old', 1, 'old_1.jpg')")
+    con.commit()
+
+    scraper._prune_old_posts(con)
+
+    assert con.execute("SELECT COUNT(*) FROM posts WHERE id='old'").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM media WHERE post_id='old'").fetchone()[0] == 0
+    assert not (media / "old.jpg").exists()
+    assert not (media / "old_1.jpg").exists()
+
+
+def test_prune_old_posts_leaves_avatars_alone(con_and_media, monkeypatch):
+    # The orphan sweep globs MEDIA_DIR non-recursively; avatars/ must be structurally immune.
+    con, media = con_and_media
+    monkeypatch.setattr(scraper, "RETAIN_DAYS", 0)
+    avatars = media / "avatars"
+    avatars.mkdir()
+    (avatars / "someone.jpg").write_bytes(b"x")
+
+    scraper._prune_old_posts(con)
+
+    assert (avatars / "someone.jpg").exists()
+
+
+def test_size_cap_disabled_when_media_max_mb_is_zero(con_and_media, monkeypatch):
+    con, media = con_and_media
+    monkeypatch.setattr(scraper, "MEDIA_MAX_MB", 0)
+    _insert(con, media, "a", days_old=1, media_file="a.jpg")
+    (media / "a.jpg").write_bytes(b"x" * 500_000)
+
+    scraper._prune_old_posts(con)
+
+    assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 1
+
+
+def test_size_cap_removes_oldest_posts_first_when_over_budget(con_and_media, monkeypatch):
+    con, media = con_and_media
+    _insert(con, media, "older", days_old=5, media_file="older.jpg")
+    _insert(con, media, "newer", days_old=1, media_file="newer.jpg")
+    (media / "older.jpg").write_bytes(b"x" * 500_000)
+    (media / "newer.jpg").write_bytes(b"x" * 10_000)
+
+    baseline = scraper._media_and_db_size_mb()
+    monkeypatch.setattr(scraper, "MEDIA_MAX_MB", baseline - 0.3)  # reachable only by dropping "older"
+
+    scraper._prune_old_posts(con)
+
+    ids = {r[0] for r in con.execute("SELECT id FROM posts")}
+    assert ids == {"newer"}
+    assert not (media / "older.jpg").exists()
+    assert (media / "newer.jpg").exists()
+
+
+def test_size_cap_stops_when_no_posts_remain(con_and_media, monkeypatch):
+    con, media = con_and_media
+    monkeypatch.setattr(scraper, "MEDIA_MAX_MB", 0.0000001)  # unreachable even with zero posts
+    _insert(con, media, "only", days_old=1, media_file="only.jpg")
+
+    scraper._prune_old_posts(con)  # must terminate rather than spin
+
+    assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 0
+
+
+def test_merge_accounts_repoints_posts_and_drops_old_account_row(con_and_media):
+    con, media = con_and_media
+    _insert(con, media, "p1", days_old=1)
+    con.execute("UPDATE posts SET username='old_handle' WHERE id='p1'")
+    con.execute("INSERT INTO accounts (username, account_id) VALUES ('old_handle', 'acct123')")
+    con.commit()
+
+    moved = scraper.rename_account(con, "old_handle", "new_handle")
+
+    assert moved == 1
+    assert con.execute("SELECT username FROM posts WHERE id='p1'").fetchone()[0] == "new_handle"
+    assert con.execute("SELECT COUNT(*) FROM accounts WHERE username='old_handle'").fetchone()[0] == 0
+    new_account = con.execute("SELECT account_id FROM accounts WHERE username='new_handle'").fetchone()
+    assert new_account["account_id"] == "acct123"  # carried over from the old handle
+
+
+def test_merge_accounts_is_a_noop_for_the_same_username(con_and_media):
+    con, _ = con_and_media
+    assert scraper.rename_account(con, "same", "same") == 0
+
+
+def test_needs_avatar_refresh_true_when_never_captured(con_and_media):
+    con, _ = con_and_media
+    con.execute("INSERT INTO accounts (username) VALUES ('u')")
+    con.commit()
+    assert scraper._needs_avatar_refresh(con, "u") is True
+
+
+def test_needs_avatar_refresh_false_when_recently_captured(con_and_media, monkeypatch):
+    con, _ = con_and_media
+    monkeypatch.setattr(scraper, "AVATAR_REFRESH_DAYS", 14)
+    now = datetime.now(UTC).isoformat()
+    con.execute(
+        "INSERT INTO accounts (username, avatar_file, avatar_updated_at) VALUES ('u', 'avatars/u.jpg', ?)",
+        (now,),
+    )
+    con.commit()
+    assert scraper._needs_avatar_refresh(con, "u") is False
+
+
+def test_needs_avatar_refresh_true_when_stale(con_and_media, monkeypatch):
+    con, _ = con_and_media
+    monkeypatch.setattr(scraper, "AVATAR_REFRESH_DAYS", 14)
+    old = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    con.execute(
+        "INSERT INTO accounts (username, avatar_file, avatar_updated_at) VALUES ('u', 'avatars/u.jpg', ?)",
+        (old,),
+    )
+    con.commit()
+    assert scraper._needs_avatar_refresh(con, "u") is True

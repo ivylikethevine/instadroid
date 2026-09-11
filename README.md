@@ -95,14 +95,24 @@ and `last_screen.jpg`, then adjust `SELECTORS`.
 
 1. Log in if needed, open the Following feed (the switcher is retried; cold starts are slow).
 2. Walk the accessibility tree screen by screen. A post is registered only once the bottom of its
-   card (share button + caption/timestamp) is on screen, so it has a stable identity.
-3. For each new post: crop the media from a screenshot, then tap Share → "Copy link" and read the
-   clipboard. The shortcode becomes the post id and the feed links straight to the post. If the
-   sheet fails to open it is retried on the next screen, then the post falls back to a content hash.
+   card (share button + caption/timestamp) is on screen, so it has a stable identity. The first time
+   an account's own header is on screen each run, its avatar is cropped and saved (once per account,
+   refreshed after `AVATAR_REFRESH_DAYS`).
+3. For each new post: crop the media from a screenshot (a video/Reel gets `VIDEO_SETTLE_SECONDS` to
+   let autoplay start and the audio-label overlay fade first; a carousel is swiped through in place,
+   capturing up to `MAX_CAROUSEL_SLIDES`), then tap Share → "Copy link" and read the clipboard. The
+   shortcode becomes the post id and the feed links straight to the post. If the sheet fails to open
+   or the clipboard never updates, it's retried on a later screen (`PERMALINK_RETRIES`), then the
+   post falls back to a content hash.
 4. Stop after `STOP_AFTER_SEEN` consecutive already-stored posts or `MAX_SCROLLS` screens.
 
 Taps are always made from a hierarchy dump taken immediately beforehand, and nothing is ever tapped
 inside an open sheet except "Copy link" (a stray tap there could message a contact).
+
+If a followed account renames itself, `docker compose exec app python scraper.py rename <old>
+<new>` repoints its stored history to the new username (there's no automatic detection — Instagram's
+numeric user id never appears in the feed's accessibility tree). It doesn't fix an existing
+`?user=<old>` FreshRSS subscription; re-subscribe under the new username after renaming.
 
 ## Development
 
@@ -150,52 +160,101 @@ instead of getting cached away as a 304.
 
 Posts (and their media) older than `RETAIN_DAYS` (default 60, `0` keeps everything) are deleted at
 the end of every scrape, along with any media file no row references any more, so disk use stays
-flat. Debug dumps in `local/data/debug` are saved as JPEG and only the newest 12 are kept.
+flat. A carousel's extra slides (beyond the cover, which stays in the same row as before) live in a
+small `media` table and are deleted alongside their post; avatars live in their own `media/avatars`
+subdirectory, one file per account, untouched by this cleanup. If `MEDIA_MAX_MB` is set, the oldest
+posts are removed after that (even if still within `RETAIN_DAYS`) until total size is back under the
+cap — worth setting once carousels are captured in full, since a single heavily-posting account can
+otherwise grow disk use with no bound but time. Debug dumps in `local/data/debug` are saved as JPEG
+and only the newest 12 are kept.
 
 ## Known limitations of v1
 
-- When "Copy link" fails twice for a post, its id is a hash of author + caption (or media
-  description) instead of the permalink shortcode.
-- Images are screenshot crops of whatever was on screen (first carousel slide, video poster frame,
-  including any in-app overlay such as the audio label on videos).
-- Videos/Reels get a still only.
+- When "Copy link" fails on every retry (`PERMALINK_RETRIES`) for a post, its id is a hash of
+  author + caption (or media description) instead of the permalink shortcode.
+- Avatar and video-still crops are positional, not selector-based — Instagram's accessibility tree
+  has no addressable node for either (the header is a collapsed leaf; the video frame is whatever's
+  on screen after `VIDEO_SETTLE_SECONDS`) — so their exact framing hasn't been verified against a
+  live device yet.
+- Videos/Reels get a still only, never the actual video.
 
 ## Roadmap
 
-- **Configurable time-fuzzing**: `POLL_MIN_HOURS`/`POLL_MAX_HOURS` and the scroll swipe/pause
-  ranges are all uniform-random today. Make the distribution itself pluggable (e.g. log-normal,
-  day/night-aware, weekday vs. weekend patterns) instead of just the min/max bounds.
+Grouped by how much of the current architecture each would touch, roughly smallest to largest.
+
+### Capture and data fidelity
+
+These extend the existing scrape/store/serve flow without changing its shape. Done, this round:
+more reliable permalinks (configurable retries, and "sheet never opened" vs. "clipboard never
+updated" are now counted separately — see `/status`), full carousel capture, a better-timed video
+still, profile picture display, and a configurable storage size cap — see "Storage and retention"
+and "Known limitations" above for each's current shape and remaining caveats. `rename_account()` /
+`scraper.py rename` gives username changes a manual reconciliation path (schema + CLI only, see
+"How a scrape works" above) — still open:
+
+- **Detect username changes automatically**: today a rename has to be noticed and reconciled by
+  hand (`scraper.py rename <old> <new>`). Instagram's numeric user id never appears in the feed's
+  accessibility tree, so detecting a rename would mean visiting each account's profile — extra
+  in-app navigation and detection surface per run, which is why it wasn't done automatically here.
+- **Real video capture**: still a poster-frame still (now better-timed, not swapped for video) —
+  Reels/videos never get the actual video. Likely needs screen recording rather than a screenshot,
+  plus somewhere to store and serve a video file per post, and meaningfully longer dwell time per
+  video post (see "Staying under the radar" above) — a real cost/benefit call, not just effort.
+
+### New scrape surfaces
+
+- **Stories support**: today only the chronological Following-feed flow is scraped. Stories live in
+  a completely separate UI surface, so this is closer to a second automation flow than a field
+  addition to the existing one.
+
+### Anti-detection: timing and device tuning
+
+No infrastructure change needed — these extend the existing pause/scroll randomization and
+`tune-android.sh`.
+
+- **Configurable time-fuzzing**: `POLL_MIN_HOURS`/`POLL_MAX_HOURS` and the scroll swipe/pause ranges
+  are all plain uniform-random today, with no time-of-day or day-of-week shape. Make the
+  distribution itself pluggable (e.g. log-normal, day/night-aware, weekday vs. weekend) instead of
+  just the min/max bounds.
+- **Fingerprint consistency (locale, timezone, density, GPS)**: `tune-android.sh` only handles
+  animations, sync, screen timeout, location-off, and disabling unused Google apps — locale, device
+  timezone, display density, and a mock GPS fix are all still whatever redroid defaults to. These
+  need to agree with each other *and* with wherever the network traffic egresses (see the
+  proxy/VPN items below) — a mismatch between IP geolocation, GPS, and device timezone is an easy
+  signal for Instagram to notice.
+
+### Anti-detection: networking
+
+Needs changes to `docker-compose.yml`'s network setup, not just app code — redroid currently has no
+network config beyond the default bridge and a published ADB port.
+
 - **IP proxy support**: route redroid's network traffic through a per-account HTTP/SOCKS proxy.
 - **VPN support**: route through a VPN client (e.g. WireGuard) instead of/alongside a proxy.
-- **Mock location and timezone within an area**: set a fake GPS fix and device timezone that
-  agree with each other (and with the IP proxy/VPN above) for a chosen region, rather than
-  whatever redroid defaults to — a mismatch between IP geolocation, GPS, and timezone is an easy
-  signal for Instagram to notice.
-- **Multiple Android VMs**: run several redroid instances in parallel (one per account/session)
-  rather than the current single-container setup, so one login doesn't gate every account.
+
+### Documentation
+
+- **Document compatible Android image / Instagram version pairs**: partially done already —
+  `CLAUDE.md`'s "What's validated" section already tracks which `erstt/redroid` tags work
+  (`13.0.0_ndk_ChromeOS`) versus don't (`15.0.0_ndk_AVD`: binder ABI mismatch;
+  `aureliolo/redroid:14.0.0_amd64_with_gapps`: no ARM translation at all; `abing7k`'s Android 11:
+  Instagram crashes at native startup). What's still missing is a structured table cross-referencing
+  specific Instagram APK versions against each image, kept current as Instagram updates — right now
+  that history is narrative, not a lookup.
+
+### Architecture and scaling
+
+The most invasive items — each changes the container/process topology, not just code inside it.
+
+- **Multiple Android VMs**: `docker-compose.yml` runs exactly one `redroid` + one `app`, and
+  `redroid` mounts one `/data` volume. Running several in parallel (one per account) means
+  per-instance compose services *and* per-instance `/data` volumes — the appops.xml/idmap/
+  telephony.db corruption incidents in `CLAUDE.md` are a direct warning against ever pointing two
+  instances at the same volume.
 - **Pure ADB backend for a real phone**: an alternative to redroid that drives a physical Android
   device over USB/network ADB, for accounts where an emulator's fingerprint is too great a risk.
-- **Investigate a Rust rewrite**: evaluate rewriting the driver (uiautomator2 automation + parsing)
-  in Rust — worth weighing against the current Python stack once the automation logic stabilizes,
-  not before.
-- **More Android configuration tuning**: beyond `tune-android.sh`'s animation/sync/location
-  settings — e.g. locale, timezone, display density, and other fingerprint-adjacent knobs worth
-  exposing per account.
-- **Document compatible Android image / Instagram version pairs**: the 2026-09-10/11 incidents (see
-  `CLAUDE.md`) showed how easily a redroid image swap or an Instagram update can break things in
-  subtle, hard-to-diagnose ways. Track and publish which `erstt/redroid` tags have been verified
-  against which Instagram APK versions, so a future upgrade is a lookup instead of a rediscovery.
-- **More reliable permalinks**: reduce how often "Copy link" fails and a post falls back to a
-  hash-based id instead of its real shortcode (see "Known limitations" above).
-- **Handle username changes**: detect when a followed account renames itself and reconcile its
-  history under the new `@username` instead of treating it as a different account.
-- **Profile picture display**: show each account's avatar in the feed, not just post media.
-- **Stories support**: currently only chronological feed posts are scraped; Stories aren't
-  captured at all.
-- **Real video capture**: Videos/Reels currently get a still poster frame only (see "Known
-  limitations" above) — capture actual playable video.
-- **Full carousel capture**: only the first carousel slide is captured today; store every slide.
-- **Configurable storage size cap**: retention today (`RETAIN_DAYS`) is time-based only — add a
-  size-based cap (e.g. max total MB for `local/data/media`+the DB) that prunes the oldest posts
-  once disk use crosses it, for accounts that post heavily enough that time alone isn't a useful
-  bound.
+  The driver already talks to its device purely over an ADB address, so the automation layer may
+  mostly carry over, but it's still a distinct backend from the emulated one, with its own
+  device-management story.
+- **Investigate a Rust rewrite**: evaluate rewriting the driver (uiautomator2 automation + parsing,
+  ~1,000 lines of Python today) in Rust — worth weighing once the automation logic stabilizes, not
+  before.
