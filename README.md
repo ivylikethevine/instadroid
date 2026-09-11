@@ -71,7 +71,7 @@ docker compose up -d redroid
 adb connect 127.0.0.1:5555
 adb -s 127.0.0.1:5555 wait-for-device shell 'while ! pm list packages >/dev/null 2>&1; do sleep 2; done'
 ./scripts/tune-android.sh 127.0.0.1:5555     # animations off, sync/location off, Google apps disabled,
-                                              # + DEVICE_TIMEZONE from .env if set (see Roadmap)
+                                              # + DEVICE_TIMEZONE from .env if set (see "Staying under the radar")
 
 apkeep -a com.instagram.android -d apk-pure local
 unzip -o local/com.instagram.android.xapk -d local/xapk
@@ -108,7 +108,10 @@ and `last_screen.jpg`, then adjust `SELECTORS`.
    shortcode becomes the post id and the feed links straight to the post. If the sheet fails to open
    or the clipboard never updates, it's retried on a later screen (`PERMALINK_RETRIES`), then the
    post falls back to a content hash.
-5. Stop after `STOP_AFTER_SEEN` consecutive already-stored posts or `MAX_SCROLLS` screens.
+5. Stop after `STOP_AFTER_SEEN` consecutive already-stored posts or `MAX_SCROLLS` screens. If
+   `EMPTY_SCREEN_LIMIT` screens in a row show no recognisable post, a debug dump (`empty_feed0`) is
+   saved and the feed is reopened once; if it happens again the run stops early (`empty_feed1`)
+   and `/status` shows it as a warning, rather than swiping through the rest of `MAX_SCROLLS` blind.
 
 Taps are always made from a hierarchy dump taken immediately beforehand, and nothing is ever tapped
 inside an open sheet except "Copy link" (a stray tap there could message a contact).
@@ -142,8 +145,14 @@ Captured stories are served at `/stories.xml` and always deleted after `STORY_RE
 python -m venv local/.venv && . local/.venv/bin/activate
 pip install -r scripts/requirements-dev.txt -r app/requirements.txt
 ruff check . && ruff format --check .
-PYTHONPATH=app pytest app/tests -q     # parser + feed tests, against a fixture / temp SQLite db
+PYTHONPATH=app pytest app/tests -q     # parser, feed, and device-flow tests; temp SQLite db
+PYTHONPATH=app pytest app/tests -q --cov=app --cov-report=term-missing   # with coverage
 ```
+
+The device-driving code (login, feed navigation, share sheet, carousels, stories, the scrape loop)
+is tested against `app/tests/fakedevice.py`: a scripted stand-in for a uiautomator2 device whose
+screens are synthetic hierarchy XML, with `goto`/`clip` attributes on nodes scripting what a tap
+does. No real account data is used in any fixture.
 
 CI (`.github/workflows/ci.yml`) runs ruff, the test suite, `pip-audit` on the requirements file
 (also weekly), shellcheck on the scripts, hadolint plus a build and smoke test of the image,
@@ -157,13 +166,41 @@ FreshRSS can reach so image links resolve). Per-account feeds: `/instagram.xml?u
 `/users` lists everyone seen so far. `/stories.xml` is a separate feed of currently-unexpired
 stories (see "Stories" above) — subscribe to it separately if you want it.
 
+## Health and restarts
+
+Both services use `restart: unless-stopped`, so they come back after a host reboot or a crash;
+`docker compose stop` (or `down`) keeps them down. `/status` is a plain-HTML page of recent runs.
+`/health` returns 503 — which the compose healthcheck turns into `unhealthy` in `docker ps` — when
+no run has finished within `POLL_MAX_HOURS` + 30min of the last one (the loop looks stuck), or no
+run has *succeeded* for 2 × `POLL_MAX_HOURS` + 1h (e.g. a login challenge is waiting for you).
+Docker doesn't restart an unhealthy container by itself. After a long downtime the stack reports
+unhealthy until its first run finishes.
+
+A run that fails for a device reason — adb offline, redroid still booting so the uiautomator server
+can't start, Instagram refusing to come to the foreground — is retried after `RETRY_DELAYS_MINUTES`
+(default 2, 5, then 15 minutes, with jitter) instead of waiting out a full poll interval. Login
+challenges and every other error never retry early.
+
+Each run also records the installed Instagram `versionName` and the redroid image (`runs.ig_version`
+/ `runs.redroid_image`, both on `/status`), so when the selectors break it's a lookup whether an
+Instagram update landed. Docker keeps at most 3 × 10MB of log per container (the `x-logging` block
+in `docker-compose.yml`), and the healthcheck's own `GET /health` every 30s is left out of the
+access log.
+
 ## Staying under the radar
 
 - Keep `POLL_MIN_HOURS` ≥ 2. Instagram tolerates a phone that checks in a few times a day; it does not
   tolerate one that scrolls every 15 minutes with metronome timing.
-- `TIME_DISTRIBUTION=daynight` is a cheap extra layer on top of that: a metronome that's merely
-  slow is still a metronome, whereas real usage naturally thins out overnight. See "Anti-detection:
-  timing and device tuning" in the Roadmap for the full shape.
+- `TIME_DISTRIBUTION` shapes every in-session pause and the poll interval, not just their bounds:
+  `uniform` (default) draws flat across the range; `lognormal` clusters near the midpoint with the
+  occasional longer outlier; `daynight` is lognormal but widens the top of the range during
+  `DAYNIGHT_QUIET_START`..`DAYNIGHT_QUIET_END` local hours (default 0–6). `daynight` is a cheap
+  extra layer: a metronome that's merely slow is still a metronome, whereas real usage thins out
+  overnight.
+- `DEVICE_TIMEZONE` (e.g. `America/Los_Angeles`) is applied to the device by `tune-android.sh`
+  (takes effect immediately, no reboot) and defines "local" for `daynight`. It's empty by default
+  on purpose — see "Fingerprint consistency" in the Roadmap: a timezone that doesn't match the
+  network egress may be a worse signal than the device's default GMT.
 - `MAX_SCROLLS` 25 is roughly 10–15 posts per run on this feed layout (each new post costs a
   share-sheet round trip). If you follow enough accounts to post more than that in a ~3-hour
   window, raise the poll frequency slowly (lower `POLL_MIN_HOURS`/`POLL_MAX_HOURS`) rather than
@@ -195,7 +232,9 @@ subdirectory, one file per account, untouched by this cleanup. If `MEDIA_MAX_MB`
 posts are removed after that (even if still within `RETAIN_DAYS`) until total size is back under the
 cap — worth setting once carousels are captured in full, since a single heavily-posting account can
 otherwise grow disk use with no bound but time. Debug dumps in `local/data/debug` are saved as JPEG
-and only the newest 12 are kept.
+and only the newest 12 hierarchy/screenshot pairs are kept; any `.xml`/`.jpg`/`.png` there older
+than `DEBUG_RETAIN_DAYS` (default 7) is deleted at the end of every run. Other files in that
+directory (e.g. scratch `test*.sqlite` databases) are never touched.
 
 Stories are unrelated to all of the above: they live in their own `stories` table and
 `media/stories` subdirectory, and are always deleted `STORY_RETAIN_HOURS` after capture regardless
@@ -215,22 +254,55 @@ of `RETAIN_DAYS`/`MEDIA_MAX_MB` — see "Stories" above.
 
 Grouped by how much of the current architecture each would touch, roughly smallest to largest.
 
+### Reliability
+
+- **Don't scrape on every container start**: the scraper starts a run the moment its container
+  starts, so every `docker compose up`, recreate, or crash-restart is an extra, off-schedule scrape
+  — three runs landed between 05:45 and 06:24 UTC on 2026-09-11, at least two of them from container
+  recreates, all well inside `POLL_MIN_HOURS`. With `restart: unless-stopped`, a restart loop would
+  become a scrape loop. On startup, wait out whatever's left of the poll interval since the last
+  recorded run instead.
+
+### Operations and observability
+
+- **Failure alerts**: push a notification (ntfy, Apprise, or a plain webhook) on a login challenge,
+  N consecutive failed runs, or no new posts for X hours. A zero-dependency variant: a synthetic
+  "scraper needs attention" entry in `/instagram.xml`, since the feed is already being read.
+- **Selector-drift canary**: record per-run parse stats (cards per screen, share with a real
+  caption, share `complete`) and flag a drop against a rolling baseline — catches an Instagram UI
+  change before runs go fully blank.
+- **`scripts/diagnose.sh`**: codify `CLAUDE.md`'s logcat triage (grep for `WATCHDOG KILLING`,
+  `FATAL EXCEPTION`, `Version mismatch`, `Can't downgrade database`) and print the matching fix;
+  optionally have the scraper save a filtered `logcat -d` into `DEBUG_DIR` on device failures.
+- **Guard `/data` against Android version mixing**: record the image tag in `local/data/android` on
+  first boot and refuse to start a different Android major version against it — the appops.xml,
+  idmap and telephony.db corruption in `CLAUDE.md` all came from exactly that.
+- **Backups**: `sqlite3 .backup` of the posts database, plus a snapshot of redroid's `/data` before
+  image or APK upgrades — the saved login session is the expensive thing to lose.
+- **Instagram update path**: detect the forced "update Instagram" screen (as a challenge-style
+  stop) and add a `scripts/update-instagram.sh` (apkeep → `install-multiple` → a `scraper.py dump`
+  smoke check), keeping the previous xapk for rollback.
+- **Manual-use lock and run-now**: a lock (file or endpoint) that keeps the scraper from starting
+  while you're driving the device in scrcpy, and a rate-limited "scrape now" trigger.
+- **Credentials from a file**: `IG_PASSWORD_FILE` / Docker secrets instead of a plain environment
+  variable.
+
 ### Capture and data fidelity
 
-These extend the existing scrape/store/serve flow without changing its shape. Done, this round:
-more reliable permalinks (configurable retries, and "sheet never opened" vs. "clipboard never
-updated" are now counted separately — see `/status`), full carousel capture, a better-timed video
-still, profile picture display, and a configurable storage size cap — see "Storage and retention"
-and "Known limitations" above for each's current shape and remaining caveats. `rename_account()` /
-`scraper.py rename` gives username changes a manual reconciliation path (schema + CLI only, see
-"How a scrape works" above) — still open:
+These extend the existing scrape/store/serve flow without changing its shape.
 
+- **Backfill missing permalinks**: 17 of 35 stored posts have no permalink (16 of them from before
+  `PERMALINK_RETRIES` existed). When an already-stored hash-id post is back on screen, try Copy
+  link once and fill in its `url` — keeping its existing `id`, since the Atom entry id is derived
+  from it and changing it would make FreshRSS show the post twice.
+- **Full captions**: captions are stored as the feed shows them, truncated at "… more". Tapping
+  "more" expands the caption in place (no navigation), so it could be done from a fresh dump before
+  storing; hashtags and mentions could then be linked in the feed HTML.
 - **Detect username changes automatically**: today a rename has to be noticed and reconciled by
   hand (`scraper.py rename <old> <new>`). Instagram's numeric user id never appears in the feed's
   accessibility tree, so detecting a rename would mean visiting each account's profile — extra
   in-app navigation and detection surface per run, which is why it wasn't done automatically here.
-- **Real video capture**: still a poster-frame still (now better-timed, not swapped for video) —
-  Reels/videos never get the actual video. Likely needs screen recording rather than a screenshot,
+- **Real video capture**: still a poster-frame still — Reels/videos never get the actual video. Likely needs screen recording rather than a screenshot,
   plus somewhere to store and serve a video file per post, and meaningfully longer dwell time per
   video post (see "Staying under the radar" above) — a real cost/benefit call, not just effort.
 - **Full story-reel capture**: only a story's current frame is captured (see "Stories" above) — a
@@ -240,32 +312,34 @@ and "Known limitations" above for each's current shape and remaining caveats. `r
   `total` count to know exactly how many frames to expect, so the loop never has to discover
   exhaustion by tapping past the end).
 
+### Feed serving
+
+- **OPML export**: `/opml` listing one per-account feed each, for a one-step bulk subscribe in
+  FreshRSS (today `/users` is a bare JSON list).
+- **Push new posts to FreshRSS**: after a run with new posts, ping FreshRSS (WebSub, or its
+  feed-refresh URL) so they show up immediately instead of on FreshRSS's own poll interval.
+- **Smaller images, richer entries**: media averages ~260KB per post as JPEG; WebP would roughly
+  halve disk and bandwidth. Add `width`/`height` to `<img>`, an Atom thumbnail for list views, and
+  a ▶ marker on video/Reel titles.
+- **Optional feed auth**: a token or basic auth, needed before `FEED_HOST=0.0.0.0` is safe —
+  otherwise media from private accounts you follow is served to anyone on the LAN.
+
 ### New scrape surfaces
 
-Done, this round: **Stories support** — the Home feed's story tray is visited every run and each
-not-yet-seen account's current story frame is captured (`MAX_STORIES_PER_RUN`, `STORY_RETAIN_HOURS`)
-and served at `/stories.xml`; see "Stories" and "How a scrape works" above for the full shape and
-its one real cost (the account becomes visible in each poster's story-viewer list) and its one
-deliberate limitation (current frame only, tracked under "Capture and data fidelity" above).
+- **Reach the real Following feed without the switcher**: under `gpu_mode=guest` the switcher's
+  bottom sheet may not open, and the scraper then falls back to Home — algorithmic, with suggested
+  posts mixed in. Investigate a deep link or activity intent that opens Following directly;
+  unconfirmed whether one exists.
+- **Followed-accounts allowlist**: periodically read the logged-in account's own Following list
+  and drop posts from anyone not on it, filtering suggested posts that leak in through the Home
+  fallback. Costs extra in-app navigation per refresh.
 
 ### Anti-detection: timing and device tuning
 
-No infrastructure change needed — these extend the existing pause/scroll randomization and
-`tune-android.sh`. Done, this round:
-
-- **Configurable time-fuzzing**: `TIME_DISTRIBUTION` (`uniform` | `lognormal` | `daynight`) now
-  shapes every pause `human_pause`/`human_scroll` draws, plus the inter-run poll interval — not just
-  their min/max bounds. `lognormal` clusters draws near the midpoint with an occasional longer
-  outlier instead of every value in range being equally likely; `daynight` additionally widens the
-  top of the range during `DAYNIGHT_QUIET_START`..`DAYNIGHT_QUIET_END` local hours (default 0-6), so
-  activity actually thins out overnight. Default stays `uniform` (unchanged behavior).
-- **Device timezone**: `DEVICE_TIMEZONE` (e.g. `America/Los_Angeles`) is applied to the device by
-  `tune-android.sh` (`service call alarm` — confirmed to take effect immediately, no reboot needed)
-  and used by the driver to compute "local" time for `DAYNIGHT_QUIET_*` above. Deliberately empty by
-  default; see "Fingerprint consistency" below for why.
-
-Investigated and **not** implemented this round — display density was already covered (see
-`REDROID_WIDTH`/`HEIGHT`/`DPI` in "First-time setup"), so the remaining gap was locale and GPS:
+No infrastructure change needed — these would extend the existing pause/scroll randomization and
+`tune-android.sh` (timing distributions and device timezone already exist; see "Staying under the
+radar"). Investigated but **not** implemented — display density is already covered by
+`REDROID_WIDTH`/`HEIGHT`/`DPI`, so the remaining gaps are locale and GPS:
 
 - **Locale**: `adb shell settings put system system_locales <locale>` writes the setting but a
   running system doesn't pick it up without a broadcast of `android.intent.action.LOCALE_CHANGED` —
@@ -304,7 +378,8 @@ network config beyond the default bridge and a published ADB port.
   `aureliolo/redroid:14.0.0_amd64_with_gapps`: no ARM translation at all; `abing7k`'s Android 11:
   Instagram crashes at native startup). What's still missing is a structured table cross-referencing
   specific Instagram APK versions against each image, kept current as Instagram updates — right now
-  that history is narrative, not a lookup.
+  that history is narrative, not a lookup. The raw data now accumulates on its own: every run
+  records the Instagram `versionName` and redroid image (`runs.ig_version` / `runs.redroid_image`).
 
 ### Architecture and scaling
 
@@ -320,6 +395,16 @@ The most invasive items — each changes the container/process topology, not jus
   The driver already talks to its device purely over an ADB address, so the automation layer may
   mostly carry over, but it's still a distinct backend from the emulated one, with its own
   device-management story.
+- **arm64 host support**: on an arm64 host, official `redroid/redroid` images run Instagram's arm64
+  code natively — no NDK translation, sidestepping the whole "Which Android?" compatibility matrix.
+  Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in the kernel).
+- **Replay tests and a module split**: `scrape_once()` and the other device flows now run in CI
+  against `tests/fakedevice.py`, but its screens are hand-written. Replaying *recorded* sequences —
+  with a helper that promotes a `DEBUG_DIR` dump into a sanitised fixture — would catch real
+  Instagram UI drift that synthetic screens can't. Splitting `scraper.py` (~1,700
+  lines) into selectors/db/navigation/parsing/capture/retention modules, with numbered migrations
+  in place of ad-hoc `PRAGMA user_version` checks, is a precondition for multi-account support and
+  for the Rust evaluation below.
 - **Investigate a Rust rewrite**: evaluate rewriting the driver (uiautomator2 automation + parsing,
   ~1,000 lines of Python today) in Rust — worth weighing once the automation logic stabilizes, not
   before.

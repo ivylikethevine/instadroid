@@ -42,7 +42,9 @@ something to ask permission for each time.
 Pull the image before starting it (`docker compose pull redroid`) so a bad tag
 fails cheaply, and prefer starting detached (`up -d`) with a quick look at logs/host responsiveness
 after, over walking away mid-boot unattended. Tear a test container down when done rather than
-leaving it running. None of this requires checking in first.
+leaving it running. None of this requires checking in first. Both compose services use
+`restart: unless-stopped` (since 2026-09-10), so they also come back on their own after a host
+reboot; `docker compose stop`/`down` is what keeps them down.
 
 One separate, harness-level thing worth knowing: the auto-mode permission classifier has, on this
 host, sometimes blocked a `docker compose up`/`run` for `redroid` outright, inconsistently (a later

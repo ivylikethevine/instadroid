@@ -24,6 +24,7 @@ import adbutils
 import uiautomator2 as u2
 from lxml import etree
 from PIL import Image
+from uiautomator2.exceptions import DeviceError as U2DeviceError
 
 ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5555")  # redroid's forwarded ADB port
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
@@ -45,6 +46,8 @@ IG_USERNAME = os.environ.get("IG_USERNAME", "")
 IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
 IG_PKG = "com.instagram.android"
 DEBUG_KEEP = 12  # debug dump pairs to retain; older ones are pruned on every new dump
+DEBUG_RETAIN_DAYS = float(os.environ.get("DEBUG_RETAIN_DAYS", "7"))  # 0 disables age-based pruning
+_DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png")
 PERMALINK_RETRIES = int(os.environ.get("PERMALINK_RETRIES", "2"))  # extra share-sheet passes after the first
 SHARE_TAP_TRIES = int(os.environ.get("SHARE_TAP_TRIES", "2"))  # taps on the share button before giving up
 CLIPBOARD_TIMEOUT = float(os.environ.get("CLIPBOARD_TIMEOUT", "6.0"))  # seconds to poll the clipboard for
@@ -63,6 +66,14 @@ TIME_DISTRIBUTION = os.environ.get("TIME_DISTRIBUTION", "uniform")  # uniform | 
 DEVICE_TIMEZONE = os.environ.get("DEVICE_TIMEZONE", "")
 DAYNIGHT_QUIET_START = int(os.environ.get("DAYNIGHT_QUIET_START", "0"))  # local hour, inclusive
 DAYNIGHT_QUIET_END = int(os.environ.get("DAYNIGHT_QUIET_END", "6"))  # local hour, exclusive
+# Consecutive screens with no identifiable post before a run treats the feed as lost: dump, reopen
+# the feed once, and stop the run if it happens again. 0 disables.
+EMPTY_SCREEN_LIMIT = int(os.environ.get("EMPTY_SCREEN_LIMIT", "3"))
+# Minutes to wait before retrying after a transient device failure (see is_transient()) instead of
+# sleeping a whole poll interval — one entry per retry, comma-separated; empty disables.
+RETRY_DELAYS_MINUTES = [
+    float(x) for x in os.environ.get("RETRY_DELAYS_MINUTES", "2,5,15").split(",") if x.strip()
+]
 
 # --- Selectors (the fragile part) ---------------------------------------------------
 SELECTORS = {
@@ -168,6 +179,30 @@ _UNIT_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 
 
 def log(*a):
     print(datetime.now().strftime("%H:%M:%S"), *a, flush=True)
+
+
+class DeviceNotReady(RuntimeError):
+    """The device or app isn't in a state to be driven yet (e.g. Instagram won't come to the
+    foreground). Unlike a login challenge, a retry a few minutes later usually just works."""
+
+
+def is_transient(e: BaseException) -> bool:
+    """Device-side failures that a short wait usually fixes: redroid still booting, adb briefly
+    offline, or the uiautomator server failing to attach to an accessibility manager that isn't up
+    yet (seen live as LaunchUiAutomationError 'server quit unexpectly', five runs in a row). Login
+    challenges and parsing/logic errors are deliberately not transient: retrying those early either
+    can't help or, for a challenge, looks worse to Instagram."""
+    return isinstance(e, (DeviceNotReady, adbutils.AdbError, adbutils.AdbTimeout, U2DeviceError))
+
+
+def next_sleep_seconds(error: BaseException | None, attempt: int) -> tuple[float, int]:
+    """(seconds to sleep before the next run, updated retry count). A transient failure retries
+    after RETRY_DELAYS_MINUTES[attempt] (jittered up to +50%) until the list runs out; anything
+    else — success, a non-transient error, retries exhausted — sleeps a normal poll interval."""
+    if error is not None and is_transient(error) and attempt < len(RETRY_DELAYS_MINUTES):
+        minutes = RETRY_DELAYS_MINUTES[attempt]
+        return sample_duration(minutes, minutes * 1.5) * 60, attempt + 1
+    return sample_duration(POLL_MIN_H, POLL_MAX_H) * 3600, 0
 
 
 def parse_posted_at(text: str, now: datetime) -> tuple[datetime, int] | None:
@@ -301,15 +336,21 @@ def db_init():
     for col in ("link_sheet_failures", "link_clipboard_failures", "new_stories"):
         if col not in run_cols:
             con.execute(f"ALTER TABLE runs ADD COLUMN {col} INTEGER")
+    for col in ("warning", "ig_version", "redroid_image"):
+        if col not in run_cols:
+            con.execute(f"ALTER TABLE runs ADD COLUMN {col} TEXT")
     con.commit()
     _migrate_dedupe(con)
     _migrate_accounts(con)
+    _migrate_post_hashes(con)
     return con
 
 
 def _device_snapshot(d) -> dict:
-    """Best-effort ro.build.* props for the status page. Uses a plain adb shell getprop rather
-    than uiautomator2's jsonrpc info, so a wedged automation service can't also blank this out."""
+    """Best-effort device/app versions for the runs table and status page: ro.build.* props, the
+    installed Instagram versionName, and the redroid image tag compose passes in — so "which
+    Instagram update broke the selectors" is a lookup. Uses plain adb shell calls rather than
+    uiautomator2's jsonrpc info, so a wedged automation service can't also blank this out."""
 
     def prop(name):
         try:
@@ -317,10 +358,19 @@ def _device_snapshot(d) -> dict:
         except Exception:
             return None
 
+    def ig_version():
+        try:
+            m = re.search(r"versionName=(\S+)", d.shell(["dumpsys", "package", IG_PKG]).output or "")
+        except Exception:
+            return None
+        return m.group(1) if m else None
+
     return {
         "android_release": prop("ro.build.version.release"),
         "android_sdk": prop("ro.build.version.sdk"),
         "device_product": prop("ro.product.name") or prop("ro.build.product"),
+        "ig_version": ig_version(),
+        "redroid_image": os.environ.get("REDROID_IMAGE") or None,
     }
 
 
@@ -334,11 +384,12 @@ def record_run(
     link_sheet_failures=0,
     link_clipboard_failures=0,
     new_stories=0,
+    warning=None,
 ):
     con.execute(
         "INSERT INTO runs (started_at, finished_at, new_posts, error, android_release, android_sdk,"
-        " device_product, link_sheet_failures, link_clipboard_failures, new_stories)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        " device_product, link_sheet_failures, link_clipboard_failures, new_stories, warning, ig_version,"
+        " redroid_image) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             started_at,
             finished_at,
@@ -350,6 +401,9 @@ def record_run(
             link_sheet_failures,
             link_clipboard_failures,
             new_stories,
+            warning,
+            snapshot.get("ig_version"),
+            snapshot.get("redroid_image"),
         ),
     )
     con.commit()
@@ -482,6 +536,48 @@ def _migrate_accounts(con):
     con.execute("PRAGMA user_version = 2")
     con.commit()
     log("accounts backfill complete")
+
+
+def _legacy_sha1_id(key: str) -> str:
+    """post_id()'s pre-SHA-256 digest. Used only by _migrate_post_hashes() to recognise which key
+    produced a stored hash; never written anywhere."""
+    return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:16]
+
+
+def _migrate_post_hashes(con):
+    """One-time rekey, guarded like _migrate_dedupe(): post_id() moved from SHA-1 to SHA-256, so
+    every stored `hash` is recomputed, or no card already on file would be recognised again. The
+    original key isn't stored, so both keys post_id() could have built from the row (caption-based,
+    or media-description-based when the card had no caption yet and that description was stored as
+    the caption) are checked against its SHA-1, and the one that matches is re-hashed. A row
+    matching neither (its caption was edited after it was stored, its account renamed, or it was
+    keyed by the original 2026-09-08 formula, which also hashed the kind and the full media
+    description — not stored, so those rows weren't matchable before this either) gets the likelier
+    of the two; if that's wrong, the next scrape's duplicate check folds the card into this row
+    rather than storing it twice. Only `hash` changes: `id` — also the Atom entry id and media
+    filename of a post without a permalink — stays as-is, so FreshRSS sees no new entries."""
+    if con.execute("PRAGMA user_version").fetchone()[0] >= 3:
+        return
+    log("running one-time post hash upgrade (SHA-1 -> SHA-256)")
+    verified = guessed = 0
+    for r in con.execute("SELECT id, username, caption, hash FROM posts").fetchall():
+        try:
+            caption = r["caption"] or ""
+            by_caption = _post_key({"username": r["username"], "caption": caption, "alt": ""})
+            by_alt = _post_key({"username": r["username"], "caption": "", "alt": caption})
+            legacy = r["hash"] or r["id"]  # rows from before the hash column keyed on id alone
+            key = next((k for k in (by_caption, by_alt) if _legacy_sha1_id(k) == legacy), None)
+            if key:
+                verified += 1
+            else:
+                guessed += 1
+                key = by_alt if _is_weak_caption(caption) else by_caption
+            con.execute("UPDATE posts SET hash=? WHERE id=?", (_digest(key), r["id"]))
+        except Exception as e:  # a single corrupt row must not block every future start
+            log(f"WARN: hash upgrade skipped row {r['id']!r}:", repr(e))
+    con.execute("PRAGMA user_version = 3")
+    con.commit()
+    log(f"post hash upgrade: {verified} verified, {guessed} best-guess")
 
 
 def _find_duplicate(con, username, posted_at, posted_at_prec, caption, exclude_id=None):
@@ -653,12 +749,32 @@ def _challenge_present(d):
 
 
 def _prune_debug_dumps():
-    hierarchies = sorted(DEBUG_DIR.glob("*_hierarchy.xml"), key=lambda p: p.stat().st_mtime)
-    for old in hierarchies[:-DEBUG_KEEP]:
-        stem = old.name.removesuffix("_hierarchy.xml")
-        old.unlink(missing_ok=True)
-        for ext in ("_screen.jpg", "_screen.png"):
-            (DEBUG_DIR / f"{stem}{ext}").unlink(missing_ok=True)
+    """Keep only the newest DEBUG_KEEP hierarchy+screenshot pairs, and delete any debug artifact
+    (.xml/.jpg/.png, top level only) older than DEBUG_RETAIN_DAYS — manual dumps and one-off
+    screenshots don't belong to a pair and otherwise never age out. Anything else in DEBUG_DIR
+    (e.g. a scratch test*.sqlite a DB_PATH may still point at) is left alone. Best-effort: a file
+    that can't be removed is logged and skipped, never raised."""
+    try:
+        doomed = []
+        hierarchies = sorted(DEBUG_DIR.glob("*_hierarchy.xml"), key=lambda p: p.stat().st_mtime)
+        for old in hierarchies[:-DEBUG_KEEP]:
+            stem = old.name.removesuffix("_hierarchy.xml")
+            doomed += [old, DEBUG_DIR / f"{stem}_screen.jpg", DEBUG_DIR / f"{stem}_screen.png"]
+        if DEBUG_RETAIN_DAYS > 0:
+            cutoff = time.time() - DEBUG_RETAIN_DAYS * 86400
+            doomed += [
+                f
+                for f in DEBUG_DIR.iterdir()
+                if f.suffix.lower() in _DEBUG_ARTIFACT_SUFFIXES and f.is_file() and f.stat().st_mtime < cutoff
+            ]
+    except OSError as e:  # e.g. DEBUG_DIR doesn't exist yet, or a file vanished mid-scan
+        log("WARN: could not scan debug dumps for pruning:", repr(e))
+        return
+    for f in doomed:
+        try:
+            f.unlink(missing_ok=True)
+        except OSError as e:
+            log(f"WARN: could not prune debug file {f.name!r}:", repr(e))
 
 
 def _dump_debug(d, name, xml=None):
@@ -719,7 +835,7 @@ def ensure_logged_in(d):
         # still on the home screen) and the function falls through to "no login screen; assume
         # session is live" — a false positive that leaves the caller thinking it's logged in.
         _dump_debug(d, "login")
-        raise RuntimeError(f"could not bring {IG_PKG} to the foreground; see {DEBUG_DIR}")
+        raise DeviceNotReady(f"could not bring {IG_PKG} to the foreground; see {DEBUG_DIR}")
     ok = d(text="OK")  # stray "Enter your password" style alert from a previous attempt
     if ok.exists(timeout=1):
         ok.click()
@@ -1102,14 +1218,22 @@ def fetch_permalink(d, post_hash: str) -> tuple[str | None, str | None]:
     return f"https://www.instagram.com/{m.group('type')}/{m.group('code')}/", None
 
 
-def post_id(p):
-    """Cheap identity for the first-pass 'have we stored this' check. Must not depend on anything
-    that changes while the post sits in the feed: like counts, relative dates, carousel index."""
+def _post_key(p) -> str:
+    """What post_id() hashes. Must not depend on anything that changes while the post sits in the
+    feed: like counts, relative dates, carousel index."""
     # Caption if there is one, else the media description up to the first comma ("Photo  of  by X").
     key = p["caption"][:200] if p["caption"] else re.sub(r"\d+", "", p["alt"].split(",")[0])
     # No kind here: a header-less video card has no media description to infer it from.
-    raw = f"{p['username']}|{key}"
-    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+    return f"{p['username']}|{key}"
+
+
+def _digest(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def post_id(p):
+    """Cheap identity for the first-pass 'have we stored this' check."""
+    return _digest(_post_key(p))
 
 
 def crop_media(d, bounds: str, pid: str, clip_top: int = 0, settle: float = 0):
@@ -1466,13 +1590,31 @@ def scrape_once(d, con) -> dict:
     link_sheet_failures = link_clipboard_failures = 0
     accounts_seen: set[str] = set()  # usernames already upserted this run
     avatars_checked: set[str] = set()  # usernames whose avatar has been considered this run
-    screens = 0
+    warnings: list[str] = []
+    screens = empty_streak = 0
+    feed_reopened = False
     while screens < MAX_SCROLLS:
         xml = d.dump_hierarchy()
         posts = parse_hierarchy(xml)
         if screens == 0 and not posts:
             _dump_debug(d, "last", xml=xml)
             log("no posts parsed on first screen — selectors probably need updating; dump saved")
+        empty_streak = 0 if posts else empty_streak + 1
+        if EMPTY_SCREEN_LIMIT and empty_streak >= EMPTY_SCREEN_LIMIT:
+            # Scrolling on regardless was seen live: 2 cards on screen 0, then 24 straight empty
+            # screens, with nothing saved to show what was on screen. Whatever it is (a screen we
+            # landed on by accident, the end of the feed, a UI change), more swipes won't fix it:
+            # reopen the feed once, and stop the run if that doesn't help either.
+            _dump_debug(d, f"empty_feed{int(feed_reopened)}", xml=xml)
+            if feed_reopened:
+                log(f"{empty_streak} empty screens again after reopening the feed; stopping (dump saved)")
+                warnings.append(f"stopped early: {empty_streak} empty screens in a row after reopening")
+                break
+            log(f"{empty_streak} empty screens in a row; reopening the feed (dump saved)")
+            warnings.append(f"reopened the feed after {empty_streak} empty screens in a row")
+            feed_reopened, empty_streak = True, 0
+            open_following_feed(d)
+            continue
         for p in posts:
             u = p["username"]
             if not u:
@@ -1617,6 +1759,7 @@ def scrape_once(d, con) -> dict:
         screens += 1
     _prune_old_posts(con)
     _prune_expired_stories(con)
+    _prune_debug_dumps()  # age-based pruning shouldn't depend on a new dump happening to be taken
     # Leave the app in a natural state
     d.press("home")
     return {
@@ -1624,21 +1767,23 @@ def scrape_once(d, con) -> dict:
         "new_stories": new_stories,
         "link_sheet_failures": link_sheet_failures,
         "link_clipboard_failures": link_clipboard_failures,
+        "warning": "; ".join(warnings) or None,
     }
 
 
 def main():
     con = db_init()
+    attempt = 0  # consecutive transient-failure retries so far
     while True:
         started_at = datetime.now(UTC).isoformat()
-        snapshot, stats, error = {}, {}, None
+        snapshot, stats, error, exc = {}, {}, None, None
         try:
             d = connect_device()
             snapshot = _device_snapshot(d)
             stats = scrape_once(d, con)
             log(f"run complete: {stats['new']} new posts, {stats['new_stories']} new stories")
         except Exception as e:  # keep the loop alive; log for debugging
-            error = repr(e)
+            exc, error = e, repr(e)
             log("ERROR:", error)
         record_run(
             con,
@@ -1650,10 +1795,16 @@ def main():
             stats.get("link_sheet_failures", 0),
             stats.get("link_clipboard_failures", 0),
             stats.get("new_stories", 0),
+            stats.get("warning"),
         )
-        hours = sample_duration(POLL_MIN_H, POLL_MAX_H)
-        log(f"sleeping {hours:.2f}h")
-        time.sleep(hours * 3600)
+        seconds, attempt = next_sleep_seconds(exc, attempt)
+        if attempt:
+            log(
+                f"transient device failure; retry {attempt}/{len(RETRY_DELAYS_MINUTES)} in {seconds / 60:.1f}m"
+            )
+        else:
+            log(f"sleeping {seconds / 3600:.2f}h")
+        time.sleep(seconds)
 
 
 if __name__ == "__main__":
