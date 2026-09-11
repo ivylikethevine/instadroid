@@ -457,6 +457,15 @@ def _run_new_stories(run) -> str:
     return str(run["new_stories"] or 0)
 
 
+def _run_filtered_posts(run) -> str:
+    """filtered_posts for a run (posts dropped by the followed-accounts allowlist, when enabled),
+    or "—" against a runs row from before that column existed."""
+    keys = run.keys()
+    if "filtered_posts" not in keys:
+        return "—"
+    return str(run["filtered_posts"] or 0)
+
+
 def _run_text(run, col: str) -> str:
     """A text column off a runs row, or "" when it's NULL or the row predates that column."""
     keys = run.keys()  # sqlite3.Row has no __contains__
@@ -538,6 +547,7 @@ def status_page():
         f"<tr><td>{escape(r['started_at'])}</td><td>{_duration(r)}</td>"
         f"<td>{r['new_posts'] if r['new_posts'] is not None else '—'}</td>"
         f"<td>{escape(_run_new_stories(r))}</td>"
+        f"<td>{escape(_run_filtered_posts(r))}</td>"
         f"<td>{escape(_link_failures(r))}</td>"
         f"<td>{escape(_run_text(r, 'ig_version') or '—')}</td>"
         f"{_result_cell(r)}</tr>"
@@ -570,7 +580,7 @@ td, th {{ text-align: left; padding: 0.25rem 0.6rem; border-bottom: 1px solid #d
 <h2>Last scrape</h2>
 {latest_html}
 <h2>Recent runs</h2>
-<table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Link fails</th><th>Instagram</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="7">none</td></tr>'}</table>
+<table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Filtered</th><th>Link fails</th><th>Instagram</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="8">none</td></tr>'}</table>
 <h2>Totals</h2>
 <p>{total} post(s) stored across {len(users)} account(s), {active_stories} active stor{"y" if active_stories == 1 else "ies"}</p>
 <table><tr><th>Account</th><th>Posts</th><th>Latest</th></tr>{users_rows or '<tr><td colspan="3">none</td></tr>'}</table>
