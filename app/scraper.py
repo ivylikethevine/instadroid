@@ -9,6 +9,7 @@ when a run fails, look at the hierarchy dump in $DEBUG_DIR and adjust them.
 """
 
 import hashlib
+import math
 import os
 import random
 import re
@@ -17,6 +18,7 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import adbutils
 import uiautomator2 as u2
@@ -43,6 +45,24 @@ IG_USERNAME = os.environ.get("IG_USERNAME", "")
 IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
 IG_PKG = "com.instagram.android"
 DEBUG_KEEP = 12  # debug dump pairs to retain; older ones are pruned on every new dump
+PERMALINK_RETRIES = int(os.environ.get("PERMALINK_RETRIES", "2"))  # extra share-sheet passes after the first
+SHARE_TAP_TRIES = int(os.environ.get("SHARE_TAP_TRIES", "2"))  # taps on the share button before giving up
+CLIPBOARD_TIMEOUT = float(os.environ.get("CLIPBOARD_TIMEOUT", "6.0"))  # seconds to poll the clipboard for
+MAX_CAROUSEL_SLIDES = int(os.environ.get("MAX_CAROUSEL_SLIDES", "10"))
+VIDEO_SETTLE_SECONDS = float(os.environ.get("VIDEO_SETTLE_SECONDS", "1.5"))  # let autoplay/overlay settle
+AVATAR_REFRESH_DAYS = int(os.environ.get("AVATAR_REFRESH_DAYS", "14"))
+MEDIA_MAX_MB = float(os.environ.get("MEDIA_MAX_MB", "0"))  # 0 disables the size-based retention cap
+MAX_STORIES_PER_RUN = int(os.environ.get("MAX_STORIES_PER_RUN", "10"))
+STORY_RETAIN_HOURS = int(os.environ.get("STORY_RETAIN_HOURS", "24"))  # matches Instagram's own expiry
+TIME_DISTRIBUTION = os.environ.get("TIME_DISTRIBUTION", "uniform")  # uniform | lognormal | daynight
+# "Local" time for the daynight distribution below — deliberately not applied anywhere by default
+# (empty = leave the device's own clock/timezone alone). Set this to match wherever the account's
+# network traffic appears to originate; see tune-android.sh, which applies the same value to the
+# device itself via `service call alarm`, and README's "Fingerprint consistency" for why a mismatch
+# between the two (or with a proxy/VPN's egress, once that exists) is worse than setting neither.
+DEVICE_TIMEZONE = os.environ.get("DEVICE_TIMEZONE", "")
+DAYNIGHT_QUIET_START = int(os.environ.get("DAYNIGHT_QUIET_START", "0"))  # local hour, inclusive
+DAYNIGHT_QUIET_END = int(os.environ.get("DAYNIGHT_QUIET_END", "6"))  # local hour, exclusive
 
 # --- Selectors (the fragile part) ---------------------------------------------------
 SELECTORS = {
@@ -80,6 +100,20 @@ SELECTORS = {
     },
     "share_id": "row_feed_button_share",
     "copy_link_desc": "Copy link",
+    # The Home feed's story tray (not present on the Following screen). Each item's content-desc
+    # is "<user>'s story, <index> of <total>, Unseen."/"...Seen." — index 0 is always the logged-in
+    # account's own story.
+    "story_tray_id": "reels_tray_container",
+    "story_item_desc": re.compile(
+        r"^(?P<user>[\w.]+)'s story, (?P<index>\d+) of (?P<total>\d+), (?P<seen>\w+)\.$"
+    ),
+    "story_viewer_id": "reel_viewer_root",
+    "story_media_id": "reel_viewer_media_container",
+    # The gradient behind the username/timestamp header, overlaid on the media itself — its bottom
+    # edge is where the crop should start, so the saved image doesn't bake in timestamp text that
+    # changes hour to hour (see capture_story_media()).
+    "story_shadow_id": "reel_viewer_top_shadow",
+    "story_timestamp_id": "reel_viewer_timestamp",
     # Anything that means a share/bottom sheet is open. We never interact inside one except to
     # tap "Copy link"; a stray tap there could message a contact.
     "sheet_markers_text": ["Write a message…"],
@@ -102,6 +136,10 @@ SELECTORS = {
     "login_password_hints": ["Password"],
     "login_button_texts": ["Log in", "Log In"],
     "login_page_markers": ["Log in", "Log In", "Forgot password?"],
+    # The logged-out "Join Instagram" welcome screen (shown before the actual login form, e.g.
+    # after a fresh install or an invalidated session) has neither a login form nor the markers
+    # above, so it must be detected and tapped through separately.
+    "welcome_existing_profile_text": "I already have a profile",
     # Post-login interstitials and the buttons that dismiss them.
     "dismiss_texts": ["Not now", "Not Now", "Skip", "Save", "Continue", "Don’t allow", "Cancel", "OK"],
     # Anything matching these means a human has to intervene.
@@ -212,9 +250,160 @@ def db_init():
     con.execute("UPDATE posts SET updated_at = scraped_at WHERE updated_at IS NULL")
     con.execute("CREATE INDEX IF NOT EXISTS posts_hash ON posts(hash)")
     con.execute("CREATE INDEX IF NOT EXISTS posts_username_posted_at ON posts(username, posted_at)")
+    con.execute(
+        # idx is 1-based: the cover image stays in posts.media_file as today, this only holds
+        # additional carousel slides, so no data migration is needed for any existing post.
+        """CREATE TABLE IF NOT EXISTS media (
+            post_id TEXT NOT NULL,
+            idx INTEGER NOT NULL,
+            file TEXT NOT NULL,
+            PRIMARY KEY (post_id, idx)
+        )"""
+    )
+    con.execute("CREATE INDEX IF NOT EXISTS media_post ON media(post_id)")
+    con.execute(
+        """CREATE TABLE IF NOT EXISTS accounts (
+            username TEXT PRIMARY KEY,
+            account_id TEXT,
+            avatar_file TEXT,
+            avatar_updated_at TEXT
+        )"""
+    )
+    con.execute(
+        # id is a content hash of the captured crop (see capture_story_media()) — stories have no
+        # public permalink/shortcode the way posts do, so there's no other stable identity to key
+        # on. No pre-existing data to migrate: this table starts empty on every DB.
+        """CREATE TABLE IF NOT EXISTS stories (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            media_file TEXT,
+            kind TEXT,
+            posted_date TEXT,
+            scraped_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )"""
+    )
+    con.execute("CREATE INDEX IF NOT EXISTS stories_username ON stories(username)")
+    con.execute("CREATE INDEX IF NOT EXISTS stories_expires_at ON stories(expires_at)")
+    con.execute(
+        """CREATE TABLE IF NOT EXISTS runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            new_posts INTEGER,
+            error TEXT,
+            android_release TEXT,
+            android_sdk TEXT,
+            device_product TEXT
+        )"""
+    )
+    run_cols = {r["name"] for r in con.execute("PRAGMA table_info(runs)")}
+    for col in ("link_sheet_failures", "link_clipboard_failures", "new_stories"):
+        if col not in run_cols:
+            con.execute(f"ALTER TABLE runs ADD COLUMN {col} INTEGER")
     con.commit()
     _migrate_dedupe(con)
+    _migrate_accounts(con)
     return con
+
+
+def _device_snapshot(d) -> dict:
+    """Best-effort ro.build.* props for the status page. Uses a plain adb shell getprop rather
+    than uiautomator2's jsonrpc info, so a wedged automation service can't also blank this out."""
+
+    def prop(name):
+        try:
+            return d.shell(f"getprop {name}").output.strip() or None
+        except Exception:
+            return None
+
+    return {
+        "android_release": prop("ro.build.version.release"),
+        "android_sdk": prop("ro.build.version.sdk"),
+        "device_product": prop("ro.product.name") or prop("ro.build.product"),
+    }
+
+
+def record_run(
+    con,
+    started_at,
+    finished_at,
+    new_posts,
+    error,
+    snapshot,
+    link_sheet_failures=0,
+    link_clipboard_failures=0,
+    new_stories=0,
+):
+    con.execute(
+        "INSERT INTO runs (started_at, finished_at, new_posts, error, android_release, android_sdk,"
+        " device_product, link_sheet_failures, link_clipboard_failures, new_stories)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            started_at,
+            finished_at,
+            new_posts,
+            error,
+            snapshot.get("android_release"),
+            snapshot.get("android_sdk"),
+            snapshot.get("device_product"),
+            link_sheet_failures,
+            link_clipboard_failures,
+            new_stories,
+        ),
+    )
+    con.commit()
+
+
+def _upsert_account(con, username: str, avatar_file: str | None = None):
+    if avatar_file:
+        con.execute(
+            "INSERT INTO accounts (username, avatar_file, avatar_updated_at) VALUES (?,?,?)"
+            " ON CONFLICT(username) DO UPDATE SET avatar_file=excluded.avatar_file,"
+            " avatar_updated_at=excluded.avatar_updated_at",
+            (username, avatar_file, datetime.now(UTC).isoformat()),
+        )
+    else:
+        con.execute("INSERT OR IGNORE INTO accounts (username) VALUES (?)", (username,))
+    con.commit()
+
+
+def _needs_avatar_refresh(con, username: str) -> bool:
+    row = con.execute("SELECT avatar_updated_at FROM accounts WHERE username=?", (username,)).fetchone()
+    if not row or not row["avatar_updated_at"]:
+        return True
+    try:
+        updated = datetime.fromisoformat(row["avatar_updated_at"])
+    except ValueError:
+        return True
+    return datetime.now(UTC) - updated > timedelta(days=AVATAR_REFRESH_DAYS)
+
+
+def rename_account(con, old: str, new: str) -> int:
+    """Reconcile a followed account's history after it renamed itself: repoint every post from
+    `old` to `new` and fold `old`'s accounts row (avatar, stable account_id if set) into `new`.
+    There is no detection here — Instagram's numeric user id is never present in the feed's
+    accessibility tree, so this is invoked by hand once a rename is noticed. Note this does not
+    fix up an existing `?user=old` FreshRSS subscription; re-subscribe under the new username."""
+    if old == new:
+        return 0
+    moved = con.execute("UPDATE posts SET username=? WHERE username=?", (new, old)).rowcount
+    old_row = con.execute("SELECT account_id, avatar_file FROM accounts WHERE username=?", (old,)).fetchone()
+    new_row = con.execute("SELECT account_id, avatar_file FROM accounts WHERE username=?", (new,)).fetchone()
+    account_id = (new_row and new_row["account_id"]) or (old_row and old_row["account_id"])
+    avatar_file = (new_row and new_row["avatar_file"]) or (old_row and old_row["avatar_file"])
+    dropped_avatar = old_row["avatar_file"] if old_row and old_row["avatar_file"] != avatar_file else None
+    con.execute(
+        "INSERT INTO accounts (username, account_id, avatar_file) VALUES (?,?,?)"
+        " ON CONFLICT(username) DO UPDATE SET account_id=excluded.account_id,"
+        " avatar_file=COALESCE(accounts.avatar_file, excluded.avatar_file)",
+        (new, account_id, avatar_file),
+    )
+    con.execute("DELETE FROM accounts WHERE username=?", (old,))
+    con.commit()
+    if dropped_avatar:
+        (MEDIA_DIR / dropped_avatar).unlink(missing_ok=True)
+    return moved
 
 
 def _safe_parse_posted_at(posted_date, scraped_at_iso):
@@ -276,6 +465,23 @@ def _migrate_dedupe(con):
     con.execute("PRAGMA user_version = 1")
     con.commit()
     log(f"dedupe migration: merged {merged} duplicate row(s)")
+
+
+def _migrate_accounts(con):
+    """One-time backfill, guarded like _migrate_dedupe(): give every username already in posts an
+    accounts row, so avatar capture and rename_account() have something to attach to for accounts
+    seen before this table existed. No posts.media_file/media data is touched."""
+    if con.execute("PRAGMA user_version").fetchone()[0] >= 2:
+        return
+    log("running one-time accounts backfill")
+    for (username,) in con.execute("SELECT DISTINCT username FROM posts").fetchall():
+        try:
+            con.execute("INSERT OR IGNORE INTO accounts (username) VALUES (?)", (username,))
+        except Exception as e:  # a single bad username must not block every future start
+            log(f"WARN: accounts backfill skipped {username!r}:", repr(e))
+    con.execute("PRAGMA user_version = 2")
+    con.commit()
+    log("accounts backfill complete")
 
 
 def _find_duplicate(con, username, posted_at, posted_at_prec, caption, exclude_id=None):
@@ -360,8 +566,63 @@ def connect_device():
     return d
 
 
+def _launch_app(d):
+    """Bring IG_PKG to the foreground. uiautomator2's app_start() defaults to `monkey -c
+    LAUNCHER` when no activity is given, which on this device silently no-ops (exit code 251,
+    launcher stays focused) — Instagram ships many enabled/disabled activity-aliases for seasonal
+    icon themes (`.activity.MainTabActivity.kpop`, `.flame`, `.slime`, ...), and category-based
+    resolution (`am start -c LAUNCHER` too) can't disambiguate them. `pm resolve-activity` returns
+    the one actually enabled, so start that explicit component instead — falling back to monkey
+    only if resolution itself fails."""
+    try:
+        out = d.shell(["cmd", "package", "resolve-activity", "--brief", IG_PKG]).output
+        activity = out.strip().splitlines()[-1].split("/", 1)[1]
+        d.app_start(IG_PKG, activity=activity, stop=False)
+    except Exception as e:
+        log(f"WARN: resolve-activity failed ({e!r}); falling back to monkey launch")
+        d.app_start(IG_PKG, stop=False)
+
+
+def _in_quiet_hours(now: datetime) -> bool:
+    """True during the configured local quiet window (only consulted by the "daynight"
+    distribution below). Uses DEVICE_TIMEZONE so "local" reflects the account's apparent timezone,
+    not the container's own clock, which stays UTC regardless of DEVICE_TIMEZONE."""
+    tz = ZoneInfo(DEVICE_TIMEZONE) if DEVICE_TIMEZONE else UTC
+    local_hour = now.astimezone(tz).hour
+    if DAYNIGHT_QUIET_START <= DAYNIGHT_QUIET_END:
+        return DAYNIGHT_QUIET_START <= local_hour < DAYNIGHT_QUIET_END
+    return local_hour >= DAYNIGHT_QUIET_START or local_hour < DAYNIGHT_QUIET_END  # wraps midnight
+
+
+def sample_duration(lo: float, hi: float, now: datetime | None = None) -> float:
+    """Draw a duration in [lo, hi] per TIME_DISTRIBUTION. Used for every pause (human_pause,
+    human_scroll's swipe duration) and the inter-run poll interval — the two things a
+    timing-analysis detector could actually observe, per the roadmap's "configurable time-fuzzing".
+
+      - "uniform" (default): random.uniform(lo, hi) — the original, unchanged behavior.
+      - "lognormal": a heavier-tailed, more human-like shape than a flat range — most draws cluster
+        near the midpoint, with an occasional longer outlier, instead of every value in [lo, hi]
+        being equally likely.
+      - "daynight": like "lognormal", but during DAYNIGHT_QUIET_START..DAYNIGHT_QUIET_END local
+        hours (default 0-6, i.e. "asleep") the top of the range is stretched, so activity actually
+        thins out overnight instead of keeping the same rhythm around the clock.
+    """
+    if TIME_DISTRIBUTION == "uniform" or hi <= lo:
+        return random.uniform(lo, hi)
+    effective_hi = hi
+    if TIME_DISTRIBUTION == "daynight" and _in_quiet_hours(now or datetime.now(UTC)):
+        effective_hi = hi + (hi - lo)
+    mid = (lo + effective_hi) / 2
+    mu, sigma = math.log(max(mid, 1e-6)), 0.5
+    for _ in range(8):  # resample a rare out-of-range draw rather than bias the shape by clipping
+        v = random.lognormvariate(mu, sigma)
+        if lo <= v <= effective_hi:
+            return v
+    return min(max(v, lo), effective_hi)  # give up after 8 tries, clip instead
+
+
 def human_pause(lo=1.0, hi=3.0):
-    time.sleep(random.uniform(lo, hi))
+    time.sleep(sample_duration(lo, hi))
 
 
 def human_scroll(d):
@@ -371,7 +632,7 @@ def human_scroll(d):
     y1 = random.randint(int(h * 0.65), int(h * 0.8))
     y2 = y1 - random.randint(int(h * 0.3), int(h * 0.45))
     # Slow enough not to fling: a fling scrolls several screens and skips whole posts.
-    d.swipe(x, y1, x, y2, duration=random.uniform(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX))
+    d.swipe(x, y1, x, y2, duration=sample_duration(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX))
 
 
 def _first(d, **kinds):
@@ -402,11 +663,17 @@ def _prune_debug_dumps():
 
 def _dump_debug(d, name, xml=None):
     """Save a hierarchy + screenshot pair for later inspection. Pass `xml` when the caller
-    already has a fresh dump, to avoid a redundant device round-trip."""
-    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-    (DEBUG_DIR / f"{name}_hierarchy.xml").write_text(xml if xml is not None else d.dump_hierarchy())
-    d.screenshot().convert("RGB").save(DEBUG_DIR / f"{name}_screen.jpg", quality=70)
-    _prune_debug_dumps()
+    already has a fresh dump, to avoid a redundant device round-trip. Best-effort: a debug dump is
+    a diagnostic aid, not part of the scrape itself, so a write failure here (e.g. a stale file
+    left owned by a different uid from a `docker exec -u root` session) must not crash the whole
+    run — it just means this one dump is missing from $DEBUG_DIR."""
+    try:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        (DEBUG_DIR / f"{name}_hierarchy.xml").write_text(xml if xml is not None else d.dump_hierarchy())
+        d.screenshot().convert("RGB").save(DEBUG_DIR / f"{name}_screen.jpg", quality=70)
+        _prune_debug_dumps()
+    except OSError as e:
+        log(f"WARN: could not write debug dump {name!r}:", repr(e))
 
 
 def _dismiss_interstitials(d, rounds=4):
@@ -439,8 +706,20 @@ def ensure_logged_in(d):
     """
     if IG_PKG not in d.app_list():
         raise RuntimeError(f"{IG_PKG} is not installed on the device; adb install it first")
-    d.app_start(IG_PKG, stop=False)
+    _launch_app(d)
     human_pause(4, 6)
+    for attempt in range(3):
+        if d.app_current().get("package") == IG_PKG:
+            break
+        log(f"WARN: {IG_PKG} not foregrounded yet (attempt {attempt}); retrying launch")
+        _launch_app(d)
+        human_pause(3, 5)
+    else:
+        # Without this check, every screen-detection call below trivially finds nothing (we're
+        # still on the home screen) and the function falls through to "no login screen; assume
+        # session is live" — a false positive that leaves the caller thinking it's logged in.
+        _dump_debug(d, "login")
+        raise RuntimeError(f"could not bring {IG_PKG} to the foreground; see {DEBUG_DIR}")
     ok = d(text="OK")  # stray "Enter your password" style alert from a previous attempt
     if ok.exists(timeout=1):
         ok.click()
@@ -448,6 +727,14 @@ def ensure_logged_in(d):
     if c := _challenge_present(d):
         _dump_debug(d, "login")
         raise RuntimeError(f"Instagram wants a human: '{c}' screen; see {DEBUG_DIR}")
+    existing = d(text=SELECTORS["welcome_existing_profile_text"])
+    if existing.exists(timeout=1):
+        # Logged-out "Join Instagram" welcome screen (fresh install, or an invalidated session) —
+        # neither a login form nor a login_page_marker, so it must be tapped through first or the
+        # check below mistakes it for an already-live session.
+        log("logged-out welcome screen detected; tapping through to the login form")
+        existing.click()
+        human_pause(1.5, 2.5)
     form = _login_form(d)
     if not form:
         if _first(d, text=SELECTORS["login_page_markers"]):
@@ -495,7 +782,7 @@ def _on_following_feed(d):
 def open_following_feed(d):
     ensure_logged_in(d)
     if d.app_current().get("package") != IG_PKG:
-        d.app_start(IG_PKG, stop=False)
+        _launch_app(d)
         human_pause(3, 5)
     _dismiss_interstitials(d)  # notification / location / "set up on new device" prompts
     close_sheets(d)
@@ -553,6 +840,7 @@ def _new_post(user, kind, date, place, clip_top):
         "caption": "",
         "bounds": None,
         "share_bounds": None,
+        "header_bounds": None,
         "clip_top": clip_top,
         "alt": "",
         "headless": False,
@@ -604,6 +892,7 @@ def parse_hierarchy(xml: str):
                     m.group("place") or "",
                     clip_top,
                 )
+                cur["header_bounds"] = n.get("bounds")  # this node *is* the header
                 posts.append(cur)
             continue
         if cur is None:
@@ -654,6 +943,39 @@ def bounds_center(bounds: str):
     return (x1 + x2) // 2, (y1 + y2) // 2
 
 
+def parse_story_tray(xml: str) -> list[dict]:
+    """Return the Home feed's story tray items (empty if the tray isn't on screen — it only
+    appears on Home, not on Following), skipping index 0 (always the logged-in account's own
+    story). Each item's content-desc doubles as a compact seen-state signal:
+    "<user>'s story, <index> of <total>, Unseen." — used only to prioritize which accounts to
+    open, since the stories table (keyed by a content hash, not this label) is the actual record
+    of what's already been captured."""
+    root = etree.fromstring(xml.encode())
+    tray = next(
+        (n for n in root.iter("node") if (n.get("resource-id") or "").endswith(SELECTORS["story_tray_id"])),
+        None,
+    )
+    if tray is None:
+        return []
+    items = []
+    for n in tray.iter("node"):
+        # The avatar image inside shares the same content-desc as its parent Button; restrict to
+        # the Button itself so each tray item is matched exactly once.
+        if not (n.get("class") or "").endswith("Button"):
+            continue
+        m = SELECTORS["story_item_desc"].match(n.get("content-desc") or "")
+        if not m or int(m.group("index")) == 0:
+            continue
+        items.append(
+            {
+                "username": m.group("user"),
+                "seen": m.group("seen") != "Unseen",
+                "bounds": n.get("bounds"),
+            }
+        )
+    return items
+
+
 def _sheet_open(d):
     if d(description=SELECTORS["copy_link_desc"]).exists(timeout=0.3):
         return True
@@ -673,7 +995,7 @@ def close_sheets(d, max_back=2):
         human_pause(1.5, 2)
     if d.app_current().get("package") != IG_PKG:
         log("WARN: left Instagram while closing a sheet; relaunching")
-        d.app_start(IG_PKG, stop=False)
+        _launch_app(d)
         human_pause(3, 5)
     return not _sheet_open(d)
 
@@ -696,7 +1018,7 @@ def _back_to_feed(d, tries=2):
     backs out of the app: if we somehow left it, relaunch instead."""
     for _ in range(tries):
         if d.app_current().get("package") != IG_PKG:
-            d.app_start(IG_PKG, stop=False)
+            _launch_app(d)
             human_pause(3, 5)
             return _on_feed(d)
         if _on_feed(d) and not _sheet_open(d):
@@ -709,21 +1031,24 @@ def _back_to_feed(d, tries=2):
 _last_url = ""
 
 
-def fetch_permalink(d, post_hash: str):
+def fetch_permalink(d, post_hash: str) -> tuple[str | None, str | None]:
     """Open the share sheet for the post with this hash, pick 'Copy link', read the clipboard.
 
     Re-dumps the hierarchy right before tapping and clicks the share *element* (not stale
     coordinates) because the feed can shift a few hundred px between a dump and a tap.
-    Returns the canonical URL or None."""
+    Returns (url, None) on success, or (None, reason) where reason is "sheet" (the share sheet
+    never opened, or the card/button vanished before it could) or "clipboard" (the sheet opened
+    and Copy link was tapped, but the clipboard never carried a fresh permalink) — the two need
+    different recoveries, so the caller counts them separately."""
     if not close_sheets(d):
         log("WARN: a sheet is stuck open; skipping permalink")
-        return None
+        return None, "sheet"
     fresh = next((p for p in parse_hierarchy(d.dump_hierarchy()) if post_id(p) == post_hash), None)
     if not fresh or not fresh["share_bounds"]:
         log("WARN: card moved before the share tap; no permalink")
-        return None
+        return None, "sheet"
     link = d(description=SELECTORS["copy_link_desc"])
-    for _tap in range(2):  # the first tap is occasionally swallowed by the video overlay
+    for _tap in range(SHARE_TAP_TRIES):  # the first tap is occasionally swallowed by the video overlay
         # Coordinate tap from the fresh dump: element-based clicks on this (non-clickable)
         # ViewGroup are unreliable on video cards.
         d.click(*bounds_center(fresh["share_bounds"]))
@@ -735,7 +1060,7 @@ def fetch_permalink(d, post_hash: str):
         _dump_debug(d, "share_sheet")
         close_sheets(d)
         _back_to_feed(d)
-        return None
+        return None, "sheet"
     # Note: clearing the clipboard first (d.set_clipboard) makes the next read come back empty.
     # Staleness is caught below by comparing with the last link we handed out.
     human_pause(0.8, 1.2)  # let the sheet finish animating
@@ -746,13 +1071,13 @@ def fetch_permalink(d, post_hash: str):
         log("WARN: Copy link vanished before click:", repr(e))
         close_sheets(d)
         _back_to_feed(d)
-        return None
+        return None, "sheet"
     d.click(cx, cy)
     # Poll instead of a single fixed-delay read: the clipboard write can lag the tap by more
     # than a beat, and the old one-shot read missed it more often than not.
     global _last_url
     url = ""
-    deadline = time.time() + 4
+    deadline = time.time() + CLIPBOARD_TIMEOUT
     while time.time() < deadline:
         time.sleep(0.4)
         try:
@@ -773,7 +1098,8 @@ def fetch_permalink(d, post_hash: str):
     m = SELECTORS["permalink"].match(url)
     if not m:
         log("WARN: clipboard did not contain a permalink:", repr(url[:80]))
-    return f"https://www.instagram.com/{m.group('type')}/{m.group('code')}/" if m else None
+        return None, "clipboard"
+    return f"https://www.instagram.com/{m.group('type')}/{m.group('code')}/", None
 
 
 def post_id(p):
@@ -786,8 +1112,10 @@ def post_id(p):
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
-def crop_media(d, bounds: str, pid: str, clip_top: int = 0):
-    """Screenshot the visible post image. Returns filename or None."""
+def crop_media(d, bounds: str, pid: str, clip_top: int = 0, settle: float = 0):
+    """Screenshot the visible post image and save it as "{pid}.jpg". Returns filename or None.
+    `settle` delays the shot (e.g. for a video/Reel, so autoplay has started and the initial
+    audio-label overlay has faded) before it's taken — still one image, just a better-timed one."""
     m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
     if not m:
         return None
@@ -798,6 +1126,8 @@ def crop_media(d, bounds: str, pid: str, clip_top: int = 0):
     if full < 200 or (y2 - y1) < 0.4 * full:
         log(f"no crop: media bounds {bounds} mostly off-screen")
         return None
+    if settle:
+        human_pause(settle, settle * 1.4)
     img: Image.Image = d.screenshot()
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     fn = f"{pid}.jpg"
@@ -805,35 +1135,317 @@ def crop_media(d, bounds: str, pid: str, clip_top: int = 0):
     return fn
 
 
+_SLIDE_INDEX = re.compile(r"^(?:Photo|Video)\s+(\d+)\s+of\s+(\d+)\b", re.I)
+
+
+def carousel_count(alt: str) -> int:
+    """Parse the slide total from a carousel card's media description ("Photo 1 of 7 by X, 317
+    likes, 10 comments"). Returns 1 (not a carousel, or the format drifted) if it can't be parsed."""
+    m = _SLIDE_INDEX.match(alt or "")
+    return int(m.group(2)) if m else 1
+
+
+def capture_carousel(d, p: dict, pid: str) -> list[str]:
+    """Swipe through a carousel's remaining slides in place and crop each one. `pid` already has
+    slide 1 captured by the caller via crop_media(); this walks slides 2..total (capped at
+    MAX_CAROUSEL_SLIDES), stopping as soon as a swipe doesn't land on the next slide (the swipe was
+    read as a vertical scroll instead, or Instagram simply has nothing further) rather than risk
+    storing the same slide twice. Returns the extra slides' filenames, in order."""
+    total = min(carousel_count(p["alt"]), MAX_CAROUSEL_SLIDES)
+    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", p["bounds"] or "")
+    if total < 2 or not m:
+        return []
+    x1, y1, x2, y2 = map(int, m.groups())
+    cy = (y1 + y2) // 2
+    inset = max(int((x2 - x1) * 0.1), 1)
+    key = post_id(p)
+    files = []
+    for slide in range(2, total + 1):
+        d.swipe(x2 - inset, cy, x1 + inset, cy, duration=random.uniform(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX))
+        human_pause(0.8, 1.6)
+        fresh = next((c for c in parse_hierarchy(d.dump_hierarchy()) if post_id(c) == key), None)
+        sm = _SLIDE_INDEX.match(fresh["alt"]) if fresh else None
+        if not fresh or not sm or int(sm.group(1)) != slide:
+            log(f"carousel: swipe didn't land on slide {slide}; stopping with {len(files)} extra")
+            break
+        fn = crop_media(d, fresh["bounds"] or p["bounds"], f"{pid}_{slide - 1}", p.get("clip_top", 0))
+        if not fn:
+            break
+        files.append(fn)
+    return files
+
+
+_SAFE_USERNAME = re.compile(r"^[A-Za-z0-9._]+$")
+
+
+def _safe_filename(username: str) -> str | None:
+    """Reject anything that isn't a plausible Instagram handle before it's used as a filename —
+    username is parsed from screen content, not trusted input."""
+    if not username or username in (".", "..") or not _SAFE_USERNAME.match(username):
+        return None
+    return username
+
+
+def _avatar_bounds(header_bounds: str):
+    """The header's own bounds crop to a leading square avatar with a small inset — the avatar
+    ImageView has no addressable node (row_feed_profile_header is a collapsed leaf in the
+    accessibility tree), so this crops positionally rather than by resource-id. Needs a live check
+    against a real device to confirm the inset actually lands on the avatar."""
+    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", header_bounds or "")
+    if not m:
+        return None
+    x1, y1, x2, y2 = map(int, m.groups())
+    size = y2 - y1
+    pad = max(size // 8, 1)
+    return x1 + pad, y1 + pad, x1 + pad + (size - 2 * pad), y2 - pad
+
+
+def capture_avatar(d, header_bounds: str, username: str) -> str | None:
+    """Crop the account's avatar from its own feed header and save it once per account, in its own
+    subdirectory so the retention orphan sweep (which only globs MEDIA_DIR's top level) never
+    touches it. Returns the path relative to MEDIA_DIR, or None."""
+    box = _avatar_bounds(header_bounds)
+    safe_user = _safe_filename(username)
+    if not box or not safe_user:
+        return None
+    avatar_dir = MEDIA_DIR / "avatars"
+    avatar_dir.mkdir(parents=True, exist_ok=True)
+    img: Image.Image = d.screenshot()
+    fn = f"{safe_user}.jpg"
+    img.crop(box).convert("RGB").save(avatar_dir / fn, quality=MEDIA_QUALITY)
+    return f"avatars/{fn}"
+
+
+def _delete_post(con, post_id: str):
+    """Delete one post row, its extra-slide media rows, and unlink every file involved (cover +
+    slides). Reads media_file straight off the posts row rather than only the media table, since a
+    row can predate carousel capture (or be inserted directly, as tests do) with no media rows."""
+    row = con.execute("SELECT media_file FROM posts WHERE id=?", (post_id,)).fetchone()
+    files = {row["media_file"]} if row and row["media_file"] else set()
+    files |= {r[0] for r in con.execute("SELECT file FROM media WHERE post_id=?", (post_id,))}
+    con.execute("DELETE FROM posts WHERE id=?", (post_id,))
+    con.execute("DELETE FROM media WHERE post_id=?", (post_id,))
+    con.commit()
+    for fn in files:
+        (MEDIA_DIR / fn).unlink(missing_ok=True)
+
+
+def _media_and_db_size_mb() -> float:
+    """Live disk footprint: the media tree plus the database's *live* size. A raw file-size stat on
+    DB_PATH would overcount once rows have been deleted — SQLite returns freed pages to an internal
+    freelist rather than shrinking the file — which would make the size cap below keep deleting
+    posts chasing a floor the file can never reach."""
+    total = 0
+    if Path(DB_PATH).exists():
+        con = sqlite3.connect(DB_PATH)
+        try:
+            page_count = con.execute("PRAGMA page_count").fetchone()[0]
+            freelist = con.execute("PRAGMA freelist_count").fetchone()[0]
+            page_size = con.execute("PRAGMA page_size").fetchone()[0]
+            total += (page_count - freelist) * page_size
+        finally:
+            con.close()
+    if MEDIA_DIR.exists():
+        total += sum(f.stat().st_size for f in MEDIA_DIR.rglob("*") if f.is_file())
+    return total / (1024 * 1024)
+
+
+def _enforce_size_cap(con):
+    """Delete the oldest posts, one at a time, until total size is back under MEDIA_MAX_MB or
+    there's nothing left to delete. 0 disables. Runs after age-based pruning and the orphan sweep,
+    so it only ever has to make up the difference."""
+    if MEDIA_MAX_MB <= 0:
+        return
+    removed = 0
+    while _media_and_db_size_mb() > MEDIA_MAX_MB:
+        row = con.execute(
+            "SELECT id FROM posts ORDER BY COALESCE(posted_at, scraped_at) ASC LIMIT 1"
+        ).fetchone()
+        if not row:
+            log(f"retention: still over MEDIA_MAX_MB={MEDIA_MAX_MB} with no posts left to remove")
+            break
+        _delete_post(con, row["id"])
+        removed += 1
+    if removed:
+        log(f"retention: removed {removed} additional post(s) to stay under {MEDIA_MAX_MB}MB")
+
+
+def capture_story_media(img: Image.Image, media_bounds: str, clip_top: int, tmp_name: str) -> Path | None:
+    """Crop a story's current frame — from a screenshot already taken by the caller, not one taken
+    here — into MEDIA_DIR/stories. clip_top skips the username/timestamp header overlay so the
+    saved image doesn't bake in text that changes hour to hour (that text would otherwise make the
+    same still-active story hash differently across runs — see scrape_stories())."""
+    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", media_bounds or "")
+    if not m:
+        return None
+    x1, y1, x2, y2 = map(int, m.groups())
+    y1 = max(y1, clip_top)
+    if (y2 - y1) < 200:
+        return None
+    stories_dir = MEDIA_DIR / "stories"
+    stories_dir.mkdir(parents=True, exist_ok=True)
+    path = stories_dir / f"{tmp_name}.jpg"
+    img.crop((x1, y1, x2, y2)).convert("RGB").save(path, quality=MEDIA_QUALITY)
+    return path
+
+
+def capture_story(d, item: dict) -> dict | None:
+    """Open one tray item's story, capture its current frame, and always exit back to the Home
+    feed via Back. Never tap forward inside the viewer (past this one open tap): the message/like/
+    reshare/profile-picture/menu targets are all real actions on someone else's story, and on this
+    host, tapping to advance past a story's last frame has been observed to eject the app to the OS
+    launcher entirely — unlike Back, which reliably returns to the tray.
+
+    A single-frame story can also auto-advance (and eject the app the same way) on its own, within
+    a few seconds of opening, whether or not we ever tap — an earlier version of this function took
+    the screenshot after a hierarchy-walk following a multi-second polling loop, and was seen to
+    capture the *launcher's* wallpaper (or a black transition frame) instead of the story, having
+    fallen behind the story's own display timer. So every device round-trip here is on the clock:
+    a single cheap exists() (not a repeated dump_hierarchy()) confirms the viewer opened, then the
+    screenshot is taken and Back is pressed immediately — cropping and saving happen afterward,
+    off-device, where they can't race anything.
+
+    Returns {username, posted_date, path} or None if the story didn't open, closed before the
+    screenshot, or nothing could be cropped."""
+    if not item["bounds"]:
+        return None
+    d.click(*bounds_center(item["bounds"]))
+    if not d(resourceIdMatches=f".*:id/{SELECTORS['story_viewer_id']}").exists(timeout=5):
+        log(f"WARN: story for {item['username']} didn't open; skipping")
+        d.press("back")
+        human_pause(1, 1.5)
+        return None
+    xml = d.dump_hierarchy()
+    if SELECTORS["story_viewer_id"] not in xml:  # exists() can win a race against a fast auto-exit
+        log(f"WARN: story for {item['username']} closed before it could be read; dump saved")
+        _dump_debug(d, f"story_{_safe_filename(item['username']) or 'unknown'}", xml=xml)
+        d.press("back")
+        human_pause(1, 1.5)
+        return None
+    img = d.screenshot()
+    d.press("back")  # off the device from here on; cropping/saving below never risks the timer
+    human_pause(1, 1.5)
+    root = etree.fromstring(xml.encode())
+    media_bounds = clip_top = None
+    posted_date = ""
+    for n in root.iter("node"):
+        rid = (n.get("resource-id") or "").split("/")[-1]
+        if rid == SELECTORS["story_media_id"] and media_bounds is None:
+            media_bounds = n.get("bounds")
+        elif rid == SELECTORS["story_shadow_id"] and clip_top is None:
+            m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", n.get("bounds") or "")
+            if m:
+                clip_top = int(m.group(4))
+        elif rid == SELECTORS["story_timestamp_id"] and not posted_date:
+            posted_date = n.get("text") or ""
+    path = capture_story_media(
+        img, media_bounds, clip_top or 0, f"tmp_{item['username']}_{int(time.time() * 1000)}"
+    )
+    return {"username": item["username"], "posted_date": posted_date, "path": path} if path else None
+
+
+def scrape_stories(d, con) -> int:
+    """Visit each not-yet-seen account's story from the Home feed's tray, capture its current
+    frame, and return to the Following feed afterward. Stories have no stable public id the way
+    posts do (no permalink/shortcode), so identity is a content hash of the captured crop, checked
+    against the DB only after capture — a duplicate is simply discarded, not prevented up front."""
+    for _ in range(3):
+        if _on_home_feed(d):
+            break
+        d.press("back")
+        human_pause(1, 1.5)
+    else:
+        log("WARN: could not reach the Home feed for stories; skipping this run")
+        return 0
+    items = [i for i in parse_story_tray(d.dump_hierarchy()) if not i["seen"]]
+    new = 0
+    for item in items[:MAX_STORIES_PER_RUN]:
+        if not _on_home_feed(d):
+            # A prior story's own auto-exit can eject the app entirely (see capture_story()); tapping
+            # this item's now-stale tray coordinates against whatever's currently on screen would be
+            # a shot in the dark, so recover onto Home first.
+            log("WARN: not on the Home feed any more; recovering before the next story")
+            for _ in range(3):
+                if _on_home_feed(d):
+                    break
+                _launch_app(d)
+                human_pause(2, 3)
+            else:
+                log("WARN: could not recover the Home feed; stopping story capture for this run")
+                break
+        captured = capture_story(d, item)
+        if not captured:
+            continue
+        digest = hashlib.sha256(captured["path"].read_bytes()).hexdigest()[:16]
+        now = datetime.now(UTC)
+        expires = (now + timedelta(hours=STORY_RETAIN_HOURS)).isoformat()
+        cur = con.execute(
+            "INSERT OR IGNORE INTO stories (id, username, media_file, kind, posted_date, scraped_at,"
+            " expires_at) VALUES (?,?,?,?,?,?,?)",
+            (
+                digest,
+                captured["username"],
+                f"stories/{digest}.jpg",
+                "story",
+                captured["posted_date"],
+                now.isoformat(),
+                expires,
+            ),
+        )
+        con.commit()
+        if cur.rowcount:
+            captured["path"].rename(MEDIA_DIR / "stories" / f"{digest}.jpg")
+            new += 1
+            log(f"new story: {captured['username']}")
+        else:
+            captured["path"].unlink(missing_ok=True)  # byte-identical to one already stored
+    open_following_feed(d)
+    return new
+
+
+def _prune_expired_stories(con):
+    """Stories always expire STORY_RETAIN_HOURS after capture, regardless of RETAIN_DAYS — they
+    model Instagram's own ~24h ephemerality, not the post-retention policy."""
+    now = datetime.now(UTC).isoformat()
+    gone = con.execute("SELECT media_file FROM stories WHERE expires_at < ?", (now,)).fetchall()
+    cur = con.execute("DELETE FROM stories WHERE expires_at < ?", (now,))
+    con.commit()
+    for (fn,) in gone:
+        if fn:
+            (MEDIA_DIR / fn).unlink(missing_ok=True)
+    if cur.rowcount:
+        log(f"retention: removed {cur.rowcount} expired stor{'y' if cur.rowcount == 1 else 'ies'}")
+
+
 def _prune_old_posts(con):
-    """Delete posts older than RETAIN_DAYS (0 disables) and any media file no row references any
-    more, so disk use stays flat instead of growing forever."""
+    """Delete posts older than RETAIN_DAYS (0 disables), any media file no row references any
+    more, and (if MEDIA_MAX_MB is set) additional oldest posts until total size is back under the
+    cap — in that order, so disk use stays flat instead of growing forever."""
     if RETAIN_DAYS > 0:
         cutoff = (datetime.now(UTC) - timedelta(days=RETAIN_DAYS)).isoformat()
-        gone = con.execute(
-            "SELECT media_file FROM posts"
-            " WHERE COALESCE(posted_at, scraped_at) < ? AND media_file IS NOT NULL",
-            (cutoff,),
-        ).fetchall()
-        cur = con.execute("DELETE FROM posts WHERE COALESCE(posted_at, scraped_at) < ?", (cutoff,))
-        con.commit()
-        for (fn,) in gone:
-            (MEDIA_DIR / fn).unlink(missing_ok=True)
-        if cur.rowcount:
-            log(f"retention: removed {cur.rowcount} post(s) older than {RETAIN_DAYS}d")
-    if not MEDIA_DIR.exists():
-        return
-    kept = {r[0] for r in con.execute("SELECT media_file FROM posts WHERE media_file IS NOT NULL")}
-    # Only ever written media_file names are *.jpg (crop_media()); restrict the sweep to those so
-    # pointing MEDIA_DIR at the wrong directory can't delete unrelated files.
-    orphans = [f for f in MEDIA_DIR.glob("*.jpg") if f.name not in kept]
-    for f in orphans:
-        f.unlink(missing_ok=True)
-    if orphans:
-        log(f"retention: removed {len(orphans)} orphaned media file(s)")
+        old_ids = [
+            r[0]
+            for r in con.execute("SELECT id FROM posts WHERE COALESCE(posted_at, scraped_at) < ?", (cutoff,))
+        ]
+        for pid in old_ids:
+            _delete_post(con, pid)
+        if old_ids:
+            log(f"retention: removed {len(old_ids)} post(s) older than {RETAIN_DAYS}d")
+    if MEDIA_DIR.exists():
+        kept = {r[0] for r in con.execute("SELECT media_file FROM posts WHERE media_file IS NOT NULL")}
+        kept |= {r[0] for r in con.execute("SELECT file FROM media")}
+        # Only ever written media_file names are *.jpg (crop_media()), and this glob is
+        # non-recursive, so pointing MEDIA_DIR at the wrong directory can't delete unrelated files
+        # and avatars/ (its own subdirectory) is never touched by this sweep.
+        orphans = [f for f in MEDIA_DIR.glob("*.jpg") if f.name not in kept]
+        for f in orphans:
+            f.unlink(missing_ok=True)
+        if orphans:
+            log(f"retention: removed {len(orphans)} orphaned media file(s)")
+    _enforce_size_cap(con)
 
 
-def scrape_once(d, con):
+def scrape_once(d, con) -> dict:
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     global _last_url
     try:
@@ -841,8 +1453,19 @@ def scrape_once(d, con):
     except Exception:
         _last_url = ""
     open_following_feed(d)
+    try:
+        new_stories = scrape_stories(d, con)
+    except Exception as e:  # a stories-viewer surprise must not sink the whole run
+        log("WARN: story capture failed, continuing with posts:", repr(e))
+        new_stories = 0
+        open_following_feed(d)  # best-effort recovery back onto the screen the post loop expects
+    if new_stories:
+        log(f"stories: {new_stories} new")
     new, seen_streak, this_run = 0, 0, set()
     link_failures: dict[str, int] = {}  # hash -> failed share-sheet attempts
+    link_sheet_failures = link_clipboard_failures = 0
+    accounts_seen: set[str] = set()  # usernames already upserted this run
+    avatars_checked: set[str] = set()  # usernames whose avatar has been considered this run
     screens = 0
     while screens < MAX_SCROLLS:
         xml = d.dump_hierarchy()
@@ -850,6 +1473,22 @@ def scrape_once(d, con):
         if screens == 0 and not posts:
             _dump_debug(d, "last", xml=xml)
             log("no posts parsed on first screen — selectors probably need updating; dump saved")
+        for p in posts:
+            u = p["username"]
+            if not u:
+                continue
+            if u not in accounts_seen:
+                accounts_seen.add(u)
+                _upsert_account(con, u)
+            # Only mark an avatar "checked" once a header is actually on screen for this account —
+            # the header-less top card (its header already scrolled off) would otherwise block a
+            # retry for the rest of the run even though its avatar was never actually captured.
+            if u not in avatars_checked and p["header_bounds"]:
+                avatars_checked.add(u)
+                if _needs_avatar_refresh(con, u):
+                    avatar = capture_avatar(d, p["header_bounds"], u)
+                    if avatar:
+                        _upsert_account(con, u, avatar)
         touched = False
         for p in posts:
             h = post_id(p)
@@ -861,16 +1500,26 @@ def scrape_once(d, con):
                 this_run.add(h)
                 seen_streak += 1
                 continue
-            media = crop_media(d, p["bounds"], h, p.get("clip_top", 0))  # before any sheet opens
+            settle = VIDEO_SETTLE_SECONDS if p["kind"] == "video" else 0
+            media = crop_media(
+                d, p["bounds"], h, p.get("clip_top", 0), settle=settle
+            )  # before any sheet opens
             if not media and not p["bounds"]:
                 log("no crop: media node not found for card")
-            url = fetch_permalink(d, h)
+            extra_media = capture_carousel(d, p, h) if media and p["kind"] == "carousel" else []
+            url, fail_reason = fetch_permalink(d, h)
+            if fail_reason == "sheet":
+                link_sheet_failures += 1
+            elif fail_reason == "clipboard":
+                link_clipboard_failures += 1
             touched = True
-            if not url and link_failures.get(h, 0) < 1:
-                # The sheet sometimes fails to open; try once more on the next screen.
+            if not url and link_failures.get(h, 0) < PERMALINK_RETRIES:
+                # The sheet sometimes fails to open; try again on a later screen.
                 link_failures[h] = link_failures.get(h, 0) + 1
                 if media:
                     (MEDIA_DIR / media).unlink(missing_ok=True)
+                for fn in extra_media:
+                    (MEDIA_DIR / fn).unlink(missing_ok=True)
                 break
             this_run.add(h)
             if _on_home_feed(d) or not _on_feed(d):
@@ -890,6 +1539,8 @@ def scrape_once(d, con):
                 con.commit()
                 if media:
                     (MEDIA_DIR / media).unlink(missing_ok=True)
+                for fn in extra_media:
+                    (MEDIA_DIR / fn).unlink(missing_ok=True)
                 break
             seen_streak = 0
             store_caption = p["caption"] or p["alt"]
@@ -914,12 +1565,20 @@ def scrape_once(d, con):
                     (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
                 _write_merged(con, dup["id"], final_id, fields)
                 con.commit()
+                for fn in extra_media:  # the existing row's cover wins; extra slides are redundant
+                    (MEDIA_DIR / fn).unlink(missing_ok=True)
                 seen_streak += 1
                 log(f"merged duplicate: {p['username']} -> {final_id}")
                 break
             if media and pid != h:
                 (MEDIA_DIR / media).rename(MEDIA_DIR / f"{pid}.jpg")
                 media = f"{pid}.jpg"
+                renamed = []
+                for i, fn in enumerate(extra_media, start=1):
+                    new_fn = f"{pid}_{i}.jpg"
+                    (MEDIA_DIR / fn).rename(MEDIA_DIR / new_fn)
+                    renamed.append(new_fn)
+                extra_media = renamed
             now_iso = datetime.now(UTC).isoformat()
             con.execute(
                 "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at,"
@@ -939,6 +1598,10 @@ def scrape_once(d, con):
                     now_iso,
                 ),
             )
+            for i, fn in enumerate(extra_media, start=1):
+                con.execute(
+                    "INSERT OR REPLACE INTO media (post_id, idx, file) VALUES (?, ?, ?)", (pid, i, fn)
+                )
             con.commit()
             new += 1
             log(f"new post: {p['username']} ({p['kind']}) {p['posted_date']} {url or '(no permalink)'}")
@@ -953,21 +1616,42 @@ def scrape_once(d, con):
         human_pause(SCROLL_PAUSE_MIN, SCROLL_PAUSE_MAX)
         screens += 1
     _prune_old_posts(con)
+    _prune_expired_stories(con)
     # Leave the app in a natural state
     d.press("home")
-    return new
+    return {
+        "new": new,
+        "new_stories": new_stories,
+        "link_sheet_failures": link_sheet_failures,
+        "link_clipboard_failures": link_clipboard_failures,
+    }
 
 
 def main():
     con = db_init()
     while True:
+        started_at = datetime.now(UTC).isoformat()
+        snapshot, stats, error = {}, {}, None
         try:
             d = connect_device()
-            n = scrape_once(d, con)
-            log(f"run complete: {n} new posts")
+            snapshot = _device_snapshot(d)
+            stats = scrape_once(d, con)
+            log(f"run complete: {stats['new']} new posts, {stats['new_stories']} new stories")
         except Exception as e:  # keep the loop alive; log for debugging
-            log("ERROR:", repr(e))
-        hours = random.uniform(POLL_MIN_H, POLL_MAX_H)
+            error = repr(e)
+            log("ERROR:", error)
+        record_run(
+            con,
+            started_at,
+            datetime.now(UTC).isoformat(),
+            stats.get("new", 0),
+            error,
+            snapshot,
+            stats.get("link_sheet_failures", 0),
+            stats.get("link_clipboard_failures", 0),
+            stats.get("new_stories", 0),
+        )
+        hours = sample_duration(POLL_MIN_H, POLL_MAX_H)
         log(f"sleeping {hours:.2f}h")
         time.sleep(hours * 3600)
 
@@ -975,12 +1659,19 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "once":
         con = db_init()
-        print(scrape_once(connect_device(), con), "new posts")
+        stats = scrape_once(connect_device(), con)
+        print(stats["new"], "new posts,", stats["new_stories"], "new stories")
     elif len(sys.argv) > 1 and sys.argv[1] == "login":
         print("logged in:", ensure_logged_in(connect_device()))
     elif len(sys.argv) > 1 and sys.argv[1] == "dump":
         d = connect_device()
         _dump_debug(d, "manual")
         print("wrote", DEBUG_DIR)
+    elif len(sys.argv) > 1 and sys.argv[1] == "rename":
+        if len(sys.argv) != 4:
+            print("usage: scraper.py rename <old_username> <new_username>")
+            sys.exit(1)
+        n = rename_account(db_init(), sys.argv[2], sys.argv[3])
+        print(f"moved {n} post(s) from {sys.argv[2]!r} to {sys.argv[3]!r}")
     else:
         main()
