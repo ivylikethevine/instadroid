@@ -34,3 +34,22 @@ for p in com.android.vending com.android.chrome com.google.android.youtube \
          com.google.android.projection.gearhead com.google.android.apps.walletnfcrel; do
   $A pm disable-user --user 0 "$p" >/dev/null 2>&1 && echo "disabled $p"
 done
+# Built-in AOSP apps the scraper's UI automation never touches. Measured on
+# erstt/redroid:13.0.0_ndk_ChromeOS (a fresh /data, nothing installed yet): these sit in Android's
+# "Cached" process tier — normally reclaimed under memory pressure, but this container reports the
+# *host's* full RAM to the guest (see `dumpsys meminfo`'s "Total RAM"), so lmkd's cached-app killer
+# never triggers and they just accumulate for the container's actual lifetime. Disabling them here
+# stops them from ever launching, cutting ~145MiB / ~14% off idle container memory (docker stats:
+# 1018MiB -> 873MiB). Left alone on purpose: com.android.settings (core app, large but too risky to
+# disable), com.android.provision / com.android.managedprovisioning (setup-wizard flows this repo's
+# troubleshooting sometimes has to re-run after a `/data/system` reset — see CLAUDE.md), and anything
+# telephony/Bluetooth/secure-element-related (com.android.phone, com.android.se, rild, bluetooth*) —
+# this repo has hit real crash loops in that area before and it's not where the memory is anyway.
+for p in com.android.documentsui com.android.printspooler com.android.bips \
+         com.android.printservice.recommendation com.android.gallery3d com.android.camera2 \
+         com.android.cameraextensions com.android.deskclock com.android.calendar \
+         com.android.providers.calendar com.android.contacts com.android.quicksearchbox \
+         com.android.dynsystem com.android.statementservice com.android.onetimeinitializer \
+         com.android.packageinstaller com.android.localtransport com.android.traceur; do
+  $A pm disable-user --user 0 "$p" >/dev/null 2>&1 && echo "disabled $p"
+done
