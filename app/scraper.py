@@ -342,6 +342,7 @@ def db_init():
     con.commit()
     _migrate_dedupe(con)
     _migrate_accounts(con)
+    _migrate_post_hashes(con)
     return con
 
 
@@ -535,6 +536,48 @@ def _migrate_accounts(con):
     con.execute("PRAGMA user_version = 2")
     con.commit()
     log("accounts backfill complete")
+
+
+def _legacy_sha1_id(key: str) -> str:
+    """post_id()'s pre-SHA-256 digest. Used only by _migrate_post_hashes() to recognise which key
+    produced a stored hash; never written anywhere."""
+    return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:16]
+
+
+def _migrate_post_hashes(con):
+    """One-time rekey, guarded like _migrate_dedupe(): post_id() moved from SHA-1 to SHA-256, so
+    every stored `hash` is recomputed, or no card already on file would be recognised again. The
+    original key isn't stored, so both keys post_id() could have built from the row (caption-based,
+    or media-description-based when the card had no caption yet and that description was stored as
+    the caption) are checked against its SHA-1, and the one that matches is re-hashed. A row
+    matching neither (its caption was edited after it was stored, its account renamed, or it was
+    keyed by the original 2026-09-08 formula, which also hashed the kind and the full media
+    description — not stored, so those rows weren't matchable before this either) gets the likelier
+    of the two; if that's wrong, the next scrape's duplicate check folds the card into this row
+    rather than storing it twice. Only `hash` changes: `id` — also the Atom entry id and media
+    filename of a post without a permalink — stays as-is, so FreshRSS sees no new entries."""
+    if con.execute("PRAGMA user_version").fetchone()[0] >= 3:
+        return
+    log("running one-time post hash upgrade (SHA-1 -> SHA-256)")
+    verified = guessed = 0
+    for r in con.execute("SELECT id, username, caption, hash FROM posts").fetchall():
+        try:
+            caption = r["caption"] or ""
+            by_caption = _post_key({"username": r["username"], "caption": caption, "alt": ""})
+            by_alt = _post_key({"username": r["username"], "caption": "", "alt": caption})
+            legacy = r["hash"] or r["id"]  # rows from before the hash column keyed on id alone
+            key = next((k for k in (by_caption, by_alt) if _legacy_sha1_id(k) == legacy), None)
+            if key:
+                verified += 1
+            else:
+                guessed += 1
+                key = by_alt if _is_weak_caption(caption) else by_caption
+            con.execute("UPDATE posts SET hash=? WHERE id=?", (_digest(key), r["id"]))
+        except Exception as e:  # a single corrupt row must not block every future start
+            log(f"WARN: hash upgrade skipped row {r['id']!r}:", repr(e))
+    con.execute("PRAGMA user_version = 3")
+    con.commit()
+    log(f"post hash upgrade: {verified} verified, {guessed} best-guess")
 
 
 def _find_duplicate(con, username, posted_at, posted_at_prec, caption, exclude_id=None):
@@ -1175,14 +1218,22 @@ def fetch_permalink(d, post_hash: str) -> tuple[str | None, str | None]:
     return f"https://www.instagram.com/{m.group('type')}/{m.group('code')}/", None
 
 
-def post_id(p):
-    """Cheap identity for the first-pass 'have we stored this' check. Must not depend on anything
-    that changes while the post sits in the feed: like counts, relative dates, carousel index."""
+def _post_key(p) -> str:
+    """What post_id() hashes. Must not depend on anything that changes while the post sits in the
+    feed: like counts, relative dates, carousel index."""
     # Caption if there is one, else the media description up to the first comma ("Photo  of  by X").
     key = p["caption"][:200] if p["caption"] else re.sub(r"\d+", "", p["alt"].split(",")[0])
     # No kind here: a header-less video card has no media description to infer it from.
-    raw = f"{p['username']}|{key}"
-    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+    return f"{p['username']}|{key}"
+
+
+def _digest(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def post_id(p):
+    """Cheap identity for the first-pass 'have we stored this' check."""
+    return _digest(_post_key(p))
 
 
 def crop_media(d, bounds: str, pid: str, clip_top: int = 0, settle: float = 0):
