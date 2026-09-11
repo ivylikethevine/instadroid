@@ -185,6 +185,45 @@ FreshRSS can reach so image links resolve). Per-account feeds: `/instagram.xml?u
 `/users` lists everyone seen so far. `/stories.xml` is a separate feed of currently-unexpired
 stories (see "Stories" above) — subscribe to it separately if you want it.
 
+If FreshRSS runs on the same host (see below), set `PUBLIC_URL=http://127.0.0.1:8000`, not
+`http://localhost:8000` — confirmed the hard way: a FreshRSS container's `localhost` resolved to
+`::1` first, and the feed server only binds the IPv4 loopback (`FEED_HOST=127.0.0.1` default), so
+every subscription failed with "Failed to resolve domain" until `PUBLIC_URL` used the literal IP.
+
+**One-step bulk subscribe**: `/opml` is an OPML outline listing all of the above — the aggregate
+feed, `/stories.xml`, and one entry per account in `/users` — nested under a single "Instagram"
+category. Import it into FreshRSS (Subscription management → Import/Export → choose file) instead
+of subscribing to each account by hand; a rename (`scraper.py rename`) still needs re-subscribing
+as before, since the OPML only reflects `/users` at the time it's fetched.
+
+**Push instead of poll**: by default FreshRSS finds new posts on its own poll interval. To have
+the scraper tell it instead, set `FRESHRSS_REFRESH_URL` in `.env` to FreshRSS's "online cron"
+actualize URL (`http://<freshrss-host>/i/?c=feed&a=actualize&user=<name>&token=<token>` — the
+token comes from the user you create below); after any run that stores something new, the scraper
+GETs that URL so FreshRSS fetches immediately. A reader being unreachable is logged as a run
+warning (shows yellow on `/status`), never fails the scrape.
+
+**Running FreshRSS on this host**: an optional `freshrss` service in `docker-compose.yml`, off by
+default (`docker compose --profile freshrss up -d freshrss`). One-time setup after it's up:
+
+```bash
+docker compose exec freshrss ./cli/do-install.php \
+  --default-user ivy --auth-type form --db-type sqlite
+docker compose exec freshrss ./cli/create-user.php \
+  --user ivy --password <a password> --token <a token> --no-default-feeds
+# Required, not optional: do-install.php's own output tells you this, and skipping it fails every
+# request (including the plain login page) with "Error during context user init!" — the install
+# leaves data/users/<name> group-owned by root with no www-data access, so PHP running as www-data
+# can't read the very config it just wrote.
+docker compose exec --user root freshrss ./cli/access-permissions.sh
+```
+
+That token is what `FRESHRSS_REFRESH_URL` above is built from. FreshRSS listens on
+`127.0.0.1:8080` by default (`FRESHRSS_LISTEN`) — loopback only, matching `FEED_HOST`, since the
+feed itself still has no auth (see "Optional feed auth" in the Roadmap). It needs
+`FRESHRSS_INTERNAL_HOST_ALLOWLIST` (defaulted in compose) to be allowed to fetch a feed on
+`127.0.0.1` at all — FreshRSS 1.30+ blocks that as an SSRF guard otherwise.
+
 ## Health and restarts
 
 Both services use `restart: unless-stopped`, so they come back after a host reboot or a crash;
@@ -344,10 +383,6 @@ These extend the existing scrape/store/serve flow without changing its shape.
 
 ### Feed serving
 
-- **OPML export**: `/opml` listing one per-account feed each, for a one-step bulk subscribe in
-  FreshRSS (today `/users` is a bare JSON list).
-- **Push new posts to FreshRSS**: after a run with new posts, ping FreshRSS (WebSub, or its
-  feed-refresh URL) so they show up immediately instead of on FreshRSS's own poll interval.
 - **Smaller images, richer entries**: media averages ~260KB per post as JPEG; WebP would roughly
   halve disk and bandwidth. Add `width`/`height` to `<img>`, an Atom thumbnail for list views, and
   a ▶ marker on video/Reel titles.

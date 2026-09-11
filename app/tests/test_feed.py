@@ -497,6 +497,79 @@ def test_status_page_shows_new_stories_column(tmp_path, monkeypatch):
     assert "<td>4</td>" in body
 
 
+def test_opml_lists_every_account_plus_the_aggregate_and_stories_feeds(tmp_path, monkeypatch):
+    import xml.etree.ElementTree as ET
+
+    client = make_app(tmp_path, monkeypatch)
+    r = client.get("/opml")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/x-opml")
+
+    root = ET.fromstring(r.text)
+    assert root.tag == "opml"
+    category = root.find("./body/outline")
+    assert category.get("text") == "Instagram"
+    outlines = category.findall("outline")
+    xml_urls = [o.get("xmlUrl") for o in outlines]
+    assert "http://feed.test/instagram.xml" in xml_urls
+    assert "http://feed.test/stories.xml" in xml_urls
+    assert "http://feed.test/instagram.xml?user=other" in xml_urls
+    assert "http://feed.test/instagram.xml?user=someone" in xml_urls
+    assert len(outlines) == 4  # aggregate + stories + 2 accounts
+    assert all(o.get("type") == "rss" for o in outlines)
+
+
+def test_opml_escapes_and_quotes_unusual_usernames(tmp_path, monkeypatch):
+    import xml.etree.ElementTree as ET
+
+    client = make_app(tmp_path, monkeypatch)
+    db = tmp_path / "posts.sqlite"
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO posts VALUES ('w1', 'a & b', 'photo', 'now', '', NULL,"
+        " '2026-09-08T08:00:00+00:00', 'h3', NULL, NULL, NULL)"
+    )
+    con.commit()
+    con.close()
+
+    r = client.get("/opml")
+    root = ET.fromstring(r.text)  # raises if the & wasn't escaped into valid XML
+    outlines = root.findall("./body/outline/outline")
+    weird = next(o for o in outlines if o.get("text") == "a & b")
+    assert weird.get("xmlUrl") == "http://feed.test/instagram.xml?user=a%20%26%20b"
+
+
+def test_opml_without_a_posts_table_returns_an_empty_category_instead_of_500(tmp_path, monkeypatch):
+    import xml.etree.ElementTree as ET
+
+    db = tmp_path / "posts.sqlite"
+    sqlite3.connect(db).close()  # empty file, no table
+    monkeypatch.setenv("DB_PATH", str(db))
+    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
+    import importlib
+
+    import app
+
+    importlib.reload(app)
+    client = TestClient(app.app)
+
+    r = client.get("/opml")
+    assert r.status_code == 200
+    root = ET.fromstring(r.text)
+    outlines = root.findall("./body/outline/outline")
+    xml_urls = {o.get("xmlUrl") for o in outlines}
+    assert xml_urls == {"http://feed.test/instagram.xml", "http://feed.test/stories.xml"}
+
+
+def test_opml_conditional_get_returns_304_when_unchanged(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)
+    first = client.get("/opml")
+    etag = first.headers["etag"]
+    second = client.get("/opml", headers={"if-none-match": etag})
+    assert second.status_code == 304
+
+
 def test_dt_handles_naive_and_malformed_timestamps(tmp_path, monkeypatch):
     make_app(tmp_path, monkeypatch)  # ensures app is importable with env set
     import app
