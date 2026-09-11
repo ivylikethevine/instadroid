@@ -135,4 +135,31 @@ container idles around 67-97MiB and peaks around 97-125MiB while actively scrapi
 aggressively than the raw numbers might suggest, since under-provisioning it risks screenshot/
 graphics-buffer failures that are much harder to diagnose than a plain OOM kill.
 
+## Reducing idle memory: disabling unused AOSP apps (2026-09-11)
+
+`dumpsys meminfo`'s "Total PSS by OOM adjustment" on a fresh boot (nothing installed yet) showed
+~350MiB sitting in Android's "Cached" process tier — apps like the camera, gallery, contacts,
+calendar, clock, print spooler, and file picker, none of which the scraper's UI automation ever
+opens. On a real device these get reclaimed by `lmkd` under memory pressure; here they don't,
+because the container reports the *host's* full RAM to the guest (`dumpsys meminfo`'s "Total RAM"
+line shows the host's real ~64GiB, not the `mem_limit` cgroup ceiling), so lmkd's minfree
+thresholds — calibrated for a 64GiB device — never trip. Cached apps just accumulate for the
+container's lifetime instead of being evicted.
+
+`scripts/tune-android.sh` now `pm disable-user`s these apps (extending the existing Google-app
+disable list), which stops them from ever launching rather than relying on a reclaim that doesn't
+happen here. Measured on a fresh boot: `docker stats` idle usage dropped from 1018MiB to 873MiB
+(~145MiB / ~14%), PIDs dropped from 1009 to ~790, and a full `logcat` check afterward showed no new
+crashes.
+
+Deliberately left alone: `com.android.settings` (the single largest cached entry at ~78MiB, but a
+core app — too risky to disable), `com.android.provision`/`com.android.managedprovisioning`
+(setup-wizard flows that may need to run again after a `/data/system` reset, per the corruption
+incidents above), and anything telephony/Bluetooth/secure-element-related
+(`com.android.phone`, `com.android.se`, `rild`, `bluetooth*`) — this project has already hit real
+crash loops in that area (see above) and none of it showed up as a memory cost anyway. Also noted
+in passing: a repeating `bluetooth@1.1-service.sim` crash loop during the first ~15s of every fresh
+boot, self-resolving and stable afterward — pre-existing (present before any of these changes,
+logcat-confirmed), not a memory driver, and out of scope here.
+
 See `README.md`'s "Which Android?" section for the fuller compatibility history.

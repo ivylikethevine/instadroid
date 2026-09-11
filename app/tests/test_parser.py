@@ -33,6 +33,13 @@ def test_full_card_fields():
     assert card["caption"] == "Second caption"
     assert card["complete"] is True
     assert card["header_bounds"] == "[0,1150][1080,1287]"
+    assert card["caption_truncated"] is False  # no trailing "more" in the raw text
+
+
+def test_truncated_caption_is_flagged_with_its_bounds():
+    top = scraper.parse_hierarchy(FIXTURE)[0]
+    assert top["caption_truncated"] is True  # raw text ended in "… more"
+    assert top["caption_bounds"] == "[32,1030][1080,1100]"
 
 
 def test_headless_top_card_has_no_header_bounds():

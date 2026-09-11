@@ -50,6 +50,7 @@ DEBUG_RETAIN_DAYS = float(os.environ.get("DEBUG_RETAIN_DAYS", "7"))  # 0 disable
 _DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png")
 PERMALINK_RETRIES = int(os.environ.get("PERMALINK_RETRIES", "2"))  # extra share-sheet passes after the first
 SHARE_TAP_TRIES = int(os.environ.get("SHARE_TAP_TRIES", "2"))  # taps on the share button before giving up
+CAPTION_EXPAND_TRIES = int(os.environ.get("CAPTION_EXPAND_TRIES", "2"))  # taps on a truncated caption's "more"
 CLIPBOARD_TIMEOUT = float(os.environ.get("CLIPBOARD_TIMEOUT", "6.0"))  # seconds to poll the clipboard for
 MAX_CAROUSEL_SLIDES = int(os.environ.get("MAX_CAROUSEL_SLIDES", "10"))
 VIDEO_SETTLE_SECONDS = float(os.environ.get("VIDEO_SETTLE_SECONDS", "1.5"))  # let autoplay/overlay settle
@@ -342,7 +343,6 @@ def db_init():
     con.commit()
     _migrate_dedupe(con)
     _migrate_accounts(con)
-    _migrate_post_hashes(con)
     return con
 
 
@@ -536,48 +536,6 @@ def _migrate_accounts(con):
     con.execute("PRAGMA user_version = 2")
     con.commit()
     log("accounts backfill complete")
-
-
-def _legacy_sha1_id(key: str) -> str:
-    """post_id()'s pre-SHA-256 digest. Used only by _migrate_post_hashes() to recognise which key
-    produced a stored hash; never written anywhere."""
-    return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:16]
-
-
-def _migrate_post_hashes(con):
-    """One-time rekey, guarded like _migrate_dedupe(): post_id() moved from SHA-1 to SHA-256, so
-    every stored `hash` is recomputed, or no card already on file would be recognised again. The
-    original key isn't stored, so both keys post_id() could have built from the row (caption-based,
-    or media-description-based when the card had no caption yet and that description was stored as
-    the caption) are checked against its SHA-1, and the one that matches is re-hashed. A row
-    matching neither (its caption was edited after it was stored, its account renamed, or it was
-    keyed by the original 2026-09-08 formula, which also hashed the kind and the full media
-    description — not stored, so those rows weren't matchable before this either) gets the likelier
-    of the two; if that's wrong, the next scrape's duplicate check folds the card into this row
-    rather than storing it twice. Only `hash` changes: `id` — also the Atom entry id and media
-    filename of a post without a permalink — stays as-is, so FreshRSS sees no new entries."""
-    if con.execute("PRAGMA user_version").fetchone()[0] >= 3:
-        return
-    log("running one-time post hash upgrade (SHA-1 -> SHA-256)")
-    verified = guessed = 0
-    for r in con.execute("SELECT id, username, caption, hash FROM posts").fetchall():
-        try:
-            caption = r["caption"] or ""
-            by_caption = _post_key({"username": r["username"], "caption": caption, "alt": ""})
-            by_alt = _post_key({"username": r["username"], "caption": "", "alt": caption})
-            legacy = r["hash"] or r["id"]  # rows from before the hash column keyed on id alone
-            key = next((k for k in (by_caption, by_alt) if _legacy_sha1_id(k) == legacy), None)
-            if key:
-                verified += 1
-            else:
-                guessed += 1
-                key = by_alt if _is_weak_caption(caption) else by_caption
-            con.execute("UPDATE posts SET hash=? WHERE id=?", (_digest(key), r["id"]))
-        except Exception as e:  # a single corrupt row must not block every future start
-            log(f"WARN: hash upgrade skipped row {r['id']!r}:", repr(e))
-    con.execute("PRAGMA user_version = 3")
-    con.commit()
-    log(f"post hash upgrade: {verified} verified, {guessed} best-guess")
 
 
 def _find_duplicate(con, username, posted_at, posted_at_prec, caption, exclude_id=None):
@@ -954,6 +912,8 @@ def _new_post(user, kind, date, place, clip_top):
         "posted_date": date,
         "place": place,
         "caption": "",
+        "caption_bounds": None,
+        "caption_truncated": False,
         "bounds": None,
         "share_bounds": None,
         "header_bounds": None,
@@ -1026,7 +986,9 @@ def parse_hierarchy(xml: str):
         elif not cur["caption"] and text and n.get("class") == SELECTORS["caption_class"]:
             if cur["headless"] and not cur["username"]:
                 cur["username"] = text.split(" ", 1)[0]
+            cur["caption_truncated"] = bool(_MORE_SUFFIX.search(text))
             cur["caption"] = clean_caption(text, cur["username"])
+            cur["caption_bounds"] = n.get("bounds")
             if cur["share_bounds"]:
                 cur["complete"] = True
         elif SELECTORS["timestamp"].match(text) and cur["share_bounds"]:
@@ -1043,12 +1005,16 @@ def parse_hierarchy(xml: str):
     return [p for p in posts if p["username"] and (p["caption"] or p["alt"])]
 
 
+_MORE_SUFFIX = re.compile(r"\s*(?:…|\.\.\.)?\s*more$")
+
+
 def clean_caption(text: str, user: str) -> str:
-    """'user Caption text… more' -> 'Caption text…'. The app truncates long captions itself."""
+    """'user Caption text… more' -> 'Caption text…'. The app truncates long captions itself
+    (see _expand_caption() for recovering the untruncated text)."""
     text = text.replace(" ", " ").strip()
     if text.startswith(user + " "):
         text = text[len(user) + 1 :]
-    return re.sub(r"\s*(?:…|\.\.\.)?\s*more$", "…", text).strip()
+    return _MORE_SUFFIX.sub("…", text).strip()
 
 
 def bounds_center(bounds: str):
@@ -1057,6 +1023,52 @@ def bounds_center(bounds: str):
         return None
     x1, y1, x2, y2 = map(int, m.groups())
     return (x1 + x2) // 2, (y1 + y2) // 2
+
+
+def _bounds_bottom_right(bounds: str, inset: int = 10):
+    """Point near a node's bottom-right corner: where a truncated, left-aligned caption's
+    trailing "... more" span sits, on its last (and typically fullest) line."""
+    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
+    if not m:
+        return None
+    x1, y1, x2, y2 = map(int, m.groups())
+    return max(x1, x2 - inset), max(y1, y2 - inset)
+
+
+def _expand_caption(d, p: dict) -> str:
+    """Tap a truncated caption's "... more" to expand it in place, and return the full text.
+    "more" is a clickable span at the end of the caption's last line, not a separate touch
+    target of its own, so the tap aims at the widget's bottom-right corner rather than its
+    center. Never raises and never drops the card: any tap/dump/match failure just falls back
+    to the already-truncated caption, and a tap that lands on a different screen is recovered
+    with _back_to_feed() before returning."""
+    if not p["caption_truncated"] or not p["caption_bounds"]:
+        return p["caption"]
+    prefix = p["caption"].rstrip("…").strip()
+    if not prefix:  # nothing distinctive to match the re-read node against; not worth the risk
+        return p["caption"]
+    point = _bounds_bottom_right(p["caption_bounds"])
+    if not point:
+        return p["caption"]
+    for _ in range(CAPTION_EXPAND_TRIES):
+        try:
+            d.click(*point)
+            human_pause(0.4, 0.9)
+            xml = d.dump_hierarchy()
+        except Exception as e:
+            log(f"WARN: caption expand tap failed for {p['username']}:", repr(e))
+            break
+        root = etree.fromstring(xml.encode())
+        for n in root.iter("node"):
+            if n.get("class") != SELECTORS["caption_class"]:
+                continue
+            cleaned = clean_caption(n.get("text") or "", p["username"])
+            if cleaned.startswith(prefix) and cleaned != p["caption"]:
+                return cleaned
+    if not _on_feed(d):
+        log(f"WARN: caption expand left the feed for {p['username']}; recovering")
+        _back_to_feed(d)
+    return p["caption"]
 
 
 def parse_story_tray(xml: str) -> list[dict]:
@@ -1685,6 +1697,8 @@ def scrape_once(d, con) -> dict:
                     (MEDIA_DIR / fn).unlink(missing_ok=True)
                 break
             seen_streak = 0
+            if p["caption_truncated"]:
+                p["caption"] = _expand_caption(d, p)
             store_caption = p["caption"] or p["alt"]
             parsed = parse_posted_at(p["posted_date"], datetime.now(UTC))
             posted_at, posted_at_prec = parsed if parsed else (None, None)

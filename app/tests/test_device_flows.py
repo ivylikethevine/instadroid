@@ -329,6 +329,51 @@ def test_fetch_permalink_refuses_to_act_inside_a_stuck_sheet():
     assert d.taps == []  # never tapped anything inside the sheet
 
 
+def _caption_card(text, goto=None):
+    return [
+        node("row_feed_profile_header", desc="someone_nice posted a photo 3 days ago", bounds=(0, 150, 1080, 289)),
+        node("row_feed_photo_imageview", desc="Photo by Someone Nice, 5 likes", bounds=(0, 289, 1080, 900)),
+        node("row_feed_button_share", bounds=(390, 900, 453, 1021)),
+        node(cls=CAPTION, text=text, bounds=(32, 1030, 1080, 1100), goto=goto),
+    ]
+
+
+def test_expand_caption_taps_more_and_returns_the_full_text():
+    d = FakeDevice(
+        {
+            "following": following_screen(_caption_card("someone_nice Short start… more", goto="expanded")),
+            "expanded": following_screen(
+                _caption_card("someone_nice Short start continues on with the full text")
+            ),
+        },
+        "following",
+    )
+    p = scraper.parse_hierarchy(d.dump_hierarchy())[0]
+    assert p["caption_truncated"] is True
+
+    assert scraper._expand_caption(d, p) == "Short start continues on with the full text"
+
+
+def test_expand_caption_falls_back_to_the_truncated_text_when_the_tap_does_nothing():
+    d = FakeDevice(
+        {"following": following_screen(_caption_card("someone_nice Short start… more"))},  # no goto: tap is inert
+        "following",
+    )
+    p = scraper.parse_hierarchy(d.dump_hierarchy())[0]
+
+    assert scraper._expand_caption(d, p) == "Short start…"
+    assert d.screen == "following"  # never knocked off the feed
+
+
+def test_expand_caption_is_a_noop_for_a_caption_that_was_never_truncated():
+    d = FakeDevice({"following": following_screen(_caption_card("someone_nice Whole caption, no more span"))}, "following")
+    p = scraper.parse_hierarchy(d.dump_hierarchy())[0]
+    assert p["caption_truncated"] is False
+
+    assert scraper._expand_caption(d, p) == "Whole caption, no more span"
+    assert d.taps == []  # nothing to tap
+
+
 # --- the scrape loop --------------------------------------------------------------------------
 
 

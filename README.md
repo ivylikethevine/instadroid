@@ -1,5 +1,7 @@
 # instadroid (instagram via redroid to rss)
 
+> EXPERIMENTAL UNTIL v1.0.0
+
 A real, logged-in Instagram Android app running in redroid (a containerised Android device),
 driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom for FreshRSS.
 
@@ -70,8 +72,9 @@ docker compose pull redroid
 docker compose up -d redroid
 adb connect 127.0.0.1:5555
 adb -s 127.0.0.1:5555 wait-for-device shell 'while ! pm list packages >/dev/null 2>&1; do sleep 2; done'
-./scripts/tune-android.sh 127.0.0.1:5555     # animations off, sync/location off, Google apps disabled,
-                                              # + DEVICE_TIMEZONE from .env if set (see "Staying under the radar")
+./scripts/tune-android.sh 127.0.0.1:5555     # animations off, sync/location off, unused Google/AOSP
+                                              # apps disabled (cuts idle memory), + DEVICE_TIMEZONE
+                                              # from .env if set (see "Staying under the radar")
 
 apkeep -a com.instagram.android -d apk-pure local
 unzip -o local/com.instagram.android.xapk -d local/xapk
@@ -107,7 +110,9 @@ and `last_screen.jpg`, then adjust `SELECTORS`.
    capturing up to `MAX_CAROUSEL_SLIDES`), then tap Share → "Copy link" and read the clipboard. The
    shortcode becomes the post id and the feed links straight to the post. If the sheet fails to open
    or the clipboard never updates, it's retried on a later screen (`PERMALINK_RETRIES`), then the
-   post falls back to a content hash.
+   post falls back to a content hash. If the caption was truncated at "… more", its "more" span is
+   tapped (expanding it in place, no navigation) and the fully-rendered caption is stored instead
+   (`CAPTION_EXPAND_TRIES` taps before giving up and keeping the truncated text).
 5. Stop after `STOP_AFTER_SEEN` consecutive already-stored posts or `MAX_SCROLLS` screens. If
    `EMPTY_SCREEN_LIMIT` screens in a row show no recognisable post, a debug dump (`empty_feed0`) is
    saved and the feed is reopened once; if it happens again the run stops early (`empty_feed1`)
@@ -250,6 +255,18 @@ of `RETAIN_DAYS`/`MEDIA_MAX_MB` — see "Stories" above.
   live device yet.
 - Videos/Reels get a still only, never the actual video.
 
+## AI Usage
+
+Heavily inspired by
+[Dictionarry/Profilarr's AI Transparency Statement](https://v2.dictionarry.dev/ai-transparency).
+
+I have used generative AI to write large parts of this code base. All of the
+code here is my _responsibility_ regardless: AI is a tool, not an owner of a
+project. I have personally understood, reviewed
+and approved all of the AI-generated code in this repository, and **mainline
+releases** carry the same accountability to me as anything I write and publish
+myself.
+
 ## Roadmap
 
 Grouped by how much of the current architecture each would touch, roughly smallest to largest.
@@ -295,9 +312,8 @@ These extend the existing scrape/store/serve flow without changing its shape.
   `PERMALINK_RETRIES` existed). When an already-stored hash-id post is back on screen, try Copy
   link once and fill in its `url` — keeping its existing `id`, since the Atom entry id is derived
   from it and changing it would make FreshRSS show the post twice.
-- **Full captions**: captions are stored as the feed shows them, truncated at "… more". Tapping
-  "more" expands the caption in place (no navigation), so it could be done from a fresh dump before
-  storing; hashtags and mentions could then be linked in the feed HTML.
+- **Link hashtags and mentions in captions**: now that full captions are stored (see "How a scrape
+  works" above), hashtags and @mentions in them could be turned into links in the feed HTML.
 - **Detect username changes automatically**: today a rename has to be noticed and reconciled by
   hand (`scraper.py rename <old> <new>`). Instagram's numeric user id never appears in the feed's
   accessibility tree, so detecting a rename would mean visiting each account's profile — extra
