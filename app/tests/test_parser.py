@@ -177,6 +177,74 @@ def test_same_post_requires_matching_username():
     assert scraper.same_post(a, b) is False
 
 
+STORY_TRAY_FIXTURE = """<hierarchy><node><node resource-id="com.instagram.android:id/reels_tray_container"
+  class="androidx.recyclerview.widget.RecyclerView">
+    <node class="android.widget.LinearLayout">
+      <node class="android.widget.Button" content-desc="myself's story, 0 of 3, Unseen."
+            bounds="[0,210][294,555]" />
+    </node>
+    <node class="android.widget.LinearLayout">
+      <node class="android.widget.Button" content-desc="alice's story, 1 of 3, Unseen."
+            bounds="[294,210][588,555]">
+        <node class="android.widget.ImageView" content-desc="alice's story, 1 of 3, Unseen."
+              bounds="[329,245][552,468]" />
+      </node>
+    </node>
+    <node class="android.widget.LinearLayout">
+      <node class="android.widget.Button" content-desc="bob's story, 2 of 3, Seen."
+            bounds="[588,210][882,555]" />
+    </node>
+</node></node></hierarchy>"""
+
+
+def test_parse_story_tray_skips_own_story_and_dedupes_the_nested_image():
+    items = scraper.parse_story_tray(STORY_TRAY_FIXTURE)
+    assert [i["username"] for i in items] == ["alice", "bob"]
+
+
+def test_parse_story_tray_reports_seen_state():
+    items = scraper.parse_story_tray(STORY_TRAY_FIXTURE)
+    by_user = {i["username"]: i for i in items}
+    assert by_user["alice"]["seen"] is False
+    assert by_user["bob"]["seen"] is True
+    assert by_user["alice"]["bounds"] == "[294,210][588,555]"
+
+
+def test_parse_story_tray_empty_when_tray_not_on_screen():
+    assert scraper.parse_story_tray("<hierarchy><node /></hierarchy>") == []
+
+
+def test_capture_story_media_returns_none_for_malformed_bounds(tmp_path, monkeypatch):
+    from PIL import Image
+
+    monkeypatch.setattr(scraper, "MEDIA_DIR", tmp_path)
+    img = Image.new("RGB", (200, 400), "red")
+
+    assert scraper.capture_story_media(img, "not-bounds", 0, "tmp") is None
+    assert scraper.capture_story_media(img, None, 0, "tmp") is None
+
+
+def test_capture_story_media_returns_none_when_clip_leaves_too_little_height(tmp_path, monkeypatch):
+    from PIL import Image
+
+    monkeypatch.setattr(scraper, "MEDIA_DIR", tmp_path)
+    img = Image.new("RGB", (200, 400), "red")
+
+    assert scraper.capture_story_media(img, "[0,0][100,150]", 0, "tmp") is None
+
+
+def test_capture_story_media_crops_and_saves_under_a_stories_subdirectory(tmp_path, monkeypatch):
+    from PIL import Image
+
+    monkeypatch.setattr(scraper, "MEDIA_DIR", tmp_path)
+    img = Image.new("RGB", (200, 400), "red")
+
+    path = scraper.capture_story_media(img, "[0,0][200,400]", 50, "tmpstory")
+
+    assert path == tmp_path / "stories" / "tmpstory.jpg"
+    assert path.exists()
+
+
 def test_carousel_count_parses_slide_total():
     assert scraper.carousel_count("Photo 1 of 7 by Other User, 317 likes, 10 comments") == 7
     assert scraper.carousel_count("Video 3 of 3 by X") == 3
@@ -207,3 +275,61 @@ def test_avatar_bounds_crops_a_square_inside_the_header():
 @pytest.mark.parametrize("bad", [None, "", "not-bounds"])
 def test_avatar_bounds_returns_none_for_missing_or_malformed_bounds(bad):
     assert scraper._avatar_bounds(bad) is None
+
+
+def test_in_quiet_hours_respects_the_configured_window(monkeypatch):
+    monkeypatch.setattr(scraper, "DAYNIGHT_QUIET_START", 0)
+    monkeypatch.setattr(scraper, "DAYNIGHT_QUIET_END", 6)
+    assert scraper._in_quiet_hours(datetime(2026, 1, 1, 3, tzinfo=UTC)) is True  # 3am: quiet
+    assert scraper._in_quiet_hours(datetime(2026, 1, 1, 14, tzinfo=UTC)) is False  # 2pm: not quiet
+    assert scraper._in_quiet_hours(datetime(2026, 1, 1, 6, tzinfo=UTC)) is False  # end is exclusive
+
+
+def test_in_quiet_hours_wraps_past_midnight(monkeypatch):
+    # A window like 22:00-06:00 has start > end and must wrap around midnight.
+    monkeypatch.setattr(scraper, "DAYNIGHT_QUIET_START", 22)
+    monkeypatch.setattr(scraper, "DAYNIGHT_QUIET_END", 6)
+    assert scraper._in_quiet_hours(datetime(2026, 1, 1, 23, tzinfo=UTC)) is True
+    assert scraper._in_quiet_hours(datetime(2026, 1, 1, 2, tzinfo=UTC)) is True
+    assert scraper._in_quiet_hours(datetime(2026, 1, 1, 12, tzinfo=UTC)) is False
+
+
+def test_in_quiet_hours_uses_device_timezone(monkeypatch):
+    # 02:00 UTC is 21:00 the previous day in US/Eastern (UTC-5) — outside a 0-6 UTC-local window.
+    monkeypatch.setattr(scraper, "DEVICE_TIMEZONE", "America/New_York")
+    monkeypatch.setattr(scraper, "DAYNIGHT_QUIET_START", 0)
+    monkeypatch.setattr(scraper, "DAYNIGHT_QUIET_END", 6)
+    assert scraper._in_quiet_hours(datetime(2026, 1, 1, 2, tzinfo=UTC)) is False
+
+
+def test_sample_duration_uniform_stays_within_bounds():
+    for _ in range(200):
+        v = scraper.sample_duration(1.0, 3.0)
+        assert 1.0 <= v <= 3.0
+
+
+def test_sample_duration_lognormal_stays_within_bounds(monkeypatch):
+    monkeypatch.setattr(scraper, "TIME_DISTRIBUTION", "lognormal")
+    for _ in range(200):
+        v = scraper.sample_duration(1.0, 3.0)
+        assert 1.0 <= v <= 3.0
+
+
+def test_sample_duration_daynight_widens_the_top_of_the_range_during_quiet_hours(monkeypatch):
+    monkeypatch.setattr(scraper, "TIME_DISTRIBUTION", "daynight")
+    monkeypatch.setattr(scraper, "DEVICE_TIMEZONE", "")
+    monkeypatch.setattr(scraper, "DAYNIGHT_QUIET_START", 0)
+    monkeypatch.setattr(scraper, "DAYNIGHT_QUIET_END", 6)
+    quiet = datetime(2026, 1, 1, 3, tzinfo=UTC)
+    awake = datetime(2026, 1, 1, 14, tzinfo=UTC)
+
+    quiet_draws = [scraper.sample_duration(1.0, 3.0, now=quiet) for _ in range(300)]
+    awake_draws = [scraper.sample_duration(1.0, 3.0, now=awake) for _ in range(300)]
+
+    assert all(1.0 <= v <= 5.0 for v in quiet_draws)  # effective_hi = hi + (hi - lo) = 5.0
+    assert all(1.0 <= v <= 3.0 for v in awake_draws)  # unwidened outside quiet hours
+    assert max(quiet_draws) > 3.0  # actually exercises the widened top, not just permits it
+
+
+def test_sample_duration_handles_hi_equal_to_lo():
+    assert scraper.sample_duration(2.0, 2.0) == 2.0

@@ -205,6 +205,59 @@ def test_record_run_stores_link_failure_counts(con_and_media):
     assert row["link_clipboard_failures"] == 1
 
 
+def test_record_run_stores_new_stories_count(con_and_media):
+    con, _ = con_and_media
+    started = datetime.now(UTC).isoformat()
+    finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
+
+    scraper.record_run(con, started, finished, 0, None, {}, new_stories=3)
+
+    assert con.execute("SELECT new_stories FROM runs").fetchone()[0] == 3
+
+
+def test_db_init_creates_an_empty_stories_table(con_and_media):
+    con, _ = con_and_media
+    assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 0
+    scraper.db_init()  # re-run must be a no-op, not a crash
+
+
+def _insert_story(con, media_dir, story_id, hours_old, username="u", media_file=None):
+    now = datetime.now(UTC)
+    scraped_at = (now - timedelta(hours=hours_old)).isoformat()
+    expires_at = (now - timedelta(hours=hours_old - scraper.STORY_RETAIN_HOURS)).isoformat()
+    if media_file:
+        (media_dir / "stories").mkdir(parents=True, exist_ok=True)
+        (media_dir / media_file).write_bytes(b"x")
+    con.execute(
+        "INSERT INTO stories (id, username, media_file, kind, posted_date, scraped_at, expires_at)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (story_id, username, media_file, "story", "1h", scraped_at, expires_at),
+    )
+    con.commit()
+
+
+def test_prune_expired_stories_removes_only_rows_past_their_expiry(con_and_media):
+    con, media = con_and_media
+    _insert_story(con, media, "old", hours_old=30, media_file="stories/old.jpg")
+    _insert_story(con, media, "fresh", hours_old=1, media_file="stories/fresh.jpg")
+
+    scraper._prune_expired_stories(con)
+
+    ids = {r[0] for r in con.execute("SELECT id FROM stories")}
+    assert ids == {"fresh"}
+    assert not (media / "stories" / "old.jpg").exists()
+    assert (media / "stories" / "fresh.jpg").exists()
+
+
+def test_prune_expired_stories_noop_when_none_expired(con_and_media):
+    con, media = con_and_media
+    _insert_story(con, media, "fresh", hours_old=1, media_file="stories/fresh.jpg")
+
+    scraper._prune_expired_stories(con)
+
+    assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 1
+
+
 def test_launch_app_falls_back_to_monkey_launch_without_recursing_forever():
     # resolve-activity failing used to recurse into _launch_app itself instead of falling back,
     # which is unbounded recursion, not a fallback.
