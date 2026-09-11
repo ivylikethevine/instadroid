@@ -17,6 +17,7 @@ FOLLOWING_TITLE = node(
 )
 TOP_URL = "https://www.instagram.com/reel/TOP123/?igsh=abc"
 OTHER_URL = "https://www.instagram.com/p/OTHER1/?igsh=xyz"
+PROFILE_TAB = node("profile_tab", desc="Profile", bounds=(864, 2088, 1080, 2214), goto="profile")
 
 
 def story_button(user, index, seen, x, goto=None):
@@ -40,6 +41,7 @@ def home_screen(switcher_goto="menu", extra=()):
         ),
         node("android:id/list", bounds=(0, 500, 1080, 2200)),
         node("feed_tab", bounds=(0, 2200, 216, 2340)),
+        PROFILE_TAB,
         *extra,
     )
 
@@ -103,6 +105,7 @@ def following_screen(cards=None, sheet=None):
             bounds=(0, 289, 1080, 2235),
             children=cards if cards is not None else feed_cards(),
         ),
+        PROFILE_TAB,
     ]
     if sheet:
         kids.append(sheet)
@@ -151,6 +154,54 @@ def feed_device(top_share="share_top", other_share="share_other", **kw):
         hswipe={"following": "following_s2", "following_s2": "following_s3"},
         **kw,
     )
+
+
+def profile_screen(following_goto="following_list"):
+    return hierarchy(
+        ACTION_BAR,
+        node(
+            "profile_header_following_stacked_familiar",
+            desc="following",
+            bounds=(782, 321, 1038, 464),
+            goto=following_goto,
+        ),
+    )
+
+
+def following_list_screen(usernames):
+    return hierarchy(
+        ACTION_BAR,
+        node("unified_follow_list_view_pager", bounds=(0, 336, 1080, 2214)),
+        *[
+            node(
+                "follow_list_username",
+                cls="android.widget.TextView",
+                text=u,
+                bounds=(247, 1353 + i * 189, 700, 1400 + i * 189),
+            )
+            for i, u in enumerate(usernames)
+        ],
+    )
+
+
+def feed_device_with_following(pages, main_scroll=None, **kw):
+    """feed_device() plus a profile -> own-Following-list screen chain, for the followed-accounts
+    allowlist. `pages` is a list of username lists, one per Following-list scroll screen; the last
+    page has no further scroll entry, simulating "list exhausted." `main_scroll` replaces the main
+    feed's own scroll map (default {"following": "older"}) — pass {} to keep a filtering test on
+    a single feed screen rather than also scrolling into `older`."""
+    d = feed_device(**kw)
+    if main_scroll is not None:
+        d.scroll = dict(main_scroll)
+    d.screens["profile"] = profile_screen()
+    d.back["profile"] = "following"
+    page_names = ["following_list"] + [f"following_list_s{i}" for i in range(2, len(pages) + 1)]
+    for i, (name, usernames) in enumerate(zip(page_names, pages, strict=True)):
+        d.screens[name] = following_list_screen(usernames)
+        d.back[name] = "profile"
+        if i + 1 < len(page_names):
+            d.scroll[name] = page_names[i + 1]
+    return d
 
 
 @pytest.fixture(autouse=True)
@@ -437,6 +488,7 @@ def test_scrape_once_end_to_end(fast_offline, monkeypatch):
         "link_sheet_failures": 0,
         "link_clipboard_failures": 0,
         "warning": None,
+        "filtered_posts": 0,
     }
     posts = {r["id"]: r for r in con.execute("SELECT * FROM posts")}
     assert set(posts) == {"TOP123", "OTHER1", "OLD1"}
@@ -509,6 +561,107 @@ def test_scrape_once_treats_an_edited_caption_as_the_same_post(monkeypatch):
     assert row["hash"] == top_card_id(feed_device(start="following"))  # re-keyed to the new caption
     assert stats["new"] == 1  # only the other card is new
     assert con.execute("SELECT COUNT(*) FROM posts WHERE username='someone_nice'").fetchone()[0] == 1
+
+
+# --- followed-accounts allowlist ----------------------------------------------------------------
+
+
+def test_open_own_following_list_navigates_from_the_feed(fast_offline):
+    d = feed_device_with_following([["alice", "bob"]], start="following")
+    assert scraper.open_own_following_list(d) is True
+    assert d.screen == "following_list"
+    assert d.history[-3:] == ["following", "profile", "following_list"]
+
+
+def test_open_own_following_list_leaves_and_reenters_when_already_on_the_list_screen(fast_offline):
+    # A real live run (2026-09-11) found this exact case: a second refresh in the same app session
+    # started mid-scroll instead of at the top, collecting 9 of 30 followed accounts instead of a
+    # fresh scroll's 27+ — accepting "already there" as done is the bug this guards against.
+    d = feed_device_with_following([["alice", "bob"]], start="following_list")
+    assert scraper.open_own_following_list(d) is True
+    assert d.screen == "following_list"
+    assert d.history.count("following_list") == 2  # left, then genuinely navigated back in
+
+
+def test_scrape_following_list_scrolls_until_no_new_username_appears(fast_offline, monkeypatch):
+    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    d = feed_device_with_following([["alice", "bob"], ["carol"]], main_scroll={}, start="following_list")
+    assert scraper.scrape_following_list(d) == ["alice", "bob", "carol"]
+
+
+def test_scrape_following_list_returns_none_when_nothing_is_ever_parsed(fast_offline, monkeypatch):
+    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    d = feed_device_with_following([[]], main_scroll={}, start="following_list")
+    assert scraper.scrape_following_list(d) is None
+
+
+def test_refresh_following_list_replaces_the_stored_list(fast_offline, monkeypatch):
+    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    con = scraper.db_init()
+    con.execute("INSERT INTO following (username, updated_at) VALUES ('stale_unfollowed', '2020-01-01')")
+    con.commit()
+    d = feed_device_with_following([["alice", "bob"]], main_scroll={}, start="following")
+
+    n = scraper.refresh_following_list(d, con)
+
+    assert n == 2
+    assert {r[0] for r in con.execute("SELECT username FROM following")} == {"alice", "bob"}
+
+
+def test_refresh_following_list_keeps_the_existing_list_on_a_failed_scrape(fast_offline, monkeypatch):
+    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    con = scraper.db_init()
+    con.execute("INSERT INTO following (username, updated_at) VALUES ('good_data', '2020-01-01')")
+    con.commit()
+    d = feed_device_with_following([[]], main_scroll={}, start="following")  # empty list = parse failure
+
+    n = scraper.refresh_following_list(d, con)
+
+    assert n is None
+    assert {r[0] for r in con.execute("SELECT username FROM following")} == {"good_data"}
+
+
+def test_scrape_once_filters_posts_from_accounts_not_on_the_refreshed_following_list(
+    fast_offline, monkeypatch
+):
+    monkeypatch.setattr(scraper, "FOLLOWING_REFRESH_DAYS", 7)
+    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(scraper, "MAX_CAROUSEL_SLIDES", 1)
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 2)
+    con = scraper.db_init()  # following table starts empty -> due for a refresh this run
+    # Only someone_nice is on the (about-to-be-scraped) Following list; other_user is not.
+    d = feed_device_with_following([["someone_nice"]], main_scroll={})
+
+    stats = scraper.scrape_once(d, con)
+
+    assert {r[0] for r in con.execute("SELECT username FROM following")} == {"someone_nice"}
+    assert stats["filtered_posts"] >= 1
+    posts = con.execute("SELECT username FROM posts").fetchall()
+    assert any(r[0] == "someone_nice" for r in posts)
+    assert all(r[0] != "other_user" for r in posts)
+    # A filtered post's account is never upserted -- no avatar work, no accounts-table footprint.
+    assert con.execute("SELECT 1 FROM accounts WHERE username='other_user'").fetchone() is None
+
+
+def test_scrape_once_does_not_filter_before_the_first_successful_refresh(fast_offline, monkeypatch):
+    # Enabled but never yet refreshed, and this run's own refresh attempt also finds nothing
+    # (empty Following-list screen) -- an empty allowlist must mean "not initialized," not "filter
+    # everything," or turning the feature on would silently drop every post on its first run.
+    monkeypatch.setattr(scraper, "FOLLOWING_REFRESH_DAYS", 7)
+    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(scraper, "MAX_CAROUSEL_SLIDES", 1)
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 2)
+    monkeypatch.setattr(scraper, "STOP_AFTER_SEEN", 1)
+    con = scraper.db_init()
+    d = feed_device_with_following([[]], main_scroll={})  # the refresh itself finds nothing
+
+    stats = scraper.scrape_once(d, con)
+
+    assert stats["filtered_posts"] == 0
+    posts = {r[0] for r in con.execute("SELECT username FROM posts")}
+    assert posts == {"someone_nice", "other_user"}  # nothing dropped
 
 
 # --- device connection and the main loop ------------------------------------------------------

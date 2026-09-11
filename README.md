@@ -158,6 +158,38 @@ identical stories don't hash differently as their relative timestamp ticks over 
 Captured stories are served at `/stories.xml` and always deleted after `STORY_RETAIN_HOURS`
 (default 24), independent of `RETAIN_DAYS`.
 
+## Followed-accounts allowlist
+
+Under `androidboot.redroid_gpu_mode=guest` the Following-feed switcher's bottom sheet doesn't
+always open (see "Which Android?" above); when it fails, `scrape_once()` falls back to whatever's
+on screen — Home, algorithmic, with suggested posts from accounts you don't follow mixed in. Set
+`FOLLOWING_REFRESH_DAYS` above its default of `0` to filter that out: periodically (every
+`FOLLOWING_REFRESH_DAYS`) the scraper navigates to the account's own profile → Following list and
+scrolls it (`MAX_FOLLOWING_SCROLLS` screens, `FOLLOWING_LIST_EMPTY_LIMIT` empty screens to stop),
+replacing the stored list with whatever it collected; any post from a username not on it is dropped
+before any of the expensive per-post work (media crop, carousel, share-sheet permalink) rather than
+after, so filtered posts cost nothing beyond the parse itself. The list being fully replaced on
+every refresh is also how an unfollow gets reflected automatically.
+
+A single refresh isn't guaranteed to be exhaustive — confirmed live against a real 30-account list,
+which one refresh captured completely and another captured 27 of 30 (a different 3 missed each
+time). The scroll amount is tuned to the list's own row height specifically to keep this rare (see
+`_human_scroll_list()`), but it's Instagram's own chunked rendering, not something this project can
+fully control from the outside. A miss is self-correcting: the account reappears once it's on
+screen for the *next* scheduled refresh, so this only ever means "may take an extra
+`FOLLOWING_REFRESH_DAYS` before a newly-followed or missed account's posts start showing up," not a
+permanent gap. An account you follow but haven't seen post yet is unaffected either way, since
+filtering only acts on posts that actually show up.
+
+This is a real, visible navigation like opening a story (see "Staying under the radar" below) and
+a genuine behavior change — posts can now be silently dropped — so it's off by default. It's also
+safe to turn on at any point: filtering only takes effect after the list has actually captured
+something at least once (an empty/never-populated list means "not initialized yet," not "you follow
+nobody"), and a refresh that fails outright (selectors broken, navigation never reached the list)
+leaves whatever list is already stored alone rather than replacing it with nothing — it just retries
+on the next run. `scraper.py rename` keeps a renamed account's allowlist entry in sync along with
+everything else it reconciles. Each run's `/status` page shows how many posts a run filtered.
+
 ## Development
 
 ```bash
@@ -394,10 +426,9 @@ These extend the existing scrape/store/serve flow without changing its shape.
 - **Reach the real Following feed without the switcher**: under `gpu_mode=guest` the switcher's
   bottom sheet may not open, and the scraper then falls back to Home — algorithmic, with suggested
   posts mixed in. Investigate a deep link or activity intent that opens Following directly;
-  unconfirmed whether one exists.
-- **Followed-accounts allowlist**: periodically read the logged-in account's own Following list
-  and drop posts from anyone not on it, filtering suggested posts that leak in through the Home
-  fallback. Costs extra in-app navigation per refresh.
+  unconfirmed whether one exists. (A followed-accounts allowlist now filters the fallback's
+  suggested posts after the fact — see "Followed-accounts allowlist" above — but reaching the real
+  feed directly would still be cheaper than the extra Following-list navigation that costs.)
 
 ### Anti-detection: timing and device tuning
 

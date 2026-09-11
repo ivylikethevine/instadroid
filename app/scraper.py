@@ -73,6 +73,19 @@ DAYNIGHT_QUIET_END = int(os.environ.get("DAYNIGHT_QUIET_END", "6"))  # local hou
 # Consecutive screens with no identifiable post before a run treats the feed as lost: dump, reopen
 # the feed once, and stop the run if it happens again. 0 disables.
 EMPTY_SCREEN_LIMIT = int(os.environ.get("EMPTY_SCREEN_LIMIT", "3"))
+# Followed-accounts allowlist: periodically re-scrape the logged-in account's own Following list
+# and drop any post from a username not on it — filters the suggested/algorithmic posts that leak
+# in when open_following_feed() can't open the switcher and falls back to Home (see README). 0
+# disables the whole feature (no navigation, no filtering) — it costs extra in-app navigation per
+# refresh and is a real behavior change (dropping posts), so it's opt-in. Once enabled, filtering
+# only takes effect after the first successful refresh — an empty/never-populated list means "not
+# initialized yet," not "you follow nobody," so nothing is dropped until real data exists.
+FOLLOWING_REFRESH_DAYS = int(os.environ.get("FOLLOWING_REFRESH_DAYS", "0"))
+# Higher than MAX_SCROLLS: _human_scroll_list()'s deliberately shorter swipe (see its docstring)
+# means more screens are needed to cover the same list.
+MAX_FOLLOWING_SCROLLS = int(os.environ.get("MAX_FOLLOWING_SCROLLS", "60"))
+# Consecutive Following-list screens with no new username before the scroll stops (list exhausted).
+FOLLOWING_LIST_EMPTY_LIMIT = int(os.environ.get("FOLLOWING_LIST_EMPTY_LIMIT", "3"))
 # Minutes to wait before retrying after a transient device failure (see is_transient()) instead of
 # sleeping a whole poll interval — one entry per retry, comma-separated; empty disables.
 RETRY_DELAYS_MINUTES = [
@@ -145,6 +158,15 @@ SELECTORS = {
     "following_text": "Following",
     # The Following feed is its own screen: Back button + action_bar_title "Following".
     "following_title_id": "action_bar_title",
+    # Own-profile navigation, for the followed-accounts allowlist (FOLLOWING_REFRESH_DAYS). The
+    # bottom tab bar's own-avatar tab; the "N following" stacked-avatar link on that profile; the
+    # Following-list screen itself (its view pager, present as soon as the screen loads regardless
+    # of list content); and each row's username. All confirmed live against a real account/device
+    # 2026-09-11 — see refresh_following_list().
+    "profile_tab_id": "profile_tab",
+    "following_link_id": "profile_header_following_stacked_familiar",
+    "following_list_screen_id": "unified_follow_list_view_pager",
+    "follow_list_username_id": "follow_list_username",
     # Login screen. Instagram renames these occasionally; several candidates each.
     "login_username_ids": ["login_username", "username"],
     "login_username_hints": [
@@ -331,6 +353,16 @@ def db_init():
     con.execute("CREATE INDEX IF NOT EXISTS stories_username ON stories(username)")
     con.execute("CREATE INDEX IF NOT EXISTS stories_expires_at ON stories(expires_at)")
     con.execute(
+        # The whole table is replaced atomically on every successful refresh (see
+        # refresh_following_list()) rather than upserted row by row, so an unfollow is reflected
+        # simply by that username's row no longer existing after the next refresh — every row
+        # shares the same updated_at, which also doubles as "when was this list last refreshed."
+        """CREATE TABLE IF NOT EXISTS following (
+            username TEXT PRIMARY KEY,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    con.execute(
         """CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             started_at TEXT NOT NULL,
@@ -343,7 +375,7 @@ def db_init():
         )"""
     )
     run_cols = {r["name"] for r in con.execute("PRAGMA table_info(runs)")}
-    for col in ("link_sheet_failures", "link_clipboard_failures", "new_stories"):
+    for col in ("link_sheet_failures", "link_clipboard_failures", "new_stories", "filtered_posts"):
         if col not in run_cols:
             con.execute(f"ALTER TABLE runs ADD COLUMN {col} INTEGER")
     for col in ("warning", "ig_version", "redroid_image"):
@@ -394,11 +426,12 @@ def record_run(
     link_clipboard_failures=0,
     new_stories=0,
     warning=None,
+    filtered_posts=0,
 ):
     con.execute(
         "INSERT INTO runs (started_at, finished_at, new_posts, error, android_release, android_sdk,"
         " device_product, link_sheet_failures, link_clipboard_failures, new_stories, warning, ig_version,"
-        " redroid_image) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " redroid_image, filtered_posts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             started_at,
             finished_at,
@@ -413,6 +446,7 @@ def record_run(
             warning,
             snapshot.get("ig_version"),
             snapshot.get("redroid_image"),
+            filtered_posts,
         ),
     )
     con.commit()
@@ -442,6 +476,20 @@ def _needs_avatar_refresh(con, username: str) -> bool:
     return datetime.now(UTC) - updated > timedelta(days=AVATAR_REFRESH_DAYS)
 
 
+def _needs_following_refresh(con) -> bool:
+    """Unlike _needs_avatar_refresh, this is a single global check, not per-account: the whole
+    Following list is captured (and replaced) in one pass, so there's one "when was this last
+    done" timestamp, not one per row. No rows at all means never successfully refreshed."""
+    row = con.execute("SELECT MAX(updated_at) FROM following").fetchone()
+    if not row or not row[0]:
+        return True
+    try:
+        updated = datetime.fromisoformat(row[0])
+    except ValueError:
+        return True
+    return datetime.now(UTC) - updated > timedelta(days=FOLLOWING_REFRESH_DAYS)
+
+
 def rename_account(con, old: str, new: str) -> int:
     """Reconcile a followed account's history after it renamed itself: repoint every post from
     `old` to `new` and fold `old`'s accounts row (avatar, stable account_id if set) into `new`.
@@ -463,6 +511,15 @@ def rename_account(con, old: str, new: str) -> int:
         (new, account_id, avatar_file),
     )
     con.execute("DELETE FROM accounts WHERE username=?", (old,))
+    # Keep the followed-accounts allowlist (if in use) in step with a rename too — otherwise every
+    # post from `new` would be filtered out as "not followed" until the next scheduled refresh.
+    following_row = con.execute("SELECT updated_at FROM following WHERE username=?", (old,)).fetchone()
+    if following_row:
+        con.execute(
+            "INSERT INTO following (username, updated_at) VALUES (?, ?) ON CONFLICT(username) DO NOTHING",
+            (new, following_row["updated_at"]),
+        )
+        con.execute("DELETE FROM following WHERE username=?", (old,))
     con.commit()
     if dropped_avatar:
         (MEDIA_DIR / dropped_avatar).unlink(missing_ok=True)
@@ -695,6 +752,22 @@ def human_scroll(d):
     y1 = random.randint(int(h * 0.65), int(h * 0.8))
     y2 = y1 - random.randint(int(h * 0.3), int(h * 0.45))
     # Slow enough not to fling: a fling scrolls several screens and skips whole posts.
+    d.swipe(x, y1, x, y2, duration=sample_duration(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX))
+
+
+def _human_scroll_list(d):
+    """Scroll the Following list by a smaller amount than human_scroll() — its rows (~190px each,
+    a dozen fit on one screen) are much shorter than a feed card (a full screen or more), so
+    human_scroll()'s feed-tuned distance (30-45% of screen height) can advance past more than a
+    screen's worth of rows between two dumps and silently skip whichever never actually rendered
+    on screen. Confirmed live (2026-09-11): human_scroll() here measurably missed ~3 of 30 followed
+    accounts on one refresh and a different ~3 on the next — a shorter swipe keeps consecutive
+    screens overlapping, so nothing passes by unseen. A followed-accounts allowlist self-heals on
+    the next scheduled refresh regardless, but this makes a single pass more likely to be complete."""
+    w, h = d.window_size()
+    x = random.randint(int(w * 0.3), int(w * 0.7))
+    y1 = random.randint(int(h * 0.55), int(h * 0.65))
+    y2 = y1 - random.randint(int(h * 0.15), int(h * 0.25))
     d.swipe(x, y1, x, y2, duration=sample_duration(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX))
 
 
@@ -982,6 +1055,130 @@ def open_following_feed(d):
     log("WARN: could not open Following feed; scraping whatever feed is showing (dump saved)")
     _dump_debug(d, "feed_switch")
     return False
+
+
+def _on_following_list(d):
+    """The Following-list screen (reached via own profile -> "N following"), independent of
+    whether the list itself has any rows on screen yet — this is the screen's own view pager,
+    present as soon as the screen loads."""
+    return d(resourceIdMatches=f".*:id/{SELECTORS['following_list_screen_id']}$").exists(timeout=2)
+
+
+def open_own_following_list(d):
+    """Navigate from wherever the app is to the logged-in account's own Following list. Returns
+    True once the list screen is confirmed on screen, False if navigation failed after a few
+    attempts (dump saved) — mirrors open_following_feed()'s shape.
+
+    Confirmed live against a real device (2026-09-11): if the app is already sitting on the list
+    screen — left over from an earlier run, or from Android simply not having killed the activity
+    — that scroll position is wherever the list was last left, not the top. Silently accepting it
+    as "already there" made a second refresh collect only 9 of 30 followed accounts instead of a
+    fresh scroll's 27+. So being on the screen already is never treated as done: leave (two backs,
+    same as open_following_feed()'s own "leave and re-enter so the feed is fresh") and navigate
+    back in via the normal tab -> link path, which always starts the list at row 0."""
+    ensure_logged_in(d)
+    if d.app_current().get("package") != IG_PKG:
+        _launch_app(d)
+        human_pause(3, 5)
+    _dismiss_interstitials(d)
+    close_sheets(d)
+    tab = d(resourceIdMatches=f".*:id/{SELECTORS['profile_tab_id']}$")
+    for attempt in range(4):
+        if _on_following_list(d):
+            d.press("back")
+            d.press("back")
+            human_pause(2, 3)
+            continue
+        if not tab.exists(timeout=3):
+            d.press("back")  # some other screen (e.g. left inside the list from a prior attempt)
+            human_pause(1, 2)
+            continue
+        try:
+            tab.click()
+            human_pause(1.5, 2.5)
+            link = d(resourceIdMatches=f".*:id/{SELECTORS['following_link_id']}$")
+            if not link.exists(timeout=5):
+                log(f"open following list attempt {attempt}: following link not found on profile")
+                _dump_debug(d, f"following_list_profile{attempt}")
+                d.press("back")
+                continue
+            link.click()
+            human_pause(1.5, 2.5)
+            if _on_following_list(d):
+                return True
+            log(f"open following list attempt {attempt}: list screen not detected after tap")
+        except Exception as e:  # a node can scroll/disappear between exists() and click()
+            log("WARN: following-list navigation click failed, retrying:", repr(e))
+    log("WARN: could not open own Following list (dump saved)")
+    _dump_debug(d, "following_list_open")
+    return False
+
+
+def parse_following_list(xml: str) -> list[str]:
+    """Every username row currently on screen on the Following-list screen, in the order they
+    appear. Deliberately narrow: only the row's own username TextView (follow_list_username) is
+    matched, so the "Categories" suggestion cards above the list (own resource-ids: title/subtitle)
+    and the "Sorted by ..." header can never be mistaken for a followed account."""
+    root = etree.fromstring(xml.encode())
+    suffix = f"id/{SELECTORS['follow_list_username_id']}"
+    return [
+        n.get("text")
+        for n in root.iter("node")
+        if (n.get("resource-id") or "").endswith(suffix) and n.get("text")
+    ]
+
+
+def scrape_following_list(d) -> list[str] | None:
+    """Scroll the already-open Following list from wherever it starts, collecting every distinct
+    username, and return them in first-seen order. Stops after FOLLOWING_LIST_EMPTY_LIMIT
+    consecutive screens with no new username (list exhausted), same shape as the main feed's
+    empty-streak detection. Returns None rather than [] when nothing was collected at all — almost
+    certainly a navigation/selector failure, not "this account follows nobody" — so the caller can
+    tell the two apart and refuse to replace a possibly-good existing list with an empty one."""
+    collected: dict[str, None] = {}  # dict for its insertion-order + O(1) membership
+    screens = empty_streak = 0
+    while screens < MAX_FOLLOWING_SCROLLS:
+        xml = d.dump_hierarchy()
+        names = parse_following_list(xml)
+        if screens == 0 and not names:
+            _dump_debug(d, "following_list_first", xml=xml)
+            log("no usernames parsed on first Following-list screen — selectors probably need updating")
+        new = 0
+        for n in names:
+            if n not in collected:
+                collected[n] = None
+                new += 1
+        empty_streak = 0 if new else empty_streak + 1
+        if empty_streak >= FOLLOWING_LIST_EMPTY_LIMIT:
+            break
+        _human_scroll_list(d)
+        human_pause(SCROLL_PAUSE_MIN, SCROLL_PAUSE_MAX)
+        screens += 1
+    return list(collected) if collected else None
+
+
+def refresh_following_list(d, con) -> int | None:
+    """Navigate to the own Following list, scrape it in full, and replace the stored allowlist
+    with exactly what was found — so an unfollow is reflected simply by that username's row no
+    longer existing after this runs. Returns the new count, or None if the refresh failed (nothing
+    collected, or navigation never reached the list) — on None, the existing stored list (if any)
+    is left untouched rather than wiped, and _needs_following_refresh() will keep returning True so
+    the next run tries again."""
+    if not open_own_following_list(d):
+        return None
+    usernames = scrape_following_list(d)
+    if not usernames:
+        log("WARN: following-list refresh collected nothing; keeping the existing list")
+        return None
+    now_iso = datetime.now(UTC).isoformat()
+    con.execute("DELETE FROM following")
+    con.executemany(
+        "INSERT INTO following (username, updated_at) VALUES (?, ?)",
+        [(u, now_iso) for u in usernames],
+    )
+    con.commit()
+    log(f"following list refreshed: {len(usernames)} accounts")
+    return len(usernames)
 
 
 def _new_post(user, kind, date, place, clip_top):
@@ -1668,6 +1865,17 @@ def scrape_once(d, con) -> dict:
     except Exception:
         _last_url = ""
     open_following_feed(d)
+    if FOLLOWING_REFRESH_DAYS and _needs_following_refresh(con):
+        try:
+            refresh_following_list(d, con)
+        except Exception as e:  # a profile/list-navigation surprise must not sink the whole run
+            log("WARN: following-list refresh failed, continuing with the existing list:", repr(e))
+        open_following_feed(d)  # back onto the feed screen the post loop expects
+    followed: set[str] | None = None
+    if FOLLOWING_REFRESH_DAYS:
+        rows = con.execute("SELECT username FROM following").fetchall()
+        if rows:  # empty/never-refreshed means "not initialized yet" -> filter nothing
+            followed = {r[0] for r in rows}
     try:
         new_stories = scrape_stories(d, con)
     except Exception as e:  # a stories-viewer surprise must not sink the whole run
@@ -1682,12 +1890,17 @@ def scrape_once(d, con) -> dict:
     accounts_seen: set[str] = set()  # usernames already upserted this run
     avatars_checked: set[str] = set()  # usernames whose avatar has been considered this run
     warnings: list[str] = []
+    filtered_posts = 0  # dropped by the followed-accounts allowlist, if enabled
     screens = empty_streak = 0
     feed_reopened = False
     while screens < MAX_SCROLLS:
         xml = d.dump_hierarchy()
-        posts = parse_hierarchy(xml)
-        if screens == 0 and not posts:
+        raw_posts = parse_hierarchy(xml)
+        posts = raw_posts
+        if followed is not None:
+            posts = [p for p in raw_posts if not p["username"] or p["username"] in followed]
+            filtered_posts += len(raw_posts) - len(posts)
+        if screens == 0 and not raw_posts:
             _dump_debug(d, "last", xml=xml)
             log("no posts parsed on first screen — selectors probably need updating; dump saved")
         empty_streak = 0 if posts else empty_streak + 1
@@ -1865,6 +2078,7 @@ def scrape_once(d, con) -> dict:
         "link_sheet_failures": link_sheet_failures,
         "link_clipboard_failures": link_clipboard_failures,
         "warning": "; ".join(warnings) or None,
+        "filtered_posts": filtered_posts,
     }
 
 
@@ -1893,6 +2107,7 @@ def main():
             stats.get("link_clipboard_failures", 0),
             stats.get("new_stories", 0),
             stats.get("warning"),
+            stats.get("filtered_posts", 0),
         )
         seconds, attempt = next_sleep_seconds(exc, attempt)
         if attempt:
