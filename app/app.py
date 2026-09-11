@@ -3,6 +3,7 @@
 /instagram.xml            -> everything
 /instagram.xml?user=NAME  -> one account
 /stories.xml              -> currently unexpired stories
+/opml                     -> one-step bulk subscribe: every feed above, as an OPML outline
 /media/<file>             -> cropped post images
 /status                   -> plain-HTML health/status page
 """
@@ -15,6 +16,8 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from html import escape
 from pathlib import Path
+from urllib.parse import quote
+from xml.etree.ElementTree import Element, SubElement, tostring
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -280,8 +283,7 @@ def stories_feed(request: Request, limit: int = 200):
     return Response(fg.atom_str(pretty=True), media_type="application/atom+xml", headers={"ETag": etag})
 
 
-@app.get("/users")
-def users():
+def _usernames() -> list:
     if not Path(DB_PATH).exists():
         return []
     with closing(_connect()) as con:
@@ -289,6 +291,55 @@ def users():
             return [r[0] for r in con.execute("SELECT DISTINCT username FROM posts ORDER BY username")]
         except sqlite3.OperationalError:
             return []
+
+
+@app.get("/users")
+def users():
+    return _usernames()
+
+
+@app.get("/opml")
+def opml(request: Request):
+    """One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed
+    per username in /users — a single FreshRSS import subscribes to everything this instance
+    serves instead of pasting ?user= URLs in one at a time."""
+    usernames = _usernames()
+    etag = f'"{sha256(f"{PUBLIC_URL}|{'|'.join(usernames)}".encode()).hexdigest()}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+
+    root = Element("opml", version="2.0")
+    head = SubElement(root, "head")
+    SubElement(head, "title").text = "Instadroid"
+    SubElement(head, "dateCreated").text = datetime.now(UTC).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    body = SubElement(root, "body")
+    category = SubElement(body, "outline", text="Instagram", title="Instagram")
+
+    def _feed_outline(parent, text, xml_url, html_url):
+        SubElement(
+            parent,
+            "outline",
+            type="rss",
+            text=text,
+            title=text,
+            xmlUrl=xml_url,
+            htmlUrl=html_url,
+        )
+
+    _feed_outline(
+        category, "Instagram — Following", f"{PUBLIC_URL}/instagram.xml", "https://www.instagram.com/"
+    )
+    _feed_outline(category, "Instagram — Stories", f"{PUBLIC_URL}/stories.xml", "https://www.instagram.com/")
+    for u in usernames:
+        _feed_outline(
+            category,
+            u,
+            f"{PUBLIC_URL}/instagram.xml?user={quote(u)}",
+            f"https://www.instagram.com/{quote(u)}/",
+        )
+
+    xml_bytes = b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="unicode").encode()
+    return Response(xml_bytes, media_type="text/x-opml; charset=utf-8", headers={"ETag": etag})
 
 
 def _scraper_health(now: datetime | None = None) -> tuple[str, str]:

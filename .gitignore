@@ -34,7 +34,6 @@ local/
 *.doc
 *.docx
 *.id
-*.py
 *.pyc
 *.pem
 *.pub

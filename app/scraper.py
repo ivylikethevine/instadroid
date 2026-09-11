@@ -16,8 +16,11 @@ import re
 import sqlite3
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import adbutils
@@ -75,6 +78,12 @@ EMPTY_SCREEN_LIMIT = int(os.environ.get("EMPTY_SCREEN_LIMIT", "3"))
 RETRY_DELAYS_MINUTES = [
     float(x) for x in os.environ.get("RETRY_DELAYS_MINUTES", "2,5,15").split(",") if x.strip()
 ]
+# FreshRSS's own "online cron" actualize URL (https://.../i/?c=feed&a=actualize&user=...&token=...),
+# GETed after a run stores something new so it fetches now instead of waiting out its own poll
+# interval or per-feed TTL. Empty disables. Any reader with an equivalent plain-GET refresh webhook
+# works here too, not just FreshRSS.
+FRESHRSS_REFRESH_URL = os.environ.get("FRESHRSS_REFRESH_URL", "")
+FRESHRSS_REFRESH_TIMEOUT = float(os.environ.get("FRESHRSS_REFRESH_TIMEOUT", "10.0"))
 
 # --- Selectors (the fragile part) ---------------------------------------------------
 SELECTORS = {
@@ -745,6 +754,35 @@ def _stop_instagram(d):
         d.shell(["am", "force-stop", IG_PKG])
     except Exception as e:
         log(f"WARN: could not force-stop {IG_PKG}:", repr(e))
+
+
+def _redact_url(url: str) -> str:
+    """scheme://host/path only, no query string — FRESHRSS_REFRESH_URL carries an auth token and
+    must never land in the shared container log."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}{parts.path}"
+
+
+def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
+    """GET FRESHRSS_REFRESH_URL after a run that stored something new, so FreshRSS (or any reader
+    with an equivalent refresh webhook) fetches immediately instead of waiting out its own poll
+    interval. No-op when disabled or nothing new was stored. Best-effort like _sweep_cached_apps:
+    returns a short error string rather than raising — a reader being unreachable must not fail a
+    scrape that already succeeded. Returns None on a no-op or success."""
+    if not FRESHRSS_REFRESH_URL or (new_posts + new_stories) == 0:
+        return None
+    url = FRESHRSS_REFRESH_URL
+    if "ajax=" not in url:
+        url += ("&" if "?" in url else "?") + "ajax=1"
+    try:
+        with urllib.request.urlopen(url, timeout=FRESHRSS_REFRESH_TIMEOUT) as resp:
+            resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        error = f"FreshRSS refresh ping to {_redact_url(FRESHRSS_REFRESH_URL)} failed: {e!r}"
+        log("WARN:", error)
+        return error
+    log(f"pinged FreshRSS refresh ({_redact_url(FRESHRSS_REFRESH_URL)})")
+    return None
 
 
 def _prune_debug_dumps():
@@ -1819,6 +1857,8 @@ def scrape_once(d, con) -> dict:
     d.press("home")
     _sweep_cached_apps(d)
     _stop_instagram(d)
+    if push_error := _ping_freshrss(new, new_stories):
+        warnings.append(push_error)
     return {
         "new": new,
         "new_stories": new_stories,
