@@ -282,7 +282,13 @@ def test_device_snapshot_tolerates_shell_failures():
             raise RuntimeError("adb not connected")
 
     snapshot = scraper._device_snapshot(BrokenDevice())
-    assert snapshot == {"android_release": None, "android_sdk": None, "device_product": None}
+    assert snapshot == {
+        "android_release": None,
+        "android_sdk": None,
+        "device_product": None,
+        "ig_version": None,
+        "redroid_image": None,
+    }
 
 
 def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(tmp_path, monkeypatch):

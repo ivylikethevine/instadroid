@@ -7,6 +7,7 @@
 /status                   -> plain-HTML health/status page
 """
 
+import logging
 import os
 import sqlite3
 from contextlib import closing
@@ -16,7 +17,7 @@ from html import escape
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from feedgen.feed import FeedGenerator
 
@@ -24,6 +25,18 @@ DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
 MEDIA_DIR = os.environ.get("MEDIA_DIR", "/media")
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://localhost:8000").rstrip("/")
 MAX_LIMIT = 500
+
+
+class _SkipHealthcheck(logging.Filter):
+    """Drop GET /health (the compose healthcheck, every 30s) from uvicorn's access log, so the
+    size-capped Docker log holds actual feed traffic rather than mostly healthchecks."""
+
+    def filter(self, record):
+        return "/health " not in record.getMessage()
+
+
+# uvicorn configures its loggers before importing this module, so a filter added here sticks.
+logging.getLogger("uvicorn.access").addFilter(_SkipHealthcheck())
 
 app = FastAPI()
 Path(MEDIA_DIR).mkdir(parents=True, exist_ok=True)
@@ -278,9 +291,42 @@ def users():
             return []
 
 
+def _scraper_health(now: datetime | None = None) -> tuple[str, str]:
+    """("", "") when healthy, else (short label, reason). OVERDUE: no run has finished within
+    POLL_MAX_HOURS + 30min of the last one, i.e. the loop itself looks stuck (a run still in
+    progress fits comfortably inside that slack). FAILING: no *successful* run for two full poll
+    cycles plus an hour, e.g. a login challenge nobody has answered yet. No runs at all is healthy —
+    the scraper may simply be on its first one."""
+    if not Path(DB_PATH).exists():
+        return "", ""
+    with closing(_connect()) as con:
+        try:
+            last_finished, last_ok, first_started = con.execute(
+                "SELECT MAX(finished_at), MAX(CASE WHEN error IS NULL THEN finished_at END), MIN(started_at)"
+                " FROM runs"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return "", ""  # e.g. the driver hasn't run db_init() yet and the table doesn't exist
+    now = now or datetime.now(UTC)
+    poll_max_h = float(os.environ.get("POLL_MAX_HOURS", "4.5"))
+    finished = _dt(last_finished)
+    if finished and now - finished > timedelta(hours=poll_max_h + 0.5):
+        hours = (now - finished).total_seconds() / 3600
+        return "OVERDUE", f"no scrape run has finished in {hours:.1f}h"
+    reference = _dt(last_ok) or _dt(first_started)
+    if reference and now - reference > timedelta(hours=2 * poll_max_h + 1):
+        hours = (now - reference).total_seconds() / 3600
+        return "FAILING", f"no successful scrape run in {hours:.1f}h"
+    return "", ""
+
+
 @app.get("/health")
 def health():
     count, _ = _stats()
+    label, reason = _scraper_health()
+    if label:
+        # 503 so the compose healthcheck (which only checks for a 2xx) marks the container unhealthy.
+        return JSONResponse({"ok": False, "posts": count, "reason": reason}, status_code=503)
     return {"ok": True, "posts": count}
 
 
@@ -317,9 +363,10 @@ def _latest_device():
     with closing(_connect()) as con:
         con.row_factory = sqlite3.Row
         try:
+            # SELECT *, not named columns: a runs table from before ig_version/redroid_image
+            # existed must still show its Android version rather than fail the whole query.
             return con.execute(
-                "SELECT android_release, android_sdk, device_product FROM runs"
-                " WHERE android_release IS NOT NULL ORDER BY id DESC LIMIT 1"
+                "SELECT * FROM runs WHERE android_release IS NOT NULL ORDER BY id DESC LIMIT 1"
             ).fetchone()
         except sqlite3.OperationalError:
             return None
@@ -359,6 +406,26 @@ def _run_new_stories(run) -> str:
     return str(run["new_stories"] or 0)
 
 
+def _run_text(run, col: str) -> str:
+    """A text column off a runs row, or "" when it's NULL or the row predates that column."""
+    keys = run.keys()  # sqlite3.Row has no __contains__
+    return (run[col] or "") if col in keys else ""
+
+
+def _run_warning(run) -> str:
+    """A run's warning (e.g. it stopped early on empty screens), or ""."""
+    return _run_text(run, "warning")
+
+
+def _run_result(run) -> tuple[str, str]:
+    """(css class, text) for a run's Result cell: its error, else its warning, else "ok"."""
+    if run["error"]:
+        return "err", _short_error(run["error"])
+    if warning := _run_warning(run):
+        return "warn", f"warn: {_short_error(warning)}"
+    return "", "ok"
+
+
 def _active_stories_count() -> int:
     if not Path(DB_PATH).exists():
         return 0
@@ -379,16 +446,7 @@ def status_page():
     runs = _recent_runs()
     device = _latest_device()
     latest = runs[0] if runs else None
-
-    # Next run is expected finished_at + somewhere in [POLL_MIN_HOURS, POLL_MAX_HOURS]; flag it
-    # overdue only once we're well past the top of that range, so a run that's simply still in
-    # progress (login retries, a slow feed) isn't reported as stuck.
-    poll_max_h = float(os.environ.get("POLL_MAX_HOURS", "4.5"))
-    overdue = False
-    if latest:
-        finished = _dt(latest["finished_at"])
-        if finished:
-            overdue = (datetime.now(UTC) - finished) > timedelta(hours=poll_max_h + 0.5)
+    health_label, health_reason = _scraper_health()  # same verdict /health gives the healthcheck
 
     device_line = "no successful run yet"
     if device:
@@ -397,26 +455,41 @@ def status_page():
             device_line += f" (API {escape(device['android_sdk'])})"
         if device["device_product"]:
             device_line += f" — {escape(device['device_product'])}"
+        if ig := _run_text(device, "ig_version"):
+            device_line += f" · Instagram {escape(ig)}"
+        if image := _run_text(device, "redroid_image"):
+            device_line += f" · {escape(image)}"
 
     if not latest:
         latest_html = "<p>No scrape runs recorded yet.</p>"
     else:
-        status_word = "ERROR" if latest["error"] else ("OVERDUE" if overdue else "OK")
-        status_class = "bad" if (latest["error"] or overdue) else "good"
+        warning = _run_warning(latest)
+        if latest["error"] or health_label:
+            status_word, status_class = ("ERROR" if latest["error"] else health_label), "bad"
+        elif warning:
+            status_word, status_class = "WARN", "warn"
+        else:
+            status_word, status_class = "OK", "good"
         latest_html = f"""
         <p><span class="badge {status_class}">{status_word}</span>
            finished {escape(latest["finished_at"])} ({_duration(latest)}),
            {latest["new_posts"] if latest["new_posts"] is not None else 0} new post(s)</p>
         {f'<p class="err">{escape(_short_error(latest["error"]))}</p>' if latest["error"] else ""}
+        {f'<p class="err">{escape(health_reason)}</p>' if health_reason else ""}
+        {f'<p class="warn">{escape(warning)}</p>' if warning and not latest["error"] else ""}
         """
+
+    def _result_cell(r):
+        css, text = _run_result(r)
+        return f'<td class="{css}">{escape(text)}</td>'
 
     runs_rows = "".join(
         f"<tr><td>{escape(r['started_at'])}</td><td>{_duration(r)}</td>"
         f"<td>{r['new_posts'] if r['new_posts'] is not None else '—'}</td>"
         f"<td>{escape(_run_new_stories(r))}</td>"
         f"<td>{escape(_link_failures(r))}</td>"
-        f'<td class="{"err" if r["error"] else ""}">'
-        f"{escape(_short_error(r['error']) if r['error'] else 'ok')}</td></tr>"
+        f"<td>{escape(_run_text(r, 'ig_version') or '—')}</td>"
+        f"{_result_cell(r)}</tr>"
         for r in runs
     )
     users_rows = "".join(
@@ -436,7 +509,9 @@ td, th {{ text-align: left; padding: 0.25rem 0.6rem; border-bottom: 1px solid #d
 .badge {{ display: inline-block; padding: 0.1rem 0.5rem; border-radius: 0.3rem; font-weight: 600; }}
 .badge.good {{ background: #d7f5da; color: #146c2e; }}
 .badge.bad {{ background: #f8d7da; color: #842029; }}
+.badge.warn {{ background: #fff3cd; color: #664d03; }}
 .err {{ color: #842029; }}
+.warn {{ color: #664d03; }}
 </style></head>
 <body>
 <h1>Instadroid status</h1>
@@ -444,7 +519,7 @@ td, th {{ text-align: left; padding: 0.25rem 0.6rem; border-bottom: 1px solid #d
 <h2>Last scrape</h2>
 {latest_html}
 <h2>Recent runs</h2>
-<table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Link fails</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="6">none</td></tr>'}</table>
+<table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Link fails</th><th>Instagram</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="7">none</td></tr>'}</table>
 <h2>Totals</h2>
 <p>{total} post(s) stored across {len(users)} account(s), {active_stories} active stor{"y" if active_stories == 1 else "ies"}</p>
 <table><tr><th>Account</th><th>Posts</th><th>Latest</th></tr>{users_rows or '<tr><td colspan="3">none</td></tr>'}</table>
