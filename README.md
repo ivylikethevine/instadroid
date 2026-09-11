@@ -145,8 +145,14 @@ Captured stories are served at `/stories.xml` and always deleted after `STORY_RE
 python -m venv local/.venv && . local/.venv/bin/activate
 pip install -r scripts/requirements-dev.txt -r app/requirements.txt
 ruff check . && ruff format --check .
-PYTHONPATH=app pytest app/tests -q     # parser + feed tests, against a fixture / temp SQLite db
+PYTHONPATH=app pytest app/tests -q     # parser, feed, and device-flow tests; temp SQLite db
+PYTHONPATH=app pytest app/tests -q --cov=app --cov-report=term-missing   # with coverage
 ```
+
+The device-driving code (login, feed navigation, share sheet, carousels, stories, the scrape loop)
+is tested against `app/tests/fakedevice.py`: a scripted stand-in for a uiautomator2 device whose
+screens are synthetic hierarchy XML, with `goto`/`clip` attributes on nodes scripting what a tap
+does. No real account data is used in any fixture.
 
 CI (`.github/workflows/ci.yml`) runs ruff, the test suite, `pip-audit` on the requirements file
 (also weekly), shellcheck on the scripts, hadolint plus a build and smoke test of the image,
@@ -392,9 +398,10 @@ The most invasive items — each changes the container/process topology, not jus
 - **arm64 host support**: on an arm64 host, official `redroid/redroid` images run Instagram's arm64
   code natively — no NDK translation, sidestepping the whole "Which Android?" compatibility matrix.
   Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in the kernel).
-- **Replay tests and a module split**: a fake device replaying recorded hierarchy/screenshot
-  sequences would let `scrape_once()` — the core loop, covered only by stubbed tests today — run in
-  CI, with a helper to promote a `DEBUG_DIR` dump into a fixture. Splitting `scraper.py` (~1,700
+- **Replay tests and a module split**: `scrape_once()` and the other device flows now run in CI
+  against `tests/fakedevice.py`, but its screens are hand-written. Replaying *recorded* sequences —
+  with a helper that promotes a `DEBUG_DIR` dump into a sanitised fixture — would catch real
+  Instagram UI drift that synthetic screens can't. Splitting `scraper.py` (~1,700
   lines) into selectors/db/navigation/parsing/capture/retention modules, with numbered migrations
   in place of ad-hoc `PRAGMA user_version` checks, is a precondition for multi-account support and
   for the Rust evaluation below.
