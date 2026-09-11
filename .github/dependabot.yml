@@ -1,19 +1,13 @@
 version: 2
 updates:
   - package-ecosystem: pip
-    directory: /driver
-    schedule: { interval: weekly }
-  - package-ecosystem: pip
-    directory: /feed
+    directory: /app
     schedule: { interval: weekly }
   - package-ecosystem: pip
     directory: /scripts
     schedule: { interval: weekly }
   - package-ecosystem: docker
-    directory: /driver
-    schedule: { interval: weekly }
-  - package-ecosystem: docker
-    directory: /feed
+    directory: /app
     schedule: { interval: weekly }
   - package-ecosystem: github-actions
     directory: /

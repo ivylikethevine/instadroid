@@ -102,6 +102,10 @@ SELECTORS = {
     "login_password_hints": ["Password"],
     "login_button_texts": ["Log in", "Log In"],
     "login_page_markers": ["Log in", "Log In", "Forgot password?"],
+    # The logged-out "Join Instagram" welcome screen (shown before the actual login form, e.g.
+    # after a fresh install or an invalidated session) has neither a login form nor the markers
+    # above, so it must be detected and tapped through separately.
+    "welcome_existing_profile_text": "I already have a profile",
     # Post-login interstitials and the buttons that dismiss them.
     "dismiss_texts": ["Not now", "Not Now", "Skip", "Save", "Continue", "Don’t allow", "Cancel", "OK"],
     # Anything matching these means a human has to intervene.
@@ -212,9 +216,55 @@ def db_init():
     con.execute("UPDATE posts SET updated_at = scraped_at WHERE updated_at IS NULL")
     con.execute("CREATE INDEX IF NOT EXISTS posts_hash ON posts(hash)")
     con.execute("CREATE INDEX IF NOT EXISTS posts_username_posted_at ON posts(username, posted_at)")
+    con.execute(
+        """CREATE TABLE IF NOT EXISTS runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            new_posts INTEGER,
+            error TEXT,
+            android_release TEXT,
+            android_sdk TEXT,
+            device_product TEXT
+        )"""
+    )
     con.commit()
     _migrate_dedupe(con)
     return con
+
+
+def _device_snapshot(d) -> dict:
+    """Best-effort ro.build.* props for the status page. Uses a plain adb shell getprop rather
+    than uiautomator2's jsonrpc info, so a wedged automation service can't also blank this out."""
+
+    def prop(name):
+        try:
+            return d.shell(f"getprop {name}").output.strip() or None
+        except Exception:
+            return None
+
+    return {
+        "android_release": prop("ro.build.version.release"),
+        "android_sdk": prop("ro.build.version.sdk"),
+        "device_product": prop("ro.product.name") or prop("ro.build.product"),
+    }
+
+
+def record_run(con, started_at, finished_at, new_posts, error, snapshot):
+    con.execute(
+        "INSERT INTO runs (started_at, finished_at, new_posts, error, android_release, android_sdk,"
+        " device_product) VALUES (?,?,?,?,?,?,?)",
+        (
+            started_at,
+            finished_at,
+            new_posts,
+            error,
+            snapshot.get("android_release"),
+            snapshot.get("android_sdk"),
+            snapshot.get("device_product"),
+        ),
+    )
+    con.commit()
 
 
 def _safe_parse_posted_at(posted_date, scraped_at_iso):
@@ -360,6 +410,23 @@ def connect_device():
     return d
 
 
+def _launch_app(d):
+    """Bring IG_PKG to the foreground. uiautomator2's app_start() defaults to `monkey -c
+    LAUNCHER` when no activity is given, which on this device silently no-ops (exit code 251,
+    launcher stays focused) — Instagram ships many enabled/disabled activity-aliases for seasonal
+    icon themes (`.activity.MainTabActivity.kpop`, `.flame`, `.slime`, ...), and category-based
+    resolution (`am start -c LAUNCHER` too) can't disambiguate them. `pm resolve-activity` returns
+    the one actually enabled, so start that explicit component instead — falling back to monkey
+    only if resolution itself fails."""
+    try:
+        out = d.shell(["cmd", "package", "resolve-activity", "--brief", IG_PKG]).output
+        activity = out.strip().splitlines()[-1].split("/", 1)[1]
+        d.app_start(IG_PKG, activity=activity, stop=False)
+    except Exception as e:
+        log(f"WARN: resolve-activity failed ({e!r}); falling back to monkey launch")
+        _launch_app(d)
+
+
 def human_pause(lo=1.0, hi=3.0):
     time.sleep(random.uniform(lo, hi))
 
@@ -402,11 +469,17 @@ def _prune_debug_dumps():
 
 def _dump_debug(d, name, xml=None):
     """Save a hierarchy + screenshot pair for later inspection. Pass `xml` when the caller
-    already has a fresh dump, to avoid a redundant device round-trip."""
-    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-    (DEBUG_DIR / f"{name}_hierarchy.xml").write_text(xml if xml is not None else d.dump_hierarchy())
-    d.screenshot().convert("RGB").save(DEBUG_DIR / f"{name}_screen.jpg", quality=70)
-    _prune_debug_dumps()
+    already has a fresh dump, to avoid a redundant device round-trip. Best-effort: a debug dump is
+    a diagnostic aid, not part of the scrape itself, so a write failure here (e.g. a stale file
+    left owned by a different uid from a `docker exec -u root` session) must not crash the whole
+    run — it just means this one dump is missing from $DEBUG_DIR."""
+    try:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        (DEBUG_DIR / f"{name}_hierarchy.xml").write_text(xml if xml is not None else d.dump_hierarchy())
+        d.screenshot().convert("RGB").save(DEBUG_DIR / f"{name}_screen.jpg", quality=70)
+        _prune_debug_dumps()
+    except OSError as e:
+        log(f"WARN: could not write debug dump {name!r}:", repr(e))
 
 
 def _dismiss_interstitials(d, rounds=4):
@@ -439,8 +512,20 @@ def ensure_logged_in(d):
     """
     if IG_PKG not in d.app_list():
         raise RuntimeError(f"{IG_PKG} is not installed on the device; adb install it first")
-    d.app_start(IG_PKG, stop=False)
+    _launch_app(d)
     human_pause(4, 6)
+    for attempt in range(3):
+        if d.app_current().get("package") == IG_PKG:
+            break
+        log(f"WARN: {IG_PKG} not foregrounded yet (attempt {attempt}); retrying launch")
+        _launch_app(d)
+        human_pause(3, 5)
+    else:
+        # Without this check, every screen-detection call below trivially finds nothing (we're
+        # still on the home screen) and the function falls through to "no login screen; assume
+        # session is live" — a false positive that leaves the caller thinking it's logged in.
+        _dump_debug(d, "login")
+        raise RuntimeError(f"could not bring {IG_PKG} to the foreground; see {DEBUG_DIR}")
     ok = d(text="OK")  # stray "Enter your password" style alert from a previous attempt
     if ok.exists(timeout=1):
         ok.click()
@@ -448,6 +533,14 @@ def ensure_logged_in(d):
     if c := _challenge_present(d):
         _dump_debug(d, "login")
         raise RuntimeError(f"Instagram wants a human: '{c}' screen; see {DEBUG_DIR}")
+    existing = d(text=SELECTORS["welcome_existing_profile_text"])
+    if existing.exists(timeout=1):
+        # Logged-out "Join Instagram" welcome screen (fresh install, or an invalidated session) —
+        # neither a login form nor a login_page_marker, so it must be tapped through first or the
+        # check below mistakes it for an already-live session.
+        log("logged-out welcome screen detected; tapping through to the login form")
+        existing.click()
+        human_pause(1.5, 2.5)
     form = _login_form(d)
     if not form:
         if _first(d, text=SELECTORS["login_page_markers"]):
@@ -495,7 +588,7 @@ def _on_following_feed(d):
 def open_following_feed(d):
     ensure_logged_in(d)
     if d.app_current().get("package") != IG_PKG:
-        d.app_start(IG_PKG, stop=False)
+        _launch_app(d)
         human_pause(3, 5)
     _dismiss_interstitials(d)  # notification / location / "set up on new device" prompts
     close_sheets(d)
@@ -673,7 +766,7 @@ def close_sheets(d, max_back=2):
         human_pause(1.5, 2)
     if d.app_current().get("package") != IG_PKG:
         log("WARN: left Instagram while closing a sheet; relaunching")
-        d.app_start(IG_PKG, stop=False)
+        _launch_app(d)
         human_pause(3, 5)
     return not _sheet_open(d)
 
@@ -696,7 +789,7 @@ def _back_to_feed(d, tries=2):
     backs out of the app: if we somehow left it, relaunch instead."""
     for _ in range(tries):
         if d.app_current().get("package") != IG_PKG:
-            d.app_start(IG_PKG, stop=False)
+            _launch_app(d)
             human_pause(3, 5)
             return _on_feed(d)
         if _on_feed(d) and not _sheet_open(d):
@@ -961,12 +1054,17 @@ def scrape_once(d, con):
 def main():
     con = db_init()
     while True:
+        started_at = datetime.now(UTC).isoformat()
+        snapshot, n, error = {}, 0, None
         try:
             d = connect_device()
+            snapshot = _device_snapshot(d)
             n = scrape_once(d, con)
             log(f"run complete: {n} new posts")
         except Exception as e:  # keep the loop alive; log for debugging
-            log("ERROR:", repr(e))
+            error = repr(e)
+            log("ERROR:", error)
+        record_run(con, started_at, datetime.now(UTC).isoformat(), n, error, snapshot)
         hours = random.uniform(POLL_MIN_H, POLL_MAX_H)
         log(f"sleeping {hours:.2f}h")
         time.sleep(hours * 3600)

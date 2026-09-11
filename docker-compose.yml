@@ -14,8 +14,12 @@ services:
     container_name: ig-redroid
     privileged: true
     restart: "no"
-    mem_limit: 4g
-    shm_size: 2g
+    # Measured peak while Instagram is actually open and scrolling: ~1.1-1.26GiB (idle boot is
+    # ~500-525MiB). 2g leaves ~60% headroom over the observed peak; shm_size is left at a more
+    # conservative 2x that guidance (1g) rather than cut aggressively, since under-provisioning it
+    # risks screenshot/graphics-buffer failures that are much harder to diagnose than an OOM.
+    mem_limit: 2g
+    shm_size: 1g
     volumes:
       - ./local/data/android:/data
     ports:
@@ -59,7 +63,8 @@ services:
       - ./local/data/db:/db
       - ./local/data/media:/media
       - ./local/data/debug:/debug
-    mem_limit: 768m
+    # Measured peak while actively scraping: ~97-125MiB (idle is ~67-97MiB).
+    mem_limit: 256m
     cpus: 1.5
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]

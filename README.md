@@ -159,3 +159,43 @@ flat. Debug dumps in `local/data/debug` are saved as JPEG and only the newest 12
 - Images are screenshot crops of whatever was on screen (first carousel slide, video poster frame,
   including any in-app overlay such as the audio label on videos).
 - Videos/Reels get a still only.
+
+## Roadmap
+
+- **Configurable time-fuzzing**: `POLL_MIN_HOURS`/`POLL_MAX_HOURS` and the scroll swipe/pause
+  ranges are all uniform-random today. Make the distribution itself pluggable (e.g. log-normal,
+  day/night-aware, weekday vs. weekend patterns) instead of just the min/max bounds.
+- **IP proxy support**: route redroid's network traffic through a per-account HTTP/SOCKS proxy.
+- **VPN support**: route through a VPN client (e.g. WireGuard) instead of/alongside a proxy.
+- **Mock location and timezone within an area**: set a fake GPS fix and device timezone that
+  agree with each other (and with the IP proxy/VPN above) for a chosen region, rather than
+  whatever redroid defaults to — a mismatch between IP geolocation, GPS, and timezone is an easy
+  signal for Instagram to notice.
+- **Multiple Android VMs**: run several redroid instances in parallel (one per account/session)
+  rather than the current single-container setup, so one login doesn't gate every account.
+- **Pure ADB backend for a real phone**: an alternative to redroid that drives a physical Android
+  device over USB/network ADB, for accounts where an emulator's fingerprint is too great a risk.
+- **Investigate a Rust rewrite**: evaluate rewriting the driver (uiautomator2 automation + parsing)
+  in Rust — worth weighing against the current Python stack once the automation logic stabilizes,
+  not before.
+- **More Android configuration tuning**: beyond `tune-android.sh`'s animation/sync/location
+  settings — e.g. locale, timezone, display density, and other fingerprint-adjacent knobs worth
+  exposing per account.
+- **Document compatible Android image / Instagram version pairs**: the 2026-09-10/11 incidents (see
+  `CLAUDE.md`) showed how easily a redroid image swap or an Instagram update can break things in
+  subtle, hard-to-diagnose ways. Track and publish which `erstt/redroid` tags have been verified
+  against which Instagram APK versions, so a future upgrade is a lookup instead of a rediscovery.
+- **More reliable permalinks**: reduce how often "Copy link" fails and a post falls back to a
+  hash-based id instead of its real shortcode (see "Known limitations" above).
+- **Handle username changes**: detect when a followed account renames itself and reconcile its
+  history under the new `@username` instead of treating it as a different account.
+- **Profile picture display**: show each account's avatar in the feed, not just post media.
+- **Stories support**: currently only chronological feed posts are scraped; Stories aren't
+  captured at all.
+- **Real video capture**: Videos/Reels currently get a still poster frame only (see "Known
+  limitations" above) — capture actual playable video.
+- **Full carousel capture**: only the first carousel slide is captured today; store every slide.
+- **Configurable storage size cap**: retention today (`RETAIN_DAYS`) is time-based only — add a
+  size-based cap (e.g. max total MB for `local/data/media`+the DB) that prunes the oldest posts
+  once disk use crosses it, for accounts that post heavily enough that time alone isn't a useful
+  bound.
