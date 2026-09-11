@@ -164,6 +164,43 @@ def test_db_init_migration_merges_legacy_duplicate_rows(tmp_path, monkeypatch):
     assert posts[0]["media_file"] == "weakhash.jpg"  # the only crop that exists is kept
 
 
+def test_dump_debug_does_not_raise_on_a_write_failure(tmp_path, monkeypatch):
+    # e.g. a stale file left owned by a different uid from a `docker exec -u root` session, or
+    # here: DEBUG_DIR itself can't be created because something else already occupies that path.
+    blocked = tmp_path / "debug"
+    blocked.write_text("not a directory")
+    monkeypatch.setattr(scraper, "DEBUG_DIR", blocked)
+
+    class FakeDevice:
+        def dump_hierarchy(self):
+            return "<hierarchy/>"
+
+    scraper._dump_debug(FakeDevice(), "whatever")  # must not raise
+
+
+def test_record_run_writes_a_row(con_and_media):
+    con, _ = con_and_media
+    started = datetime.now(UTC).isoformat()
+    finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
+
+    scraper.record_run(con, started, finished, 3, None, {"android_release": "13", "android_sdk": "33"})
+
+    row = con.execute("SELECT * FROM runs").fetchone()
+    assert row["new_posts"] == 3
+    assert row["error"] is None
+    assert row["android_release"] == "13"
+    assert row["device_product"] is None  # not in the snapshot dict
+
+
+def test_device_snapshot_tolerates_shell_failures():
+    class BrokenDevice:
+        def shell(self, cmd):
+            raise RuntimeError("adb not connected")
+
+    snapshot = scraper._device_snapshot(BrokenDevice())
+    assert snapshot == {"android_release": None, "android_sdk": None, "device_product": None}
+
+
 def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(tmp_path, monkeypatch):
     db = tmp_path / "posts.sqlite"
     media = tmp_path / "media"

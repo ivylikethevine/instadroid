@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
@@ -46,6 +47,18 @@ def test_feed_lists_posts_with_permalinks_and_escaping(tmp_path, monkeypatch):
     assert "&lt;there&gt;" in body and "<there>" not in body
     assert "San Diego" in body
     assert body.index("someone") < body.index("other")  # posted_at order, not scrape order
+
+
+def test_feed_entries_expose_both_posted_and_saved_dates_for_sorting(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)
+    body = client.get("/instagram.xml").text
+    # Machine-sortable Atom fields (posted_at -> published, scraped_at -> updated)...
+    assert "<published>2026-09-08T09:00:00+00:00</published>" in body
+    assert "<updated>2026-09-08T08:00:00+00:00</updated>" in body
+    # ...and spelled out in the human-readable content too, so sorting-by-eye works in any reader
+    # that doesn't surface <published>/<updated>.
+    assert "Posted 2 days ago (2026-09-08 09:00 UTC)" in body
+    assert "saved 2026-09-08 08:00 UTC" in body
 
 
 def test_user_filter_and_users_endpoint(tmp_path, monkeypatch):
@@ -134,6 +147,86 @@ def test_etag_changes_when_a_row_is_merged_in_place(tmp_path, monkeypatch):
     assert second.status_code == 200
     assert "The real caption" in second.text
     assert second.headers["etag"] != etag
+
+
+def test_status_page_with_no_runs_yet(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)
+    r = client.get("/status")
+    assert r.status_code == 200
+    assert "No scrape runs recorded yet" in r.text
+    assert "no successful run yet" in r.text
+
+
+def test_status_page_shows_latest_ok_run_and_device(tmp_path, monkeypatch):
+    db = tmp_path / "posts.sqlite"
+    client = make_app(tmp_path, monkeypatch)
+    con = sqlite3.connect(db)
+    con.execute(
+        """CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+            new_posts INTEGER, error TEXT, android_release TEXT, android_sdk TEXT, device_product TEXT
+        )"""
+    )
+    now = datetime.now(UTC)
+    con.execute(
+        "INSERT INTO runs (started_at, finished_at, new_posts, error, android_release, android_sdk,"
+        " device_product) VALUES (?,?,?,?,?,?,?)",
+        (
+            (now - timedelta(minutes=2)).isoformat(),
+            now.isoformat(),
+            2,
+            None,
+            "13",
+            "33",
+            "redroid_x86_64",
+        ),
+    )
+    con.commit()
+    con.close()
+
+    body = client.get("/status").text
+    assert "Android 13" in body
+    assert "API 33" in body
+    assert "redroid_x86_64" in body
+    assert "OK" in body
+    assert "2m 0s" in body
+    assert "2 new post(s)" in body
+    assert "someone" in body and "other" in body  # per-account totals from the seeded posts
+
+
+def test_status_page_flags_an_error_run(tmp_path, monkeypatch):
+    db = tmp_path / "posts.sqlite"
+    client = make_app(tmp_path, monkeypatch)
+    con = sqlite3.connect(db)
+    con.execute(
+        """CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+            new_posts INTEGER, error TEXT, android_release TEXT, android_sdk TEXT, device_product TEXT
+        )"""
+    )
+    con.execute(
+        "INSERT INTO runs (started_at, finished_at, new_posts, error) VALUES (?,?,?,?)",
+        ("2026-09-08T08:00:00+00:00", "2026-09-08T08:00:30+00:00", 0, "RuntimeError('login failed')"),
+    )
+    con.commit()
+    con.close()
+
+    body = client.get("/status").text
+    assert "ERROR" in body
+    assert "login failed" in body
+
+
+def test_short_error_truncates_multiline_stack_traces(tmp_path, monkeypatch):
+    make_app(tmp_path, monkeypatch)
+    import app
+
+    assert app._short_error("RuntimeError('simple')") == "RuntimeError('simple')"
+    multiline = "LaunchUiAutomationError('boom', 'a huge\nmulti-line\njava stack trace')"
+    result = app._short_error(multiline)
+    assert "\n" not in result
+    assert result.startswith("LaunchUiAutomationError")
+    long_one_liner = "x" * 200
+    assert app._short_error(long_one_liner) == "x" * 139 + "…"
 
 
 def test_dt_handles_naive_and_malformed_timestamps(tmp_path, monkeypatch):
