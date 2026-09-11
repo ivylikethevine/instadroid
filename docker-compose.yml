@@ -106,3 +106,33 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # Optional: a real FreshRSS to subscribe to this instance's feeds. Off by default — start with
+  # `docker compose --profile freshrss up -d freshrss`. First-run setup (creates the SQLite-backed
+  # instance and a user with an API token) is two one-time commands, see README's FreshRSS section:
+  #   docker compose exec freshrss ./cli/do-install.php --default_user <name> --auth_type form --db-type sqlite
+  #   docker compose exec freshrss ./cli/create-user.php --user <name> --password <pw> --token <token> --no-default-feeds
+  # That token is what FRESHRSS_REFRESH_URL (app service env, read by scraper.py) is built from.
+  freshrss:
+    image: freshrss/freshrss:1.30.0-alpine
+    container_name: ig-freshrss
+    profiles: [freshrss]
+    logging: *logging
+    restart: unless-stopped
+    # Host networking, same reason as the app service above: the feed server binds the host's own
+    # 127.0.0.1:8000 (FEED_HOST default), which a bridged container could not reach, and the
+    # scraper's refresh ping has to reach FreshRSS back over that same loopback. LISTEN below keeps
+    # FreshRSS itself loopback-only despite host networking, since the feed still has no auth of its
+    # own (see README's "Optional feed auth" roadmap item) — nothing here should reach the LAN.
+    network_mode: host
+    environment:
+      LISTEN: ${FRESHRSS_LISTEN:-127.0.0.1:8080}
+      TZ: ${DEVICE_TIMEZONE:-UTC}
+      CRON_MIN: ${FRESHRSS_CRON_MIN:-}   # empty: the scraper pushes instead of FreshRSS polling
+      # Required, not optional: FreshRSS 1.30+ refuses to fetch "internal" hosts as an SSRF guard,
+      # and this feed lives on 127.0.0.1 — without this the subscription silently fetches nothing.
+      INTERNAL_HOST_ALLOWLIST: ${FRESHRSS_INTERNAL_HOST_ALLOWLIST:-127.0.0.1:8000 localhost:8000}
+    volumes:
+      - ./local/data/freshrss/data:/var/www/FreshRSS/data
+      - ./local/data/freshrss/extensions:/var/www/FreshRSS/extensions
+    mem_limit: 512m

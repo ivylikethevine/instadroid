@@ -453,6 +453,26 @@ def test_merge_accounts_is_a_noop_for_the_same_username(con_and_media):
     assert scraper.rename_account(con, "same", "same") == 0
 
 
+def test_rename_account_keeps_a_followed_allowlist_entry_in_sync(con_and_media):
+    con, _ = con_and_media
+    con.execute("INSERT INTO following (username, updated_at) VALUES ('old_handle', '2020-01-01')")
+    con.commit()
+
+    scraper.rename_account(con, "old_handle", "new_handle")
+
+    assert {r[0] for r in con.execute("SELECT username FROM following")} == {"new_handle"}
+
+
+def test_rename_account_leaves_the_allowlist_alone_when_the_old_name_wasnt_on_it(con_and_media):
+    con, _ = con_and_media
+    con.execute("INSERT INTO following (username, updated_at) VALUES ('someone_else', '2020-01-01')")
+    con.commit()
+
+    scraper.rename_account(con, "old_handle", "new_handle")
+
+    assert {r[0] for r in con.execute("SELECT username FROM following")} == {"someone_else"}
+
+
 def test_needs_avatar_refresh_true_when_never_captured(con_and_media):
     con, _ = con_and_media
     con.execute("INSERT INTO accounts (username) VALUES ('u')")
@@ -482,3 +502,26 @@ def test_needs_avatar_refresh_true_when_stale(con_and_media, monkeypatch):
     )
     con.commit()
     assert scraper._needs_avatar_refresh(con, "u") is True
+
+
+def test_needs_following_refresh_true_when_never_captured(con_and_media):
+    con, _ = con_and_media
+    assert scraper._needs_following_refresh(con) is True
+
+
+def test_needs_following_refresh_false_when_recently_captured(con_and_media, monkeypatch):
+    con, _ = con_and_media
+    monkeypatch.setattr(scraper, "FOLLOWING_REFRESH_DAYS", 7)
+    now = datetime.now(UTC).isoformat()
+    con.execute("INSERT INTO following (username, updated_at) VALUES ('u', ?)", (now,))
+    con.commit()
+    assert scraper._needs_following_refresh(con) is False
+
+
+def test_needs_following_refresh_true_when_stale(con_and_media, monkeypatch):
+    con, _ = con_and_media
+    monkeypatch.setattr(scraper, "FOLLOWING_REFRESH_DAYS", 7)
+    old = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    con.execute("INSERT INTO following (username, updated_at) VALUES ('u', ?)", (old,))
+    con.commit()
+    assert scraper._needs_following_refresh(con) is True

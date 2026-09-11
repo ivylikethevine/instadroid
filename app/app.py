@@ -3,6 +3,7 @@
 /instagram.xml            -> everything
 /instagram.xml?user=NAME  -> one account
 /stories.xml              -> currently unexpired stories
+/opml                     -> one-step bulk subscribe: every feed above, as an OPML outline
 /media/<file>             -> cropped post images
 /status                   -> plain-HTML health/status page
 """
@@ -15,6 +16,8 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from html import escape
 from pathlib import Path
+from urllib.parse import quote
+from xml.etree.ElementTree import Element, SubElement, tostring
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -280,8 +283,7 @@ def stories_feed(request: Request, limit: int = 200):
     return Response(fg.atom_str(pretty=True), media_type="application/atom+xml", headers={"ETag": etag})
 
 
-@app.get("/users")
-def users():
+def _usernames() -> list:
     if not Path(DB_PATH).exists():
         return []
     with closing(_connect()) as con:
@@ -289,6 +291,55 @@ def users():
             return [r[0] for r in con.execute("SELECT DISTINCT username FROM posts ORDER BY username")]
         except sqlite3.OperationalError:
             return []
+
+
+@app.get("/users")
+def users():
+    return _usernames()
+
+
+@app.get("/opml")
+def opml(request: Request):
+    """One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed
+    per username in /users — a single FreshRSS import subscribes to everything this instance
+    serves instead of pasting ?user= URLs in one at a time."""
+    usernames = _usernames()
+    etag = f'"{sha256(f"{PUBLIC_URL}|{'|'.join(usernames)}".encode()).hexdigest()}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+
+    root = Element("opml", version="2.0")
+    head = SubElement(root, "head")
+    SubElement(head, "title").text = "Instadroid"
+    SubElement(head, "dateCreated").text = datetime.now(UTC).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    body = SubElement(root, "body")
+    category = SubElement(body, "outline", text="Instagram", title="Instagram")
+
+    def _feed_outline(parent, text, xml_url, html_url):
+        SubElement(
+            parent,
+            "outline",
+            type="rss",
+            text=text,
+            title=text,
+            xmlUrl=xml_url,
+            htmlUrl=html_url,
+        )
+
+    _feed_outline(
+        category, "Instagram — Following", f"{PUBLIC_URL}/instagram.xml", "https://www.instagram.com/"
+    )
+    _feed_outline(category, "Instagram — Stories", f"{PUBLIC_URL}/stories.xml", "https://www.instagram.com/")
+    for u in usernames:
+        _feed_outline(
+            category,
+            u,
+            f"{PUBLIC_URL}/instagram.xml?user={quote(u)}",
+            f"https://www.instagram.com/{quote(u)}/",
+        )
+
+    xml_bytes = b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="unicode").encode()
+    return Response(xml_bytes, media_type="text/x-opml; charset=utf-8", headers={"ETag": etag})
 
 
 def _scraper_health(now: datetime | None = None) -> tuple[str, str]:
@@ -406,6 +457,15 @@ def _run_new_stories(run) -> str:
     return str(run["new_stories"] or 0)
 
 
+def _run_filtered_posts(run) -> str:
+    """filtered_posts for a run (posts dropped by the followed-accounts allowlist, when enabled),
+    or "—" against a runs row from before that column existed."""
+    keys = run.keys()
+    if "filtered_posts" not in keys:
+        return "—"
+    return str(run["filtered_posts"] or 0)
+
+
 def _run_text(run, col: str) -> str:
     """A text column off a runs row, or "" when it's NULL or the row predates that column."""
     keys = run.keys()  # sqlite3.Row has no __contains__
@@ -487,6 +547,7 @@ def status_page():
         f"<tr><td>{escape(r['started_at'])}</td><td>{_duration(r)}</td>"
         f"<td>{r['new_posts'] if r['new_posts'] is not None else '—'}</td>"
         f"<td>{escape(_run_new_stories(r))}</td>"
+        f"<td>{escape(_run_filtered_posts(r))}</td>"
         f"<td>{escape(_link_failures(r))}</td>"
         f"<td>{escape(_run_text(r, 'ig_version') or '—')}</td>"
         f"{_result_cell(r)}</tr>"
@@ -519,7 +580,7 @@ td, th {{ text-align: left; padding: 0.25rem 0.6rem; border-bottom: 1px solid #d
 <h2>Last scrape</h2>
 {latest_html}
 <h2>Recent runs</h2>
-<table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Link fails</th><th>Instagram</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="7">none</td></tr>'}</table>
+<table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Filtered</th><th>Link fails</th><th>Instagram</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="8">none</td></tr>'}</table>
 <h2>Totals</h2>
 <p>{total} post(s) stored across {len(users)} account(s), {active_stories} active stor{"y" if active_stories == 1 else "ies"}</p>
 <table><tr><th>Account</th><th>Posts</th><th>Latest</th></tr>{users_rows or '<tr><td colspan="3">none</td></tr>'}</table>
