@@ -70,7 +70,8 @@ docker compose pull redroid
 docker compose up -d redroid
 adb connect 127.0.0.1:5555
 adb -s 127.0.0.1:5555 wait-for-device shell 'while ! pm list packages >/dev/null 2>&1; do sleep 2; done'
-./scripts/tune-android.sh 127.0.0.1:5555     # animations off, sync/location off, Google apps disabled
+./scripts/tune-android.sh 127.0.0.1:5555     # animations off, sync/location off, Google apps disabled,
+                                              # + DEVICE_TIMEZONE from .env if set (see Roadmap)
 
 apkeep -a com.instagram.android -d apk-pure local
 unzip -o local/com.instagram.android.xapk -d local/xapk
@@ -94,17 +95,20 @@ and `last_screen.jpg`, then adjust `SELECTORS`.
 ## How a scrape works
 
 1. Log in if needed, open the Following feed (the switcher is retried; cold starts are slow).
-2. Walk the accessibility tree screen by screen. A post is registered only once the bottom of its
+2. Switch back to the Home feed — stories don't appear on the Following screen — and capture up to
+   `MAX_STORIES_PER_RUN` not-yet-seen accounts' current story frame from the tray, then return to
+   Following. See "Stories" below for what this does and doesn't cover.
+3. Walk the accessibility tree screen by screen. A post is registered only once the bottom of its
    card (share button + caption/timestamp) is on screen, so it has a stable identity. The first time
    an account's own header is on screen each run, its avatar is cropped and saved (once per account,
    refreshed after `AVATAR_REFRESH_DAYS`).
-3. For each new post: crop the media from a screenshot (a video/Reel gets `VIDEO_SETTLE_SECONDS` to
+4. For each new post: crop the media from a screenshot (a video/Reel gets `VIDEO_SETTLE_SECONDS` to
    let autoplay start and the audio-label overlay fade first; a carousel is swiped through in place,
    capturing up to `MAX_CAROUSEL_SLIDES`), then tap Share → "Copy link" and read the clipboard. The
    shortcode becomes the post id and the feed links straight to the post. If the sheet fails to open
    or the clipboard never updates, it's retried on a later screen (`PERMALINK_RETRIES`), then the
    post falls back to a content hash.
-4. Stop after `STOP_AFTER_SEEN` consecutive already-stored posts or `MAX_SCROLLS` screens.
+5. Stop after `STOP_AFTER_SEEN` consecutive already-stored posts or `MAX_SCROLLS` screens.
 
 Taps are always made from a hierarchy dump taken immediately beforehand, and nothing is ever tapped
 inside an open sheet except "Copy link" (a stray tap there could message a contact).
@@ -113,6 +117,24 @@ If a followed account renames itself, `docker compose exec app python scraper.py
 <new>` repoints its stored history to the new username (there's no automatic detection — Instagram's
 numeric user id never appears in the feed's accessibility tree). It doesn't fix an existing
 `?user=<old>` FreshRSS subscription; re-subscribe under the new username after renaming.
+
+## Stories
+
+Opening a story is a real, visible view — the scraping account shows up in that account's story
+viewer list, same as a human opening it would. That's accepted as the cost of this feature, not a
+bug; keep `MAX_STORIES_PER_RUN` in mind alongside "Staying under the radar" below if that's a
+concern for a given account.
+
+Only the story's current frame is captured — never actually tapped, since only the initial open tap
+is made and every visit exits via Back. Advancing a story via tap was tried during development and,
+on this host, reliably ejects Instagram to the OS launcher once a single-frame story's queue is
+exhausted (Back, by contrast, always returns cleanly to the tray). Given that, multi-frame stories
+only ever contribute their currently-shown frame, not the whole reel — a deliberate scope decision,
+not a "not yet implemented" gap. Stories have no permalink/shortcode the way posts do, so each is
+identified by a content hash of its own cropped image (the crop skips the header overlay so
+identical stories don't hash differently as their relative timestamp ticks over between runs).
+Captured stories are served at `/stories.xml` and always deleted after `STORY_RETAIN_HOURS`
+(default 24), independent of `RETAIN_DAYS`.
 
 ## Development
 
@@ -132,16 +154,23 @@ Actions.
 
 Subscribe to `http://<host>:8000/instagram.xml` (set `PUBLIC_URL` in compose to whatever
 FreshRSS can reach so image links resolve). Per-account feeds: `/instagram.xml?user=somebody`.
-`/users` lists everyone seen so far.
+`/users` lists everyone seen so far. `/stories.xml` is a separate feed of currently-unexpired
+stories (see "Stories" above) — subscribe to it separately if you want it.
 
 ## Staying under the radar
 
 - Keep `POLL_MIN_HOURS` ≥ 2. Instagram tolerates a phone that checks in a few times a day; it does not
   tolerate one that scrolls every 15 minutes with metronome timing.
+- `TIME_DISTRIBUTION=daynight` is a cheap extra layer on top of that: a metronome that's merely
+  slow is still a metronome, whereas real usage naturally thins out overnight. See "Anti-detection:
+  timing and device tuning" in the Roadmap for the full shape.
 - `MAX_SCROLLS` 25 is roughly 10–15 posts per run on this feed layout (each new post costs a
   share-sheet round trip). If you follow enough accounts to post more than that in a ~3-hour
   window, raise the poll frequency slowly (lower `POLL_MIN_HOURS`/`POLL_MAX_HOURS`) rather than
   scroll depth.
+- `MAX_STORIES_PER_RUN` is a real, visible view of each story it opens — unlike scrolling the feed,
+  which is invisible to the accounts posting it. Keep it modest if the followed accounts would find
+  a stranger's account watching every one of their stories every few hours notable.
 - Occasionally open `scrcpy` and poke around yourself; it helps, and you'll need it anyway for
   the "confirm it's you" challenges that appear a few times a year.
 
@@ -167,6 +196,10 @@ posts are removed after that (even if still within `RETAIN_DAYS`) until total si
 cap — worth setting once carousels are captured in full, since a single heavily-posting account can
 otherwise grow disk use with no bound but time. Debug dumps in `local/data/debug` are saved as JPEG
 and only the newest 12 are kept.
+
+Stories are unrelated to all of the above: they live in their own `stories` table and
+`media/stories` subdirectory, and are always deleted `STORY_RETAIN_HOURS` after capture regardless
+of `RETAIN_DAYS`/`MEDIA_MAX_MB` — see "Stories" above.
 
 ## Known limitations of v1
 
@@ -200,28 +233,60 @@ and "Known limitations" above for each's current shape and remaining caveats. `r
   Reels/videos never get the actual video. Likely needs screen recording rather than a screenshot,
   plus somewhere to store and serve a video file per post, and meaningfully longer dwell time per
   video post (see "Staying under the radar" above) — a real cost/benefit call, not just effort.
+- **Full story-reel capture**: only a story's current frame is captured (see "Stories" above) — a
+  deliberate scope decision, not a gap left for later, given that tapping to advance a story has
+  been observed to eject the app to the OS launcher on this host once its queue is exhausted. Worth
+  revisiting only with a materially different navigation approach (e.g. reading the tray's own
+  `total` count to know exactly how many frames to expect, so the loop never has to discover
+  exhaustion by tapping past the end).
 
 ### New scrape surfaces
 
-- **Stories support**: today only the chronological Following-feed flow is scraped. Stories live in
-  a completely separate UI surface, so this is closer to a second automation flow than a field
-  addition to the existing one.
+Done, this round: **Stories support** — the Home feed's story tray is visited every run and each
+not-yet-seen account's current story frame is captured (`MAX_STORIES_PER_RUN`, `STORY_RETAIN_HOURS`)
+and served at `/stories.xml`; see "Stories" and "How a scrape works" above for the full shape and
+its one real cost (the account becomes visible in each poster's story-viewer list) and its one
+deliberate limitation (current frame only, tracked under "Capture and data fidelity" above).
 
 ### Anti-detection: timing and device tuning
 
 No infrastructure change needed — these extend the existing pause/scroll randomization and
-`tune-android.sh`.
+`tune-android.sh`. Done, this round:
 
-- **Configurable time-fuzzing**: `POLL_MIN_HOURS`/`POLL_MAX_HOURS` and the scroll swipe/pause ranges
-  are all plain uniform-random today, with no time-of-day or day-of-week shape. Make the
-  distribution itself pluggable (e.g. log-normal, day/night-aware, weekday vs. weekend) instead of
-  just the min/max bounds.
-- **Fingerprint consistency (locale, timezone, density, GPS)**: `tune-android.sh` only handles
-  animations, sync, screen timeout, location-off, and disabling unused Google apps — locale, device
-  timezone, display density, and a mock GPS fix are all still whatever redroid defaults to. These
-  need to agree with each other *and* with wherever the network traffic egresses (see the
-  proxy/VPN items below) — a mismatch between IP geolocation, GPS, and device timezone is an easy
-  signal for Instagram to notice.
+- **Configurable time-fuzzing**: `TIME_DISTRIBUTION` (`uniform` | `lognormal` | `daynight`) now
+  shapes every pause `human_pause`/`human_scroll` draws, plus the inter-run poll interval — not just
+  their min/max bounds. `lognormal` clusters draws near the midpoint with an occasional longer
+  outlier instead of every value in range being equally likely; `daynight` additionally widens the
+  top of the range during `DAYNIGHT_QUIET_START`..`DAYNIGHT_QUIET_END` local hours (default 0-6), so
+  activity actually thins out overnight. Default stays `uniform` (unchanged behavior).
+- **Device timezone**: `DEVICE_TIMEZONE` (e.g. `America/Los_Angeles`) is applied to the device by
+  `tune-android.sh` (`service call alarm` — confirmed to take effect immediately, no reboot needed)
+  and used by the driver to compute "local" time for `DAYNIGHT_QUIET_*` above. Deliberately empty by
+  default; see "Fingerprint consistency" below for why.
+
+Investigated and **not** implemented this round — display density was already covered (see
+`REDROID_WIDTH`/`HEIGHT`/`DPI` in "First-time setup"), so the remaining gap was locale and GPS:
+
+- **Locale**: `adb shell settings put system system_locales <locale>` writes the setting but a
+  running system doesn't pick it up without a broadcast of `android.intent.action.LOCALE_CHANGED` —
+  and this device's `adb shell` gets a `SecurityException` sending that broadcast (`not allowed to
+  send broadcast ... from ... uid=2000`), confirmed live. The usual fallback, a reboot to force the
+  property to be re-read at boot, is too heavy for routine per-account tuning (redroid's own ~35s
+  boot budget, doubled or worse if this became a per-run thing). Needs a materially different
+  approach, not just wiring up the setting.
+- **Mock GPS location**: `adb emu geo fix <lon> <lat>` — the standard way to fake a location on the
+  Android Emulator — is a no-op on redroid; confirmed live (no response, no error, nothing changes).
+  That command talks to the official AVD's QEMU console, which redroid's non-QEMU virtualization
+  doesn't expose. A real implementation needs a mock-location provider app installed and driven
+  through Developer Options (`ACCESS_MOCK_LOCATION` + "select mock location app"), a materially
+  bigger lift than the other items here — and moot without the proxy/VPN item below anyway, since a
+  GPS fix with no matching network egress is its own mismatch.
+
+**Fingerprint consistency**: locale, timezone, and GPS all need to agree with each other *and* with
+wherever the network traffic egresses (see the proxy/VPN items below) — a mismatch between IP
+geolocation, GPS, and device timezone is an easy signal for Instagram to notice. That's why
+`DEVICE_TIMEZONE` defaults to empty rather than some plausible-looking value: setting it alone, with
+no matching IP/GPS, may be a worse signal than leaving the device on its default GMT.
 
 ### Anti-detection: networking
 

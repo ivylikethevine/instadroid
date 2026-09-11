@@ -379,6 +379,124 @@ def test_status_page_shows_latest_ok_run_includes_link_failures_dash_when_absent
     assert r.status_code == 200  # must not raise on a runs row missing the link-failure columns
 
 
+def _make_stories_db(tmp_path, monkeypatch):
+    db = tmp_path / "posts.sqlite"
+    monkeypatch.setenv("DB_PATH", str(db))
+    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE stories (id TEXT PRIMARY KEY, username TEXT, media_file TEXT, kind TEXT,"
+        " posted_date TEXT, scraped_at TEXT, expires_at TEXT)"
+    )
+    con.commit()
+    con.close()
+    import importlib
+
+    import app
+
+    importlib.reload(app)
+    return db, TestClient(app.app)
+
+
+def test_stories_feed_lists_only_unexpired_stories(tmp_path, monkeypatch):
+    db, client = _make_stories_db(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO stories VALUES ('s1','alice','stories/s1.jpg','story','1h',?,?)",
+        ((now - timedelta(hours=1)).isoformat(), (now + timedelta(hours=20)).isoformat()),
+    )
+    con.execute(
+        "INSERT INTO stories VALUES ('s2','bob','stories/s2.jpg','story','30h',?,?)",
+        ((now - timedelta(hours=30)).isoformat(), (now - timedelta(hours=6)).isoformat()),
+    )
+    con.commit()
+    con.close()
+
+    body = client.get("/stories.xml").text
+    assert "alice" in body
+    assert "http://feed.test/media/stories/s1.jpg" in body
+    assert "bob" not in body  # expired
+
+
+def test_stories_feed_empty_when_table_missing(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)  # legacy schema: no stories table at all
+    r = client.get("/stories.xml")
+    assert r.status_code == 200
+    assert "<entry>" not in r.text
+
+
+def test_stories_feed_conditional_get_returns_304(tmp_path, monkeypatch):
+    _, client = _make_stories_db(tmp_path, monkeypatch)
+    first = client.get("/stories.xml")
+    etag = first.headers["etag"]
+    second = client.get("/stories.xml", headers={"if-none-match": etag})
+    assert second.status_code == 304
+
+
+def test_stories_feed_etag_changes_when_a_story_expires(tmp_path, monkeypatch):
+    db, client = _make_stories_db(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO stories VALUES ('s1','alice','stories/s1.jpg','story','1h',?,?)",
+        ((now - timedelta(hours=1)).isoformat(), (now + timedelta(hours=1)).isoformat()),
+    )
+    con.commit()
+    con.close()
+
+    first = client.get("/stories.xml")
+    assert "alice" in first.text
+    etag = first.headers["etag"]
+
+    # Simulate the story expiring between requests (as it eventually does on its own).
+    con = sqlite3.connect(db)
+    con.execute(
+        "UPDATE stories SET expires_at = ? WHERE id = 's1'", ((now - timedelta(hours=1)).isoformat(),)
+    )
+    con.commit()
+    con.close()
+
+    second = client.get("/stories.xml", headers={"if-none-match": etag})
+    assert second.status_code == 200
+    assert "alice" not in second.text
+    assert second.headers["etag"] != etag
+
+
+def test_status_page_shows_new_stories_column(tmp_path, monkeypatch):
+    db = tmp_path / "posts.sqlite"
+    client = make_app(tmp_path, monkeypatch)
+    con = sqlite3.connect(db)
+    con.execute(
+        """CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+            new_posts INTEGER, error TEXT, android_release TEXT, android_sdk TEXT, device_product TEXT,
+            new_stories INTEGER
+        )"""
+    )
+    now = datetime.now(UTC)
+    con.execute(
+        "INSERT INTO runs (started_at, finished_at, new_posts, new_stories) VALUES (?,?,?,?)",
+        ((now - timedelta(minutes=1)).isoformat(), now.isoformat(), 0, 4),
+    )
+    con.execute(
+        "CREATE TABLE stories (id TEXT PRIMARY KEY, username TEXT, media_file TEXT, kind TEXT,"
+        " posted_date TEXT, scraped_at TEXT, expires_at TEXT)"
+    )
+    con.execute(
+        "INSERT INTO stories VALUES ('s1','alice','stories/s1.jpg','story','1h',?,?)",
+        (now.isoformat(), (now + timedelta(hours=20)).isoformat()),
+    )
+    con.commit()
+    con.close()
+
+    body = client.get("/status").text
+    assert "1 active story" in body
+    # the runs table row's own new_stories value, distinct from the currently-active count above
+    assert "<td>4</td>" in body
+
+
 def test_dt_handles_naive_and_malformed_timestamps(tmp_path, monkeypatch):
     make_app(tmp_path, monkeypatch)  # ensures app is importable with env set
     import app
