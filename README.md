@@ -158,6 +158,38 @@ identical stories don't hash differently as their relative timestamp ticks over 
 Captured stories are served at `/stories.xml` and always deleted after `STORY_RETAIN_HOURS`
 (default 24), independent of `RETAIN_DAYS`.
 
+## Followed-accounts allowlist
+
+Under `androidboot.redroid_gpu_mode=guest` the Following-feed switcher's bottom sheet doesn't
+always open (see "Which Android?" above); when it fails, `scrape_once()` falls back to whatever's
+on screen — Home, algorithmic, with suggested posts from accounts you don't follow mixed in. Set
+`FOLLOWING_REFRESH_DAYS` above its default of `0` to filter that out: periodically (every
+`FOLLOWING_REFRESH_DAYS`) the scraper navigates to the account's own profile → Following list and
+scrolls it (`MAX_FOLLOWING_SCROLLS` screens, `FOLLOWING_LIST_EMPTY_LIMIT` empty screens to stop),
+replacing the stored list with whatever it collected; any post from a username not on it is dropped
+before any of the expensive per-post work (media crop, carousel, share-sheet permalink) rather than
+after, so filtered posts cost nothing beyond the parse itself. The list being fully replaced on
+every refresh is also how an unfollow gets reflected automatically.
+
+A single refresh isn't guaranteed to be exhaustive — confirmed live against a real 30-account list,
+which one refresh captured completely and another captured 27 of 30 (a different 3 missed each
+time). The scroll amount is tuned to the list's own row height specifically to keep this rare (see
+`_human_scroll_list()`), but it's Instagram's own chunked rendering, not something this project can
+fully control from the outside. A miss is self-correcting: the account reappears once it's on
+screen for the *next* scheduled refresh, so this only ever means "may take an extra
+`FOLLOWING_REFRESH_DAYS` before a newly-followed or missed account's posts start showing up," not a
+permanent gap. An account you follow but haven't seen post yet is unaffected either way, since
+filtering only acts on posts that actually show up.
+
+This is a real, visible navigation like opening a story (see "Staying under the radar" below) and
+a genuine behavior change — posts can now be silently dropped — so it's off by default. It's also
+safe to turn on at any point: filtering only takes effect after the list has actually captured
+something at least once (an empty/never-populated list means "not initialized yet," not "you follow
+nobody"), and a refresh that fails outright (selectors broken, navigation never reached the list)
+leaves whatever list is already stored alone rather than replacing it with nothing — it just retries
+on the next run. `scraper.py rename` keeps a renamed account's allowlist entry in sync along with
+everything else it reconciles. Each run's `/status` page shows how many posts a run filtered.
+
 ## Development
 
 ```bash
@@ -184,6 +216,45 @@ Subscribe to `http://<host>:8000/instagram.xml` (set `PUBLIC_URL` in compose to 
 FreshRSS can reach so image links resolve). Per-account feeds: `/instagram.xml?user=somebody`.
 `/users` lists everyone seen so far. `/stories.xml` is a separate feed of currently-unexpired
 stories (see "Stories" above) — subscribe to it separately if you want it.
+
+If FreshRSS runs on the same host (see below), set `PUBLIC_URL=http://127.0.0.1:8000`, not
+`http://localhost:8000` — confirmed the hard way: a FreshRSS container's `localhost` resolved to
+`::1` first, and the feed server only binds the IPv4 loopback (`FEED_HOST=127.0.0.1` default), so
+every subscription failed with "Failed to resolve domain" until `PUBLIC_URL` used the literal IP.
+
+**One-step bulk subscribe**: `/opml` is an OPML outline listing all of the above — the aggregate
+feed, `/stories.xml`, and one entry per account in `/users` — nested under a single "Instagram"
+category. Import it into FreshRSS (Subscription management → Import/Export → choose file) instead
+of subscribing to each account by hand; a rename (`scraper.py rename`) still needs re-subscribing
+as before, since the OPML only reflects `/users` at the time it's fetched.
+
+**Push instead of poll**: by default FreshRSS finds new posts on its own poll interval. To have
+the scraper tell it instead, set `FRESHRSS_REFRESH_URL` in `.env` to FreshRSS's "online cron"
+actualize URL (`http://<freshrss-host>/i/?c=feed&a=actualize&user=<name>&token=<token>` — the
+token comes from the user you create below); after any run that stores something new, the scraper
+GETs that URL so FreshRSS fetches immediately. A reader being unreachable is logged as a run
+warning (shows yellow on `/status`), never fails the scrape.
+
+**Running FreshRSS on this host**: an optional `freshrss` service in `docker-compose.yml`, off by
+default (`docker compose --profile freshrss up -d freshrss`). One-time setup after it's up:
+
+```bash
+docker compose exec freshrss ./cli/do-install.php \
+  --default-user ivy --auth-type form --db-type sqlite
+docker compose exec freshrss ./cli/create-user.php \
+  --user ivy --password <a password> --token <a token> --no-default-feeds
+# Required, not optional: do-install.php's own output tells you this, and skipping it fails every
+# request (including the plain login page) with "Error during context user init!" — the install
+# leaves data/users/<name> group-owned by root with no www-data access, so PHP running as www-data
+# can't read the very config it just wrote.
+docker compose exec --user root freshrss ./cli/access-permissions.sh
+```
+
+That token is what `FRESHRSS_REFRESH_URL` above is built from. FreshRSS listens on
+`127.0.0.1:8080` by default (`FRESHRSS_LISTEN`) — loopback only, matching `FEED_HOST`, since the
+feed itself still has no auth (see "Optional feed auth" in the Roadmap). It needs
+`FRESHRSS_INTERNAL_HOST_ALLOWLIST` (defaulted in compose) to be allowed to fetch a feed on
+`127.0.0.1` at all — FreshRSS 1.30+ blocks that as an SSRF guard otherwise.
 
 ## Health and restarts
 
@@ -344,10 +415,6 @@ These extend the existing scrape/store/serve flow without changing its shape.
 
 ### Feed serving
 
-- **OPML export**: `/opml` listing one per-account feed each, for a one-step bulk subscribe in
-  FreshRSS (today `/users` is a bare JSON list).
-- **Push new posts to FreshRSS**: after a run with new posts, ping FreshRSS (WebSub, or its
-  feed-refresh URL) so they show up immediately instead of on FreshRSS's own poll interval.
 - **Smaller images, richer entries**: media averages ~260KB per post as JPEG; WebP would roughly
   halve disk and bandwidth. Add `width`/`height` to `<img>`, an Atom thumbnail for list views, and
   a ▶ marker on video/Reel titles.
@@ -359,10 +426,9 @@ These extend the existing scrape/store/serve flow without changing its shape.
 - **Reach the real Following feed without the switcher**: under `gpu_mode=guest` the switcher's
   bottom sheet may not open, and the scraper then falls back to Home — algorithmic, with suggested
   posts mixed in. Investigate a deep link or activity intent that opens Following directly;
-  unconfirmed whether one exists.
-- **Followed-accounts allowlist**: periodically read the logged-in account's own Following list
-  and drop posts from anyone not on it, filtering suggested posts that leak in through the Home
-  fallback. Costs extra in-app navigation per refresh.
+  unconfirmed whether one exists. (A followed-accounts allowlist now filters the fallback's
+  suggested posts after the fact — see "Followed-accounts allowlist" above — but reaching the real
+  feed directly would still be cheaper than the extra Following-list navigation that costs.)
 
 ### Anti-detection: timing and device tuning
 

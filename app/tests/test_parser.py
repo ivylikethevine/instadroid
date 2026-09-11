@@ -209,6 +209,35 @@ def test_parse_story_tray_skips_own_story_and_dedupes_the_nested_image():
     assert [i["username"] for i in items] == ["alice", "bob"]
 
 
+# Modeled on a real Following-list screen dump (own account, 2026-09-11): "Categories" suggestion
+# cards (own resource-ids: title/subtitle, no follow_list_username) sit above the real rows, and a
+# "Sorted by ..." header between them — both must never be mistaken for a followed account.
+FOLLOWING_LIST_FIXTURE = """<hierarchy><node><node resource-id="com.instagram.android:id/frame_header">
+    <node resource-id="com.instagram.android:id/row_header_textview" text="Categories" />
+  </node>
+  <node resource-id="com.instagram.android:id/container" content-desc="Least interacted with">
+    <node resource-id="com.instagram.android:id/title" text="Least interacted with" />
+    <node resource-id="com.instagram.android:id/subtitle" text="ashnikko and 6 others" />
+  </node>
+  <node resource-id="com.instagram.android:id/sorting_entry_row_option" text="Sorted by Default" />
+  <node resource-id="com.instagram.android:id/follow_list_container">
+    <node resource-id="com.instagram.android:id/follow_list_username" text="nykkyhex" />
+    <node resource-id="com.instagram.android:id/follow_list_subtitle" text="Nykky Hex" />
+  </node>
+  <node resource-id="com.instagram.android:id/follow_list_container">
+    <node resource-id="com.instagram.android:id/follow_list_username" text="lunavonnoir_" />
+  </node>
+</node></hierarchy>"""
+
+
+def test_parse_following_list_finds_rows_and_skips_categories_and_sort_header():
+    assert scraper.parse_following_list(FOLLOWING_LIST_FIXTURE) == ["nykkyhex", "lunavonnoir_"]
+
+
+def test_parse_following_list_returns_empty_for_a_screen_with_no_rows():
+    assert scraper.parse_following_list("<hierarchy><node/></hierarchy>") == []
+
+
 def test_parse_story_tray_reports_seen_state():
     items = scraper.parse_story_tray(STORY_TRAY_FIXTURE)
     by_user = {i["username"]: i for i in items}
