@@ -1,3 +1,14 @@
+# One definition shared by the redroid service and the app's REDROID_IMAGE (recorded per run, shown
+# on /status), so the two can't drift apart.
+x-redroid-image: &redroid_image erstt/redroid:13.0.0_ndk_ChromeOS
+
+# Cap each container's json-file log at 3 x 10MB; unbounded by default.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # The Android side: a containerised device via redroid. Android 13 + ChromeOS's ARC++ NDK
   # translation is validated working as of 2026-09-10 (Instagram install/login/scrape all
@@ -10,10 +21,12 @@ services:
   # translation, and it doesn't publish Android 14. See CLAUDE.md for the careful start/monitor
   # procedure and README.md's "Which Android?" for the full compatibility history.
   redroid:
-    image: erstt/redroid:13.0.0_ndk_ChromeOS
+    image: *redroid_image
     container_name: ig-redroid
+    logging: *logging
     privileged: true
-    restart: "no"
+    # Comes back after a host reboot or crash; `docker compose stop`/`down` keeps it down.
+    restart: unless-stopped
     # Measured peak while Instagram is actually open and scrolling: ~1.1-1.26GiB (idle boot is
     # ~500-525MiB). 2g leaves ~60% headroom over the observed peak; shm_size is left at a more
     # conservative 2x that guidance (1g) rather than cut aggressively, since under-provisioning it
@@ -38,7 +51,9 @@ services:
   app:
     build: ./app
     container_name: ig-app
-    restart: "no"
+    # entrypoint.sh exits if either process dies, so this restarts a clean scraper+feed pair.
+    restart: unless-stopped
+    logging: *logging
     depends_on: [redroid]
     network_mode: host         # so it can reach redroid's ADB port on the host loopback
     env_file: .env             # IG_USERNAME / IG_PASSWORD for automated login
@@ -72,6 +87,10 @@ services:
       DEVICE_TIMEZONE: ${DEVICE_TIMEZONE:-}   # empty = leave the device's clock alone; also read by tune-android.sh
       DAYNIGHT_QUIET_START: ${DAYNIGHT_QUIET_START:-0}
       DAYNIGHT_QUIET_END: ${DAYNIGHT_QUIET_END:-6}
+      EMPTY_SCREEN_LIMIT: ${EMPTY_SCREEN_LIMIT:-3}         # empty screens in a row before reopening/stopping; 0 disables
+      RETRY_DELAYS_MINUTES: ${RETRY_DELAYS_MINUTES-2,5,15} # early retries after a transient device failure; empty disables
+      DEBUG_RETAIN_DAYS: ${DEBUG_RETAIN_DAYS:-7}   # delete debug .xml/.jpg/.png older than this; 0 disables
+      REDROID_IMAGE: *redroid_image                # recorded with each run
     volumes:
       - ./local/data/db:/db
       - ./local/data/media:/media
@@ -79,6 +98,8 @@ services:
     # Measured peak while actively scraping: ~97-125MiB (idle is ~67-97MiB).
     mem_limit: 256m
     cpus: 1.5
+    # /health returns 503 once scraping looks stuck or keeps failing (see _scraper_health() in
+    # app.py), so `docker ps` shows "unhealthy". Docker itself doesn't restart unhealthy containers.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s
