@@ -229,6 +229,156 @@ def test_short_error_truncates_multiline_stack_traces(tmp_path, monkeypatch):
     assert app._short_error(long_one_liner) == "x" * 139 + "…"
 
 
+def test_feed_renders_extra_carousel_slides_and_avatar(tmp_path, monkeypatch):
+    db = tmp_path / "posts.sqlite"
+    monkeypatch.setenv("DB_PATH", str(db))
+    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,"
+        " media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT)"
+    )
+    con.execute("CREATE TABLE media (post_id TEXT, idx INTEGER, file TEXT)")
+    con.execute("CREATE TABLE accounts (username TEXT PRIMARY KEY, avatar_file TEXT, avatar_updated_at TEXT)")
+    con.execute(
+        "INSERT INTO posts VALUES ('C1', 'carouseler', 'carousel', '1 day ago', 'Look at these',"
+        " 'C1.jpg', '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL, '2026-09-08T09:00:00+00:00')"
+    )
+    con.execute("INSERT INTO media VALUES ('C1', 1, 'C1_1.jpg'), ('C1', 2, 'C1_2.jpg')")
+    con.execute(
+        "INSERT INTO accounts VALUES ('carouseler', 'avatars/carouseler.jpg', '2026-09-08T08:00:00+00:00')"
+    )
+    con.commit()
+    con.close()
+    import importlib
+
+    import app
+
+    importlib.reload(app)
+    client = TestClient(app.app)
+
+    body = client.get("/instagram.xml").text
+    assert "http://feed.test/media/C1.jpg" in body  # cover
+    assert "http://feed.test/media/C1_1.jpg" in body
+    assert "http://feed.test/media/C1_2.jpg" in body
+    assert "http://feed.test/media/avatars/carouseler.jpg" in body
+
+
+def test_feed_falls_back_to_cover_image_without_media_or_accounts_tables(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)  # legacy schema: no media/accounts tables at all
+    body = client.get("/instagram.xml").text
+    assert "http://feed.test/media/ABC.jpg" in body
+
+
+def test_etag_changes_when_a_carousel_slide_is_added(tmp_path, monkeypatch):
+    db = tmp_path / "posts.sqlite"
+    monkeypatch.setenv("DB_PATH", str(db))
+    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,"
+        " media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT, updated_at TEXT)"
+    )
+    con.execute("CREATE TABLE media (post_id TEXT, idx INTEGER, file TEXT)")
+    con.execute(
+        "INSERT INTO posts VALUES ('C1', 'someone', 'carousel', '1 day ago', 'cap', 'C1.jpg',"
+        " '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL, '2026-09-08T09:00:00+00:00',"
+        " '2026-09-08T08:00:00+00:00')"
+    )
+    con.commit()
+    con.close()
+    import importlib
+
+    import app
+
+    importlib.reload(app)
+    client = TestClient(app.app)
+
+    first = client.get("/instagram.xml")
+    etag = first.headers["etag"]
+
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO media VALUES ('C1', 1, 'C1_1.jpg')")  # a slide captured on a later run
+    con.commit()
+    con.close()
+
+    second = client.get("/instagram.xml", headers={"if-none-match": etag})
+    assert second.status_code == 200
+    assert second.headers["etag"] != etag
+
+
+def test_etag_changes_when_an_avatar_is_captured(tmp_path, monkeypatch):
+    db = tmp_path / "posts.sqlite"
+    client = make_app(tmp_path, monkeypatch)
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE accounts (username TEXT PRIMARY KEY, avatar_file TEXT, avatar_updated_at TEXT)")
+    con.commit()
+    con.close()
+
+    first = client.get("/instagram.xml")
+    etag = first.headers["etag"]
+
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO accounts VALUES ('someone', 'avatars/someone.jpg', '2026-09-08T12:00:00+00:00')")
+    con.commit()
+    con.close()
+
+    second = client.get("/instagram.xml", headers={"if-none-match": etag})
+    assert second.status_code == 200
+    assert "avatars/someone.jpg" in second.text
+    assert second.headers["etag"] != etag
+
+
+def test_status_page_shows_link_failure_counts(tmp_path, monkeypatch):
+    db = tmp_path / "posts.sqlite"
+    client = make_app(tmp_path, monkeypatch)
+    con = sqlite3.connect(db)
+    con.execute(
+        """CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+            new_posts INTEGER, error TEXT, android_release TEXT, android_sdk TEXT, device_product TEXT,
+            link_sheet_failures INTEGER, link_clipboard_failures INTEGER
+        )"""
+    )
+    now = datetime.now(UTC)
+    con.execute(
+        "INSERT INTO runs (started_at, finished_at, new_posts, link_sheet_failures, link_clipboard_failures)"
+        " VALUES (?,?,?,?,?)",
+        ((now - timedelta(minutes=1)).isoformat(), now.isoformat(), 1, 2, 3),
+    )
+    con.commit()
+    con.close()
+
+    body = client.get("/status").text
+    assert "2 sheet / 3 clipboard" in body
+
+
+def test_status_page_shows_latest_ok_run_includes_link_failures_dash_when_absent(tmp_path, monkeypatch):
+    # test_status_page_shows_latest_ok_run_and_device already seeds a runs table from before
+    # link_sheet_failures/link_clipboard_failures existed; confirm the page degrades to "—" for it
+    # instead of a KeyError, the same defensive shape app.py already uses for "url"/"place"/etc.
+    client = make_app(tmp_path, monkeypatch)
+    con = sqlite3.connect(tmp_path / "posts.sqlite")
+    con.execute(
+        """CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+            new_posts INTEGER, error TEXT, android_release TEXT, android_sdk TEXT, device_product TEXT
+        )"""
+    )
+    now = datetime.now(UTC)
+    con.execute(
+        "INSERT INTO runs (started_at, finished_at, new_posts) VALUES (?,?,?)",
+        ((now - timedelta(minutes=1)).isoformat(), now.isoformat(), 0),
+    )
+    con.commit()
+    con.close()
+
+    r = client.get("/status")
+    assert r.status_code == 200  # must not raise on a runs row missing the link-failure columns
+
+
 def test_dt_handles_naive_and_malformed_timestamps(tmp_path, monkeypatch):
     make_app(tmp_path, monkeypatch)  # ensures app is importable with env set
     import app

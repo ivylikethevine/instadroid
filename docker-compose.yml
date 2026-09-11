@@ -59,6 +59,13 @@ services:
       MEDIA_QUALITY: ${MEDIA_QUALITY:-95}          # JPEG quality (1-95) for saved post crops
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8000}   # what FreshRSS can reach
       FEED_HOST: ${FEED_HOST:-127.0.0.1}   # loopback only by default; set to 0.0.0.0 for LAN access
+      PERMALINK_RETRIES: ${PERMALINK_RETRIES:-2}   # extra share-sheet passes after the first
+      SHARE_TAP_TRIES: ${SHARE_TAP_TRIES:-2}       # taps on the share button before giving up
+      CLIPBOARD_TIMEOUT: ${CLIPBOARD_TIMEOUT:-6.0} # seconds to poll the clipboard for
+      MAX_CAROUSEL_SLIDES: ${MAX_CAROUSEL_SLIDES:-10}
+      VIDEO_SETTLE_SECONDS: ${VIDEO_SETTLE_SECONDS:-1.5}   # let autoplay/overlay settle before the still
+      AVATAR_REFRESH_DAYS: ${AVATAR_REFRESH_DAYS:-14}
+      MEDIA_MAX_MB: ${MEDIA_MAX_MB:-0}              # total media+DB size cap in MB; 0 disables
     volumes:
       - ./local/data/db:/db
       - ./local/data/media:/media
