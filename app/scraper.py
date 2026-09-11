@@ -35,6 +35,15 @@ MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", "/debug"))
 POLL_MIN_H = float(os.environ.get("POLL_MIN_HOURS", "2.5"))
 POLL_MAX_H = float(os.environ.get("POLL_MAX_HOURS", "4.5"))
+# Which feed to scrape. "chrono" (default): the real chronological Following feed, reached via the
+# switcher — see open_following_feed(). "home": deliberately stay on the algorithmic Home feed
+# instead and skip the switcher navigation entirely — e.g. pair with FOLLOWING_REFRESH_DAYS's
+# allowlist to filter Home's suggested content rather than fighting the switcher for it. Any other
+# value falls back to "chrono" (logged once at import).
+FEED_MODE = os.environ.get("FEED_MODE", "chrono").strip().lower()
+if FEED_MODE not in ("chrono", "home"):
+    print(f"WARN: unknown FEED_MODE {FEED_MODE!r}; falling back to chrono", flush=True)
+    FEED_MODE = "chrono"
 MAX_SCROLLS = int(os.environ.get("MAX_SCROLLS", "25"))
 STOP_AFTER_SEEN = int(os.environ.get("STOP_AFTER_SEEN", "4"))
 RETAIN_DAYS = int(os.environ.get("RETAIN_DAYS", "60"))  # 0 disables deletion
@@ -53,7 +62,9 @@ DEBUG_RETAIN_DAYS = float(os.environ.get("DEBUG_RETAIN_DAYS", "7"))  # 0 disable
 _DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png")
 PERMALINK_RETRIES = int(os.environ.get("PERMALINK_RETRIES", "2"))  # extra share-sheet passes after the first
 SHARE_TAP_TRIES = int(os.environ.get("SHARE_TAP_TRIES", "2"))  # taps on the share button before giving up
-CAPTION_EXPAND_TRIES = int(os.environ.get("CAPTION_EXPAND_TRIES", "2"))  # taps on a truncated caption's "more"
+CAPTION_EXPAND_TRIES = int(
+    os.environ.get("CAPTION_EXPAND_TRIES", "2")
+)  # taps on a truncated caption's "more"
 CLIPBOARD_TIMEOUT = float(os.environ.get("CLIPBOARD_TIMEOUT", "6.0"))  # seconds to poll the clipboard for
 MAX_CAROUSEL_SLIDES = int(os.environ.get("MAX_CAROUSEL_SLIDES", "10"))
 VIDEO_SETTLE_SECONDS = float(os.environ.get("VIDEO_SETTLE_SECONDS", "1.5"))  # let autoplay/overlay settle
@@ -158,6 +169,9 @@ SELECTORS = {
     "following_text": "Following",
     # The Following feed is its own screen: Back button + action_bar_title "Following".
     "following_title_id": "action_bar_title",
+    # The bottom tab bar's own Home tab — for FEED_MODE=home, the deliberate alternative to the
+    # switcher-based navigation above.
+    "home_tab_id": "feed_tab",
     # Own-profile navigation, for the followed-accounts allowlist (FOLLOWING_REFRESH_DAYS). The
     # bottom tab bar's own-avatar tab; the "N following" stacked-avatar link on that profile; the
     # Following-list screen itself (its view pager, present as soon as the screen loads regardless
@@ -1057,6 +1071,59 @@ def open_following_feed(d):
     return False
 
 
+def open_home_feed(d):
+    """The FEED_MODE=home alternative to open_following_feed(): navigate to (and stay on) the
+    algorithmic Home feed. No switcher involved — just the bottom tab bar's own Home tab, tapped
+    directly.
+
+    Deliberately does NOT mirror open_following_feed()'s "leave and re-enter if already there" —
+    confirmed live (2026-09-11): Home is the root of the app's back stack, so pressing back from
+    it doesn't refresh anything, it triggers Android's "tap again to exit" and risks actually
+    exiting the app on a second back press soon after. Already being on Home just means done."""
+    ensure_logged_in(d)
+    if d.app_current().get("package") != IG_PKG:
+        _launch_app(d)
+        human_pause(3, 5)
+    _dismiss_interstitials(d)
+    close_sheets(d)
+    tab = d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}$")
+    for attempt in range(4):
+        if _on_home_feed(d):
+            return True
+        if tab.exists(timeout=3):
+            try:
+                tab.click()
+                human_pause(1.5, 2.5)
+                for _ in range(6):  # cold starts can take a while to build the screen
+                    if _on_home_feed(d):
+                        return True
+                    time.sleep(2)
+                log(f"open home feed attempt {attempt}: tapped Home tab but feed not found")
+            except Exception as e:  # the tab bar can be mid-transition between exists() and click()
+                log("WARN: home tab click failed, retrying:", repr(e))
+        else:
+            d.press("back")  # some other screen; step out and retry
+            human_pause(1, 2)
+    log("WARN: could not open Home feed (dump saved)")
+    _dump_debug(d, "home_feed_open")
+    return False
+
+
+def _on_target_feed(d) -> bool:
+    """True when the screen currently showing is the specific feed FEED_MODE selects, not just
+    any feed at all — the Following and Home feeds are the only two the scraper ever intends to be
+    on, and _on_home_feed()'s bottom-tab-bar check tells them apart."""
+    if not _on_feed(d):
+        return False
+    return _on_home_feed(d) if FEED_MODE == "home" else not _on_home_feed(d)
+
+
+def open_target_feed(d):
+    """Navigate to whichever feed FEED_MODE selects — the single call site scrape_once() uses
+    throughout, so a run never has to know which mode it's in beyond this one dispatch."""
+    return open_home_feed(d) if FEED_MODE == "home" else open_following_feed(d)
+
+
 def _on_following_list(d):
     """The Following-list screen (reached via own profile -> "N following"), independent of
     whether the list itself has any rows on screen yet — this is the screen's own view pager,
@@ -1197,6 +1264,7 @@ def _new_post(user, kind, date, place, clip_top):
         "alt": "",
         "headless": False,
         "complete": False,
+        "_merged_reel": False,
     }
 
 
@@ -1232,9 +1300,37 @@ def parse_hierarchy(xml: str):
         if not in_list:
             continue
         if rid == SELECTORS["header_id"]:
+            m = SELECTORS["header_desc"].match(desc)
+            # A Reel/video card tagged with collaborators ("<user> and N others" — confirmed live
+            # 2026-09-11) renders its media node, and the "Reel by ..." alt description that comes
+            # with it, *before* its own header — unlike every other card layout, where the header
+            # always comes first. When that happens for the very top-of-screen provisional
+            # "headless" card, this header is that same card's header discovered late, not a
+            # different, already-scrolled-off card's: a genuinely different off-screen card would
+            # already have picked up its own username (from a caption) or share_bounds before any
+            # later header could appear, so headless+no-username+no-caption+no-share_bounds can
+            # only mean "still nothing but this card's own leading media." Fold the identity in
+            # rather than starting a second, disconnected entry that would never pass the final
+            # username+(caption or alt) filter below.
+            if (
+                m
+                and cur is not None
+                and cur["headless"]
+                and not cur["username"]
+                and not cur["caption"]
+                and not cur["share_bounds"]
+                and cur["alt"]
+                and cur["alt"].split()[0].lower() in ("reel", "video")
+            ):
+                cur["username"] = m.group("user")
+                cur["posted_date"] = m.group("date")
+                cur["place"] = m.group("place") or ""
+                cur["header_bounds"] = n.get("bounds")
+                cur["headless"] = False
+                cur["_merged_reel"] = True
+                continue
             if cur is not None and cur["share_bounds"]:
                 cur["complete"] = True  # we saw the whole bottom of the previous card
-            m = SELECTORS["header_desc"].match(desc)
             cur = None
             if m:  # sponsored / suggested cards have a different header and are skipped
                 cur = _new_post(
@@ -1253,6 +1349,11 @@ def parse_hierarchy(xml: str):
             cur["bounds"] = n.get("bounds")
         elif cur["share_bounds"] is None and rid == SELECTORS["share_id"]:
             cur["share_bounds"] = n.get("bounds")
+            if cur["_merged_reel"]:
+                # This layout has no separate caption or timestamp node to wait for (confirmed
+                # live: zero caption-class nodes anywhere in a real dump of one) — the share
+                # button itself is the bottom of the card.
+                cur["complete"] = True
         elif cur["headless"] and cur["kind"] in ("", "post") and desc.startswith("Turn sound"):
             cur["kind"] = "video"  # reels have a mute toggle and no media description
         elif not cur["alt"] and SELECTORS["media_alt"].match(desc):
@@ -1811,7 +1912,7 @@ def scrape_stories(d, con) -> int:
             log(f"new story: {captured['username']}")
         else:
             captured["path"].unlink(missing_ok=True)  # byte-identical to one already stored
-    open_following_feed(d)
+    open_target_feed(d)
     return new
 
 
@@ -1864,13 +1965,13 @@ def scrape_once(d, con) -> dict:
         _last_url = d.clipboard or ""  # whatever is there now is stale by definition
     except Exception:
         _last_url = ""
-    open_following_feed(d)
+    open_target_feed(d)
     if FOLLOWING_REFRESH_DAYS and _needs_following_refresh(con):
         try:
             refresh_following_list(d, con)
         except Exception as e:  # a profile/list-navigation surprise must not sink the whole run
             log("WARN: following-list refresh failed, continuing with the existing list:", repr(e))
-        open_following_feed(d)  # back onto the feed screen the post loop expects
+        open_target_feed(d)  # back onto the feed screen the post loop expects
     followed: set[str] | None = None
     if FOLLOWING_REFRESH_DAYS:
         rows = con.execute("SELECT username FROM following").fetchall()
@@ -1881,7 +1982,7 @@ def scrape_once(d, con) -> dict:
     except Exception as e:  # a stories-viewer surprise must not sink the whole run
         log("WARN: story capture failed, continuing with posts:", repr(e))
         new_stories = 0
-        open_following_feed(d)  # best-effort recovery back onto the screen the post loop expects
+        open_target_feed(d)  # best-effort recovery back onto the screen the post loop expects
     if new_stories:
         log(f"stories: {new_stories} new")
     new, seen_streak, this_run = 0, 0, set()
@@ -1917,7 +2018,7 @@ def scrape_once(d, con) -> dict:
             log(f"{empty_streak} empty screens in a row; reopening the feed (dump saved)")
             warnings.append(f"reopened the feed after {empty_streak} empty screens in a row")
             feed_reopened, empty_streak = True, 0
-            open_following_feed(d)
+            open_target_feed(d)
             continue
         for p in posts:
             u = p["username"]
@@ -1968,9 +2069,9 @@ def scrape_once(d, con) -> dict:
                     (MEDIA_DIR / fn).unlink(missing_ok=True)
                 break
             this_run.add(h)
-            if _on_home_feed(d) or not _on_feed(d):
-                log("WARN: not on the Following feed any more; reopening it")
-                open_following_feed(d)
+            if not _on_target_feed(d):
+                log(f"WARN: not on the {FEED_MODE} feed any more; reopening it")
+                open_target_feed(d)
                 this_run.discard(h)  # let the card be handled again where it appears
             pid = url.rstrip("/").rsplit("/", 1)[-1] if url else h
             row = con.execute("SELECT username FROM posts WHERE id=?", (pid,)).fetchone() if url else None

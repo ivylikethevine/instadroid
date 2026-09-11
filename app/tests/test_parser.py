@@ -60,6 +60,65 @@ def test_card_without_caption_or_alt_is_excluded():
     assert scraper.parse_hierarchy(xml) == []
 
 
+# A Reel tagged with collaborators ("<user> and N others"), modeled on a real dump captured live
+# (2026-09-11): its media node (carrying the "Reel by ..." alt) renders *before* its own header —
+# every other card layout has the header first — and it has no separate caption or timestamp node
+# at all, only the header's own content-desc.
+REEL_COLLAB_FIXTURE = """<hierarchy><node><node resource-id="android:id/list">
+  <node resource-id="com.instagram.android:id/media_group" bounds="[0,210][1080,2093]">
+    <node resource-id="com.instagram.android:id/row_feed_photo_imageview"
+          content-desc="Reel by Someone, Liked by a_friend and others, 2 comments, 57 minutes ago"
+          bounds="[0,210][1080,2093]" />
+  </node>
+  <node resource-id="com.instagram.android:id/row_feed_profile_header"
+        content-desc="thewhorrorshowlive posted a video in Precinct DTLA 57 minutes ago"
+        bounds="[0,210][1080,347]" />
+  <node resource-id="com.instagram.android:id/row_feed_photo_profile_name"
+        text="thewhorrorshowlive and 3 others" />
+  <node resource-id="com.instagram.android:id/row_feed_button_share" bounds="[420,2093][483,2214]" />
+  <node resource-id="com.instagram.android:id/row_feed_button_like" />
+</node></node></hierarchy>"""
+
+
+def test_reel_with_media_before_header_is_identified_not_split_in_two():
+    posts = scraper.parse_hierarchy(REEL_COLLAB_FIXTURE)
+    assert len(posts) == 1  # not two dead-end entries that both fail the final filter
+    p = posts[0]
+    assert p["username"] == "thewhorrorshowlive"
+    assert p["kind"] == "video"
+    assert p["place"] == "Precinct DTLA"
+    assert p["posted_date"] == "57 minutes ago"
+    assert p["alt"].startswith("Reel by")
+    assert p["headless"] is False
+    assert p["header_bounds"] == "[0,210][1080,347]"
+
+
+def test_reel_with_media_before_header_is_complete_once_share_button_seen():
+    # This layout has no caption/timestamp node to wait for -- the share button is the bottom of
+    # the card. Without this, the post would never pass scrape_once()'s `if not p["complete"]`
+    # gate and would never actually get stored.
+    p = scraper.parse_hierarchy(REEL_COLLAB_FIXTURE)[0]
+    assert p["complete"] is True
+    assert p["share_bounds"] == "[420,2093][483,2214]"
+    assert p["bounds"] == "[0,210][1080,2093]"
+
+
+def test_a_genuinely_different_off_screen_card_is_not_merged_into_the_next_header():
+    # Control case: an ordinary (non-Reel) card whose header has scrolled off is identified from
+    # its own caption before any later header appears -- confirming the merge fix only fires for
+    # the narrow headless+no-username+no-caption+no-share_bounds+Reel-alt case, not generally.
+    xml = f"""<hierarchy><node><node resource-id="android:id/list">
+      <node class="{scraper.SELECTORS["caption_class"]}" text="old_user Old caption" />
+      <node resource-id="com.instagram.android:id/row_feed_profile_header"
+            content-desc="new_user posted a photo 1 hour ago" bounds="[0,900][1080,1030]" />
+      <node class="{scraper.SELECTORS["caption_class"]}" text="new_user New caption" />
+      <node resource-id="com.instagram.android:id/row_feed_button_share" bounds="[0,0][1,1]" />
+      <node text="1 hour ago" />
+    </node></node></hierarchy>"""
+    posts = scraper.parse_hierarchy(xml)
+    assert [p["username"] for p in posts] == ["old_user", "new_user"]
+
+
 def test_post_id_ignores_counts_dates_and_kind():
     base = {"username": "u", "kind": "photo", "caption": "", "alt": "Photo 1 of 3 by U, 5 likes, 2 comments"}
     later = {**base, "kind": "carousel", "alt": "Photo 2 of 3 by U, 9 likes, 4 comments"}
