@@ -1,8 +1,12 @@
 """End-to-end-ish tests of the device-driving code (login, feed navigation, share sheet, carousels,
 stories, the scrape loop, main()) against tests.fakedevice.FakeDevice. Screens are synthetic."""
 
+import os
 import sqlite3
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import adbutils
 import pytest
@@ -415,7 +419,11 @@ def test_stop_instagram_force_stops_the_app_and_is_best_effort():
 
 def _caption_card(text, goto=None):
     return [
-        node("row_feed_profile_header", desc="someone_nice posted a photo 3 days ago", bounds=(0, 150, 1080, 289)),
+        node(
+            "row_feed_profile_header",
+            desc="someone_nice posted a photo 3 days ago",
+            bounds=(0, 150, 1080, 289),
+        ),
         node("row_feed_photo_imageview", desc="Photo by Someone Nice, 5 likes", bounds=(0, 289, 1080, 900)),
         node("row_feed_button_share", bounds=(390, 900, 453, 1021)),
         node(cls=CAPTION, text=text, bounds=(32, 1030, 1080, 1100), goto=goto),
@@ -440,7 +448,9 @@ def test_expand_caption_taps_more_and_returns_the_full_text():
 
 def test_expand_caption_falls_back_to_the_truncated_text_when_the_tap_does_nothing():
     d = FakeDevice(
-        {"following": following_screen(_caption_card("someone_nice Short start… more"))},  # no goto: tap is inert
+        {
+            "following": following_screen(_caption_card("someone_nice Short start… more"))
+        },  # no goto: tap is inert
         "following",
     )
     p = scraper.parse_hierarchy(d.dump_hierarchy())[0]
@@ -450,7 +460,10 @@ def test_expand_caption_falls_back_to_the_truncated_text_when_the_tap_does_nothi
 
 
 def test_expand_caption_is_a_noop_for_a_caption_that_was_never_truncated():
-    d = FakeDevice({"following": following_screen(_caption_card("someone_nice Whole caption, no more span"))}, "following")
+    d = FakeDevice(
+        {"following": following_screen(_caption_card("someone_nice Whole caption, no more span"))},
+        "following",
+    )
     p = scraper.parse_hierarchy(d.dump_hierarchy())[0]
     assert p["caption_truncated"] is False
 
@@ -563,7 +576,90 @@ def test_scrape_once_treats_an_edited_caption_as_the_same_post(monkeypatch):
     assert con.execute("SELECT COUNT(*) FROM posts WHERE username='someone_nice'").fetchone()[0] == 1
 
 
-# --- followed-accounts allowlist ----------------------------------------------------------------
+# --- feed mode (chrono vs home) ------------------------------------------------------------------
+
+
+def home_feed_screen(cards=None):
+    """A populated Home feed, with the bottom tab bar (feed_tab) present -- unlike
+    following_screen(), which mirrors real Instagram's Following screen hiding it."""
+    return hierarchy(
+        ACTION_BAR,
+        node(desc="Instagram Home Feed", bounds=(0, 150, 400, 280), goto="menu"),
+        node(
+            "android:id/list",
+            bounds=(0, 289, 1080, 2235),
+            children=cards if cards is not None else feed_cards(),
+        ),
+        node("feed_tab", bounds=(0, 2200, 216, 2340)),
+        PROFILE_TAB,
+    )
+
+
+def test_open_home_feed_navigates_via_the_home_tab(fast_offline):
+    # feed_device()'s own back map already sends "following" -> "home"; open_home_feed() has no
+    # switcher to tap, so this is the same recovery path open_following_feed() itself relies on.
+    d = feed_device(start="following")
+    assert scraper.open_home_feed(d) is True
+    assert d.screen == "home"
+
+
+def test_on_target_feed_matches_feed_mode(fast_offline, monkeypatch):
+    home = FakeDevice({"home": home_feed_screen()}, "home")
+    following = FakeDevice({"following": following_screen()}, "following")
+    monkeypatch.setattr(scraper, "FEED_MODE", "home")
+    assert scraper._on_target_feed(home) is True
+    assert scraper._on_target_feed(following) is False
+    monkeypatch.setattr(scraper, "FEED_MODE", "chrono")
+    assert scraper._on_target_feed(home) is False
+    assert scraper._on_target_feed(following) is True
+
+
+def test_open_target_feed_dispatches_by_feed_mode(fast_offline, monkeypatch):
+    d = feed_device(start="home")
+    monkeypatch.setattr(scraper, "FEED_MODE", "home")
+    assert scraper.open_target_feed(d) is True
+    assert d.screen == "home"
+    d = feed_device(start="home")
+    monkeypatch.setattr(scraper, "FEED_MODE", "chrono")
+    assert scraper.open_target_feed(d) is True
+    assert d.screen == "following"
+
+
+def test_unknown_feed_mode_falls_back_to_chrono():
+    # A subprocess, not importlib.reload(scraper) -- scraper.py is a shared, stateful module across
+    # the whole test session (its exception classes are identity-checked elsewhere, per test_push.py's
+    # own note), and reloading it in place would rebind those classes out from under other test files.
+    result = subprocess.run(
+        [sys.executable, "-c", "import scraper; print(scraper.FEED_MODE)"],
+        cwd=Path(__file__).parent.parent,
+        env={**os.environ, "FEED_MODE": "algorithmic"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip().splitlines()[-1] == "chrono"  # the fallback warning also prints
+
+
+def test_scrape_once_stays_on_home_feed_when_feed_mode_is_home(fast_offline, monkeypatch):
+    monkeypatch.setattr(scraper, "FEED_MODE", "home")
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    monkeypatch.setattr(scraper, "STOP_AFTER_SEEN", 1)
+    con = scraper.db_init()
+    # Seed every card already-known so nothing new needs the share-sheet round trip -- this test
+    # is about which feed scrape_once() navigates to, not about re-testing that flow.
+    for i, card in enumerate(scraper.parse_hierarchy(home_feed_screen())):
+        _seed_post(con, f"SEEN{i}", card["username"], "already stored", 1, h=scraper.post_id(card))
+    d = FakeDevice(
+        {"home": home_feed_screen(), "following": following_screen(), "menu": MENU},
+        "home",
+        back={"following": "home", "menu": "home"},
+    )
+
+    scraper.scrape_once(d, con)
+
+    assert "following" not in d.history  # never navigated to the chronological feed
+    assert "menu" not in d.history  # never opened the switcher either
 
 
 def test_open_own_following_list_navigates_from_the_feed(fast_offline):
