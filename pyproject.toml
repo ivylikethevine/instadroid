@@ -11,3 +11,7 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["app/tests"]
 cache_dir = "local/.pytest_cache"
+
+[tool.coverage.run]
+data_file = "local/.coverage"
+omit = ["app/tests/*"]
