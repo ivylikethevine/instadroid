@@ -320,7 +320,8 @@ def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(tmp_path, mon
 
     con = scraper.db_init()  # must not raise, and must not loop forever on the corrupt row
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 2  # dedupe (v1) then accounts (v2)
+    # dedupe (v1), accounts backfill (v2), post hash upgrade (v3)
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 3
     ids = {r[0] for r in con.execute("SELECT id FROM posts")}
     assert ids == {"bad", "good"}  # the corrupt row is left alone, not dropped or crashed on
 
@@ -354,7 +355,7 @@ def test_migration_backfills_an_accounts_row_for_every_existing_username(tmp_pat
 
     con = scraper.db_init()
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 3  # accounts (v2), then hash upgrade (v3)
     assert con.execute("SELECT username FROM accounts WHERE username='club'").fetchone() is not None
     # media_file / the media table are untouched: no backfill needed there.
     assert con.execute("SELECT media_file FROM posts WHERE id='h1'").fetchone()[0] == "h1.jpg"
