@@ -16,8 +16,10 @@ jobs:
     name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.14"
       - run: pip install -r scripts/requirements-dev.txt
@@ -29,8 +31,10 @@ jobs:
     name: Unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.14"
           cache: pip
@@ -44,8 +48,10 @@ jobs:
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.14"
       - run: pip install -r scripts/requirements-dev.txt
@@ -56,7 +62,9 @@ jobs:
     name: Shell scripts (shellcheck)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - run: sudo apt-get update -q && sudo apt-get install -y -q shellcheck
       - run: shellcheck -S warning ./scripts/*.sh
 
@@ -65,13 +73,15 @@ jobs:
     name: Docker (hadolint + build + compose config)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: hadolint/hadolint-action@v3.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
         with:
           dockerfile: app/Dockerfile
           failure-threshold: warning
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: app
           push: false
@@ -84,7 +94,7 @@ jobs:
           docker run --rm instadroid-app:ci python -c "import scraper; print('import ok')"
           # network=host: the feed binds 127.0.0.1 by default, same as the compose service.
           docker run --rm -d --name app --network host instadroid-app:ci
-          for i in $(seq 1 20); do curl -fs localhost:8000/health && break; sleep 1; done
+          for _ in $(seq 1 20); do curl -fs localhost:8000/health && break; sleep 1; done
           curl -fs localhost:8000/health | grep -q '"ok":true'
           docker rm -f app
       - name: Validate compose file
@@ -100,9 +110,40 @@ jobs:
       contents: read
       pull-requests: read # gitleaks lists the PR's commits via the API when scanning a PR
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v3
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  actionlint:
+    if: github.event.pull_request.draft != true
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: |
+          bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+
+  zizmor:
+    if: github.event.pull_request.draft != true
+    name: Workflow security lint (zizmor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.14"
+      - run: pip install zizmor
+      - run: zizmor --min-severity=medium .github/workflows
+        env:
+          # Lets zizmor run its online audits (e.g. checking action pins against the real repo)
+          # instead of falling back to offline-only checks.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

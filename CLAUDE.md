@@ -22,9 +22,11 @@ something to ask permission for each time.
   `androidboot.redroid_gpu_mode=guest`; `=host` was tried and rejected (see below) — stay on `guest`.
 - `erstt/redroid:15.0.0_ndk_AVD` (Android 15) — **does not work** on this host. Tried twice,
   identical failure both times: `hwservicemanager`/`servicemanager` fatal within ~3s of boot, host
-  completely unaffected. A generous `mem_limit`/`shm_size` (now permanently set on the service)
-  made no difference, ruling out memory as the cause — this is a binder ABI mismatch between that
-  image and this host's kernel binder driver. Not worth retrying without a new hypothesis.
+  completely unaffected. A generous `mem_limit`/`shm_size` at the time made no difference, ruling
+  out memory as the cause — this is a binder ABI mismatch between that image and this host's kernel
+  binder driver. Not worth retrying without a new hypothesis. (The service's `mem_limit`/`shm_size`
+  have since been re-tuned down for Android 13's actual measured footprint — see "Memory limits"
+  below — so don't read today's values as evidence either way for a future Android-15 retry.)
 - No Android 14 NDK build exists upstream (`erstt/redroid` only publishes 11/12/13/15).
   `aureliolo/redroid:14.0.0_amd64_with_gapps` (the only Android-14 redroid image found) boots fine
   and is host-safe, but ships **no ARM translation at all** — confirmed by both a device-side check
@@ -71,6 +73,43 @@ now runs cleanly through boot with zero `Bad operation` errors.
 volume.** If a different Android version needs testing again, give it its own volume path (e.g.
 `./local/data/android-15`) rather than reusing `./local/data/android`.
 
+## More cross-version `/data` corruption: idmap cache and telephony.db (2026-09-11)
+
+The appops.xml bug above turned out to be one instance of a recurring class, not a one-off. On
+2026-09-11, restarting redroid hit two more incidents from the same root cause (Android-15 leftovers
+mixed into the Android-13 `/data` volume):
+
+- **Stale idmap cache**: `system_server: Version mismatch in Idmap (was 0x9, expected 0x8)`,
+  `idmap2d` repeatedly killed/restarted, boot stretched from the normal ~35s to several minutes.
+  `/data/resource-cache` had two mtime generations of the same SystemUI overlay `.frro`/`@idmap`
+  files. Fixed with the same move-aside pattern; now scripted as `scripts/reset-resource-cache.sh`
+  — run that first if boot is slow and `idmap` shows up in logcat.
+- **`com.android.phone` crash loop**: `SQLiteException: Can't downgrade database from version
+  4063240 to 3735560` in `com.android.providers.telephony`'s `telephony.db` (at
+  `/data/user_de/0/com.android.providers.telephony/databases/`, not `/data/data` — telephony uses
+  device-encrypted storage). Logcat showed this firing thousands of times in the ring buffer — a
+  tight crash loop, not an occasional error — and was destabilizing Instagram's own UI automation
+  (the app would get pushed back to the launcher mid-scrape). Fixed via `adb root` +
+  `am force-stop com.android.phone` + moving `telephony.db`, `.db-journal`, `mmssms.db`,
+  `carrierIdentification.db` (and their journals) aside, same pattern as appops.xml.
+
+A third, unrelated issue also surfaced in the same session: `system_server` deadlocked on **every**
+boot inside `PermissionPolicyService.grantOrUpgradeDefaultRuntimePermissionsIfNeeded` (a
+`CompletableFuture.get()` that never completed), got Watchdog-killed every few minutes, and
+retried forever without ever reaching `sys.boot_completed`. This was a genuine code-level hang, not
+a corrupted-file issue — resetting `/data/system/users/0/package-restrictions.xml` alone did *not*
+fix it. Recovery required a full reset of `/data/system`, `/data/system_ce`, and `/data/system_de`
+(moved aside, not deleted) — but **`/data/data` was left untouched, and Instagram's login session
+survived** (`scraper.py login` returned "no login screen; assume session is live" with zero
+manual steps), so this was much lower-cost than it looked going in. Instagram itself did need
+reinstalling (`local/xapk/*.apk` was still on disk from the original setup, no network fetch
+needed) since wiping the package database orphaned its `/data/app` registration.
+
+**Takeaway: when redroid boot is slow, adb is stuck `offline`, or automation is flaky, read
+`adb -s 127.0.0.1:5555 logcat -d` (grep for `WATCHDOG KILLING`, `FATAL EXCEPTION`, `Version
+mismatch`, `Can't downgrade database`) before restarting the container again.** Each blind restart
+costs 1-9+ minutes; the log almost always names the actual blocked call directly.
+
 ## Host GPU mode tried and rejected
 
 Also on 2026-09-10, tried `androidboot.redroid_gpu_mode=host` (with `/dev/dri` passed through to
@@ -83,5 +122,15 @@ enabled` path. The user stopped this line of investigation before it was evaluat
 consuming this feed may not support whatever that mode changes. `docker-compose.yml` is back to
 `androidboot.redroid_gpu_mode=guest`, the validated default. Don't retry `=host` without the user
 raising it again.
+
+## Memory limits (measured 2026-09-11)
+
+Measured with `docker stats` across several boots and a live scrape: redroid idles around
+500-525MiB and peaks around 1.1-1.26GiB with Instagram actually open and scrolling; the app
+container idles around 67-97MiB and peaks around 97-125MiB while actively scraping. `mem_limit`/
+`shm_size` were re-tuned from the original 4g/2g (redroid) and 768m (app) down to `2g`/`1g` and
+`256m` respectively — roughly 60% and 2x headroom over the observed peaks. `shm_size` was cut less
+aggressively than the raw numbers might suggest, since under-provisioning it risks screenshot/
+graphics-buffer failures that are much harder to diagnose than a plain OOM kill.
 
 See `README.md`'s "Which Android?" section for the fuller compatibility history.

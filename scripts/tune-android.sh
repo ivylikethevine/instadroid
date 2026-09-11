@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 # One-time (idempotent) device tuning: turn off animations and disable Google apps the scraper
 # never uses, to cut CPU/RAM inside the container. Keeps GMS + WebView (Instagram wants them).
+# Also sets the device's timezone from DEVICE_TIMEZONE (read from .env if present, or already
+# exported) — see scraper.py's DEVICE_TIMEZONE for why this isn't set by default.
 # Usage: ./scripts/tune-android.sh [device-serial]   (defaults to the first `adb devices` entry,
 # e.g. redroid's 127.0.0.1:5555)
 set -uo pipefail
 S="${1:-$(adb devices | awk 'NR==2 {print $1}')}"
 A="adb -s $S shell"
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+if [ -n "${DEVICE_TIMEZONE:-}" ]; then
+  $A service call alarm 3 s16 "$DEVICE_TIMEZONE" >/dev/null 2>&1 && echo "timezone set to $DEVICE_TIMEZONE"
+fi
 $A settings put global window_animation_scale 0
 $A settings put global transition_animation_scale 0
 $A settings put global animator_duration_scale 0

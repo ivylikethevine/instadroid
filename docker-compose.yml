@@ -14,8 +14,12 @@ services:
     container_name: ig-redroid
     privileged: true
     restart: "no"
-    mem_limit: 4g
-    shm_size: 2g
+    # Measured peak while Instagram is actually open and scrolling: ~1.1-1.26GiB (idle boot is
+    # ~500-525MiB). 2g leaves ~60% headroom over the observed peak; shm_size is left at a more
+    # conservative 2x that guidance (1g) rather than cut aggressively, since under-provisioning it
+    # risks screenshot/graphics-buffer failures that are much harder to diagnose than an OOM.
+    mem_limit: 2g
+    shm_size: 1g
     volumes:
       - ./local/data/android:/data
     ports:
@@ -55,11 +59,25 @@ services:
       MEDIA_QUALITY: ${MEDIA_QUALITY:-95}          # JPEG quality (1-95) for saved post crops
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8000}   # what FreshRSS can reach
       FEED_HOST: ${FEED_HOST:-127.0.0.1}   # loopback only by default; set to 0.0.0.0 for LAN access
+      PERMALINK_RETRIES: ${PERMALINK_RETRIES:-2}   # extra share-sheet passes after the first
+      SHARE_TAP_TRIES: ${SHARE_TAP_TRIES:-2}       # taps on the share button before giving up
+      CLIPBOARD_TIMEOUT: ${CLIPBOARD_TIMEOUT:-6.0} # seconds to poll the clipboard for
+      MAX_CAROUSEL_SLIDES: ${MAX_CAROUSEL_SLIDES:-10}
+      VIDEO_SETTLE_SECONDS: ${VIDEO_SETTLE_SECONDS:-1.5}   # let autoplay/overlay settle before the still
+      AVATAR_REFRESH_DAYS: ${AVATAR_REFRESH_DAYS:-14}
+      MEDIA_MAX_MB: ${MEDIA_MAX_MB:-0}              # total media+DB size cap in MB; 0 disables
+      MAX_STORIES_PER_RUN: ${MAX_STORIES_PER_RUN:-10}
+      STORY_RETAIN_HOURS: ${STORY_RETAIN_HOURS:-24}  # matches Instagram's own story expiry
+      TIME_DISTRIBUTION: ${TIME_DISTRIBUTION:-uniform}   # uniform | lognormal | daynight
+      DEVICE_TIMEZONE: ${DEVICE_TIMEZONE:-}   # empty = leave the device's clock alone; also read by tune-android.sh
+      DAYNIGHT_QUIET_START: ${DAYNIGHT_QUIET_START:-0}
+      DAYNIGHT_QUIET_END: ${DAYNIGHT_QUIET_END:-6}
     volumes:
       - ./local/data/db:/db
       - ./local/data/media:/media
       - ./local/data/debug:/debug
-    mem_limit: 768m
+    # Measured peak while actively scraping: ~97-125MiB (idle is ~67-97MiB).
+    mem_limit: 256m
     cpus: 1.5
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]
