@@ -105,10 +105,14 @@ and `last_screen.jpg`, then adjust `SELECTORS`.
 
 ## How a scrape works
 
-1. Log in if needed, open the Following feed (the switcher is retried; cold starts are slow).
-2. Switch back to the Home feed — stories don't appear on the Following screen — and capture up to
-   `MAX_STORIES_PER_RUN` not-yet-seen accounts' current story frame from the tray, then return to
-   Following. See "Stories" below for what this does and doesn't cover.
+1. Log in if needed, open the target feed — `FEED_MODE=chrono` (default): the real chronological
+   Following feed, reached via the switcher (retried; cold starts are slow). `FEED_MODE=home`:
+   deliberately stay on the algorithmic Home feed instead, no switcher involved at all — see
+   "Followed-accounts allowlist" below for why you might want that.
+2. Capture up to `MAX_STORIES_PER_RUN` not-yet-seen accounts' current story frame from the Home
+   feed's tray — stories don't appear on the Following screen, so in chrono mode this means
+   switching to Home and back; in home mode it's already there. See "Stories" below for what this
+   does and doesn't cover.
 3. Walk the accessibility tree screen by screen. A post is registered only once the bottom of its
    card (share button + caption/timestamp) is on screen, so it has a stable identity. The first time
    an account's own header is on screen each run, its avatar is cropped and saved (once per account,
@@ -162,14 +166,16 @@ Captured stories are served at `/stories.xml` and always deleted after `STORY_RE
 
 Under `androidboot.redroid_gpu_mode=guest` the Following-feed switcher's bottom sheet doesn't
 always open (see "Which Android?" above); when it fails, `scrape_once()` falls back to whatever's
-on screen — Home, algorithmic, with suggested posts from accounts you don't follow mixed in. Set
-`FOLLOWING_REFRESH_DAYS` above its default of `0` to filter that out: periodically (every
-`FOLLOWING_REFRESH_DAYS`) the scraper navigates to the account's own profile → Following list and
-scrolls it (`MAX_FOLLOWING_SCROLLS` screens, `FOLLOWING_LIST_EMPTY_LIMIT` empty screens to stop),
-replacing the stored list with whatever it collected; any post from a username not on it is dropped
-before any of the expensive per-post work (media crop, carousel, share-sheet permalink) rather than
-after, so filtered posts cost nothing beyond the parse itself. The list being fully replaced on
-every refresh is also how an unfollow gets reflected automatically.
+on screen — Home, algorithmic, with suggested posts from accounts you don't follow mixed in.
+`FEED_MODE=home` (see "How a scrape works" above) hits the same problem on purpose, every run, by
+design — it skips the switcher outright. Either way, set `FOLLOWING_REFRESH_DAYS` above its
+default of `0` to filter that out: periodically (every `FOLLOWING_REFRESH_DAYS`) the scraper
+navigates to the account's own profile → Following list and scrolls it (`MAX_FOLLOWING_SCROLLS`
+screens, `FOLLOWING_LIST_EMPTY_LIMIT` empty screens to stop), replacing the stored list with
+whatever it collected; any post from a username not on it is dropped before any of the expensive
+per-post work (media crop, carousel, share-sheet permalink) rather than after, so filtered posts
+cost nothing beyond the parse itself. The list being fully replaced on every refresh is also how
+an unfollow gets reflected automatically.
 
 A single refresh isn't guaranteed to be exhaustive — confirmed live against a real 30-account list,
 which one refresh captured completely and another captured 27 of 30 (a different 3 missed each
