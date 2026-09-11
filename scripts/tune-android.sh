@@ -45,11 +45,14 @@ done
 # troubleshooting sometimes has to re-run after a `/data/system` reset — see CLAUDE.md), and anything
 # telephony/Bluetooth/secure-element-related (com.android.phone, com.android.se, rild, bluetooth*) —
 # this repo has hit real crash loops in that area before and it's not where the memory is anyway.
+# DO NOT add com.android.packageinstaller: PackageManagerService requires exactly one enabled
+# "installer" app system-wide and hard-crashes system_server at boot without it ("There must be
+# exactly one installer; found []") — see CLAUDE.md, this took down a whole boot.
 for p in com.android.documentsui com.android.printspooler com.android.bips \
          com.android.printservice.recommendation com.android.gallery3d com.android.camera2 \
          com.android.cameraextensions com.android.deskclock com.android.calendar \
          com.android.providers.calendar com.android.contacts com.android.quicksearchbox \
          com.android.dynsystem com.android.statementservice com.android.onetimeinitializer \
-         com.android.packageinstaller com.android.localtransport com.android.traceur; do
+         com.android.localtransport com.android.traceur; do
   $A pm disable-user --user 0 "$p" >/dev/null 2>&1 && echo "disabled $p"
 done

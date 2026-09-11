@@ -135,6 +135,10 @@ container idles around 67-97MiB and peaks around 97-125MiB while actively scrapi
 aggressively than the raw numbers might suggest, since under-provisioning it risks screenshot/
 graphics-buffer failures that are much harder to diagnose than a plain OOM kill.
 
+**Update:** the 1.1-1.26GiB peak above turned out to be an underestimate — see "The bigger find:
+Instagram itself never gets reclaimed between polls" further down for a live-account measurement
+that hit 1.98GiB, and why `mem_limit` should not be lowered based on the numbers in this section.
+
 ## Reducing idle memory: disabling unused AOSP apps (2026-09-11)
 
 `dumpsys meminfo`'s "Total PSS by OOM adjustment" on a fresh boot (nothing installed yet) showed
@@ -148,9 +152,7 @@ container's lifetime instead of being evicted.
 
 `scripts/tune-android.sh` now `pm disable-user`s these apps (extending the existing Google-app
 disable list), which stops them from ever launching rather than relying on a reclaim that doesn't
-happen here. Measured on a fresh boot: `docker stats` idle usage dropped from 1018MiB to 873MiB
-(~145MiB / ~14%), PIDs dropped from 1009 to ~790, and a full `logcat` check afterward showed no new
-crashes.
+happen here.
 
 Deliberately left alone: `com.android.settings` (the single largest cached entry at ~78MiB, but a
 core app — too risky to disable), `com.android.provision`/`com.android.managedprovisioning`
@@ -161,5 +163,74 @@ crash loops in that area (see above) and none of it showed up as a memory cost a
 in passing: a repeating `bluetooth@1.1-service.sim` crash loop during the first ~15s of every fresh
 boot, self-resolving and stable afterward — pre-existing (present before any of these changes,
 logcat-confirmed), not a memory driver, and out of scope here.
+
+**`com.android.packageinstaller` crashed every cold boot.** The first pass at this list included
+it — it looked like just another idle UI app the scraper's `adb install`-based flow never opens.
+It was disabled live against an already-booted instance, measured (looked fine), and written up as
+safe. It isn't: `PackageManagerService`'s constructor requires exactly one enabled app matching the
+system installer role, and hard-crashes if it finds zero. That check only runs during
+`PackageManagerService` startup, i.e. on a *cold* boot — an already-running instance never hits it,
+which is exactly why the live test missed it. The next cold restart hit a tight ~5s crash loop:
+`Zygote failed to write to system_server FD`, `*** FATAL EXCEPTION IN SYSTEM PROCESS`,
+`java.lang.RuntimeException: There must be exactly one installer; found []` at
+`PackageManagerService.getRequiredInstallerLPr`, on every respawn, never reaching
+`sys.boot_completed`. Same recovery pattern as the appops.xml/idmap/telephony.db incidents above:
+`adb root`, then `adb shell mv /data/system/users/0/package-restrictions.xml
+/data/system/users/0/package-restrictions.xml.bak` (this is where `pm disable-user` state lives)
+and restart the container — Android regenerates a clean one on next boot, which re-enables
+*everything*, so the (corrected, `packageinstaller`-free) disable list has to be re-run afterward.
+Confirmed fixed and confirmed to survive a subsequent cold restart cleanly.
+
+**Takeaway that generalizes beyond this one package: test `pm disable-user` changes against a full
+cold restart, not just the already-booted instance you disabled them on.** Some AOSP roles
+(installer here) are only validated during `PackageManagerService` startup, so a live test can look
+completely fine and still crash-loop the very next boot.
+
+With the corrected list (16 apps, `com.android.packageinstaller` excluded) applied from first boot
+and verified across a cold restart: `docker stats` idle usage dropped from 1018MiB to 745.7MiB
+(~272MiB / ~27%), PIDs dropped from 1009 to 758, `sys.boot_completed` reached normally, and a full
+`logcat` check showed zero `FATAL EXCEPTION IN SYSTEM PROCESS` lines.
+
+## The bigger find: Instagram itself never gets reclaimed between polls (2026-09-11)
+
+Ran a real login + `scraper.py once` against this host's actual account to get a live peak
+measurement (previously only estimated). `docker stats` hit **1.98GiB of the 2GiB `mem_limit`** —
+far above the 1.1-1.26GiB figure in "Memory limits" above, which was evidently measured under a
+lighter run. `dumpsys meminfo` explained why: `com.instagram.android` alone was 702MiB resident,
+plus a 116MiB `:fbns` (push-notification) subprocess the scraper has no use for (it polls, it's
+never woken by a push) — ~820MiB neither `tune-android.sh` nor the app-sweep above ever touched,
+because both only look at *other* apps. Same root cause as the "Reducing idle memory" section:
+this container's `lmkd` never reclaims anything, so once Instagram is opened by a run it just sits
+there fully resident for the entire ~2.5-4.5h gap until the next one — every run before this fix
+was paying that ~820MiB tax continuously, not just while actually scraping.
+
+Fix: `scraper.py`'s `scrape_once()` now force-stops `com.instagram.android` itself at the very end
+of a run (`_stop_instagram()`, alongside the `_sweep_cached_apps()` app-sweep) — same reasoning as
+that sweep: this container can't rely on `lmkd` to do it, so the scraper does it explicitly instead.
+Confirmed safe **the hard way**: the very first live test of this (a rushed manual `am force-stop`
++ immediate `scraper.py once`, run back-to-back with other manual `adb`/`am` commands in between)
+hit `DeviceNotReady: could not bring com.instagram.android to the foreground` — looked at first
+like cold boot being slower than `ensure_logged_in()`'s retry budget assumes. Timed it in isolation
+and it wasn't: `app_current()` reported Instagram foregrounded in ~1.1s from a genuine cold start,
+well inside the existing retry budget. Re-ran the real flow cleanly (`am force-stop`, then only
+`scraper.py once`, no manual commands in between) and it worked — twice more, through the actual
+`scrape_once()` code path after rebuilding the image with the fix, each time confirmed by `pidof
+com.instagram.android` finding nothing right after a run and the next run's log showing no
+foreground warnings at all. Conclusion: the one failure was this session's own rapid-fire manual
+`adb`/`am` commands stepping on each other, not a real cold-start timing problem — but this is
+exactly the kind of thing the `packageinstaller` incident above says to verify with a real run
+rather than assume, so it was.
+
+Effect measured over two consecutive real runs: memory after each run settled around ~1.03GiB
+(down from Instagram's own ~1.7-1.9GiB while it's actually open) and stayed there until the next
+run relaunches it. This does **not** lower the peak *during* an active scrape — Instagram is still
+open and using its ~820MiB then, same as always — it only stops paying that cost through the idle
+gap between runs, which is most of the container's time.
+
+**On `mem_limit`: do not lower it.** The 1.98GiB peak measured here (99% of the current `2g`) is
+real, live-account data under a genuinely heavy run (many carousels and Reels, several permalink
+retries) — a materially worse case than whatever produced the older 1.1-1.26GiB figure. `2g` held
+without an OOM kill, but with far less headroom than previously believed. Worth remeasuring peak
+again after some real-world runs settle, before ever considering it as a candidate to lower.
 
 See `README.md`'s "Which Android?" section for the fuller compatibility history.

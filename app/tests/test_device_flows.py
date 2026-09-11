@@ -329,6 +329,39 @@ def test_fetch_permalink_refuses_to_act_inside_a_stuck_sheet():
     assert d.taps == []  # never tapped anything inside the sheet
 
 
+def test_sweep_cached_apps_force_stops_every_package_and_skips_a_failure(monkeypatch):
+    d = feed_device(start="following")
+    real_shell = d.shell
+    calls = []
+
+    def flaky_shell(cmd):
+        calls.append(cmd)
+        if "com.android.keychain" in cmd:
+            raise RuntimeError("device offline")
+        return real_shell(cmd)
+
+    monkeypatch.setattr(d, "shell", flaky_shell)
+
+    scraper._sweep_cached_apps(d)  # must not raise despite the keychain failure
+
+    swept = {c[2] for c in calls}
+    assert swept == set(scraper.CACHED_APP_SWEEP)  # every package attempted, including after the failure
+
+
+def test_stop_instagram_force_stops_the_app_and_is_best_effort():
+    d = feed_device(start="following")
+
+    scraper._stop_instagram(d)
+
+    assert f"am force-stop {scraper.IG_PKG}" in d.shell_calls
+
+    def raising_shell(cmd):
+        raise RuntimeError("device offline")
+
+    d.shell = raising_shell
+    scraper._stop_instagram(d)  # must not raise
+
+
 def _caption_card(text, goto=None):
     return [
         node("row_feed_profile_header", desc="someone_nice posted a photo 3 days ago", bounds=(0, 150, 1080, 289)),
@@ -421,6 +454,9 @@ def test_scrape_once_end_to_end(fast_offline, monkeypatch):
     assert [s["username"] for s in stories] == ["alice"]  # bob's viewer never opened, carol was seen
     assert (media / stories[0]["media_file"]).exists()
     assert d.presses[-1] == "home"
+    for pkg in scraper.CACHED_APP_SWEEP:
+        assert f"am force-stop {pkg}" in d.shell_calls
+    assert f"am force-stop {scraper.IG_PKG}" in d.shell_calls
 
 
 def test_scrape_once_without_permalinks_falls_back_to_hash_ids_and_merges_a_placeholder(monkeypatch):

@@ -706,6 +706,47 @@ def _challenge_present(d):
     return None
 
 
+# Cached-tier system apps left enabled by tune-android.sh (see there for why: com.android.settings
+# is core, the rest may be needed again after a /data reset or a real permission/keychain prompt),
+# but that this container's lmkd never reclaims on its own — it judges free memory against the
+# host, not the container's mem_limit, so a once-launched cached app just sits there for the rest
+# of the container's life (see CLAUDE.md's "Reducing idle memory"). Force-stopped here instead:
+# unlike pm disable-user, this only kills the current process, so whatever needs one again just
+# relaunches it — no risk of the packageinstaller-style "required singleton" crash from disabling.
+CACHED_APP_SWEEP = (
+    "com.android.settings",
+    "com.android.permissioncontroller",
+    "com.android.managedprovisioning",
+    "com.android.keychain",
+    "com.android.externalstorage",
+)
+
+
+def _sweep_cached_apps(d):
+    """Force-stop CACHED_APP_SWEEP's processes at the end of a run. Best-effort per package: one
+    failure (e.g. the app wasn't running) must not skip the rest."""
+    for pkg in CACHED_APP_SWEEP:
+        try:
+            d.shell(["am", "force-stop", pkg])
+        except Exception as e:
+            log(f"WARN: could not force-stop {pkg}:", repr(e))
+
+
+def _stop_instagram(d):
+    """Force-stop IG_PKG itself at the end of a run. Once opened, Instagram (plus its :fbns push
+    process) measured ~820MiB resident — dwarfing everything in CACHED_APP_SWEEP combined — and
+    the same non-functional lmkd means it never gets reclaimed between polls either, so it would
+    otherwise just sit there for the ~2.5-4.5h until the next run. Safe to kill here: the next
+    run's connect_device()/ensure_logged_in() already does a full launch-from-scratch every time
+    regardless of whether Instagram happened to still be running, and the saved login session
+    lives in /data, not the process — confirmed with a real cold-start-after-force-stop scrape
+    before this was added. Best-effort, like _sweep_cached_apps."""
+    try:
+        d.shell(["am", "force-stop", IG_PKG])
+    except Exception as e:
+        log(f"WARN: could not force-stop {IG_PKG}:", repr(e))
+
+
 def _prune_debug_dumps():
     """Keep only the newest DEBUG_KEEP hierarchy+screenshot pairs, and delete any debug artifact
     (.xml/.jpg/.png, top level only) older than DEBUG_RETAIN_DAYS — manual dumps and one-off
@@ -1776,6 +1817,8 @@ def scrape_once(d, con) -> dict:
     _prune_debug_dumps()  # age-based pruning shouldn't depend on a new dump happening to be taken
     # Leave the app in a natural state
     d.press("home")
+    _sweep_cached_apps(d)
+    _stop_instagram(d)
     return {
         "new": new,
         "new_stories": new_stories,

@@ -85,6 +85,14 @@ docker compose exec app python scraper.py login      # types the .env credential
 docker compose exec app python scraper.py once        # first scrape, watch the output
 ```
 
+`tune-android.sh` disables a curated list of unused system apps to cut idle memory (see CLAUDE.md's
+"Reducing idle memory" for the measurement). One package must never be added to that list:
+`com.android.packageinstaller`. Disabling it crashes `system_server` on every subsequent cold boot
+(`RuntimeException: There must be exactly one installer; found []` in `PackageManagerService`) —
+Android requires exactly one enabled package-installer app system-wide. Recovery, if this ever
+happens again: `adb root`, then move `/data/system/users/0/package-restrictions.xml` aside and
+restart the container — same pattern as the `/data` corruption incidents in CLAUDE.md.
+
 The scraper runs the login step at the start of every scrape, so once the session is saved on the
 device it is a no-op. If Instagram asks for a code or "confirm it's you", the run aborts with a
 `login_screen.jpg` / `login_hierarchy.xml` in `local/data/debug`; finish that step by hand and re-run.
@@ -117,6 +125,12 @@ and `last_screen.jpg`, then adjust `SELECTORS`.
    `EMPTY_SCREEN_LIMIT` screens in a row show no recognisable post, a debug dump (`empty_feed0`) is
    saved and the feed is reopened once; if it happens again the run stops early (`empty_feed1`)
    and `/status` shows it as a warning, rather than swiping through the rest of `MAX_SCROLLS` blind.
+6. Force-stop Instagram and a short list of cached system apps (Settings, permission controller,
+   etc.). This container's Android never reclaims memory on its own between runs (see CLAUDE.md),
+   and Instagram alone measured ~820MiB resident once opened — without this, that memory just sits
+   there for the full `POLL_MIN_HOURS`-`POLL_MAX_HOURS` gap until the next run. The saved login
+   session lives on disk, not in the running process, so the next run's normal login-check handles
+   the resulting cold start the same way it always does.
 
 Taps are always made from a hierarchy dump taken immediately beforehand, and nothing is ever tapped
 inside an open sheet except "Copy link" (a stray tap there could message a contact).
