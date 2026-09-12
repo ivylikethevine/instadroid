@@ -45,6 +45,7 @@ services:
       - androidboot.redroid_height=${REDROID_HEIGHT:-2340}
       - androidboot.redroid_dpi=${REDROID_DPI:-420}
       - androidboot.redroid_fps=30
+      - androidboot.use_memfd=true
 
   # Single image: the scraper loop and the feed server run as two processes in one container
   # (see app/entrypoint.sh), so this is the only thing to build/publish alongside redroid.
