@@ -7,8 +7,10 @@ import subprocess
 import sys
 import time
 import zipfile
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import NoReturn
 
 import adbutils
 import igprofiles
@@ -30,7 +32,7 @@ from instadroid import (
 )
 from PIL import Image, ImageDraw
 
-from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, hierarchy, node
+from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, Node, Out, hierarchy, node
 
 SAVE_FAILURE_LOGCAT = diagnostics.save_failure_logcat  # captured before conftest stubs it out
 CAPTION = SELECTORS_445["caption_class"]  # read at import, before conftest pins the profile
@@ -43,12 +45,12 @@ OTHER_URL = "https://www.instagram.com/p/OTHER1/?igsh=xyz"
 PROFILE_TAB = node("profile_tab", desc="Profile", bounds=(864, 2088, 1080, 2214), goto="profile")
 
 
-def story_button(user, index, seen, x, goto=None):
+def story_button(user: str, index: int, seen: bool, x: int, goto: str | None = None) -> Node:
     desc = f"{user}'s story, {index} of 3, {'Seen' if seen else 'Unseen'}."
     return node(cls="android.widget.Button", desc=desc, bounds=(x, 300, x + 180, 480), goto=goto)
 
 
-def home_screen(switcher_goto="menu", extra=()):
+def home_screen(switcher_goto: str = "menu", extra: Iterable[Node] = ()) -> str:
     return hierarchy(
         ACTION_BAR,
         node(desc="Instagram Home Feed", bounds=(0, 150, 400, 280), goto=switcher_goto),
@@ -89,7 +91,7 @@ STORY = hierarchy(
 )
 
 
-def feed_cards(slide=1, top_share="share_top", other_share="share_other"):
+def feed_cards(slide: int = 1, top_share: str = "share_top", other_share: str = "share_other") -> list[Node]:
     """A header-less Reel (header scrolled off) above a full carousel card."""
     reel_desc = "Reel by Someone Nice, Liked by a_friend and others, 6 comments, August 29"
     return [
@@ -119,7 +121,7 @@ def feed_cards(slide=1, top_share="share_top", other_share="share_other"):
     ]
 
 
-def following_screen(cards=None, sheet=None):
+def following_screen(cards: list[Node] | None = None, sheet: Node | None = None) -> str:
     kids = [
         ACTION_BAR,
         FOLLOWING_TITLE,
@@ -135,7 +137,7 @@ def following_screen(cards=None, sheet=None):
     return hierarchy(*kids)
 
 
-def copy_link(clip=None):
+def copy_link(clip: str | None = None) -> Node:
     return node(desc="Copy link", bounds=(0, 2240, 1080, 2330), clip=clip, goto="following")
 
 
@@ -147,7 +149,7 @@ OLDER_CARDS = [
 ]
 
 
-def feed_device(top_share="share_top", other_share="share_other", **kw):
+def feed_device(top_share: str = "share_top", other_share: str = "share_other", **kw: object) -> FakeDevice:
     screens = {
         "home": home_screen(),
         "menu": MENU,
@@ -179,7 +181,7 @@ def feed_device(top_share="share_top", other_share="share_other", **kw):
     )
 
 
-def profile_screen(following_goto="following_list"):
+def profile_screen(following_goto: str = "following_list") -> str:
     return hierarchy(
         ACTION_BAR,
         node(
@@ -191,7 +193,7 @@ def profile_screen(following_goto="following_list"):
     )
 
 
-def following_list_screen(usernames):
+def following_list_screen(usernames: Iterable[str]) -> str:
     return hierarchy(
         ACTION_BAR,
         node("unified_follow_list_view_pager", bounds=(0, 336, 1080, 2214)),
@@ -207,7 +209,9 @@ def following_list_screen(usernames):
     )
 
 
-def feed_device_with_following(pages, main_scroll=None, **kw):
+def feed_device_with_following(
+    pages: list[list[str]], main_scroll: dict[str, str] | None = None, **kw: object
+) -> FakeDevice:
     """feed_device() plus a profile -> own-Following-list screen chain, for the followed-accounts
     allowlist. `pages` is a list of username lists, one per Following-list scroll screen; the last
     page has no further scroll entry, simulating "list exhausted." `main_scroll` replaces the main
@@ -228,7 +232,7 @@ def feed_device_with_following(pages, main_scroll=None, **kw):
 
 
 @pytest.fixture(autouse=True)
-def fast_offline(tmp_path, monkeypatch):
+def fast_offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
     monkeypatch.setattr(config, "MEDIA_DIR", tmp_path / "media")
     monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "debug")
@@ -246,7 +250,7 @@ def fast_offline(tmp_path, monkeypatch):
 # --- login ------------------------------------------------------------------------------------
 
 
-def login_screen(button_goto="notnow"):
+def login_screen(button_goto: str = "notnow") -> str:
     return hierarchy(
         node(
             cls="android.widget.TextView", text="Phone number, username or email", bounds=(0, 500, 1080, 560)
@@ -259,11 +263,11 @@ def login_screen(button_goto="notnow"):
     )
 
 
-def text_screen(text, goto=None):
+def text_screen(text: str, goto: str | None = None) -> str:
     return hierarchy(node(cls="android.widget.TextView", text=text, bounds=(0, 1000, 1080, 1100), goto=goto))
 
 
-def test_login_fills_the_form_and_dismisses_interstitials():
+def test_login_fills_the_form_and_dismisses_interstitials() -> None:
     screens = {"login": login_screen(), "notnow": text_screen("Not now", goto="home"), "home": home_screen()}
     d = FakeDevice(screens, "login")
     assert navigation.ensure_logged_in(d) is True
@@ -272,7 +276,7 @@ def test_login_fills_the_form_and_dismisses_interstitials():
     assert d.launches == ["com.instagram.mainactivity.LauncherActivity"]  # resolved, not monkey
 
 
-def test_login_taps_through_the_logged_out_welcome_screen():
+def test_login_taps_through_the_logged_out_welcome_screen() -> None:
     screens = {
         "welcome": text_screen("I already have a profile", goto="login"),
         "login": login_screen(button_goto="home"),
@@ -283,7 +287,7 @@ def test_login_taps_through_the_logged_out_welcome_screen():
     assert "login" in d.history
 
 
-def test_login_dismisses_a_stray_ok_alert_and_accepts_a_live_session():
+def test_login_dismisses_a_stray_ok_alert_and_accepts_a_live_session() -> None:
     d = FakeDevice({"alert": text_screen("OK", goto="home"), "home": home_screen()}, "alert")
     assert navigation.ensure_logged_in(d) is True
     assert d.typed == []
@@ -298,31 +302,37 @@ def test_login_dismisses_a_stray_ok_alert_and_accepts_a_live_session():
         ({"markers": text_screen("Forgot password?")}, "markers", "form not recognised"),
     ],
 )  # fmt: skip
-def test_login_failures_raise_with_a_debug_dump(screens, start, match, fast_offline):
+def test_login_failures_raise_with_a_debug_dump(
+    screens: dict[str, str], start: str, match: str, fast_offline: Path
+) -> None:
     with pytest.raises(RuntimeError, match=match):
         navigation.ensure_logged_in(FakeDevice(screens, start))
     assert (fast_offline / "debug" / "login_hierarchy.xml").exists()
 
 
-def test_login_without_credentials_raises(monkeypatch):
+def test_login_without_credentials_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "IG_PASSWORD", "")
     with pytest.raises(RuntimeError, match="not set"):
         navigation.ensure_logged_in(FakeDevice({"login": login_screen()}, "login"))
 
 
-def test_login_raises_when_instagram_is_not_installed_and_auto_install_is_off(monkeypatch):
+def test_login_raises_when_instagram_is_not_installed_and_auto_install_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(config, "IG_AUTO_INSTALL", False)
     with pytest.raises(RuntimeError, match="not installed"):
         navigation.ensure_logged_in(FakeDevice({}, "launcher", installed=()))
 
 
-def _apk_run(monkeypatch, d, calls, *, fail_on=None):
+def _apk_run(
+    monkeypatch: pytest.MonkeyPatch, d: FakeDevice, calls: list[list[str]], *, fail_on: str | None = None
+) -> None:
     """Patch subprocess.run to fake apkeep + adb install without touching the network or a
     real device, recording every invocation into `calls`. `fail_on` (argv[0], "apkeep" or "adb")
     makes that step raise CalledProcessError. A successful "adb install"/"install-multiple" flips
     `d`'s installed set, same as a real adb install would."""
 
-    def fake_run(cmd, **kwargs):
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
         if fail_on and cmd[0] == fail_on:
             raise subprocess.CalledProcessError(1, cmd, output="", stderr="boom")
@@ -341,7 +351,7 @@ def _apk_run(monkeypatch, d, calls, *, fail_on=None):
     monkeypatch.setattr(subprocess, "run", fake_run)
 
 
-def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch):
+def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     d = FakeDevice({"home": home_screen()}, "launcher", installed=())
     calls = []
     _apk_run(monkeypatch, d, calls)
@@ -354,7 +364,7 @@ def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch):
     assert install_call[5].endswith("config.arm64_v8a.apk")
 
 
-def test_installing_instagram_reactivates_the_profile(monkeypatch):
+def test_installing_instagram_reactivates_the_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     d = FakeDevice({"home": home_screen()}, "launcher", installed=())
     _apk_run(monkeypatch, d, [])
     monkeypatch.setattr(versioning, "PROFILE_WARNING", "stale warning from before the install")
@@ -362,7 +372,7 @@ def test_installing_instagram_reactivates_the_profile(monkeypatch):
     assert versioning.PROFILE.name == "v445" and versioning.PROFILE_WARNING is None  # installed 445.0.0.45.83
 
 
-def test_auto_install_fetches_the_profiles_own_apk_version(monkeypatch):
+def test_auto_install_fetches_the_profiles_own_apk_version(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "IG_APK_VERSION", "")
     monkeypatch.setattr(versioning, "PROFILE", igprofiles.load("v446"))
     d = FakeDevice({"home": home_screen()}, "launcher", installed=(), ig_version="446.0.0.49.77")
@@ -373,7 +383,7 @@ def test_auto_install_fetches_the_profiles_own_apk_version(monkeypatch):
     assert next(c for c in calls if c[0] == "apkeep")[2] == f"{config.IG_PKG}@446.0.0.49.77"
 
 
-def test_a_pinned_apk_version_gets_its_own_cache_folder(monkeypatch):
+def test_a_pinned_apk_version_gets_its_own_cache_folder(monkeypatch: pytest.MonkeyPatch) -> None:
     # An unpinned bundle already cached at the top level must not be installed for a pinned version.
     xapk_dir = config.APK_CACHE_DIR / "xapk"
     xapk_dir.mkdir(parents=True)
@@ -390,7 +400,7 @@ def test_a_pinned_apk_version_gets_its_own_cache_folder(monkeypatch):
     assert all("/445.0.0.45.83/" in arg for arg in install_call[4:])
 
 
-def test_install_version_replaces_a_newer_install_in_place(monkeypatch):
+def test_install_version_replaces_a_newer_install_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
     d = FakeDevice({"home": home_screen()}, "launcher", ig_version="446.0.0.49.77")
     d.install = lambda: setattr(d, "ig_version", "445.0.0.45.83")  # what the downgrade installs
     calls = []
@@ -401,7 +411,9 @@ def test_install_version_replaces_a_newer_install_in_place(monkeypatch):
     assert install_call[3:6] == ["install-multiple", "-r", "-d"]
 
 
-def test_install_version_defaults_to_the_pinned_version_and_skips_when_already_installed(monkeypatch):
+def test_install_version_defaults_to_the_pinned_version_and_skips_when_already_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(config, "IG_APK_VERSION", "445.0.0.45.83")
     d = FakeDevice({"home": home_screen()}, "launcher")  # already reports 445.0.0.45.83
     calls = []
@@ -410,14 +422,16 @@ def test_install_version_defaults_to_the_pinned_version_and_skips_when_already_i
     assert calls == []
 
 
-def test_install_version_raises_when_the_device_reports_another_version(monkeypatch):
+def test_install_version_raises_when_the_device_reports_another_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     d = FakeDevice({"home": home_screen()}, "launcher", ig_version="446.0.0.49.77")
     _apk_run(monkeypatch, d, [])  # the fake install leaves the version untouched
     with pytest.raises(device.DeviceNotReady, match="device reports 446.0.0.49.77"):
         install.install_instagram_version(d, "445.0.0.45.83")
 
 
-def test_ensure_logged_in_reuses_a_cached_apk(monkeypatch):
+def test_ensure_logged_in_reuses_a_cached_apk(monkeypatch: pytest.MonkeyPatch) -> None:
     xapk_dir = config.APK_CACHE_DIR / "xapk"
     xapk_dir.mkdir(parents=True)
     (xapk_dir / f"{config.IG_PKG}.apk").write_bytes(b"base")
@@ -430,21 +444,21 @@ def test_ensure_logged_in_reuses_a_cached_apk(monkeypatch):
     assert install_call[3] == "install"  # single apk: no -multiple
 
 
-def test_ensure_logged_in_raises_transiently_when_apkeep_fails(monkeypatch):
+def test_ensure_logged_in_raises_transiently_when_apkeep_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     d = FakeDevice({}, "launcher", installed=())
     _apk_run(monkeypatch, d, [], fail_on="apkeep")
     with pytest.raises(device.DeviceNotReady):
         navigation.ensure_logged_in(d)
 
 
-def test_ensure_logged_in_raises_transiently_when_install_fails(monkeypatch):
+def test_ensure_logged_in_raises_transiently_when_install_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     d = FakeDevice({}, "launcher", installed=())
     _apk_run(monkeypatch, d, [], fail_on="adb")
     with pytest.raises(device.DeviceNotReady):
         navigation.ensure_logged_in(d)
 
 
-def test_app_that_never_foregrounds_is_a_transient_device_failure():
+def test_app_that_never_foregrounds_is_a_transient_device_failure() -> None:
     d = FakeDevice({}, "launcher", launch_blocked=True)
     with pytest.raises(device.DeviceNotReady) as exc:
         navigation.ensure_logged_in(d)
@@ -455,19 +469,19 @@ def test_app_that_never_foregrounds_is_a_transient_device_failure():
 # --- feed navigation --------------------------------------------------------------------------
 
 
-def test_open_following_feed_goes_through_the_switcher():
+def test_open_following_feed_goes_through_the_switcher() -> None:
     d = feed_device()
     assert navigation.open_following_feed(d) is True
     assert d.history[-2:] == ["menu", "following"]
 
 
-def test_open_following_feed_reenters_a_following_screen_left_over_from_last_run():
+def test_open_following_feed_reenters_a_following_screen_left_over_from_last_run() -> None:
     d = feed_device(start="following")
     assert navigation.open_following_feed(d) is True
     assert d.history == ["following", "home", "menu", "following"]
 
 
-def test_open_following_feed_backs_out_of_an_unrelated_screen():
+def test_open_following_feed_backs_out_of_an_unrelated_screen() -> None:
     d = feed_device(start="profile")
     d.screens["profile"] = hierarchy(node(text="Edit profile"))
     d.back["profile"] = "home"
@@ -475,20 +489,20 @@ def test_open_following_feed_backs_out_of_an_unrelated_screen():
     assert d.presses[0] == "back"
 
 
-def test_open_following_feed_gives_up_when_the_switcher_never_opens(fast_offline):
+def test_open_following_feed_gives_up_when_the_switcher_never_opens(fast_offline: Path) -> None:
     d = FakeDevice({"home": home_screen(switcher_goto="")}, "home")
     assert navigation.open_following_feed(d) is False
     assert (fast_offline / "debug" / "feed_switch_hierarchy.xml").exists()
 
 
-def test_close_sheets_relaunches_if_back_leaves_the_app():
+def test_close_sheets_relaunches_if_back_leaves_the_app() -> None:
     d = feed_device(start="share_top")
     d.back["share_top"] = "launcher"
     assert navigation.close_sheets(d) is True
     assert d.screen == "home"
 
 
-def test_back_to_feed_relaunches_from_outside_the_app():
+def test_back_to_feed_relaunches_from_outside_the_app() -> None:
     d = feed_device(start="launcher", launch_screen="following")
     assert navigation.back_to_feed(d) is True
 
@@ -496,59 +510,61 @@ def test_back_to_feed_relaunches_from_outside_the_app():
 # --- permalinks -------------------------------------------------------------------------------
 
 
-def top_card_id(d):
+def top_card_id(d: FakeDevice) -> str:
     return parsing.post_id(parsing.parse_hierarchy(d.dump_hierarchy())[0])
 
 
-def test_fetch_permalink_copies_and_canonicalises_the_link():
+def test_fetch_permalink_copies_and_canonicalises_the_link() -> None:
     d = feed_device(start="following")
     assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/reel/TOP123/", None)
     assert d.screen == "following"
 
 
-def test_fetch_permalink_reports_a_sheet_that_never_opens(fast_offline):
+def test_fetch_permalink_reports_a_sheet_that_never_opens(fast_offline: Path) -> None:
     d = feed_device(top_share="", start="following")
     assert capture.fetch_permalink(d, top_card_id(d)) == (None, "sheet")
     assert (fast_offline / "debug" / "share_sheet_hierarchy.xml").exists()
 
 
-def test_fetch_permalink_reports_a_clipboard_that_never_updates():
+def test_fetch_permalink_reports_a_clipboard_that_never_updates() -> None:
     d = feed_device(top_share="share_noclip", start="following")
     assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
 
 
-def test_fetch_permalink_ignores_the_previous_posts_link_left_in_the_clipboard(monkeypatch):
+def test_fetch_permalink_ignores_the_previous_posts_link_left_in_the_clipboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(capture, "_last_url", TOP_URL)
     d = feed_device(start="following")
     assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
 
 
-def test_fetch_permalink_when_the_card_is_gone():
+def test_fetch_permalink_when_the_card_is_gone() -> None:
     assert capture.fetch_permalink(feed_device(start="following"), "no-such-card") == (None, "sheet")
 
 
-def test_fetch_permalink_refuses_to_act_inside_a_stuck_sheet():
+def test_fetch_permalink_refuses_to_act_inside_a_stuck_sheet() -> None:
     d = feed_device(start="share_top")
     d.back["share_top"] = "share_top"
     assert capture.fetch_permalink(d, "anything") == (None, "sheet")
     assert d.taps == []  # never tapped anything inside the sheet
 
 
-def test_force_stop_is_one_shell_call_and_best_effort():
+def test_force_stop_is_one_shell_call_and_best_effort() -> None:
     d = feed_device(start="following")
 
     device.free_device_memory(d)
 
     assert d.shell_calls == [f"am force-stop {pkg}" for pkg in (*device.CACHED_APP_SWEEP, config.IG_PKG)]
 
-    def raising_shell(cmd):
+    def raising_shell(cmd: str | list[str]) -> NoReturn:
         raise RuntimeError("device offline")
 
     d.shell = raising_shell
     device.force_stop(d, config.IG_PKG)  # must not raise
 
 
-def _caption_card(text, goto=None):
+def _caption_card(text: str, goto: str | None = None) -> list[Node]:
     return [
         node(
             "row_feed_profile_header",
@@ -561,7 +577,7 @@ def _caption_card(text, goto=None):
     ]
 
 
-def test_expand_caption_taps_more_and_returns_the_full_text():
+def test_expand_caption_taps_more_and_returns_the_full_text() -> None:
     d = FakeDevice(
         {
             "following": following_screen(_caption_card("someone_nice Short start… more", goto="expanded")),
@@ -577,7 +593,7 @@ def test_expand_caption_taps_more_and_returns_the_full_text():
     assert capture.expand_caption(d, p) == "Short start continues on with the full text"
 
 
-def test_expand_caption_falls_back_to_the_truncated_text_when_the_tap_does_nothing():
+def test_expand_caption_falls_back_to_the_truncated_text_when_the_tap_does_nothing() -> None:
     d = FakeDevice(
         {
             "following": following_screen(_caption_card("someone_nice Short start… more"))
@@ -590,7 +606,7 @@ def test_expand_caption_falls_back_to_the_truncated_text_when_the_tap_does_nothi
     assert d.screen == "following"  # never knocked off the feed
 
 
-def test_expand_caption_is_a_noop_for_a_caption_that_was_never_truncated():
+def test_expand_caption_is_a_noop_for_a_caption_that_was_never_truncated() -> None:
     d = FakeDevice(
         {"following": following_screen(_caption_card("someone_nice Whole caption, no more span"))},
         "following",
@@ -605,7 +621,15 @@ def test_expand_caption_is_a_noop_for_a_caption_that_was_never_truncated():
 # --- the scrape loop --------------------------------------------------------------------------
 
 
-def _seed_post(con, pid, username, caption, days_ago, h=None, url=None):
+def _seed_post(
+    con: sqlite3.Connection,
+    pid: str,
+    username: str,
+    caption: str,
+    days_ago: int,
+    h: str | None = None,
+    url: str | None = None,
+) -> None:
     ts = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
     con.execute(
         "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash, url,"
@@ -615,7 +639,7 @@ def _seed_post(con, pid, username, caption, days_ago, h=None, url=None):
     con.commit()
 
 
-def test_scrape_once_end_to_end(fast_offline, monkeypatch):
+def test_scrape_once_end_to_end(fast_offline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 3)
     monkeypatch.setattr(config, "STOP_AFTER_SEEN", 1)
     media = fast_offline / "media"
@@ -663,7 +687,9 @@ def test_scrape_once_end_to_end(fast_offline, monkeypatch):
     assert f"am force-stop {config.IG_PKG}" in d.shell_calls
 
 
-def test_scrape_once_without_permalinks_falls_back_to_hash_ids_and_merges_a_placeholder(monkeypatch):
+def test_scrape_once_without_permalinks_falls_back_to_hash_ids_and_merges_a_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
     monkeypatch.setattr(config, "MAX_SCROLLS", 2)
@@ -687,7 +713,9 @@ def test_scrape_once_without_permalinks_falls_back_to_hash_ids_and_merges_a_plac
     assert other["url"] is None and other["id"] == other["hash"]
 
 
-def test_scrape_once_drops_a_permalink_that_belongs_to_another_account(monkeypatch):
+def test_scrape_once_drops_a_permalink_that_belongs_to_another_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
@@ -700,7 +728,7 @@ def test_scrape_once_drops_a_permalink_that_belongs_to_another_account(monkeypat
     assert row["url"] is None and row["id"] != "TOP123"  # stored under its hash, not the stale link
 
 
-def test_scrape_once_treats_an_edited_caption_as_the_same_post(monkeypatch):
+def test_scrape_once_treats_an_edited_caption_as_the_same_post(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
@@ -719,7 +747,7 @@ def test_scrape_once_treats_an_edited_caption_as_the_same_post(monkeypatch):
 # --- feed mode (chrono vs home) ------------------------------------------------------------------
 
 
-def home_feed_screen(cards=None):
+def home_feed_screen(cards: list[Node] | None = None) -> str:
     """A populated Home feed, with the bottom tab bar (feed_tab) present -- unlike
     following_screen(), which mirrors real Instagram's Following screen hiding it."""
     return hierarchy(
@@ -735,7 +763,7 @@ def home_feed_screen(cards=None):
     )
 
 
-def test_open_home_feed_navigates_via_the_home_tab(fast_offline):
+def test_open_home_feed_navigates_via_the_home_tab(fast_offline: Path) -> None:
     # feed_device()'s own back map already sends "following" -> "home"; open_home_feed() has no
     # switcher to tap, so this is the same recovery path open_following_feed() itself relies on.
     d = feed_device(start="following")
@@ -743,7 +771,7 @@ def test_open_home_feed_navigates_via_the_home_tab(fast_offline):
     assert d.screen == "home"
 
 
-def test_on_target_feed_matches_feed_mode(fast_offline, monkeypatch):
+def test_on_target_feed_matches_feed_mode(fast_offline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = FakeDevice({"home": home_feed_screen()}, "home")
     following = FakeDevice({"following": following_screen()}, "following")
     monkeypatch.setattr(config, "FEED_MODE", "home")
@@ -754,7 +782,9 @@ def test_on_target_feed_matches_feed_mode(fast_offline, monkeypatch):
     assert navigation.on_target_feed(following) is True
 
 
-def test_open_target_feed_dispatches_by_feed_mode(fast_offline, monkeypatch):
+def test_open_target_feed_dispatches_by_feed_mode(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     d = feed_device(start="home")
     monkeypatch.setattr(config, "FEED_MODE", "home")
     assert navigation.open_target_feed(d) is True
@@ -765,7 +795,7 @@ def test_open_target_feed_dispatches_by_feed_mode(fast_offline, monkeypatch):
     assert d.screen == "following"
 
 
-def test_unknown_feed_mode_falls_back_to_chrono():
+def test_unknown_feed_mode_falls_back_to_chrono() -> None:
     # A subprocess: FEED_MODE is resolved at import, and reloading config in place would leak into
     # every other test in the session.
     result = subprocess.run(
@@ -779,7 +809,9 @@ def test_unknown_feed_mode_falls_back_to_chrono():
     assert result.stdout.strip().splitlines()[-1] == "chrono"  # the fallback warning also prints
 
 
-def test_scrape_once_stays_on_home_feed_when_feed_mode_is_home(fast_offline, monkeypatch):
+def test_scrape_once_stays_on_home_feed_when_feed_mode_is_home(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(config, "FEED_MODE", "home")
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
@@ -801,14 +833,16 @@ def test_scrape_once_stays_on_home_feed_when_feed_mode_is_home(fast_offline, mon
     assert "menu" not in d.history  # never opened the switcher either
 
 
-def test_open_own_following_list_navigates_from_the_feed(fast_offline):
+def test_open_own_following_list_navigates_from_the_feed(fast_offline: Path) -> None:
     d = feed_device_with_following([["alice", "bob"]], start="following")
     assert navigation.open_own_following_list(d) is True
     assert d.screen == "following_list"
     assert d.history[-3:] == ["following", "profile", "following_list"]
 
 
-def test_open_own_following_list_leaves_and_reenters_when_already_on_the_list_screen(fast_offline):
+def test_open_own_following_list_leaves_and_reenters_when_already_on_the_list_screen(
+    fast_offline: Path,
+) -> None:
     # A real live run (2026-09-11) found this exact case: a second refresh in the same app session
     # started mid-scroll instead of at the top, collecting 9 of 30 followed accounts instead of a
     # fresh scroll's 27+ — accepting "already there" as done is the bug this guards against.
@@ -818,19 +852,25 @@ def test_open_own_following_list_leaves_and_reenters_when_already_on_the_list_sc
     assert d.history.count("following_list") == 2  # left, then genuinely navigated back in
 
 
-def test_scrape_following_list_scrolls_until_no_new_username_appears(fast_offline, monkeypatch):
+def test_scrape_following_list_scrolls_until_no_new_username_appears(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
     d = feed_device_with_following([["alice", "bob"], ["carol"]], main_scroll={}, start="following_list")
     assert navigation.scrape_following_list(d) == ["alice", "bob", "carol"]
 
 
-def test_scrape_following_list_returns_none_when_nothing_is_ever_parsed(fast_offline, monkeypatch):
+def test_scrape_following_list_returns_none_when_nothing_is_ever_parsed(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
     d = feed_device_with_following([[]], main_scroll={}, start="following_list")
     assert navigation.scrape_following_list(d) is None
 
 
-def test_refresh_following_list_replaces_the_stored_list(fast_offline, monkeypatch):
+def test_refresh_following_list_replaces_the_stored_list(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
     con = db.db_init()
     con.execute("INSERT INTO following (username, updated_at) VALUES ('stale_unfollowed', '2020-01-01')")
@@ -843,7 +883,9 @@ def test_refresh_following_list_replaces_the_stored_list(fast_offline, monkeypat
     assert {r[0] for r in con.execute("SELECT username FROM following")} == {"alice", "bob"}
 
 
-def test_refresh_following_list_keeps_the_existing_list_on_a_failed_scrape(fast_offline, monkeypatch):
+def test_refresh_following_list_keeps_the_existing_list_on_a_failed_scrape(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
     con = db.db_init()
     con.execute("INSERT INTO following (username, updated_at) VALUES ('good_data', '2020-01-01')")
@@ -857,8 +899,8 @@ def test_refresh_following_list_keeps_the_existing_list_on_a_failed_scrape(fast_
 
 
 def test_scrape_once_filters_posts_from_accounts_not_on_the_refreshed_following_list(
-    fast_offline, monkeypatch
-):
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 7)
     monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
@@ -879,7 +921,9 @@ def test_scrape_once_filters_posts_from_accounts_not_on_the_refreshed_following_
     assert con.execute("SELECT 1 FROM accounts WHERE username='other_user'").fetchone() is None
 
 
-def test_scrape_once_does_not_filter_before_the_first_successful_refresh(fast_offline, monkeypatch):
+def test_scrape_once_does_not_filter_before_the_first_successful_refresh(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Enabled but never yet refreshed, and this run's own refresh attempt also finds nothing
     # (empty Following-list screen) -- an empty allowlist must mean "not initialized," not "filter
     # everything," or turning the feature on would silently drop every post on its first run.
@@ -906,7 +950,7 @@ class StopLoop(Exception):
     pass
 
 
-def test_connect_device(monkeypatch):
+def test_connect_device(monkeypatch: pytest.MonkeyPatch) -> None:
     dev = feed_device()
     monkeypatch.setattr(adbutils.adb, "connect", lambda addr, timeout=None: None)
     monkeypatch.setattr(u2, "connect", lambda addr: dev)
@@ -916,7 +960,9 @@ def test_connect_device(monkeypatch):
     )  # device reports 445.0.0.45.83
 
 
-def test_connect_device_warns_when_the_installed_version_differs_from_the_profile(monkeypatch):
+def test_connect_device_warns_when_the_installed_version_differs_from_the_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     dev = feed_device()
     dev.ig_version = "446.0.0.49.77"
     monkeypatch.setattr(adbutils.adb, "connect", lambda addr, timeout=None: None)
@@ -929,7 +975,7 @@ def test_connect_device_warns_when_the_installed_version_differs_from_the_profil
     )
 
 
-def test_scrape_once_reports_the_profile_warning(monkeypatch):
+def test_scrape_once_reports_the_profile_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
     monkeypatch.setattr(
@@ -939,10 +985,10 @@ def test_scrape_once_reports_the_profile_warning(monkeypatch):
     assert "Instagram 446.0.0.49.77 is installed but profile v445" in stats["warning"]
 
 
-def _stop_after_first_sleep(monkeypatch):
-    sleeps = []
+def _stop_after_first_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    sleeps: list[float] = []
 
-    def sleep(seconds):
+    def sleep(seconds: float) -> NoReturn:
         sleeps.append(seconds)
         raise StopLoop
 
@@ -951,11 +997,13 @@ def _stop_after_first_sleep(monkeypatch):
     return sleeps
 
 
-def test_main_records_a_transient_failure_and_retries_early(fast_offline, monkeypatch):
+def test_main_records_a_transient_failure_and_retries_early(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sleeps = _stop_after_first_sleep(monkeypatch)
     monkeypatch.setattr(config, "RETRY_DELAYS_MINUTES", [2.0])
 
-    def offline():
+    def offline() -> NoReturn:
         raise adbutils.AdbError("device 127.0.0.1:5555 not online")
 
     monkeypatch.setattr(device, "connect_device", offline)
@@ -968,7 +1016,9 @@ def test_main_records_a_transient_failure_and_retries_early(fast_offline, monkey
     assert 2 * 60 <= sleeps[0] <= 3 * 60
 
 
-def test_main_records_a_successful_run_with_device_versions(fast_offline, monkeypatch):
+def test_main_records_a_successful_run_with_device_versions(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sleeps = _stop_after_first_sleep(monkeypatch)
     monkeypatch.setattr(device, "connect_device", feed_device)
     stats = {
@@ -997,7 +1047,9 @@ def test_main_records_a_successful_run_with_device_versions(fast_offline, monkey
 MIB = 1024 * 1024
 
 
-def cgroup_output(current_mib, max_mib=3072, oom_kill=0, inactive_file_mib=0):
+def cgroup_output(
+    current_mib: int, max_mib: int | None = 3072, oom_kill: int = 0, inactive_file_mib: int = 0
+) -> str:
     """memory.current, memory.max, memory.events, then (part of) memory.stat, as `cat` prints them."""
     limit = "max" if max_mib is None else str(max_mib * MIB)
     usage = (current_mib + inactive_file_mib) * MIB
@@ -1007,13 +1059,13 @@ def cgroup_output(current_mib, max_mib=3072, oom_kill=0, inactive_file_mib=0):
     )
 
 
-def with_cgroup(d, readings):
+def with_cgroup(d: FakeDevice, readings: Iterable[str]) -> FakeDevice:
     """Make FakeDevice `d` answer the memory guard's cgroup read with successive `readings`
     (cgroup_output() strings); the last one repeats."""
     shell = d.shell
     readings = list(readings)
 
-    def fake_shell(cmd):
+    def fake_shell(cmd: str | list[str]) -> Out:
         joined = " ".join(cmd) if isinstance(cmd, list) else cmd
         if joined.startswith("cat /sys/fs/cgroup/memory.current"):
             d.shell_calls.append(joined)
@@ -1024,7 +1076,7 @@ def with_cgroup(d, readings):
     return d
 
 
-def test_redroid_memory_parses_the_cgroup_files():
+def test_redroid_memory_parses_the_cgroup_files() -> None:
     d = with_cgroup(feed_device(), [cgroup_output(1843, 3072, oom_kill=7)])
     assert device._redroid_memory(d) == {"current": 1843 * MIB, "max": 3072 * MIB, "oom_kill": 7}
     unlimited = with_cgroup(feed_device(), [cgroup_output(500, None)])
@@ -1032,14 +1084,14 @@ def test_redroid_memory_parses_the_cgroup_files():
     assert device._redroid_memory(feed_device()) is None  # no cgroup files: guard off
 
 
-def test_redroid_memory_excludes_reclaimable_file_cache():
+def test_redroid_memory_excludes_reclaimable_file_cache() -> None:
     # The live reading that stopped a run too early: 2756MiB counted, but ~600MiB was file cache.
     d = with_cgroup(feed_device(), [cgroup_output(2150, 3072, inactive_file_mib=606)])
     assert device._redroid_memory(d)["current"] == 2150 * MIB
     assert device.MemoryGuard(d).exceeded() is None  # 70% of the limit, not 90%
 
 
-def test_scrape_once_starts_and_ends_with_instagram_stopped(monkeypatch):
+def test_scrape_once_starts_and_ends_with_instagram_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
     d = feed_device()
@@ -1052,8 +1104,8 @@ def test_scrape_once_starts_and_ends_with_instagram_stopped(monkeypatch):
     assert stops[1] > d.shell_calls.index("dumpsys package com.instagram.android")  # after the run
 
 
-def test_scrape_once_still_stops_instagram_when_the_run_raises(monkeypatch):
-    def boom(d):
+def test_scrape_once_still_stops_instagram_when_the_run_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(d: FakeDevice) -> NoReturn:
         raise device.DeviceNotReady("feed never opened")
 
     monkeypatch.setattr(navigation, "open_target_feed", boom)
@@ -1065,7 +1117,7 @@ def test_scrape_once_still_stops_instagram_when_the_run_raises(monkeypatch):
         assert d.shell_calls.count(f"am force-stop {pkg}") == 2
 
 
-def test_memory_guard_stops_the_run_before_the_limit(monkeypatch):
+def test_memory_guard_stops_the_run_before_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MEMORY_GUARD_PERCENT", 85)
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     # start, before stories, first screen: fine; second screen check: 2700 of 3072 MiB is 88%.
@@ -1078,7 +1130,7 @@ def test_memory_guard_stops_the_run_before_the_limit(monkeypatch):
     assert stats["oom_kills"] == 0
 
 
-def test_memory_guard_can_be_disabled(monkeypatch):
+def test_memory_guard_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MEMORY_GUARD_PERCENT", 0)
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
@@ -1087,7 +1139,7 @@ def test_memory_guard_can_be_disabled(monkeypatch):
     assert stats["mem_peak_mb"] == 3000  # still measured
 
 
-def test_memory_guard_skips_stories_when_already_over(monkeypatch):
+def test_memory_guard_skips_stories_when_already_over(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
     d = with_cgroup(feed_device(), [cgroup_output(2900)])
     stats = scrape.scrape_once(d, db.db_init())
@@ -1098,7 +1150,7 @@ def test_memory_guard_skips_stories_when_already_over(monkeypatch):
 _NOISE = Image.effect_noise((WIDTH // 8, HEIGHT // 8), 80)  # random, so generated once
 
 
-def _story_frame(seed, overlay=False):
+def _story_frame(seed: int, overlay: bool = False) -> Image.Image:
     """A photo-like screenshot (noise), optionally with a bar drawn over its lower part, the way a
     tooltip or reply box can differ between two captures of the same story."""
     img = _NOISE.resize((WIDTH, HEIGHT)).convert("RGB")
@@ -1109,7 +1161,7 @@ def _story_frame(seed, overlay=False):
     return img
 
 
-def test_a_recaptured_story_is_not_stored_twice(monkeypatch):
+def test_a_recaptured_story_is_not_stored_twice(monkeypatch: pytest.MonkeyPatch) -> None:
     con = db.db_init()
     frame = _story_frame(0)
     d = feed_device(start="home")
@@ -1127,7 +1179,7 @@ def test_a_recaptured_story_is_not_stored_twice(monkeypatch):
     assert len(list((config.MEDIA_DIR / "stories").iterdir())) == 2  # discarded crops removed
 
 
-def test_a_blank_story_frame_is_discarded(monkeypatch):
+def test_a_blank_story_frame_is_discarded(monkeypatch: pytest.MonkeyPatch) -> None:
     con = db.db_init()
     d = feed_device(start="home")
     d.screenshot = lambda: Image.new("RGB", (WIDTH, HEIGHT), (2, 2, 2))
@@ -1135,7 +1187,7 @@ def test_a_blank_story_frame_is_discarded(monkeypatch):
     assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 0
 
 
-def test_oom_kills_during_a_run_are_reported(monkeypatch):
+def test_oom_kills_during_a_run_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
     d = with_cgroup(feed_device(), [cgroup_output(900, oom_kill=7), cgroup_output(1000, oom_kill=9)])
@@ -1144,7 +1196,7 @@ def test_oom_kills_during_a_run_are_reported(monkeypatch):
     assert "redroid OOM-killed 2 Android process(es)" in stats["warning"]
 
 
-def test_main_records_memory_stats(fast_offline, monkeypatch):
+def test_main_records_memory_stats(fast_offline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _stop_after_first_sleep(monkeypatch)
     monkeypatch.setattr(device, "connect_device", feed_device)
     stats = {"new": 0, "new_stories": 0, "warning": None, "mem_peak_mb": 1843, "oom_kills": 1}
@@ -1162,7 +1214,7 @@ def test_main_records_memory_stats(fast_offline, monkeypatch):
 # --- media format ---------------------------------------------------------------------------------
 
 
-def test_jpeg_media_format_still_writes_jpegs(fast_offline, monkeypatch):
+def test_jpeg_media_format_still_writes_jpegs(fast_offline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from PIL import Image
 
     monkeypatch.setattr(config, "MEDIA_FORMAT", "jpeg")
@@ -1170,7 +1222,9 @@ def test_jpeg_media_format_still_writes_jpegs(fast_offline, monkeypatch):
     assert path.name == "s.jpg" and path.read_bytes()[:3] == b"\xff\xd8\xff"
 
 
-def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file(fast_offline, monkeypatch):
+def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     avatars = config.MEDIA_DIR / "avatars"
     avatars.mkdir(parents=True)
     (avatars / "old_user.jpg").write_bytes(b"old jpeg")  # captured before switching MEDIA_FORMAT
@@ -1183,13 +1237,13 @@ def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file(fast_offline, 
 # --- startup wait ---------------------------------------------------------------------------------
 
 
-def _record_last_run(con, minutes_ago, error=None):
+def _record_last_run(con: sqlite3.Connection, minutes_ago: float, error: str | None = None) -> None:
     finished = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
     db.record_run(con, finished, finished, 0, error, {})
 
 
 @pytest.fixture
-def poll_window(monkeypatch):
+def poll_window(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "POLL_MIN_H", 2.5)
     monkeypatch.setattr(config, "POLL_MAX_H", 4.5)
     monkeypatch.setattr(config, "TIME_DISTRIBUTION", "uniform")
@@ -1197,18 +1251,18 @@ def poll_window(monkeypatch):
     monkeypatch.setattr(config, "SCRAPE_ON_STARTUP", False)
 
 
-def test_startup_scrapes_immediately_with_no_recorded_run(poll_window):
+def test_startup_scrapes_immediately_with_no_recorded_run(poll_window: None) -> None:
     assert scrape._startup_wait_seconds(db.db_init()) == 0
 
 
-def test_startup_waits_out_the_rest_of_the_poll_interval(poll_window):
+def test_startup_waits_out_the_rest_of_the_poll_interval(poll_window: None) -> None:
     con = db.db_init()
     _record_last_run(con, minutes_ago=60)
     wait = scrape._startup_wait_seconds(con)
     assert 1.5 * 3600 - 5 <= wait <= 3.5 * 3600
 
 
-def test_startup_does_not_wait_when_the_last_run_is_old(poll_window):
+def test_startup_does_not_wait_when_the_last_run_is_old(poll_window: None) -> None:
     con = db.db_init()
     _record_last_run(con, minutes_ago=5 * 60)
     assert scrape._startup_wait_seconds(con) == 0
@@ -1222,13 +1276,15 @@ def test_startup_does_not_wait_when_the_last_run_is_old(poll_window):
         "AdbError('offline')",
     ],
 )
-def test_startup_after_a_transient_failure_waits_only_for_the_first_retry(poll_window, error):
+def test_startup_after_a_transient_failure_waits_only_for_the_first_retry(
+    poll_window: None, error: str
+) -> None:
     con = db.db_init()
     _record_last_run(con, minutes_ago=0.5, error=error)
     assert 85 <= scrape._startup_wait_seconds(con) <= 90  # 2 minutes, minus the 30s already passed
 
 
-def test_startup_after_a_non_transient_failure_waits_a_full_interval(poll_window):
+def test_startup_after_a_non_transient_failure_waits_a_full_interval(poll_window: None) -> None:
     con = db.db_init()
     _record_last_run(
         con, minutes_ago=1, error="RuntimeError(\"Instagram wants a human: 'Confirm it's you'\")"
@@ -1236,14 +1292,14 @@ def test_startup_after_a_non_transient_failure_waits_a_full_interval(poll_window
     assert scrape._startup_wait_seconds(con) >= 2.5 * 3600 - 65
 
 
-def test_scrape_on_startup_skips_the_wait(poll_window, monkeypatch):
+def test_scrape_on_startup_skips_the_wait(poll_window: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "SCRAPE_ON_STARTUP", True)
     con = db.db_init()
     _record_last_run(con, minutes_ago=1)
     assert scrape._startup_wait_seconds(con) == 0
 
 
-def test_main_waits_before_its_first_scrape(fast_offline, monkeypatch):
+def test_main_waits_before_its_first_scrape(fast_offline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sleeps = _stop_after_first_sleep(monkeypatch)
     monkeypatch.setattr(scrape, "_startup_wait_seconds", lambda con: 123.0)
     connects = []
@@ -1265,7 +1321,7 @@ LOGCAT = """\
 """
 
 
-def test_filter_logcat_keeps_errors_fatals_and_known_signatures(monkeypatch):
+def test_filter_logcat_keeps_errors_fatals_and_known_signatures(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "LOGCAT_TAIL_LINES", 2000)
     kept = diagnostics._filter_logcat(LOGCAT)
     assert [line.split(": ", 1)[0].split()[-1] for line in kept] == [
@@ -1279,10 +1335,12 @@ def test_filter_logcat_keeps_errors_fatals_and_known_signatures(monkeypatch):
     assert "WATCHDOG KILLING" in diagnostics._filter_logcat(LOGCAT)[-1]
 
 
-def test_save_failure_logcat_writes_a_filtered_file(fast_offline, monkeypatch):
+def test_save_failure_logcat_writes_a_filtered_file(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     calls = []
 
-    def fake_run(cmd, **kwargs):
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout=LOGCAT, stderr="")
 
@@ -1295,7 +1353,9 @@ def test_save_failure_logcat_writes_a_filtered_file(fast_offline, monkeypatch):
     assert "FATAL EXCEPTION" in text and "Something: chatter" not in text
 
 
-def test_save_failure_logcat_tolerates_an_unreachable_device(fast_offline, monkeypatch):
+def test_save_failure_logcat_tolerates_an_unreachable_device(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -1305,11 +1365,13 @@ def test_save_failure_logcat_tolerates_an_unreachable_device(fast_offline, monke
     assert not list(config.DEBUG_DIR.glob("logcat_*")) if config.DEBUG_DIR.exists() else True
 
 
-def test_main_saves_a_logcat_only_for_device_failures(fast_offline, monkeypatch, no_real_logcat):
-    def run_main_once(error):
+def test_main_saves_a_logcat_only_for_device_failures(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, no_real_logcat: list[str]
+) -> None:
+    def run_main_once(error: BaseException) -> None:
         _stop_after_first_sleep(monkeypatch)
 
-        def failing():
+        def failing() -> NoReturn:
             raise error
 
         monkeypatch.setattr(device, "connect_device", failing)
@@ -1322,7 +1384,9 @@ def test_main_saves_a_logcat_only_for_device_failures(fast_offline, monkeypatch,
     assert len(no_real_logcat) == 1  # a login challenge isn't a device failure
 
 
-def test_failure_logcats_are_pruned_like_other_debug_files(fast_offline, monkeypatch):
+def test_failure_logcats_are_pruned_like_other_debug_files(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(config, "DEBUG_KEEP", 2)
     config.DEBUG_DIR.mkdir(parents=True)
     for i in range(4):

@@ -6,51 +6,135 @@
 /opml                     -> one-step bulk subscribe: every feed above, as an OPML outline
 /media/<file>             -> cropped post images
 /status                   -> plain-HTML health/status page
+/health, /users           -> JSON (docs/openapi.json is the committed spec)
+
+FEED_TOKEN (or FEED_TOKEN_FILE) turns on auth for everything except /health, see _authorized().
 """
 
+import hmac
 import logging
 import os
+import re
 import sqlite3
-from contextlib import closing
+from base64 import b64decode
+from collections.abc import Awaitable, Callable, Sequence
+from contextlib import closing, suppress
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from hashlib import sha256
 from html import escape
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from feedgen.feed import FeedGenerator
+from fileenv import env_secret
 from PIL import Image
+from pydantic import BaseModel
 
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
 MEDIA_DIR = os.environ.get("MEDIA_DIR", "/media")
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://localhost:8000").rstrip("/")
 POLL_MAX_HOURS = float(os.environ.get("POLL_MAX_HOURS", "4.5"))
+FEED_HOST = os.environ.get("FEED_HOST", "127.0.0.1")
+# Required on every request except /health once set: as a bearer token, as the password of HTTP
+# basic auth (any username), or as ?token=. Media URLs in the feeds are signed with it instead of
+# carrying it, so a reader's image loads work without exposing the token itself. Empty = no auth.
+FEED_TOKEN = env_secret("FEED_TOKEN")
 MAX_LIMIT = 500
+_OPEN_PATHS = ("/health",)  # the compose healthcheck calls it without credentials
 
 
 class _SkipHealthcheck(logging.Filter):
     """Drop GET /health (the compose healthcheck, every 30s) from uvicorn's access log, so the
-    size-capped Docker log holds actual feed traffic rather than mostly healthchecks."""
+    size-capped Docker log holds actual feed traffic rather than mostly healthchecks. Also blanks a
+    ?token= value, which would otherwise be written to the log with the request path."""
 
-    def filter(self, record):
-        return "/health " not in record.getMessage()
+    def filter(self, record: logging.LogRecord) -> bool:
+        if "/health " in record.getMessage():
+            return False
+        if isinstance(record.args, tuple):
+            record.args = tuple(_redact_token(a) if isinstance(a, str) else a for a in record.args)
+        return True
+
+
+def _redact_token(text: str) -> str:
+    return re.sub(r"([?&]token=)[^&\s]*", r"\1REDACTED", text)
 
 
 # uvicorn configures its loggers before importing this module, so a filter added here sticks.
 logging.getLogger("uvicorn.access").addFilter(_SkipHealthcheck())
 
-app = FastAPI()
+if not FEED_TOKEN and FEED_HOST not in ("127.0.0.1", "localhost", "::1"):
+    logging.getLogger("uvicorn.error").warning(
+        "FEED_HOST=%s without FEED_TOKEN: every feed and media file is readable by anyone who can reach it",
+        FEED_HOST,
+    )
+
+app = FastAPI(
+    title="instadroid",
+    summary="Atom feeds of an Instagram Following feed scraped from a real Android app.",
+    description=(
+        "When the server runs with `FEED_TOKEN`, every path except `/health` needs that token: as "
+        "`Authorization: Bearer <token>`, as the password of HTTP basic auth, or as `?token=`. "
+        "`/media/<file>` URLs written into the feeds carry a per-file `sig` instead."
+    ),
+)
 Path(MEDIA_DIR).mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 
 
-def _query(sql: str, args=(), default=None, one: bool = False) -> Any:
+def _media_sig(file: str) -> str:
+    """HMAC of one media path under FEED_TOKEN: lets a reader load that file, and nothing else."""
+    return hmac.new(FEED_TOKEN.encode(), f"media/{file}".encode(), "sha256").hexdigest()[:32]
+
+
+def _media_url(file: str) -> str:
+    url = f"{PUBLIC_URL}/media/{file}"
+    return f"{url}?sig={_media_sig(file)}" if FEED_TOKEN else url
+
+
+def _feed_url(path: str, **params: str | None) -> str:
+    """A feed URL for a subscription list (/opml), carrying the token when auth is on: whoever
+    fetched the list already presented it, and the reader will need it for each feed."""
+    query = {k: v for k, v in params.items() if v} | ({"token": FEED_TOKEN} if FEED_TOKEN else {})
+    return f"{PUBLIC_URL}{path}" + (f"?{urlencode(query, quote_via=quote)}" if query else "")
+
+
+def _authorized(request: Request) -> bool:
+    if not FEED_TOKEN or request.url.path in _OPEN_PATHS:
+        return True
+    presented = [request.query_params.get("token", "")]
+    scheme, _, credentials = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer":
+        presented.append(credentials.strip())
+    elif scheme.lower() == "basic":
+        with suppress(ValueError):  # binascii.Error and UnicodeDecodeError are both ValueErrors
+            presented.append(b64decode(credentials.strip(), validate=True).decode().partition(":")[2])
+    if request.url.path.startswith("/media/"):
+        file = request.url.path.removeprefix("/media/")
+        if hmac.compare_digest(request.query_params.get("sig", ""), _media_sig(file)):
+            return True
+    return any(p and hmac.compare_digest(p.encode(), FEED_TOKEN.encode()) for p in presented)
+
+
+@app.middleware("http")
+async def _require_token(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    if _authorized(request):
+        return await call_next(request)
+    return Response(
+        "authentication required\n",
+        status_code=401,
+        media_type="text/plain",
+        headers={"WWW-Authenticate": 'Basic realm="instadroid"'},
+    )
+
+
+def _query(sql: str, args: Sequence[object] = (), default: Any = None, one: bool = False) -> Any:
     """Run a read-only query and return its rows (or first row with `one`), or `default` when the
     database or table doesn't exist yet (the scraper creates both on its first start). Read-only so
     the scraper's writer lock never blocks a request."""
@@ -65,7 +149,7 @@ def _query(sql: str, args=(), default=None, one: bool = False) -> Any:
             return default
 
 
-def _col(row, name: str, default=None):
+def _col(row: sqlite3.Row, name: str, default: Any = None) -> Any:
     """row[name], or `default` when a runs/posts row predates that column (sqlite3.Row has no get)."""
     keys = row.keys()  # sqlite3.Row's `in` checks values, not column names
     return row[name] if name in keys else default
@@ -79,7 +163,7 @@ def _utc(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def _cached(request: Request, *parts) -> tuple[str, Response | None]:
+def _cached(request: Request, *parts: object) -> tuple[str, Response | None]:
     """(ETag over `parts`, a 304 response if the client already has it, else None)."""
     etag = f'"{sha256("|".join(map(str, parts)).encode()).hexdigest()}"'
     if request.headers.get("if-none-match") == etag:
@@ -124,19 +208,20 @@ def _img(file: str) -> str:
     narrows the column from stretching it."""
     dims = _image_size(file)
     size = f' width="{dims[0]}" height="{dims[1]}" style="max-width:100%;height:auto"' if dims else ""
-    return f'<img src="{PUBLIC_URL}/media/{file}" alt=""{size} />'
+    return f'<img src="{_media_url(file)}" alt=""{size} />'
 
 
-def _thumbnail(fe, file: str) -> None:
+def _thumbnail(fe: Any, file: str) -> None:
     """Attach a Media RSS <media:thumbnail> (the full cover image, with its dimensions when known)
-    for readers that show a picture in list view. Needs fg.load_extension("media")."""
-    thumb = {"url": f"{PUBLIC_URL}/media/{file}"}
+    for readers that show a picture in list view. Needs fg.load_extension("media"), which adds
+    `fe.media` at runtime (hence Any: feedgen's FeedEntry has no such attribute statically)."""
+    thumb = {"url": _media_url(file)}
     if dims := _image_size(file):
         thumb |= {"width": str(dims[0]), "height": str(dims[1])}
     fe.media.thumbnail(thumb)
 
 
-def _dt(value):
+def _dt(value: str | None) -> datetime | None:
     """Parse a stored ISO timestamp, tolerant of a missing/malformed value and of a naive one
     (feedgen rejects those) — returns None rather than raising, so one bad row can't 500 the
     whole feed."""
@@ -149,7 +234,35 @@ def _dt(value):
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def rows(user: str | None, limit: int):
+# Instagram usernames: letters, digits, "_" and ".", at most 30, never ending in "." (so a mention
+# at the end of a sentence doesn't swallow the full stop). Hashtags: letters, digits and "_", not all
+# digits. Neither may follow a word character, "/" or "@"/"#", which leaves emails and URL
+# fragments ("a@b.com", "example.com/#top") alone.
+_CAPTION_LINK = re.compile(
+    r"(?<![\w/@#.])@(?P<user>[A-Za-z0-9_](?:[A-Za-z0-9_.]{0,28}[A-Za-z0-9_])?)(?![\w@])"
+    r"|(?<![\w/@#&])#(?P<tag>\w*[^\W\d]\w*)"
+)
+
+
+def _caption_html(caption: str) -> str:
+    """A caption as HTML: escaped, line breaks kept, and each @mention and #hashtag linked to its
+    Instagram page. Matching runs on the raw text, so an escaped entity like &#x27; is never
+    mistaken for a hashtag."""
+    out: list[str] = []
+    pos = 0
+    for m in _CAPTION_LINK.finditer(caption):
+        out.append(escape(caption[pos : m.start()]))
+        if user := m["user"]:
+            href = f"https://www.instagram.com/{quote(user)}/"
+        else:
+            href = f"https://www.instagram.com/explore/tags/{quote(m['tag'])}/"
+        out.append(f'<a href="{escape(href)}">{escape(m[0])}</a>')
+        pos = m.end()
+    out.append(escape(caption[pos:]))
+    return "".join(out).replace("\n", "<br/>")
+
+
+def rows(user: str | None, limit: int) -> list[sqlite3.Row]:
     where = " WHERE username = ?" if user else ""
     return _query(
         f"SELECT * FROM posts{where} ORDER BY COALESCE(posted_at, scraped_at) DESC LIMIT ?",
@@ -158,9 +271,9 @@ def rows(user: str | None, limit: int):
     )
 
 
-def _media_rows(post_ids: list) -> dict:
+def _media_rows(post_ids: list[str]) -> dict[str, list[str]]:
     """{post_id: [extra slide filenames, in order]} for the given posts."""
-    out: dict[str, list] = {}
+    out: dict[str, list[str]] = {}
     if post_ids:
         placeholders = ",".join("?" * len(post_ids))
         sql = f"SELECT post_id, file FROM media WHERE post_id IN ({placeholders}) ORDER BY post_id, idx"
@@ -169,13 +282,13 @@ def _media_rows(post_ids: list) -> dict:
     return out
 
 
-def _avatar_files() -> dict:
+def _avatar_files() -> dict[str, str]:
     """{username: avatar_file} for every account with a captured avatar."""
     sql = "SELECT username, avatar_file FROM accounts WHERE avatar_file IS NOT NULL"
     return dict(map(tuple, _query(sql, default=[])))
 
 
-def _feed_signal(user: str | None) -> tuple:
+def _feed_signal(user: str | None) -> tuple[object, ...]:
     """Cheap ETag input for /instagram.xml: post count and latest change (updated_at also moves when
     a row is merged in place), extra-slide count and latest avatar refresh, scoped to `user` when
     given so one account's new post doesn't invalidate every other per-account feed."""
@@ -195,8 +308,22 @@ def _post_count() -> int:
     return row[0] if row else 0
 
 
-@app.get("/instagram.xml")
-def feed(request: Request, user: str | None = None, limit: int = 200):
+_ATOM: dict[int | str, dict[str, Any]] = {
+    200: {"content": {"application/atom+xml": {}}, "description": "An Atom feed."},
+    304: {},
+}
+
+
+class Health(BaseModel):
+    ok: bool
+    posts: int
+    reason: str | None = None
+
+
+@app.get("/instagram.xml", response_class=Response, responses=_ATOM, summary="Posts feed")
+def feed(request: Request, user: str | None = None, limit: int = 200) -> Response:
+    """Stored posts as Atom, newest first. `user` narrows it to one account; `limit` is capped at
+    500."""
     etag, not_modified = _cached(request, user, limit, *_feed_signal(user))
     if not_modified:
         return not_modified
@@ -226,12 +353,12 @@ def feed(request: Request, user: str | None = None, limit: int = 200):
         html = ""
         avatar = avatars.get(r["username"])
         if avatar:
-            html += f'<p><img src="{PUBLIC_URL}/media/{avatar}" alt="" width="48" height="48" /></p>'
+            html += f'<p><img src="{_media_url(avatar)}" alt="" width="48" height="48" /></p>'
         for slide in ([r["media_file"]] if r["media_file"] else []) + extra_slides.get(r["id"], []):
             html += f"<p>{_img(slide)}</p>"
         if r["media_file"]:
             _thumbnail(fe, r["media_file"])
-        html += f"<p>{escape(caption).replace(chr(10), '<br/>')}</p>"
+        html += f"<p>{_caption_html(caption)}</p>"
         # Both dates are also on the entry itself (<published>/<updated>) for readers that sort by
         # those, but spelling them out here means sorting-by-eye works in any reader.
         meta = []
@@ -252,19 +379,20 @@ def feed(request: Request, user: str | None = None, limit: int = 200):
     return Response(fg.atom_str(pretty=True), media_type="application/atom+xml", headers={"ETag": etag})
 
 
-def _story_rows(limit: int):
+def _story_rows(limit: int) -> list[sqlite3.Row]:
     """Stored stories, newest first (they share RETAIN_DAYS with posts; the scraper prunes them)."""
     return _query("SELECT * FROM stories ORDER BY scraped_at DESC LIMIT ?", (_limit(limit),), default=[])
 
 
-def _stories_stats():
+def _stories_stats() -> tuple[int, str]:
     """(count, latest scraped_at) - the ETag input for /stories.xml."""
     row = _query("SELECT COUNT(*), COALESCE(MAX(scraped_at), '') FROM stories", one=True)
     return tuple(row) if row else (0, "")
 
 
-@app.get("/stories.xml")
-def stories_feed(request: Request, limit: int = 200):
+@app.get("/stories.xml", response_class=Response, responses=_ATOM, summary="Stories feed")
+def stories_feed(request: Request, limit: int = 200) -> Response:
+    """Stored story frames as Atom, newest first; `limit` is capped at 500."""
     etag, not_modified = _cached(request, limit, *_stories_stats())
     if not_modified:
         return not_modified
@@ -288,22 +416,28 @@ def stories_feed(request: Request, limit: int = 200):
     return Response(fg.atom_str(pretty=True), media_type="application/atom+xml", headers={"ETag": etag})
 
 
-def _usernames() -> list:
+def _usernames() -> list[str]:
     return [r[0] for r in _query("SELECT DISTINCT username FROM posts ORDER BY username", default=[])]
 
 
-@app.get("/users")
-def users():
+@app.get("/users", summary="Accounts with stored posts")
+def users() -> list[str]:
+    """Every username with at least one stored post, sorted."""
     return _usernames()
 
 
-@app.get("/opml")
-def opml(request: Request):
+@app.get(
+    "/opml",
+    response_class=Response,
+    responses={200: {"content": {"text/x-opml": {}}, "description": "An OPML outline."}, 304: {}},
+    summary="Subscription list",
+)
+def opml(request: Request) -> Response:
     """One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed
     per username in /users — a single FreshRSS import subscribes to everything this instance
     serves instead of pasting ?user= URLs in one at a time."""
     usernames = _usernames()
-    etag, not_modified = _cached(request, PUBLIC_URL, *usernames)
+    etag, not_modified = _cached(request, PUBLIC_URL, FEED_TOKEN, *usernames)
     if not_modified:
         return not_modified
 
@@ -314,7 +448,7 @@ def opml(request: Request):
     body = SubElement(root, "body")
     category = SubElement(body, "outline", text="Instagram", title="Instagram")
 
-    def _feed_outline(parent, text, xml_url, html_url):
+    def _feed_outline(parent: Element, text: str, xml_url: str, html_url: str) -> None:
         SubElement(
             parent,
             "outline",
@@ -326,15 +460,12 @@ def opml(request: Request):
         )
 
     _feed_outline(
-        category, "Instagram — Following", f"{PUBLIC_URL}/instagram.xml", "https://www.instagram.com/"
+        category, "Instagram — Following", _feed_url("/instagram.xml"), "https://www.instagram.com/"
     )
-    _feed_outline(category, "Instagram — Stories", f"{PUBLIC_URL}/stories.xml", "https://www.instagram.com/")
+    _feed_outline(category, "Instagram — Stories", _feed_url("/stories.xml"), "https://www.instagram.com/")
     for u in usernames:
         _feed_outline(
-            category,
-            u,
-            f"{PUBLIC_URL}/instagram.xml?user={quote(u)}",
-            f"https://www.instagram.com/{quote(u)}/",
+            category, u, _feed_url("/instagram.xml", user=u), f"https://www.instagram.com/{quote(u)}/"
         )
 
     xml_bytes = b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="unicode").encode()
@@ -366,17 +497,25 @@ def _scraper_health(now: datetime | None = None) -> tuple[str, str]:
     return "", ""
 
 
-@app.get("/health")
-def health():
+@app.get(
+    "/health",
+    response_model=Health,
+    response_model_exclude_none=True,
+    responses={503: {"model": Health, "description": "Scraping looks stuck or keeps failing."}},
+    summary="Scraper health",
+)
+def health() -> Health | JSONResponse:
+    """`ok` unless no run has finished for too long or none has succeeded for too long (then 503,
+    with a `reason`). Never needs the feed token."""
     count = _post_count()
     label, reason = _scraper_health()
     if label:
         # 503 so the compose healthcheck (which only checks for a 2xx) marks the container unhealthy.
         return JSONResponse({"ok": False, "posts": count, "reason": reason}, status_code=503)
-    return {"ok": True, "posts": count}
+    return Health(ok=True, posts=count)
 
 
-def _user_counts():
+def _user_counts() -> list[sqlite3.Row]:
     return _query(
         "SELECT username, COUNT(*) AS n, MAX(COALESCE(posted_at, scraped_at)) AS latest"
         " FROM posts GROUP BY username ORDER BY username",
@@ -384,11 +523,11 @@ def _user_counts():
     )
 
 
-def _recent_runs(limit: int = 10):
+def _recent_runs(limit: int = 10) -> list[sqlite3.Row]:
     return _query("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,), default=[])
 
 
-def _latest_device():
+def _latest_device() -> sqlite3.Row | None:
     """Device props from the most recent run that got far enough to read them (a run that failed
     before connect_device() leaves these NULL). SELECT * so an old runs table still works."""
     return _query("SELECT * FROM runs WHERE android_release IS NOT NULL ORDER BY id DESC LIMIT 1", one=True)
@@ -401,7 +540,7 @@ def _short_error(error: str, limit: int = 140) -> str:
     return first_line[: limit - 1] + "…" if len(first_line) > limit else first_line
 
 
-def _duration(run) -> str:
+def _duration(run: sqlite3.Row) -> str:
     start, end = _dt(run["started_at"]), _dt(run["finished_at"])
     if not start or not end:
         return "—"
@@ -409,20 +548,20 @@ def _duration(run) -> str:
     return f"{m}m {s}s" if m else f"{s}s"
 
 
-def _link_failures(run) -> str:
+def _link_failures(run: sqlite3.Row) -> str:
     """ "sheet/clipboard" failure counts for a run, or "—" for a row from before these columns."""
     if _col(run, "link_sheet_failures", "—") == "—":
         return "—"
     return f"{run['link_sheet_failures'] or 0} sheet / {run['link_clipboard_failures'] or 0} clipboard"
 
 
-def _run_count(run, col: str) -> str:
+def _run_count(run: sqlite3.Row, col: str) -> str:
     """An integer runs column as text, or "—" for a row from before that column existed."""
     value = _col(run, col, "—")
     return "—" if value == "—" else str(value or 0)
 
 
-def _run_memory(run) -> str:
+def _run_memory(run: sqlite3.Row) -> str:
     """redroid's peak memory during a run ("1843 MiB"), plus its OOM kills when there were any, or
     "—" when it wasn't measured (the cgroup wasn't readable, or a row from before these columns)."""
     peak, ooms = _col(run, "mem_peak_mb"), _col(run, "oom_kills")
@@ -431,12 +570,12 @@ def _run_memory(run) -> str:
     return f"{peak} MiB" + (f", {ooms} OOM kill(s)" if ooms else "")
 
 
-def _run_text(run, col: str) -> str:
+def _run_text(run: sqlite3.Row, col: str) -> str:
     """A text column off a runs row, or "" when it's NULL or the row predates that column."""
     return _col(run, col) or ""
 
 
-def _run_result(run) -> tuple[str, str]:
+def _run_result(run: sqlite3.Row) -> tuple[str, str]:
     """(css class, text) for a run's Result cell: its error, else its warning, else "ok"."""
     if run["error"]:
         return "err", _short_error(run["error"])
@@ -445,8 +584,9 @@ def _run_result(run) -> tuple[str, str]:
     return "", "ok"
 
 
-@app.get("/status", response_class=HTMLResponse)
-def status_page():
+@app.get("/status", response_class=HTMLResponse, summary="Status page")
+def status_page() -> HTMLResponse:
+    """A plain-HTML page of recent runs, the device, and per-account totals."""
     users = _user_counts()
     total = sum(u["n"] for u in users)
     stories_count = _stories_stats()[0]
@@ -488,7 +628,7 @@ def status_page():
         {f'<p class="warn">{escape(warning)}</p>' if warning and not latest["error"] else ""}
         """
 
-    def _result_cell(r):
+    def _result_cell(r: sqlite3.Row) -> str:
         css, text = _run_result(r)
         return f'<td class="{css}">{escape(text)}</td>'
 

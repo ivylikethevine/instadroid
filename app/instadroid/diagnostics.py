@@ -5,12 +5,16 @@ import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
+
+import uiautomator2 as u2
+from PIL import Image
 
 from . import config
 from .common import log
 
 
-def prune_debug_dumps():
+def prune_debug_dumps() -> None:
     """Keep only the newest DEBUG_KEEP hierarchy+screenshot pairs and DEBUG_KEEP failure logcats, and
     delete any debug artifact (.xml/.jpg/.png/.txt, top level only) older than DEBUG_RETAIN_DAYS — manual dumps and one-off
     screenshots don't belong to a pair and otherwise never age out. Anything else in DEBUG_DIR
@@ -100,7 +104,7 @@ def save_failure_logcat(error: str) -> Path | None:
     return path
 
 
-def dump_debug(d, name, xml=None):
+def dump_debug(d: u2.Device, name: str, xml: str | None = None) -> None:
     """Save a hierarchy + screenshot pair for later inspection. Pass `xml` when the caller
     already has a fresh dump, to avoid a redundant device round-trip. Best-effort: a debug dump is
     a diagnostic aid, not part of the scrape itself, so a write failure here (e.g. a stale file
@@ -111,7 +115,9 @@ def dump_debug(d, name, xml=None):
         (config.DEBUG_DIR / f"{name}_hierarchy.xml").write_text(
             xml if xml is not None else d.dump_hierarchy()
         )
-        d.screenshot().convert("RGB").save(config.DEBUG_DIR / f"{name}_screen.jpg", quality=70)
+        cast(Image.Image, d.screenshot()).convert("RGB").save(
+            config.DEBUG_DIR / f"{name}_screen.jpg", quality=70
+        )
         prune_debug_dumps()
     except OSError as e:
         log(f"WARN: could not write debug dump {name!r}:", repr(e))

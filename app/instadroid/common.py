@@ -3,22 +3,26 @@
 import hashlib
 import re
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 
-def log(*a):
+def log(*a: object) -> None:
     print(datetime.now().strftime("%H:%M:%S"), *a, flush=True)
 
 
-def parse_iso(value) -> datetime | None:
-    """A stored ISO timestamp as an aware datetime (naive = UTC), or None if missing/malformed."""
+def parse_iso(value: object) -> datetime | None:
+    """A stored ISO timestamp as an aware datetime (naive = UTC), or None if missing/malformed.
+    `value` is whatever a sqlite column or caller happened to hand over — not necessarily a str —
+    so a wrong type is expected to reach fromisoformat() and is caught below like any other
+    malformed value."""
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(cast(str, value))
     except TypeError, ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def older_than(value, days: float) -> bool:
+def older_than(value: object, days: float) -> bool:
     """True if the stored timestamp is missing, malformed, or more than `days` old."""
     parsed = parse_iso(value)
     return parsed is None or datetime.now(UTC) - parsed > timedelta(days=days)

@@ -6,6 +6,7 @@ import os
 import random
 import re
 import time
+from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from typing import TypedDict
 from zoneinfo import ZoneInfo
@@ -57,7 +58,7 @@ def transient_error_names() -> set[str]:
     """Class names is_transient() accepts, subclasses included, for matching a stored runs.error
     (which is repr(exception), so it starts with the class name)."""
 
-    def walk(cls):
+    def walk(cls: type[BaseException]) -> Iterator[type[BaseException]]:
         yield cls
         for sub in cls.__subclasses__():
             yield from walk(sub)
@@ -65,7 +66,7 @@ def transient_error_names() -> set[str]:
     return {c.__name__ for base in _TRANSIENT for c in walk(base)}
 
 
-def instagram_version(d) -> str | None:
+def instagram_version(d: u2.Device) -> str | None:
     """The installed Instagram versionName, or None if it isn't installed or adb misbehaves."""
     try:
         m = re.search(r"versionName=(\S+)", d.shell(["dumpsys", "package", config.IG_PKG]).output or "")
@@ -74,13 +75,13 @@ def instagram_version(d) -> str | None:
     return m.group(1) if m else None
 
 
-def device_snapshot(d) -> DeviceSnapshot:
+def device_snapshot(d: u2.Device) -> DeviceSnapshot:
     """Best-effort device/app versions for the runs table and status page: ro.build.* props, the
     installed Instagram versionName, and the redroid image tag compose passes in — so "which
     Instagram update broke the selectors" is a lookup. Uses plain adb shell calls rather than
     uiautomator2's jsonrpc info, so a wedged automation service can't also blank this out."""
 
-    def prop(name):
+    def prop(name: str) -> str | None:
         try:
             return d.shell(f"getprop {name}").output.strip() or None
         except Exception:
@@ -95,7 +96,7 @@ def device_snapshot(d) -> DeviceSnapshot:
     }
 
 
-def connect_device():
+def connect_device() -> u2.Device:
     log("connecting to", config.ADB_ADDR)
     adbutils.adb.connect(config.ADB_ADDR, timeout=30)
     d = u2.connect(config.ADB_ADDR)
@@ -106,7 +107,7 @@ def connect_device():
 
 
 @versioned
-def launch_app(d):
+def launch_app(d: u2.Device) -> None:
     """Bring IG_PKG to the foreground. uiautomator2's app_start() defaults to `monkey -c
     LAUNCHER` when no activity is given, which on this device silently no-ops (exit code 251,
     launcher stays focused) — Instagram ships many enabled/disabled activity-aliases for seasonal
@@ -123,7 +124,7 @@ def launch_app(d):
         d.app_start(config.IG_PKG, stop=False)
 
 
-def ensure_foreground(d) -> bool:
+def ensure_foreground(d: u2.Device) -> bool:
     """Relaunch Instagram if something else is in front. True if it had to."""
     if d.app_current().get("package") == config.IG_PKG:
         return False
@@ -173,7 +174,7 @@ def sample_duration(lo: float, hi: float, now: datetime | None = None) -> float:
     return min(max(v, lo), effective_hi)  # give up after 8 tries, clip instead
 
 
-def human_pause(lo=1.0, hi=3.0):
+def human_pause(lo: float = 1.0, hi: float = 3.0) -> None:
     time.sleep(sample_duration(lo, hi))
 
 
@@ -182,7 +183,9 @@ def swipe_duration() -> float:
     return sample_duration(config.SCROLL_SWIPE_MIN, config.SCROLL_SWIPE_MAX)
 
 
-def human_scroll(d, start=(0.65, 0.8), distance=(0.3, 0.45)):
+def human_scroll(
+    d: u2.Device, start: tuple[float, float] = (0.65, 0.8), distance: tuple[float, float] = (0.3, 0.45)
+) -> None:
     """Scroll up by a random amount at a random speed, like a thumb would. `start` and `distance`
     are fractions of screen height; the defaults are tuned for feed cards."""
     w, h = d.window_size()
@@ -192,14 +195,14 @@ def human_scroll(d, start=(0.65, 0.8), distance=(0.3, 0.45)):
     d.swipe(x, y1, x, y2, duration=swipe_duration())
 
 
-def human_scroll_list(d):
+def human_scroll_list(d: u2.Device) -> None:
     """A shorter human_scroll() for the Following list: its ~190px rows are much shorter than a feed
     card, and the feed distance was seen live (2026-09-11) to skip ~3 of 30 accounts per refresh.
     Overlapping screens keep every row on screen for at least one dump."""
     human_scroll(d, start=(0.55, 0.65), distance=(0.15, 0.25))
 
 
-def first(d, **kinds):
+def first(d: u2.Device, **kinds: Iterable[str]) -> u2.UiObject | None:
     """Return the first existing selector among the given candidate lists."""
     for kind, values in kinds.items():
         for v in values:
@@ -225,7 +228,7 @@ CACHED_APP_SWEEP = (
 )
 
 
-def force_stop(d, *pkgs):
+def force_stop(d: u2.Device, *pkgs: str) -> None:
     """Force-stop packages in one adb round trip; `;` keeps going past one that fails. Best-effort:
     an adb failure is logged, never raised."""
     try:
@@ -234,7 +237,7 @@ def force_stop(d, *pkgs):
         log(f"WARN: could not force-stop {', '.join(pkgs)}:", repr(e))
 
 
-def _redroid_memory(d) -> MemoryReading | None:
+def _redroid_memory(d: u2.Device) -> MemoryReading | None:
     """redroid's own container memory, read through adb from the cgroup v2 files the container sees
     as /sys/fs/cgroup (readable by the adb shell user): {"current": bytes, "max": bytes or None when
     unlimited, "oom_kill": kernel OOM kills in this container since it started}. None when the files
@@ -271,14 +274,14 @@ class MemoryGuard:
     whether usage has crossed MEMORY_GUARD_PERCENT of the container's limit. Every method is a no-op
     when _redroid_memory() can't read the cgroup."""
 
-    def __init__(self, d):
+    def __init__(self, d: u2.Device) -> None:
         self.d = d
         self.peak: int | None = None
         first = self._read()
         self.oom_kill_start = first["oom_kill"] if first else None
         self.last = first
 
-    def _read(self):
+    def _read(self) -> MemoryReading | None:
         m = _redroid_memory(self.d)
         if m:
             self.peak = max(self.peak or 0, m["current"])
@@ -308,7 +311,7 @@ class MemoryGuard:
         return max(0, m["oom_kill"] - self.oom_kill_start)
 
 
-def free_device_memory(d):
+def free_device_memory(d: u2.Device) -> None:
     """Force-stop the cached system apps and Instagram itself, before a run (so it never starts on
     top of a still-resident Instagram, e.g. left open by `scraper.py login`) and after it. Instagram
     plus its :fbns process measured ~820MiB resident and lmkd never reclaims it here; the next run

@@ -4,6 +4,8 @@ import subprocess
 import zipfile
 from pathlib import Path
 
+import uiautomator2 as u2
+
 from . import config, device, versioning
 from .common import log
 from .device import DeviceNotReady
@@ -77,7 +79,7 @@ def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
     return base + splits
 
 
-def install_instagram(d, version: str | None = None, downgrade: bool = False) -> None:
+def install_instagram(d: u2.Device, version: str | None = None, downgrade: bool = False) -> None:
     """Fetch (or reuse a cached) Instagram bundle and adb-install it, same as the manual
     `apkeep` + `install-multiple` steps in README.md's First-time setup. Raises DeviceNotReady on
     any failure so the caller's retry ladder (device.is_transient()) handles it rather than aborting the
@@ -101,7 +103,7 @@ def install_instagram(d, version: str | None = None, downgrade: bool = False) ->
     versioning.activate_profile(installed)  # device.connect_device() activated before this version existed
 
 
-def install_instagram_version(d, version: str | None = None) -> str | None:
+def install_instagram_version(d: u2.Device, version: str | None = None) -> str | None:
     """`scraper.py install [VERSION]`: put exactly `version` (default: the active profile's
     apk_version, see _apk_version(); "latest" = newest on APKPure) on the device, replacing whatever
     is installed, including a newer version. A no-op if that version is already installed. Returns

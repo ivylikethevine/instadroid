@@ -4,6 +4,8 @@ time, so tests can monkeypatch any of them."""
 import os
 from pathlib import Path
 
+from fileenv import env_secret
+
 ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5555")  # redroid's forwarded ADB port
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
@@ -38,8 +40,9 @@ if MEDIA_FORMAT not in ("webp", "jpeg"):
     print(f"WARN: unknown MEDIA_FORMAT {MEDIA_FORMAT!r}; falling back to webp", flush=True)
     MEDIA_FORMAT = "webp"
 MEDIA_EXTS = (".jpg", ".webp")  # every extension this scraper has ever written
-IG_USERNAME = os.environ.get("IG_USERNAME", "")
-IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
+# Either can come from a file instead (IG_USERNAME_FILE / IG_PASSWORD_FILE, e.g. a Docker secret).
+IG_USERNAME = env_secret("IG_USERNAME")
+IG_PASSWORD = env_secret("IG_PASSWORD")
 IG_PKG = "com.instagram.android"
 # If the device has no Instagram installed, navigation.ensure_logged_in() fetches it with apkeep (built into
 # the image, see Dockerfile) and adb-installs it, instead of just raising — this is what lets the
@@ -111,7 +114,8 @@ SCRAPE_ON_STARTUP = os.environ.get("SCRAPE_ON_STARTUP", "0").strip().lower() in 
 # GETed after a run stores something new so it fetches now instead of waiting out its own poll
 # interval or per-feed TTL. Empty disables. Any reader with an equivalent plain-GET refresh webhook
 # works here too, not just FreshRSS.
-FRESHRSS_REFRESH_URL = os.environ.get("FRESHRSS_REFRESH_URL", "")
+# It carries an API token, so it can come from FRESHRSS_REFRESH_URL_FILE instead.
+FRESHRSS_REFRESH_URL = env_secret("FRESHRSS_REFRESH_URL")
 # Selector-drift canary: every run records cards/screen, the share of cards with a real (non-weak)
 # caption, and the share flagged "complete" (see parsing.is_weak_caption(), post["complete"]). If a run's
 # numbers fall below SELECTOR_DRIFT_THRESHOLD of the rolling average over the last

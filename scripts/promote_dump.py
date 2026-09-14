@@ -19,6 +19,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "app"))
@@ -34,7 +35,7 @@ _CHROME = re.compile(
 )
 
 
-def expected(xml: str) -> dict:
+def expected(xml: str) -> dict[str, Any]:
     return json.loads(json.dumps(parsing.parse_screen(xml)))  # plain JSON types, as stored
 
 
@@ -78,7 +79,7 @@ def leftover_text(xml: str) -> list[str]:
     return sorted(v for v in values if v and not _CHROME.match(v))
 
 
-def shape(found: parsing.ScreenParse) -> list:
+def shape(found: parsing.ScreenParse) -> list[Any]:
     """What must survive pseudonymizing: card count and structure, not the text."""
     return [
         [

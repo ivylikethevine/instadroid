@@ -5,6 +5,7 @@
     profiles                 list the Instagram version profiles
     install [VERSION|latest] install an Instagram build (default: the active profile's)
     dump                     save the current screen's hierarchy + screenshot to DEBUG_DIR
+    compat                   redroid image / Instagram build pairs this database has run
     rename OLD NEW           move an account's history to its new username
 
 The scraper itself lives in the instadroid/ package.
@@ -42,6 +43,16 @@ if __name__ == "__main__":
         d = device.connect_device()
         diagnostics.dump_debug(d, "manual")
         print("wrote", config.DEBUG_DIR)
+    elif len(sys.argv) > 1 and sys.argv[1] == "compat":
+        pairs = db.version_pairs(db.db_init())
+        print("redroid image | Instagram | profile | runs (ok, clean) | new posts | last run")
+        for p in pairs:
+            print(
+                f"{p['redroid_image'] or '?'} | {p['ig_version']} | {p['selector_profile'] or '?'}"
+                f" | {p['runs']} ({p['ok_runs']}, {p['clean_runs']}) | {p['new_posts']} | {p['last_run'][:10]}"
+            )
+        if not pairs:
+            print("(no runs that reached the device yet)")
     elif len(sys.argv) > 1 and sys.argv[1] == "rename":
         if len(sys.argv) != 4:
             print("usage: scraper.py rename <old_username> <new_username>")

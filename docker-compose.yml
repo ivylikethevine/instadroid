@@ -96,6 +96,10 @@ services:
     env_file: .env
     environment:
       REDROID_IMAGE: *redroid_image   # recorded with each run
+    # Optional: credentials from Docker secrets instead of .env. Create the file (readable by uid
+    # 1000, which the app runs as), uncomment this and the top-level `secrets:` block at the end,
+    # and set IG_PASSWORD_FILE=/run/secrets/ig_password in .env in place of IG_PASSWORD.
+    # secrets: [ig_password]
     volumes:
       - ./local/data/db:/db
       - ./local/data/media:/media
@@ -130,8 +134,8 @@ services:
     # Host networking, same reason as the app service above: the feed server binds the host's own
     # 127.0.0.1:8000 (FEED_HOST default), which a bridged container could not reach, and the
     # scraper's refresh ping has to reach FreshRSS back over that same loopback. LISTEN below keeps
-    # FreshRSS itself loopback-only despite host networking, since the feed still has no auth of its
-    # own (see README's "Optional feed auth" roadmap item) — nothing here should reach the LAN.
+    # FreshRSS itself loopback-only despite host networking; the feed is only authenticated when
+    # FEED_TOKEN is set (see README's FreshRSS section) — nothing here should reach the LAN.
     network_mode: host
     environment:
       LISTEN: ${FRESHRSS_LISTEN:-127.0.0.1:8080}
@@ -144,3 +148,8 @@ services:
       - ./local/data/freshrss/data:/var/www/FreshRSS/data
       - ./local/data/freshrss/extensions:/var/www/FreshRSS/extensions
     mem_limit: 512m
+
+# Goes with the app service's commented `secrets:` above.
+# secrets:
+#   ig_password:
+#     file: ./local/secrets/ig_password

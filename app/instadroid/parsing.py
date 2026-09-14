@@ -2,8 +2,9 @@
 list, timestamps, and post identity. No device access, so it's what the replay tests exercise."""
 
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from lxml import etree
 
@@ -57,7 +58,7 @@ def is_weak_caption(caption: str) -> bool:
     return not caption or bool(_WEAK_CAPTION.match(caption))
 
 
-def same_post(existing: dict, candidate: dict) -> bool:
+def same_post(existing: Mapping[str, Any], candidate: Mapping[str, Any]) -> bool:
     """True if `existing` (a stored post: username, caption, posted_at) and `candidate` (a
     freshly parsed card: username, caption, posted_at, posted_at_precision) are the same
     Instagram post seen twice — typically because a card was captured before its caption widget

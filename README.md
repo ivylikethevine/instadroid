@@ -54,6 +54,10 @@ config change fixes. `erstt/redroid` is the only source found with confirmed, wo
 translation, and it doesn't publish an Android 14 build. Android 13/ChromeOS remains the image in
 `docker-compose.yml`.
 
+[`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) has the same history as a lookup table of image and
+Instagram build pairs, and `docker compose exec app python scraper.py compat` lists every pair your own
+database has run, from what each run records.
+
 That same first attempt at running redroid **also caused a full kernel panic** on this specific
 host, unrelated to Instagram compatibility — see `CLAUDE.md` for the root cause and the exact,
 now-validated safe procedure before running redroid here (or on any host you haven't personally
@@ -72,7 +76,7 @@ tested it on).
 ## First-time setup
 
 ```bash
-cp .env.example .env                 # fill in IG_USERNAME / IG_PASSWORD
+cp .env.example .env                 # fill in IG_USERNAME / IG_PASSWORD (or IG_PASSWORD_FILE)
 docker compose pull redroid
 docker compose up -d redroid
 adb connect 127.0.0.1:5555
@@ -85,6 +89,11 @@ docker compose up -d --build
 docker compose exec app python scraper.py login      # types the .env credentials into the login form
 docker compose exec app python scraper.py once        # first scrape, watch the output
 ```
+
+The password doesn't have to live in `.env`: `IG_PASSWORD_FILE` (and `IG_USERNAME_FILE`) read the value
+from a file instead, such as a Docker secret mounted at `/run/secrets/` — `docker-compose.yml` has a
+commented `secrets:` example. `FEED_TOKEN` and `FRESHRSS_REFRESH_URL` accept a `_FILE` variant the same
+way. Setting both forms of one, or a file the app can't read, stops the process with an error.
 
 The `app` container installs Instagram on the device itself the first time it finds it missing:
 `ensure_logged_in()` fetches it with `apkeep` (built into the image, from APKPure) and
@@ -245,7 +254,15 @@ pip install -r scripts/requirements-dev.txt -r app/requirements.txt
 ruff check . && ruff format --check . && pyright
 pytest -q                              # parser, feed, and device-flow tests; temp SQLite db
 pytest -q --cov=app --cov-report=term-missing   # with coverage
+python scripts/export_openapi.py       # after changing a route in app/app.py
 ```
+
+All Python code, tests included, is fully type-annotated: ruff's `ANN` rules enforce annotations on
+every function, and pyright type-checks `app/` (tests excluded) and `scripts/`.
+
+The feed server's OpenAPI spec is committed as [`docs/openapi.json`](docs/openapi.json) and published
+with the project site. `tests/test_openapi.py` compares it with the routes, so CI fails until the spec
+is regenerated after a route change.
 
 The device-driving code (login, feed navigation, share sheet, carousels, stories, the scrape loop)
 is tested against `app/tests/fakedevice.py`: a scripted stand-in for a uiautomator2 device whose
@@ -278,7 +295,18 @@ attestation-verify command. A tag like `v1.0.0-rc1` is treated as a prerelease a
 Subscribe to `http://<host>:8000/instagram.xml` (set `PUBLIC_URL` in compose to whatever
 FreshRSS can reach so image links resolve). Per-account feeds: `/instagram.xml?user=somebody`.
 `/users` lists everyone seen so far. `/stories.xml` is a separate feed of currently-unexpired
-stories (see "Stories" above) — subscribe to it separately if you want it.
+stories (see "Stories" above) — subscribe to it separately if you want it. In each post, @mentions
+and #hashtags in the caption link to that account's or hashtag's Instagram page.
+
+**Feed auth**: the feed server is open to anything that can reach it, which is fine on the default
+`FEED_HOST=127.0.0.1`. Before setting `FEED_HOST=0.0.0.0`, set `FEED_TOKEN` (or `FEED_TOKEN_FILE`):
+every path except `/health` then needs the token, as `Authorization: Bearer <token>`, as the
+password of HTTP basic auth (any username — FreshRSS's per-feed HTTP username/password fields), or
+as `?token=<token>` on the feed URL. Images in the feeds keep loading in a reader without the token:
+their URLs carry a signature that opens that one file only. `/opml` writes `?token=` into each feed
+URL, so importing it (or a Dynamic OPML category, itself subscribed with `?token=`) needs no per-feed
+setup. A `?token=` value is blanked in the access log. Browsers get a basic-auth prompt on `/status`.
+Without a token, a non-loopback `FEED_HOST` logs a warning at startup.
 
 If FreshRSS runs on the same host (see below), set `PUBLIC_URL=http://127.0.0.1:8000`, not
 `http://localhost:8000` — confirmed the hard way: a FreshRSS container's `localhost` resolved to
@@ -320,7 +348,7 @@ docker compose exec --user root freshrss ./cli/access-permissions.sh
 
 That token is what `FRESHRSS_REFRESH_URL` above is built from. FreshRSS listens on
 `127.0.0.1:8080` by default (`FRESHRSS_LISTEN`) — loopback only, matching `FEED_HOST`, since the
-feed itself still has no auth (see "Optional feed auth" in the Roadmap). It needs
+feed itself has no auth unless `FEED_TOKEN` is set (see "Feed auth" above). It needs
 `FRESHRSS_INTERNAL_HOST_ALLOWLIST` (defaulted in compose) to be allowed to fetch a feed on
 `127.0.0.1` at all — FreshRSS 1.30+ blocks that as an SSRF guard otherwise.
 
