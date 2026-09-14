@@ -1,10 +1,11 @@
 """Command-line entry point. `python scraper.py` runs the poll loop; the subcommands are one-offs:
 
-    once                     one scrape run
+    once                     one scrape run (recorded in the runs table like a scheduled one)
     login                    log in (or confirm the session is live), then stop Instagram
     profiles                 list the Instagram version profiles
     install [VERSION|latest] install an Instagram build (default: the active profile's)
     dump                     save the current screen's hierarchy + screenshot to DEBUG_DIR
+    compat                   redroid image / Instagram build pairs this database has run
     rename OLD NEW           move an account's history to its new username
 
 The scraper itself lives in the instadroid/ package.
@@ -18,8 +19,9 @@ from instadroid import config, db, device, diagnostics, install, navigation, scr
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "once":
-        con = db.db_init()
-        stats = scrape.scrape_once(device.connect_device(), con)
+        stats, exc = scrape.run_recorded(db.db_init())  # recorded in runs, like a scheduled run
+        if exc:
+            sys.exit(f"run failed: {exc!r}")
         print(stats["new"], "new posts,", stats["new_stories"], "new stories")
     elif len(sys.argv) > 1 and sys.argv[1] == "login":
         d = device.connect_device()
@@ -31,7 +33,8 @@ if __name__ == "__main__":
         for name in available_profiles():
             p = select_profile(name)[0]
             active = " (active)" if p.name == versioning.PROFILE.name else ""
-            print(f"{p.name}{active}  installs {p.apk_version}  {p.notes}")
+            status = "validated" if p.validated else "NOT validated"
+            print(f"{p.name}{active}  installs {p.apk_version}  {status}  {p.notes}")
     elif len(sys.argv) > 1 and sys.argv[1] == "install":
         if len(sys.argv) > 3:
             print("usage: scraper.py install [VERSION|latest]   (default: the active profile's apk_version)")
@@ -42,6 +45,16 @@ if __name__ == "__main__":
         d = device.connect_device()
         diagnostics.dump_debug(d, "manual")
         print("wrote", config.DEBUG_DIR)
+    elif len(sys.argv) > 1 and sys.argv[1] == "compat":
+        pairs = db.version_pairs(db.db_init())
+        print("redroid image | Instagram | profile | runs (ok, clean) | new posts | last run")
+        for p in pairs:
+            print(
+                f"{p['redroid_image'] or '?'} | {p['ig_version']} | {p['selector_profile'] or '?'}"
+                f" | {p['runs']} ({p['ok_runs']}, {p['clean_runs']}) | {p['new_posts']} | {p['last_run'][:10]}"
+            )
+        if not pairs:
+            print("(no runs that reached the device yet)")
     elif len(sys.argv) > 1 and sys.argv[1] == "rename":
         if len(sys.argv) != 4:
             print("usage: scraper.py rename <old_username> <new_username>")

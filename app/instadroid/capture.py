@@ -3,7 +3,9 @@ carousel slides, avatars."""
 
 import time
 from pathlib import Path
+from typing import cast
 
+import uiautomator2 as u2
 from lxml import etree
 from PIL import Image
 
@@ -13,7 +15,7 @@ from .versioning import SELECTORS, versioned
 
 
 @versioned
-def expand_caption(d, p: parsing.Post) -> str:
+def expand_caption(d: u2.Device, p: parsing.Post) -> str:
     """Tap a truncated caption's "... more" to expand it in place, and return the full text.
     "more" is a clickable span at the end of the caption's last line, not a separate touch
     target of its own, so the tap aims at the widget's bottom-right corner rather than its
@@ -52,7 +54,7 @@ def expand_caption(d, p: parsing.Post) -> str:
 _last_url = ""  # the last permalink handed out, to spot a clipboard that didn't change
 
 
-def reset_last_url(d):
+def reset_last_url(d: u2.Device) -> None:
     """Start a run treating whatever is on the clipboard now as stale."""
     global _last_url
     try:
@@ -62,7 +64,7 @@ def reset_last_url(d):
 
 
 @versioned
-def fetch_permalink(d, post_hash: str) -> tuple[str | None, str | None]:
+def fetch_permalink(d: u2.Device, post_hash: str) -> tuple[str | None, str | None]:
     """Open the share sheet for the post with this hash, pick 'Copy link', read the clipboard.
 
     Re-dumps the hierarchy right before tapping and clicks the share *element* (not stale
@@ -95,6 +97,7 @@ def fetch_permalink(d, post_hash: str) -> tuple[str | None, str | None]:
         navigation.close_sheets(d)
         navigation.back_to_feed(d)
         return None, "sheet"
+    diagnostics.capture_screen(d, "share_sheet")
     # Note: clearing the clipboard first (d.set_clipboard) makes the next read come back empty.
     # Staleness is caught below by comparing with the last link we handed out.
     device.human_pause(0.8, 1.2)  # let the sheet finish animating
@@ -146,7 +149,9 @@ def save_media(img: Image.Image, path: Path) -> None:
 
 
 @versioned
-def crop_media(d, bounds: str | None, pid: str, clip_top: int = 0, settle: float = 0):
+def crop_media(
+    d: u2.Device, bounds: str | None, pid: str, clip_top: int = 0, settle: float = 0
+) -> str | None:
     """Screenshot the visible post image and save it as "{pid}.webp" (or .jpg, see MEDIA_FORMAT).
     Returns filename or None.
     `settle` delays the shot (e.g. for a video/Reel, so autoplay has started and the initial
@@ -162,7 +167,7 @@ def crop_media(d, bounds: str | None, pid: str, clip_top: int = 0, settle: float
         return None
     if settle:
         device.human_pause(settle, settle * 1.4)
-    img: Image.Image = d.screenshot()
+    img = cast(Image.Image, d.screenshot())
     config.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     fn = f"{pid}{media_ext()}"
     save_media(img.crop((x1, y1, x2, y2)), config.MEDIA_DIR / fn)
@@ -170,7 +175,7 @@ def crop_media(d, bounds: str | None, pid: str, clip_top: int = 0, settle: float
 
 
 @versioned
-def capture_carousel(d, p: parsing.Post, pid: str) -> list[str]:
+def capture_carousel(d: u2.Device, p: parsing.Post, pid: str) -> list[str]:
     """Swipe through a carousel's remaining slides in place and crop each one. `pid` already has
     slide 1 captured by the caller via crop_media(); this walks slides 2..total (capped at
     MAX_CAROUSEL_SLIDES), stopping as soon as a swipe doesn't land on the next slide (the swipe was
@@ -203,7 +208,7 @@ def capture_carousel(d, p: parsing.Post, pid: str) -> list[str]:
 
 
 @versioned
-def _avatar_bounds(header_bounds: str):
+def _avatar_bounds(header_bounds: str) -> tuple[int, int, int, int] | None:
     """The header's own bounds crop to a leading square avatar with a small inset — the avatar
     ImageView has no addressable node (row_feed_profile_header is a collapsed leaf in the
     accessibility tree), so this crops positionally rather than by resource-id. Needs a live check
@@ -217,7 +222,7 @@ def _avatar_bounds(header_bounds: str):
 
 
 @versioned
-def capture_avatar(d, header_bounds: str, username: str) -> str | None:
+def capture_avatar(d: u2.Device, header_bounds: str, username: str) -> str | None:
     """Crop the account's avatar from its own feed header and save it once per account, in its own
     subdirectory so the retention orphan sweep (which only globs MEDIA_DIR's top level) never
     touches it. Returns the path relative to MEDIA_DIR, or None."""
@@ -227,7 +232,7 @@ def capture_avatar(d, header_bounds: str, username: str) -> str | None:
         return None
     avatar_dir = config.MEDIA_DIR / "avatars"
     avatar_dir.mkdir(parents=True, exist_ok=True)
-    img: Image.Image = d.screenshot()
+    img = cast(Image.Image, d.screenshot())
     fn = f"{safe_user}{media_ext()}"
     save_media(img.crop(box), avatar_dir / fn)
     # The orphan sweep never looks in avatars/, so drop this account's avatar in any other format

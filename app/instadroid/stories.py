@@ -1,10 +1,12 @@
 """Capturing stories from the Home feed's tray, with perceptual-hash dedupe."""
 
+import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
 
+import uiautomator2 as u2
 from lxml import etree
 from PIL import Image, ImageStat
 
@@ -41,7 +43,7 @@ def capture_story_media(
 
 
 @versioned
-def capture_story(d, item: parsing.StoryItem) -> CapturedStory | None:
+def capture_story(d: u2.Device, item: parsing.StoryItem) -> CapturedStory | None:
     """Open one tray item's story, capture its current frame, and always exit back to the Home
     feed via Back. Never tap forward inside the viewer (past this one open tap): the message/like/
     reshare/profile-picture/menu targets are all real actions on someone else's story, and on this
@@ -75,6 +77,7 @@ def capture_story(d, item: parsing.StoryItem) -> CapturedStory | None:
         d.press("back")
         device.human_pause(1, 1.5)
         return None
+    diagnostics.capture_screen(d, "story_viewer", xml)
     img = d.screenshot()
     d.press("back")  # off the device from here on; cropping/saving below never risks the timer
     device.human_pause(1, 1.5)
@@ -97,7 +100,7 @@ def capture_story(d, item: parsing.StoryItem) -> CapturedStory | None:
 
 
 @versioned
-def scrape_stories(d, con) -> int:
+def scrape_stories(d: u2.Device, con: sqlite3.Connection) -> int:
     """Visit each not-yet-seen account's story from the Home feed's tray, capture its current
     frame, and return to the Following feed afterward. Stories have no stable public id the way
     posts do (no permalink/shortcode), so a capture is checked against the DB only afterwards: a
@@ -110,8 +113,11 @@ def scrape_stories(d, con) -> int:
         device.human_pause(1, 1.5)
     else:
         log("WARN: could not reach the Home feed for stories; skipping this run")
+        diagnostics.capture_screen(d, "home_feed", failure=True)
         return 0
-    items = [i for i in parsing.parse_story_tray(d.dump_hierarchy()) if not i["seen"]]
+    tray_xml = d.dump_hierarchy()
+    diagnostics.capture_screen(d, "home_feed", tray_xml)
+    items = [i for i in parsing.parse_story_tray(tray_xml) if not i["seen"]]
     new = 0
     for item in items[: config.MAX_STORIES_PER_RUN]:
         if not navigation.on_home_feed(d):
@@ -185,7 +191,7 @@ def _is_blank_frame(img: Image.Image) -> bool:
     return stat.mean[0] < 8 and stat.stddev[0] < 4
 
 
-def _find_story_duplicate(con, username: str, phash: str) -> bool:
+def _find_story_duplicate(con: sqlite3.Connection, username: str, phash: str) -> bool:
     """True if this account has a story stored in the last day (a story's lifetime) that looks the
     same. The byte hash alone missed these: every capture re-encodes a fresh screenshot."""
     cutoff = (datetime.now(UTC) - timedelta(days=1)).isoformat()

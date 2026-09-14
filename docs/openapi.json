@@ -1,0 +1,282 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "instadroid",
+    "summary": "Atom feeds of an Instagram Following feed scraped from a real Android app.",
+    "description": "When the server runs with `FEED_TOKEN`, every path except `/health` needs that token: as `Authorization: Bearer <token>`, as the password of HTTP basic auth, or as `?token=`. `/media/<file>` URLs written into the feeds carry a per-file `sig` instead.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/instagram.xml": {
+      "get": {
+        "summary": "Posts feed",
+        "description": "Stored posts as Atom, newest first. `user` narrows it to one account; `limit` is capped at\n500.",
+        "operationId": "feed_instagram_xml_get",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An Atom feed.",
+            "content": {
+              "application/atom+xml": {}
+            }
+          },
+          "304": {
+            "description": "Not Modified"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stories.xml": {
+      "get": {
+        "summary": "Stories feed",
+        "description": "Stored story frames as Atom, newest first; `limit` is capped at 500.",
+        "operationId": "stories_feed_stories_xml_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An Atom feed.",
+            "content": {
+              "application/atom+xml": {}
+            }
+          },
+          "304": {
+            "description": "Not Modified"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users": {
+      "get": {
+        "summary": "Accounts with stored posts",
+        "description": "Every username with at least one stored post, sorted.",
+        "operationId": "users_users_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response Users Users Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/opml": {
+      "get": {
+        "summary": "Subscription list",
+        "description": "One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed\nper username in /users — a single FreshRSS import subscribes to everything this instance\nserves instead of pasting ?user= URLs in one at a time.",
+        "operationId": "opml_opml_get",
+        "responses": {
+          "200": {
+            "description": "An OPML outline.",
+            "content": {
+              "text/x-opml": {}
+            }
+          },
+          "304": {
+            "description": "Not Modified"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Scraper health",
+        "description": "`ok` unless no run has finished for too long or none has succeeded for too long (then 503,\nwith a `reason`). Never needs the feed token.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Scraping looks stuck or keeps failing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/status": {
+      "get": {
+        "summary": "Status page",
+        "description": "A plain-HTML page of recent runs, the device, and per-account totals.",
+        "operationId": "status_page_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Health": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "posts": {
+            "type": "integer",
+            "title": "Posts"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok",
+          "posts"
+        ],
+        "title": "Health"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

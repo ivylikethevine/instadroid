@@ -1,10 +1,13 @@
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
 
 from tests.test_feed import make_app
 
 
-def _add_runs(db, runs):
+def _add_runs(db: Path, runs: list[tuple[float, str | None, str | None]]) -> None:
     """runs: [(finished_hours_ago, error, warning)] — each run took 5 minutes."""
     con = sqlite3.connect(db)
     con.execute(
@@ -25,19 +28,21 @@ def _add_runs(db, runs):
     con.close()
 
 
-def test_health_ok_with_no_runs_yet(tmp_path, monkeypatch):
+def test_health_ok_with_no_runs_yet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = make_app(tmp_path, monkeypatch)
     r = client.get("/health")
     assert r.status_code == 200 and r.json() == {"ok": True, "posts": 2}
 
 
-def test_health_ok_after_a_recent_successful_run(tmp_path, monkeypatch):
+def test_health_ok_after_a_recent_successful_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = make_app(tmp_path, monkeypatch)
     _add_runs(tmp_path / "posts.sqlite", [(1, None, None)])
     assert client.get("/health").status_code == 200
 
 
-def test_health_503_when_no_run_has_finished_for_too_long(tmp_path, monkeypatch):
+def test_health_503_when_no_run_has_finished_for_too_long(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("POLL_MAX_HOURS", "4.5")
     client = make_app(tmp_path, monkeypatch)
     _add_runs(tmp_path / "posts.sqlite", [(6, None, None)])  # past 4.5h + 30min
@@ -46,7 +51,7 @@ def test_health_503_when_no_run_has_finished_for_too_long(tmp_path, monkeypatch)
     assert r.json()["ok"] is False and "no scrape run has finished" in r.json()["reason"]
 
 
-def test_health_503_when_runs_keep_failing(tmp_path, monkeypatch):
+def test_health_503_when_runs_keep_failing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLL_MAX_HOURS", "4.5")
     client = make_app(tmp_path, monkeypatch)
     # Runs are still happening on schedule, but none has succeeded in 11h (> 2 * 4.5h + 1h).
@@ -58,13 +63,15 @@ def test_health_503_when_runs_keep_failing(tmp_path, monkeypatch):
     assert r.status_code == 503 and "no successful scrape run" in r.json()["reason"]
 
 
-def test_health_ok_while_the_first_runs_are_still_failing_briefly(tmp_path, monkeypatch):
+def test_health_ok_while_the_first_runs_are_still_failing_briefly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     client = make_app(tmp_path, monkeypatch)
     _add_runs(tmp_path / "posts.sqlite", [(1, "ConnectError('not online')", None)])
     assert client.get("/health").status_code == 200
 
 
-def test_status_page_shows_a_warning_run(tmp_path, monkeypatch):
+def test_status_page_shows_a_warning_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = make_app(tmp_path, monkeypatch)
     _add_runs(tmp_path / "posts.sqlite", [(0.1, None, "stopped early: 3 empty screens in a row")])
     body = client.get("/status").text
@@ -72,7 +79,9 @@ def test_status_page_shows_a_warning_run(tmp_path, monkeypatch):
     assert "stopped early: 3 empty screens in a row" in body
 
 
-def test_status_page_shows_instagram_version_and_image(tmp_path, monkeypatch):
+def test_status_page_shows_instagram_version_and_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     client = make_app(tmp_path, monkeypatch)
     db = tmp_path / "posts.sqlite"
     _add_runs(db, [(0.1, None, None)])
@@ -92,7 +101,7 @@ def test_status_page_shows_instagram_version_and_image(tmp_path, monkeypatch):
     assert "(profile" not in body  # a runs table from before selector_profile existed
 
 
-def test_status_page_shows_the_selector_profile(tmp_path, monkeypatch):
+def test_status_page_shows_the_selector_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = make_app(tmp_path, monkeypatch)
     db = tmp_path / "posts.sqlite"
     _add_runs(db, [(0.1, None, None)])
@@ -105,7 +114,7 @@ def test_status_page_shows_the_selector_profile(tmp_path, monkeypatch):
     assert "Instagram 446.0.0.49.77 (profile v445)" in client.get("/status").text
 
 
-def test_status_page_shows_the_health_reason(tmp_path, monkeypatch):
+def test_status_page_shows_the_health_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLL_MAX_HOURS", "4.5")
     client = make_app(tmp_path, monkeypatch)
     _add_runs(tmp_path / "posts.sqlite", [(6, None, None)])
@@ -113,7 +122,7 @@ def test_status_page_shows_the_health_reason(tmp_path, monkeypatch):
     assert "OVERDUE" in body and "no scrape run has finished" in body
 
 
-def test_status_page_shows_peak_memory_and_oom_kills(tmp_path, monkeypatch):
+def test_status_page_shows_peak_memory_and_oom_kills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = make_app(tmp_path, monkeypatch)
     db = tmp_path / "posts.sqlite"
     _add_runs(db, [(0.2, None, None), (0.1, None, None)])

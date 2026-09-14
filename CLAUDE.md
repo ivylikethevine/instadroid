@@ -292,8 +292,11 @@ What changed as a result:
   run that raises doesn't leave ~800MiB resident. `scraper.py login` force-stops Instagram when it
   finishes, too.
 
-**Before any device-driving run (login, once, a manual scrape): check `docker stats` headroom,
-force-stop Instagram, and ask the user first.** Optional host-side mitigation, the user's call since
+**Before any device-driving run (login, once, a manual scrape, and `scripts/new_profile.py`'s
+`baseline`, `new` and `restore`): check `docker stats` headroom, force-stop Instagram, and ask the user
+first.** `new_profile.py baseline` checks headroom and refuses while the `app` service is running,
+but that doesn't replace asking; its other subcommands (`scaffold`, `check`, `promote`, `validate`)
+never touch the device. Optional host-side mitigation, the user's call since
 it's host-wide: `sysctl vm.oom_dump_tasks=0` stops each OOM kill from dumping every process to the
 kernel log.
 

@@ -1,18 +1,19 @@
 import logging
 import os
 import time
+from pathlib import Path
 
 import pytest
 from instadroid import config, db, device, diagnostics
 
 
 class Out:
-    def __init__(self, output):
+    def __init__(self, output: str) -> None:
         self.output = output
 
 
 class VersionedDevice:
-    def shell(self, cmd):
+    def shell(self, cmd: list[str] | str) -> Out:
         if isinstance(cmd, list) and cmd[:2] == ["dumpsys", "package"]:
             return Out(
                 "Packages:\n  Package [com.instagram.android]\n    versionCode=385111379\n"
@@ -23,7 +24,7 @@ class VersionedDevice:
         )
 
 
-def test_device_snapshot_records_instagram_version_and_image(monkeypatch):
+def test_device_snapshot_records_instagram_version_and_image(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDROID_IMAGE", "erstt/redroid:13.0.0_ndk_ChromeOS")
     snapshot = device.device_snapshot(VersionedDevice())
     assert snapshot["android_release"] == "13"
@@ -31,7 +32,7 @@ def test_device_snapshot_records_instagram_version_and_image(monkeypatch):
     assert snapshot["redroid_image"] == "erstt/redroid:13.0.0_ndk_ChromeOS"
 
 
-def test_record_run_stores_versions(tmp_path, monkeypatch):
+def test_record_run_stores_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
     con = db.db_init()
     db.record_run(
@@ -43,7 +44,7 @@ def test_record_run_stores_versions(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def debug_dir(tmp_path, monkeypatch):
+def debug_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     d = tmp_path / "debug"
     d.mkdir()
     monkeypatch.setattr(config, "DEBUG_DIR", d)
@@ -51,14 +52,14 @@ def debug_dir(tmp_path, monkeypatch):
     return d
 
 
-def _touch(path, days_old=0.0):
+def _touch(path: Path, days_old: float = 0.0) -> Path:
     path.write_bytes(b"x")
     t = time.time() - days_old * 86400
     os.utime(path, (t, t))
     return path
 
 
-def test_prune_debug_removes_old_loose_artifacts_but_not_other_files(debug_dir):
+def test_prune_debug_removes_old_loose_artifacts_but_not_other_files(debug_dir: Path) -> None:
     old_png = _touch(debug_dir / "following_link.png", days_old=10)
     old_xml = _touch(debug_dir / "feed_menu.xml", days_old=10)
     fresh_png = _touch(debug_dir / "boot.png", days_old=1)
@@ -73,7 +74,7 @@ def test_prune_debug_removes_old_loose_artifacts_but_not_other_files(debug_dir):
     assert scratch_db.exists() and scratch_dir.exists()
 
 
-def test_prune_debug_still_caps_dump_pairs_by_count(debug_dir, monkeypatch):
+def test_prune_debug_still_caps_dump_pairs_by_count(debug_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "DEBUG_KEEP", 2)
     for i in range(4):
         _touch(debug_dir / f"d{i}_hierarchy.xml", days_old=0.1 * (4 - i))
@@ -89,26 +90,28 @@ def test_prune_debug_still_caps_dump_pairs_by_count(debug_dir, monkeypatch):
     ]
 
 
-def test_prune_debug_age_rule_can_be_disabled(debug_dir, monkeypatch):
+def test_prune_debug_age_rule_can_be_disabled(debug_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "DEBUG_RETAIN_DAYS", 0)
     old = _touch(debug_dir / "header.png", days_old=100)
     diagnostics.prune_debug_dumps()
     assert old.exists()
 
 
-def test_prune_debug_tolerates_a_missing_directory(tmp_path, monkeypatch):
+def test_prune_debug_tolerates_a_missing_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "nope")
     diagnostics.prune_debug_dumps()  # must not raise
 
 
-def test_healthcheck_requests_are_left_out_of_the_access_log(tmp_path, monkeypatch):
+def test_healthcheck_requests_are_left_out_of_the_access_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("DB_PATH", str(tmp_path / "posts.sqlite"))
     monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
     import app
 
     f = app._SkipHealthcheck()
 
-    def record(path):
+    def record(path: str) -> logging.LogRecord:
         args = ("127.0.0.1:5000", "GET", path, "1.1", 200)
         return logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d', args, None)
 

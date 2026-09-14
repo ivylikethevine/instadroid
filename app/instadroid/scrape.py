@@ -6,8 +6,10 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 from urllib.parse import urlsplit
+
+import uiautomator2 as u2
 
 from . import (
     capture,
@@ -25,7 +27,7 @@ from . import (
 from .common import log
 
 
-def _startup_wait_seconds(con, now: datetime | None = None) -> float:
+def _startup_wait_seconds(con: sqlite3.Connection, now: datetime | None = None) -> float:
     """Seconds to wait before the first scrape after the process starts: whatever's left of the
     interval since the last recorded run finished. That interval is the first RETRY_DELAYS_MINUTES
     entry if the last run failed transiently (the retry it would have had), otherwise a normally
@@ -109,7 +111,7 @@ def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
     return None
 
 
-def scrape_once(d, con) -> RunStats:
+def scrape_once(d: u2.Device, con: sqlite3.Connection) -> RunStats:
     """One scrape run. Starts and ends with Instagram and the cached system apps force-stopped
     (_free_device_memory), the end in a `finally` so a run that raises halfway doesn't leave
     Instagram's ~800MiB resident until the next poll. Adds the run's redroid memory peak and OOM
@@ -130,7 +132,17 @@ def scrape_once(d, con) -> RunStats:
     return stats
 
 
-def _store_post(d, con, p: parsing.Post, h, pid, url, media, extra_media, ig_version) -> bool:
+def _store_post(
+    d: u2.Device,
+    con: sqlite3.Connection,
+    p: parsing.Post,
+    h: str,
+    pid: str,
+    url: str | None,
+    media: str | None,
+    extra_media: list[str],
+    ig_version: str | None,
+) -> bool:
     """Save a captured card (media cropped, permalink fetched, `pid` its final id): merge it into a
     stored duplicate (returns False) or insert it as a new post (True)."""
     if p["caption_truncated"]:
@@ -185,7 +197,7 @@ def _rename_media(pid: str, media: str, extra_media: list[str]) -> tuple[str, li
     return names[0], names[1:]
 
 
-def _scrape_feed(d, con, guard: device.MemoryGuard) -> RunStats:
+def _scrape_feed(d: u2.Device, con: sqlite3.Connection, guard: device.MemoryGuard) -> RunStats:
     config.DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     capture.reset_last_url(d)
     navigation.open_target_feed(d)
@@ -234,6 +246,7 @@ def _scrape_feed(d, con, guard: device.MemoryGuard) -> RunStats:
             warnings.append(f"stopped early: {reason}")
             break
         xml = d.dump_hierarchy()
+        diagnostics.capture_screen(d, "feed", xml)
         raw_posts = parsing.parse_hierarchy(xml)
         stat_dumps += 1
         stat_cards += len(raw_posts)
@@ -368,7 +381,34 @@ def _scrape_feed(d, con, guard: device.MemoryGuard) -> RunStats:
     }
 
 
-def main():
+def run_recorded(con: sqlite3.Connection) -> tuple[dict[str, Any], Exception | None]:
+    """Connect, scrape once, and record the run in the runs table whatever happens: one iteration
+    of main()'s loop, and `scraper.py once`. Returns (the run's stats, the exception that ended it or
+    None); a failure is logged, never raised."""
+    started_at = datetime.now(UTC).isoformat()
+    snapshot: device.DeviceSnapshot = {}
+    stats: dict[str, Any] = {}
+    error, exc = None, None
+    try:
+        d = device.connect_device()
+        snapshot = device.device_snapshot(d)
+        stats = dict(scrape_once(d, con))
+        log(f"run complete: {stats['new']} new posts, {stats['new_stories']} new stories")
+    except Exception as e:  # keep the loop alive; log for debugging
+        exc, error = e, repr(e)
+        log("ERROR:", error)
+        if device.is_transient(e):
+            diagnostics.save_failure_logcat(error)
+    if snapshot:  # connected, so a profile was activated (possibly re-activated by an install)
+        snapshot["selector_profile"] = versioning.PROFILE.name
+    recorded = {k: v for k, v in stats.items() if k != "new"}
+    db.record_run(
+        con, started_at, datetime.now(UTC).isoformat(), stats.get("new", 0), error, snapshot, **recorded
+    )
+    return stats, exc
+
+
+def main() -> None:
     con = db.db_init()
     attempt = 0  # consecutive transient-failure retries so far
     if wait := _startup_wait_seconds(con):
@@ -377,24 +417,7 @@ def main():
         )
         time.sleep(wait)
     while True:
-        started_at = datetime.now(UTC).isoformat()
-        snapshot: device.DeviceSnapshot = {}
-        stats: dict = {}
-        error, exc = None, None
-        try:
-            d = device.connect_device()
-            snapshot = device.device_snapshot(d)
-            stats = dict(scrape_once(d, con))
-            log(f"run complete: {stats['new']} new posts, {stats['new_stories']} new stories")
-        except Exception as e:  # keep the loop alive; log for debugging
-            exc, error = e, repr(e)
-            log("ERROR:", error)
-            if device.is_transient(e):
-                diagnostics.save_failure_logcat(error)
-        if snapshot:  # connected, so a profile was activated (possibly re-activated by an install)
-            snapshot["selector_profile"] = versioning.PROFILE.name
-        new_posts = stats.pop("new", 0)
-        db.record_run(con, started_at, datetime.now(UTC).isoformat(), new_posts, error, snapshot, **stats)
+        _, exc = run_recorded(con)
         seconds, attempt = next_sleep_seconds(exc, attempt)
         if attempt:
             log(
