@@ -225,7 +225,7 @@ there fully resident for the entire ~2.5-4.5h gap until the next one — every r
 was paying that ~820MiB tax continuously, not just while actually scraping.
 
 Fix: `scraper.py`'s `scrape_once()` now force-stops `com.instagram.android` itself at the very end
-of a run (`_stop_instagram()`, alongside the `_sweep_cached_apps()` app-sweep) — same reasoning as
+of a run (`_free_device_memory()`, which force-stops it along with the cached-app sweep) — same reasoning as
 that sweep: this container can't rely on `lmkd` to do it, so the scraper does it explicitly instead.
 Confirmed safe **the hard way**: the very first live test of this (a rushed manual `am force-stop`
 + immediate `scraper.py once`, run back-to-back with other manual `adb`/`am` commands in between)

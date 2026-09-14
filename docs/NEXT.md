@@ -89,7 +89,9 @@ stored posts dedupe across Instagram upgrades.
    `__init__.py` with `Profile(Profile445)` setting `major = 444`, `apk_version`, `notes`.
    `test_every_profile_meets_the_contract` picks the directory up automatically.
 3. **Baseline run** with `IG_PROFILE=v444`, short (`MAX_SCROLLS=5`, `MAX_STORIES_PER_RUN=2`), and
-   only with memory headroom (see CLAUDE.md's host-freeze section).
+   only with memory headroom (see CLAUDE.md's host-freeze section). Pass overrides with `-e`
+   (`docker compose run --rm --no-deps -e IG_PROFILE=v444 -e MAX_SCROLLS=5 app python scraper.py
+   once`) or put them in `.env`; compose no longer forwards shell variables for these.
 4. **Dump what differs** (`scraper.py dump`, and the automatic `last`/`empty_feed` dumps). Save the
    relevant ones under `v444/fixtures/`, override the changed selector keys or `@versioned`
    functions, and add tests that load that profile and its fixtures.
