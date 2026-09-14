@@ -12,7 +12,7 @@ ignore = ["E501", "ANN401"]
 
 [tool.pytest.ini_options]
 testpaths = ["app/tests"]
-pythonpath = ["app"]
+pythonpath = ["app", "scripts"]
 cache_dir = "local/.pytest_cache"
 
 [tool.coverage.run]

@@ -105,6 +105,7 @@ def ensure_logged_in(d: u2.Device) -> bool:
     if not (config.IG_USERNAME and config.IG_PASSWORD):
         diagnostics.dump_debug(d, "login")
         raise RuntimeError("login screen shown but IG_USERNAME/IG_PASSWORD not set")
+    diagnostics.capture_screen(d, "login")  # before typing, so no credentials end up in it
     user_field, pw_field = form
     log("login screen detected; entering credentials as", config.IG_USERNAME)
     user_field.click()
@@ -155,6 +156,7 @@ def open_following_feed(d: u2.Device) -> bool:
             device.human_pause(0.8, 1.5)
         if _on_following_feed(d):
             if attempt > 0:
+                diagnostics.capture_screen(d, "following_feed")
                 return True  # we navigated here a moment ago; the screen just took a while
             # Left over from the last run: leave and re-enter so the feed is fresh.
             d.press("back")
@@ -166,6 +168,7 @@ def open_following_feed(d: u2.Device) -> bool:
                 for tap in range(4):  # taps get swallowed while the app is still warming up
                     sw.click()
                     if f.exists(timeout=5):
+                        diagnostics.capture_screen(d, "feed_switch_menu")
                         break
                     log(f"feed switch attempt {attempt}: switcher tap {tap} opened nothing")
                 if f.exists(timeout=1):
@@ -173,6 +176,7 @@ def open_following_feed(d: u2.Device) -> bool:
                     device.human_pause(3, 5)
                     for _ in range(6):  # cold starts can take a while to build the screen
                         if _on_following_feed(d):
+                            diagnostics.capture_screen(d, "following_feed")
                             return True
                         time.sleep(2)
                     log(f"feed switch attempt {attempt}: clicked Following but title not found")
@@ -274,6 +278,7 @@ def open_own_following_list(d: u2.Device) -> bool:
         try:
             tab.click()
             device.human_pause(1.5, 2.5)
+            diagnostics.capture_screen(d, "profile")
             link = d(resourceIdMatches=f".*:id/{SELECTORS['following_link_id']}$")
             if not link.exists(timeout=5):
                 log(f"open following list attempt {attempt}: following link not found on profile")
@@ -304,6 +309,7 @@ def scrape_following_list(d: u2.Device) -> list[str] | None:
     screens = empty_streak = 0
     while screens < config.MAX_FOLLOWING_SCROLLS:
         xml = d.dump_hierarchy()
+        diagnostics.capture_screen(d, "following_list", xml)
         names = parsing.parse_following_list(xml)
         if screens == 0 and not names:
             diagnostics.dump_debug(d, "following_list_first", xml=xml)

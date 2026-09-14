@@ -1,6 +1,6 @@
 """Command-line entry point. `python scraper.py` runs the poll loop; the subcommands are one-offs:
 
-    once                     one scrape run
+    once                     one scrape run (recorded in the runs table like a scheduled one)
     login                    log in (or confirm the session is live), then stop Instagram
     profiles                 list the Instagram version profiles
     install [VERSION|latest] install an Instagram build (default: the active profile's)
@@ -19,8 +19,9 @@ from instadroid import config, db, device, diagnostics, install, navigation, scr
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "once":
-        con = db.db_init()
-        stats = scrape.scrape_once(device.connect_device(), con)
+        stats, exc = scrape.run_recorded(db.db_init())  # recorded in runs, like a scheduled run
+        if exc:
+            sys.exit(f"run failed: {exc!r}")
         print(stats["new"], "new posts,", stats["new_stories"], "new stories")
     elif len(sys.argv) > 1 and sys.argv[1] == "login":
         d = device.connect_device()
@@ -32,7 +33,8 @@ if __name__ == "__main__":
         for name in available_profiles():
             p = select_profile(name)[0]
             active = " (active)" if p.name == versioning.PROFILE.name else ""
-            print(f"{p.name}{active}  installs {p.apk_version}  {p.notes}")
+            status = "validated" if p.validated else "NOT validated"
+            print(f"{p.name}{active}  installs {p.apk_version}  {status}  {p.notes}")
     elif len(sys.argv) > 1 and sys.argv[1] == "install":
         if len(sys.argv) > 3:
             print("usage: scraper.py install [VERSION|latest]   (default: the active profile's apk_version)")

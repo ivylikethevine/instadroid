@@ -48,17 +48,10 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   of 440, 441, 442, 443 and 444 gets its own `app/igprofiles/v44N/` directory: confirm APKPure still
   serves a build (`scraper.py install <version>`), start from the 445 selectors, take a short
   `IG_PROFILE=v44N` baseline run, and override only what differs, with fixtures from that version's
-  dumps. `docs/NEXT.md` has the step-by-step. Going back in versions on one device means `-r -d`
+  dumps. `scripts/new_profile.py` automates all of that except choosing the overrides; `docs/NEXT.md`
+  has the step-by-step. Going back in versions on one device means `-r -d`
   downgrades, which an older Instagram may reject with data a newer build wrote, so expect a fresh
   login.
-- **Semi-automate new profile development**: Instagram ships a major version roughly weekly, so
-  `docs/NEXT.md`'s "Adding a version" steps will recur. Script the mechanical parts into one
-  command (e.g. `scraper.py new-profile <version>`): scaffold `app/igprofiles/vXYZ/` subclassing the
-  current default, install that build, take a short capped baseline run (only with memory headroom),
-  and run each screen's dump through `scripts/promote_dump.py` under the parent profile — which
-  already reports what parses and saves scrubbed fixtures — plus a report of which selector keys
-  matched nothing. The human step that stays is deciding
-  what the new selectors or `@versioned` overrides should be, then marking the profile validated.
 
 ### Large
 

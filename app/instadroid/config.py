@@ -60,6 +60,11 @@ IG_APK_VERSION = os.environ.get("IG_APK_VERSION", "").strip()
 APK_CACHE_DIR = Path(os.environ.get("APK_CACHE_DIR", "/apk"))
 APK_FETCH_TIMEOUT = float(os.environ.get("APK_FETCH_TIMEOUT", "300"))  # apkeep's own download
 DEBUG_KEEP = 12  # debug dump pairs to retain; older ones are pruned on every new dump
+# Profile development (scripts/new_profile.py baseline): when set, every screen the scraper visits
+# is also saved here as a numbered hierarchy + screenshot pair (up to CAPTURE_PER_SCREEN of each
+# screen, plus every failure dump), never pruned, for `new_profile.py check`. Empty = off.
+PROFILE_CAPTURE_DIR = os.environ.get("PROFILE_CAPTURE_DIR", "").strip()
+CAPTURE_PER_SCREEN = 3
 DEBUG_RETAIN_DAYS = float(os.environ.get("DEBUG_RETAIN_DAYS", "7"))  # 0 disables age-based pruning
 _DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png", ".txt")
 # How much of a filtered logcat to keep per device failure (see diagnostics.save_failure_logcat()).

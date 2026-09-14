@@ -142,8 +142,10 @@ First-run interstitials (notifications, location, "set up on new device") are di
 Everything specific to one Instagram version (selectors, the APK build to install, any behavior
 that differs, test fixtures) lives in its own directory under `app/igprofiles/`, e.g. `v445/`.
 `IG_PROFILE` picks one (default `v446`, the newest validated version; 440 is the oldest supported). The
-active profile is shown on `/status` and recorded in `runs.selector_profile`. See `docs/NEXT.md` for
-the design and how to add a version.
+active profile is shown on `/status` and recorded in `runs.selector_profile`. A profile that isn't
+validated yet still runs, with a warning. `scripts/new_profile.py` handles the mechanical work of adding
+a version: scaffold, a capped capture-mode baseline run, a per-screen selector check, fixtures,
+validation. See `docs/NEXT.md` for the design and the steps.
 
 If a run reports `no posts parsed on first screen`, look at `local/data/debug/last_hierarchy.xml`
 and `last_screen.jpg`, then fix it in that Instagram version's own profile directory rather than in

@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 from urllib.parse import urlsplit
 
 import uiautomator2 as u2
@@ -246,6 +246,7 @@ def _scrape_feed(d: u2.Device, con: sqlite3.Connection, guard: device.MemoryGuar
             warnings.append(f"stopped early: {reason}")
             break
         xml = d.dump_hierarchy()
+        diagnostics.capture_screen(d, "feed", xml)
         raw_posts = parsing.parse_hierarchy(xml)
         stat_dumps += 1
         stat_cards += len(raw_posts)
@@ -380,6 +381,33 @@ def _scrape_feed(d: u2.Device, con: sqlite3.Connection, guard: device.MemoryGuar
     }
 
 
+def run_recorded(con: sqlite3.Connection) -> tuple[dict[str, Any], Exception | None]:
+    """Connect, scrape once, and record the run in the runs table whatever happens: one iteration
+    of main()'s loop, and `scraper.py once`. Returns (the run's stats, the exception that ended it or
+    None); a failure is logged, never raised."""
+    started_at = datetime.now(UTC).isoformat()
+    snapshot: device.DeviceSnapshot = {}
+    stats: dict[str, Any] = {}
+    error, exc = None, None
+    try:
+        d = device.connect_device()
+        snapshot = device.device_snapshot(d)
+        stats = dict(scrape_once(d, con))
+        log(f"run complete: {stats['new']} new posts, {stats['new_stories']} new stories")
+    except Exception as e:  # keep the loop alive; log for debugging
+        exc, error = e, repr(e)
+        log("ERROR:", error)
+        if device.is_transient(e):
+            diagnostics.save_failure_logcat(error)
+    if snapshot:  # connected, so a profile was activated (possibly re-activated by an install)
+        snapshot["selector_profile"] = versioning.PROFILE.name
+    recorded = {k: v for k, v in stats.items() if k != "new"}
+    db.record_run(
+        con, started_at, datetime.now(UTC).isoformat(), stats.get("new", 0), error, snapshot, **recorded
+    )
+    return stats, exc
+
+
 def main() -> None:
     con = db.db_init()
     attempt = 0  # consecutive transient-failure retries so far
@@ -389,24 +417,7 @@ def main() -> None:
         )
         time.sleep(wait)
     while True:
-        started_at = datetime.now(UTC).isoformat()
-        snapshot: device.DeviceSnapshot = {}
-        stats: dict = {}
-        error, exc = None, None
-        try:
-            d = device.connect_device()
-            snapshot = device.device_snapshot(d)
-            stats = dict(scrape_once(d, con))
-            log(f"run complete: {stats['new']} new posts, {stats['new_stories']} new stories")
-        except Exception as e:  # keep the loop alive; log for debugging
-            exc, error = e, repr(e)
-            log("ERROR:", error)
-            if device.is_transient(e):
-                diagnostics.save_failure_logcat(error)
-        if snapshot:  # connected, so a profile was activated (possibly re-activated by an install)
-            snapshot["selector_profile"] = versioning.PROFILE.name
-        new_posts = stats.pop("new", 0)
-        db.record_run(con, started_at, datetime.now(UTC).isoformat(), new_posts, error, snapshot, **stats)
+        _, exc = run_recorded(con)
         seconds, attempt = next_sleep_seconds(exc, attempt)
         if attempt:
             log(

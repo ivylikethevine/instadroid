@@ -57,6 +57,8 @@ Everything specific to one Instagram major version lives in its own directory,
 The oldest supported version is 440. [NEXT.md](NEXT.md) describes the design and walks through adding
 a version step by step. The short version:
 
+- **Use `scripts/new_profile.py`** to scaffold the directory, take a capture-mode baseline run, see
+  which selector keys each screen is missing, promote fixtures and mark the profile validated.
 - **Change the version's own directory, not shared code.** If 446 renamed a resource-id, override that
   key in `v446/selectors.py`. If it changed behavior, override the `@versioned` function as a method
   on `v446`'s `Profile`. Don't add `if version == ...` checks to `app/instadroid/`.
