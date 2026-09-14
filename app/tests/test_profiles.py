@@ -1,18 +1,14 @@
-"""Selector-profile resolution (igprofiles.resolve) and activation (scraper.activate_profile)."""
+"""Instagram version profiles: discovery and loading (igprofiles), selection and install versions
+(scraper.activate_profile / _apk_version), and per-version behavior overrides (@versioned)."""
 
-from pathlib import Path
+import types
 
+import igprofiles
 import pytest
 import scraper
-from igprofiles import PROFILES, V445, major_of, resolve
+from igprofiles import BaseProfile, major_of
 
-
-class V450(V445):
-    major = 450
-    selectors = {**V445.selectors, "share_id": "row_feed_button_share_v450"}
-
-
-FAKE = (V445, V450)
+# --- discovery and loading ---------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -23,76 +19,192 @@ def test_major_of(version, major):
     assert major_of(version) == major
 
 
-def test_exact_major_match_has_no_warning():
-    assert resolve("450.0.0.1.2", profiles=FAKE) == (V450, None)
-    assert resolve("445.0.0.45.83", profiles=FAKE) == (V445, None)
+def test_available_profiles_are_the_vxyz_directories_at_or_above_the_floor():
+    names = igprofiles.available()
+    assert {"v445", "v446"} <= set(names)
+    assert names == sorted(names)
+    assert all(int(n[1:]) >= igprofiles.MIN_MAJOR for n in names)
 
 
-def test_a_version_between_profiles_uses_the_highest_older_one_and_warns():
-    profile, warning = resolve("446.0.0.49.77", profiles=FAKE)
-    assert profile is V445
-    assert warning == "no selector profile for Instagram 446.0.0.49.77; using 445"
+def test_default_profile_is_available():
+    assert igprofiles.DEFAULT_PROFILE in igprofiles.available()
 
 
-def test_a_version_newer_than_every_profile_uses_the_newest_and_warns():
-    profile, warning = resolve("460.0.0.1.1", profiles=FAKE)
-    assert profile is V450 and "460.0.0.1.1" in warning
+@pytest.mark.parametrize("name", ["v445", "445", " V445 "])
+def test_load_accepts_a_name_with_or_without_the_v(name):
+    profile = igprofiles.load(name)
+    assert (profile.name, profile.major, profile.apk_version) == ("v445", 445, "445.0.0.45.83")
 
 
-def test_a_version_older_than_every_profile_uses_the_oldest_and_warns():
-    profile, warning = resolve("300.0.0.0.0", profiles=FAKE)
-    assert profile is V445 and warning
+@pytest.mark.parametrize(
+    ("name", "error"),
+    [
+        ("v439", "below the supported floor (v440)"),
+        ("v999", "no profile directory igprofiles/v999/"),
+        ("latest", "is not a profile name"),
+    ],
+)
+def test_load_rejects_invalid_names(name, error):
+    with pytest.raises(ValueError, match=error.replace("(", r"\(").replace(")", r"\)")):
+        igprofiles.load(name)
 
 
-@pytest.mark.parametrize("version", [None, "garbage"])
-def test_an_unknown_version_uses_the_newest_profile_and_warns(version):
-    profile, warning = resolve(version, profiles=FAKE)
-    assert profile is V450 and warning.startswith("Instagram version unknown")
-
-
-def test_override_forces_a_profile_and_warns_when_it_differs_from_the_installed_version():
-    assert resolve("450.0.0.1.2", override="445", profiles=FAKE) == (
-        V445,
-        "IG_SELECTOR_PROFILE forces selector profile 445 (Instagram 450.0.0.1.2 installed)",
+def _fake_profile_dir(monkeypatch, name, profile_cls):
+    monkeypatch.setattr(igprofiles, "available", lambda: ["v445", "v446", name])
+    module = types.SimpleNamespace(Profile=profile_cls)
+    real_import = igprofiles.importlib.import_module
+    monkeypatch.setattr(
+        igprofiles.importlib,
+        "import_module",
+        lambda mod: module if mod == f"igprofiles.{name}" else real_import(mod),
     )
-    assert resolve("445.0.0.45.83", override="445", profiles=FAKE) == (V445, None)
 
 
-def test_an_override_matching_no_profile_falls_back_to_the_newest_and_warns():
-    profile, warning = resolve("445.0.0.45.83", override="999", profiles=FAKE)
-    assert profile is V450 and "matches no profile (445, 450)" in warning
+def test_load_rejects_a_profile_whose_major_does_not_match_its_directory(monkeypatch):
+    class Profile(BaseProfile):
+        major, apk_version, selectors = 446, "446.0.0.49.77", {}
+
+    _fake_profile_dir(monkeypatch, "v447", Profile)
+    with pytest.raises(ValueError, match="defines major=446, expected 447"):
+        igprofiles.load("v447")
 
 
-def test_a_subclass_profile_inherits_every_key_it_does_not_override():
-    changed = {k for k in V450.selectors if V450.selectors[k] is not V445.selectors[k]}
-    assert changed == {"share_id"}
-    assert V445.selectors["share_id"] == "row_feed_button_share"  # the base is untouched
+def test_load_rejects_an_apk_version_from_another_major(monkeypatch):
+    class Profile(BaseProfile):
+        major, apk_version, selectors = 447, "446.0.0.49.77", {}
+
+    _fake_profile_dir(monkeypatch, "v447", Profile)
+    with pytest.raises(ValueError, match="is not a 447.x build"):
+        igprofiles.load("v447")
 
 
-def test_registry_is_ascending_by_major():
-    majors = [p.major for p in PROFILES]
-    assert majors == sorted(majors) and len(set(majors)) == len(majors)
+def test_load_rejects_a_directory_without_a_profile_class(monkeypatch):
+    _fake_profile_dir(monkeypatch, "v447", None)
+    with pytest.raises(ValueError, match=r"must define Profile\(BaseProfile\)"):
+        igprofiles.load("v447")
 
 
-def test_activate_profile_rebinds_the_selectors_call_sites_read(monkeypatch):
-    monkeypatch.setattr(scraper, "PROFILES", FAKE)
-    monkeypatch.setattr(scraper, "resolve_profile", lambda v, o: resolve(v, o, profiles=FAKE))
-    xml = (Path(__file__).parent / "fixture_feed.xml").read_text()
-    assert scraper.parse_hierarchy(xml)  # 445 selectors find the fixture's cards
-
-    # A profile whose header id doesn't exist in this (445-era) dump finds no headed card at all.
-    class V451(V450):
-        major = 451
-        selectors = {**V450.selectors, "header_id": "no_such_header"}
-
-    monkeypatch.setattr(scraper, "resolve_profile", lambda v, o: (V451, None))
-    scraper.activate_profile("451.0.0.0.0")
-    assert scraper.PROFILE is V451 and scraper.SELECTORS is V451.selectors
-    assert not any(p["header_bounds"] for p in scraper.parse_hierarchy(xml))
+def test_select_falls_back_to_the_default_with_a_warning():
+    profile, warning = igprofiles.select("")
+    assert profile.name == igprofiles.DEFAULT_PROFILE and warning is None
+    profile, warning = igprofiles.select("v439")
+    assert profile.name == igprofiles.DEFAULT_PROFILE
+    assert warning == (
+        f"IG_PROFILE='v439': v439 is below the supported floor (v440); using {igprofiles.DEFAULT_PROFILE}"
+    )
 
 
-def test_activate_profile_honours_the_override(monkeypatch):
-    monkeypatch.setattr(scraper, "resolve_profile", lambda v, o: resolve(v, o, profiles=FAKE))
-    monkeypatch.setattr(scraper, "IG_SELECTOR_PROFILE", "445")
-    scraper.activate_profile("450.0.0.1.2")
-    assert scraper.PROFILE is V445 and "forces selector profile 445" in scraper.PROFILE_WARNING
+# --- the contract every profile directory must meet (this is what a 440-444 backfill runs) --------
+
+
+@pytest.mark.parametrize("name", igprofiles.available())
+def test_every_profile_meets_the_contract(name):
+    profile = igprofiles.load(name)
+    assert profile.major >= igprofiles.MIN_MAJOR
+    assert major_of(profile.apk_version) == profile.major
+    # Every selector key the scraper reads must exist, so a profile can't silently drop one.
+    baseline = igprofiles.load("v445").selectors
+    assert set(baseline) <= set(profile.selectors), set(baseline) - set(profile.selectors)
+    assert not scraper._unknown_hooks(profile), "an override name matches no @versioned function"
+
+
+def test_v446_inherits_everything_from_v445_so_far():
+    v445, v446 = igprofiles.load("v445"), igprofiles.load("v446")
+    assert v446.selectors == v445.selectors
+    assert isinstance(v446, type(v445))
+    assert v446.apk_version == "446.0.0.49.77"
+
+
+def test_profile_fixtures_live_in_their_version_directory():
+    path = igprofiles.fixture("445", "feed.xml")
+    assert path.parts[-3:] == ("v445", "fixtures", "feed.xml") and path.is_file()
+
+
+# --- selection in the scraper -------------------------------------------------------------------
+
+
+def test_activate_profile_loads_the_ig_profile_directory(monkeypatch):
+    monkeypatch.setattr(scraper, "IG_PROFILE", "v446")
+    scraper.activate_profile("446.0.0.49.77")
+    assert scraper.PROFILE.name == "v446" and scraper.SELECTORS is scraper.PROFILE.selectors
+    assert scraper.PROFILE_WARNING is None
+
+
+def test_activate_profile_does_not_suggest_a_profile_that_does_not_exist():
+    scraper.activate_profile("460.0.0.1.1")
+    assert scraper.PROFILE.name == "v445"
+    assert scraper.PROFILE_WARNING == (
+        "Instagram 460.0.0.1.1 is installed but profile v445 targets 445.x;"
+        " run `scraper.py install` to get 445.0.0.45.83"
+    )
+
+
+def test_activate_profile_reports_a_bad_ig_profile(monkeypatch):
+    monkeypatch.setattr(scraper, "IG_PROFILE", "v999")
+    scraper.activate_profile("445.0.0.45.83")
+    assert scraper.PROFILE.name == "v445"
+    assert (scraper.PROFILE_WARNING or "").startswith(
+        "IG_PROFILE='v999': no profile directory igprofiles/v999/"
+    )
+
+
+@pytest.mark.parametrize(
+    ("argument", "env", "expected"),
+    [
+        (None, "", "445.0.0.45.83"),  # the active profile's own build
+        (None, "444.0.0.1.1", "444.0.0.1.1"),  # IG_APK_VERSION overrides it
+        (None, "latest", ""),  # apkeep's latest
+        ("446.0.0.49.77", "444.0.0.1.1", "446.0.0.49.77"),  # an explicit argument beats both
+        ("latest", "", ""),
+    ],
+)
+def test_apk_version_resolution(monkeypatch, argument, env, expected):
+    monkeypatch.setattr(scraper, "IG_APK_VERSION", env)
+    assert scraper._apk_version(argument) == expected
+
+
+# --- per-version behavior overrides ------------------------------------------------------------
+
+
+class _WithParserOverride(type(igprofiles.load("v445"))):
+    """A v445 profile whose parse_hierarchy tags every post, calling the base implementation."""
+
+    def parse_hierarchy(self, base, xml):
+        return [{**p, "tagged_by": self.name} for p in base(xml)]
+
+
+def test_a_profile_method_overrides_a_versioned_function_and_receives_the_base(monkeypatch):
+    xml = igprofiles.fixture("v445", "feed.xml").read_text()
+    baseline = scraper.parse_hierarchy(xml)
+    monkeypatch.setattr(scraper, "PROFILE", _WithParserOverride())
+    posts = scraper.parse_hierarchy(xml)
+    assert [p["username"] for p in posts] == [p["username"] for p in baseline]
+    assert {p["tagged_by"] for p in posts} == {"v445"}
+
+
+def test_overrides_are_inherited_by_newer_profiles(monkeypatch):
+    class Newer(_WithParserOverride):
+        major = 446
+
+    xml = igprofiles.fixture("v445", "feed.xml").read_text()
+    monkeypatch.setattr(scraper, "PROFILE", Newer())
+    assert {p["tagged_by"] for p in scraper.parse_hierarchy(xml)} == {"v446"}
+
+
+def test_without_an_override_the_base_implementation_runs():
+    assert "parse_hierarchy" in scraper._VERSIONED
+    assert scraper.parse_hierarchy.base is not scraper.parse_hierarchy
+    xml = igprofiles.fixture("v445", "feed.xml").read_text()
+    assert scraper.parse_hierarchy(xml) == scraper.parse_hierarchy.base(xml)
+
+
+def test_a_misnamed_override_is_reported(monkeypatch):
+    class Typo(type(igprofiles.load("v445"))):
+        def parse_heirarchy(self, base, xml):
+            return base(xml)
+
+    monkeypatch.setattr(scraper, "select_profile", lambda requested: (Typo(), None))
+    scraper.activate_profile("445.0.0.45.83")
+    assert (
+        scraper.PROFILE_WARNING == "profile v445 defines parse_heirarchy, which match no @versioned function"
+    )

@@ -1,10 +1,10 @@
 from datetime import UTC, datetime
-from pathlib import Path
 
+import igprofiles
 import pytest
 import scraper
 
-FIXTURE = (Path(__file__).parent / "fixture_feed.xml").read_text()
+FIXTURE = igprofiles.fixture("v445", "feed.xml").read_text()
 
 
 def test_parse_hierarchy_finds_both_cards_and_skips_sponsored():

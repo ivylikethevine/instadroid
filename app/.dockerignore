@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 tests/
+# Per-version test fixtures (screen dumps) aren't needed at runtime.
+igprofiles/*/fixtures/

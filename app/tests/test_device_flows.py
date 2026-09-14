@@ -10,13 +10,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import adbutils
+import igprofiles
 import pytest
 import scraper
-from igprofiles import V445
+from igprofiles.v445.selectors import SELECTORS as SELECTORS_445
 
 from tests.fakedevice import FakeDevice, hierarchy, node
 
-CAPTION = V445.selectors["caption_class"]  # read at import, before conftest pins the profile
+CAPTION = SELECTORS_445["caption_class"]  # read at import, before conftest pins the profile
 ACTION_BAR = node("action_bar_container", bounds=(0, 142, 1080, 289))
 FOLLOWING_TITLE = node(
     "action_bar_title", cls="android.widget.TextView", text="Following", bounds=(150, 160, 500, 270)
@@ -216,7 +217,7 @@ def fast_offline(tmp_path, monkeypatch):
     monkeypatch.setattr(scraper, "MEDIA_DIR", tmp_path / "media")
     monkeypatch.setattr(scraper, "DEBUG_DIR", tmp_path / "debug")
     monkeypatch.setattr(scraper, "APK_CACHE_DIR", tmp_path / "apk")
-    monkeypatch.setattr(scraper, "IG_APK_VERSION", "")  # latest, the top-level cache layout
+    monkeypatch.setattr(scraper, "IG_APK_VERSION", "latest")  # the top-level cache layout
     monkeypatch.setattr(scraper, "human_pause", lambda *a, **k: None)
     monkeypatch.setattr(scraper.time, "sleep", lambda s: None)
     monkeypatch.setattr(scraper, "IG_USERNAME", "me")
@@ -337,14 +338,23 @@ def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch):
     assert install_call[5].endswith("config.arm64_v8a.apk")
 
 
-def test_installing_instagram_reresolves_the_selector_profile(monkeypatch):
+def test_installing_instagram_reactivates_the_profile(monkeypatch):
     d = FakeDevice({"home": home_screen()}, "launcher", installed=())
     _apk_run(monkeypatch, d, [])
-    monkeypatch.setattr(
-        scraper, "PROFILE_WARNING", "Instagram version unknown (None); using selector profile 445"
-    )
+    monkeypatch.setattr(scraper, "PROFILE_WARNING", "stale warning from before the install")
     assert scraper.ensure_logged_in(d) is True
-    assert scraper.PROFILE is V445 and scraper.PROFILE_WARNING is None  # now installed: 445.0.0.45.83
+    assert scraper.PROFILE.name == "v445" and scraper.PROFILE_WARNING is None  # installed 445.0.0.45.83
+
+
+def test_auto_install_fetches_the_profiles_own_apk_version(monkeypatch):
+    monkeypatch.setattr(scraper, "IG_APK_VERSION", "")
+    monkeypatch.setattr(scraper, "PROFILE", igprofiles.load("v446"))
+    d = FakeDevice({"home": home_screen()}, "launcher", installed=(), ig_version="446.0.0.49.77")
+    calls = []
+    _apk_run(monkeypatch, d, calls)
+    monkeypatch.setattr(scraper, "IG_PROFILE", "v446")
+    assert scraper.ensure_logged_in(d) is True
+    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{scraper.IG_PKG}@446.0.0.49.77"
 
 
 def test_a_pinned_apk_version_gets_its_own_cache_folder(monkeypatch):
@@ -902,27 +912,28 @@ def test_connect_device(monkeypatch):
     monkeypatch.setattr(scraper.adbutils.adb, "connect", lambda addr, timeout=None: None)
     monkeypatch.setattr(scraper.u2, "connect", lambda addr: dev)
     assert scraper.connect_device() is dev
-    assert scraper.PROFILE is V445 and scraper.PROFILE_WARNING is None  # device reports 445.0.0.45.83
+    assert scraper.PROFILE.name == "v445" and scraper.PROFILE_WARNING is None  # device reports 445.0.0.45.83
 
 
-def test_connect_device_warns_when_no_profile_matches_the_installed_version(monkeypatch):
+def test_connect_device_warns_when_the_installed_version_differs_from_the_profile(monkeypatch):
     dev = feed_device()
     dev.ig_version = "446.0.0.49.77"
     monkeypatch.setattr(scraper.adbutils.adb, "connect", lambda addr, timeout=None: None)
     monkeypatch.setattr(scraper.u2, "connect", lambda addr: dev)
     scraper.connect_device()
-    assert scraper.PROFILE is V445
-    assert scraper.PROFILE_WARNING == "no selector profile for Instagram 446.0.0.49.77; using 445"
+    assert scraper.PROFILE.name == "v445"  # the configured profile wins; nothing switches on its own
+    assert scraper.PROFILE_WARNING == (
+        "Instagram 446.0.0.49.77 is installed but profile v445 targets 445.x;"
+        " run `scraper.py install` to get 445.0.0.45.83, or set IG_PROFILE=v446"
+    )
 
 
 def test_scrape_once_reports_the_profile_warning(monkeypatch):
     monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
-    monkeypatch.setattr(
-        scraper, "PROFILE_WARNING", "no selector profile for Instagram 446.0.0.49.77; using 445"
-    )
+    monkeypatch.setattr(scraper, "PROFILE_WARNING", "Instagram 446.0.0.49.77 is installed but profile v445")
     stats = scraper.scrape_once(feed_device(), scraper.db_init())
-    assert "no selector profile for Instagram 446.0.0.49.77" in stats["warning"]
+    assert "Instagram 446.0.0.49.77 is installed but profile v445" in stats["warning"]
 
 
 def _stop_after_first_sleep(monkeypatch):
@@ -974,7 +985,7 @@ def test_main_records_a_successful_run_with_device_versions(fast_offline, monkey
     run = con.execute("SELECT * FROM runs").fetchone()
     assert (run["new_posts"], run["new_stories"], run["warning"], run["error"]) == (2, 1, "w", None)
     assert (run["android_release"], run["ig_version"]) == ("13", "445.0.0.45.83")
-    assert run["selector_profile"] == "445"
+    assert run["selector_profile"] == "v445"
     assert scraper.POLL_MIN_H * 3600 <= sleeps[0] <= scraper.POLL_MAX_H * 3600
 
 
