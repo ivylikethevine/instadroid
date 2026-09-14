@@ -25,6 +25,9 @@ services:
     container_name: ig-redroid
     logging: *logging
     privileged: true
+    depends_on:
+      android-data-guard:
+        condition: service_completed_successfully
     # Comes back after a host reboot or crash; `docker compose stop`/`down` keeps it down.
     restart: unless-stopped
     # Memory: a live scrape measured 1.98GiB (2026-09-11), and on 2026-09-14 a scrape sat at
@@ -54,6 +57,20 @@ services:
       - androidboot.redroid_dpi=${REDROID_DPI:-420}
       - androidboot.redroid_fps=30
       - androidboot.use_memfd=true
+
+  # One-shot, before redroid: refuses to start it on a /data volume last used by a different Android
+  # major version, which corrupted appops.xml, the idmap cache and telephony.db before (CLAUDE.md).
+  # The image that last used the volume is recorded in local/data/android.image; see
+  # scripts/guard-android-data.sh for what to do when it refuses. Same image as app, nothing to pull.
+  android-data-guard:
+    build: ./app
+    user: "0:0"
+    restart: "no"
+    logging: *logging
+    entrypoint: ["sh", "/guard.sh", *redroid_image, "/data/android.image"]
+    volumes:
+      - ./scripts/guard-android-data.sh:/guard.sh:ro
+      - ./local/data:/data
 
   # One-shot: creates the app's bind-mount directories owned by the app user (uid 1000) before app
   # starts. Without it, Docker creates a missing bind-mount source as root, and the app (USER 1000)

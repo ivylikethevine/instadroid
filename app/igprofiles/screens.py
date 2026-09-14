@@ -109,6 +109,11 @@ def screen_of_dump(name: str) -> str | None:
     return next((screen for pattern, screen in _DUMP_SCREENS if pattern.match(name)), None)
 
 
+def screen_of_fixture(name: str) -> str:
+    """The screen a fixture shows, from its name: "feed_444" -> "feed", "home_feed" -> "home_feed"."""
+    return re.sub(r"_\d{3}$", "", name)
+
+
 def _strings(nodes: list[etree._Element]) -> list[str]:
     return [v for n in nodes for v in (n.get("text"), n.get("content-desc")) if v]
 

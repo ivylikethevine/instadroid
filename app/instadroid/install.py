@@ -4,6 +4,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
+import igprofiles
 import uiautomator2 as u2
 
 from . import config, device, versioning
@@ -12,10 +13,11 @@ from .device import DeviceNotReady
 
 
 def _apk_version(version: str | None = None) -> str:
-    """The Instagram build to fetch: `version` if given, else IG_APK_VERSION, else the active
-    profile's apk_version. "latest" (or an empty string) means whatever apkeep resolves as latest."""
+    """The Instagram build to fetch: `version` if given, else IG_APK_VERSION, else the newest validated
+    build (of IG_PROFILE's profile when that's set, otherwise of any profile). "latest" (or an empty
+    string, including when nothing is validated) means whatever apkeep resolves as latest."""
     if version is None:
-        version = config.IG_APK_VERSION or versioning.PROFILE.apk_version
+        version = config.IG_APK_VERSION or igprofiles.newest_build(config.IG_PROFILE or None) or ""
     version = version.strip()
     return "" if version.lower() == "latest" else version
 

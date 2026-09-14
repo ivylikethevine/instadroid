@@ -8,6 +8,12 @@ from fileenv import env_secret
 
 ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5555")  # redroid's forwarded ADB port
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
+# Manual control files (instadroid/control.py): manual.lock holds scheduled runs back, scrape-now cuts
+# the wait short. Defaults to the database directory, which the feed server and the host share.
+CONTROL_DIR = os.environ.get("CONTROL_DIR", "") or str(Path(DB_PATH).parent)
+LOCK_MAX_HOURS = float(os.environ.get("LOCK_MAX_HOURS", "6"))  # an older lock counts as forgotten; 0 = never
+RUN_NOW_MIN_MINUTES = float(os.environ.get("RUN_NOW_MIN_MINUTES", "30"))  # rate limit for scrape-now
+CONTROL_POLL_SECONDS = 30.0  # how often a sleeping or locked loop checks the control files
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", "/debug"))
 POLL_MIN_H = float(os.environ.get("POLL_MIN_HOURS", "2.5"))
@@ -50,12 +56,12 @@ IG_PKG = "com.instagram.android"
 # CLAUDE.md, where Instagram's package registration was orphaned but the app itself wasn't touched.
 # 0/false/empty falls back to the original behavior: raise and require a manual `adb install`.
 IG_AUTO_INSTALL = os.environ.get("IG_AUTO_INSTALL", "1").strip().lower() not in ("0", "false", "")
-# Which Instagram version profile to run: a directory under igprofiles/ ("v445", or just "445").
-# Everything version-specific (selectors, the APK build to install, behavior overrides) lives there.
-# Empty = igprofiles.DEFAULT_PROFILE. See docs/NEXT.md.
+# Force one Instagram version profile: a directory under igprofiles/ ("v440", or just "440"). Empty (the
+# default) = the highest profile at or below the installed Instagram version, chosen on every connect.
+# Profiles exist only where Instagram changed something. See docs/NEXT.md.
 IG_PROFILE = os.environ.get("IG_PROFILE", "").strip()
-# Override the Instagram build auto-install and `scraper.py install` fetch. Empty = the active
-# profile's own apk_version; "latest" = whatever apkeep resolves as latest on APKPure.
+# Override the Instagram build auto-install and `scraper.py install` fetch. Empty = the newest build
+# validated with any profile (igprofiles.newest_build()); "latest" = the newest on APKPure.
 IG_APK_VERSION = os.environ.get("IG_APK_VERSION", "").strip()
 APK_CACHE_DIR = Path(os.environ.get("APK_CACHE_DIR", "/apk"))
 APK_FETCH_TIMEOUT = float(os.environ.get("APK_FETCH_TIMEOUT", "300"))  # apkeep's own download
@@ -80,6 +86,13 @@ MAX_CAROUSEL_SLIDES = int(os.environ.get("MAX_CAROUSEL_SLIDES", "10"))
 VIDEO_SETTLE_SECONDS = float(os.environ.get("VIDEO_SETTLE_SECONDS", "1.5"))  # let autoplay/overlay settle
 AVATAR_REFRESH_DAYS = int(os.environ.get("AVATAR_REFRESH_DAYS", "14"))
 MEDIA_MAX_MB = float(os.environ.get("MEDIA_MAX_MB", "0"))  # 0 disables the size-based retention cap
+# Database backups (instadroid/backup.py): at the end of a run, when the newest backup in BACKUP_DIR is
+# at least BACKUP_EVERY_HOURS old, keeping the newest BACKUP_KEEP. 0 hours disables the automatic ones.
+# The default directory sits next to the database, which guards against corruption and bad
+# migrations, not disk loss: point it at another mount for that.
+BACKUP_DIR = os.environ.get("BACKUP_DIR", "/db/backups")
+BACKUP_EVERY_HOURS = float(os.environ.get("BACKUP_EVERY_HOURS", "24"))
+BACKUP_KEEP = int(os.environ.get("BACKUP_KEEP", "7"))
 MAX_STORIES_PER_RUN = int(os.environ.get("MAX_STORIES_PER_RUN", "10"))
 TIME_DISTRIBUTION = os.environ.get("TIME_DISTRIBUTION", "uniform")  # uniform | lognormal | daynight
 # "Local" time for the daynight distribution below — deliberately not applied anywhere by default
@@ -136,4 +149,13 @@ SELECTOR_DRIFT_THRESHOLD = float(os.environ.get("SELECTOR_DRIFT_THRESHOLD", "0.5
 # against the host's RAM, see CLAUDE.md), so the scraper has to back off itself: on 2026-09-14 a run
 # at the old 2g limit OOM-killed Android processes and froze the host. 0 disables.
 MEMORY_GUARD_PERCENT = float(os.environ.get("MEMORY_GUARD_PERCENT", "85"))
+# Failure alerts (instadroid/alerts.py). ALERT_URL receives a POST per alert raised or resolved (an ntfy
+# topic URL works as is); it can carry a token, so ALERT_URL_FILE works too. Empty = no push, but open
+# alerts still appear in /instagram.xml and on /status. An alert is raised for a login challenge, for
+# ALERT_FAILED_RUNS failed runs in a row (0 disables), and for no new post in ALERT_NO_POSTS_HOURS
+# (0, the default, disables: a quiet feed isn't necessarily a broken one).
+ALERT_URL = env_secret("ALERT_URL")
+ALERT_FAILED_RUNS = int(os.environ.get("ALERT_FAILED_RUNS", "3"))
+ALERT_NO_POSTS_HOURS = float(os.environ.get("ALERT_NO_POSTS_HOURS", "0"))
+ALERT_TIMEOUT = float(os.environ.get("ALERT_TIMEOUT", "10.0"))
 FRESHRSS_REFRESH_TIMEOUT = float(os.environ.get("FRESHRSS_REFRESH_TIMEOUT", "10.0"))

@@ -93,6 +93,14 @@ def db_init() -> sqlite3.Connection:
         # navigation.refresh_following_list()) rather than upserted row by row, so an unfollow is reflected
         # simply by that username's row no longer existing after the next refresh — every row
         # shares the same updated_at, which also doubles as "when was this list last refreshed."
+        # Open failure alerts, one row per kind (see alerts.update()); the feed server shows them.
+        """CREATE TABLE IF NOT EXISTS alerts (
+            kind TEXT PRIMARY KEY,
+            message TEXT NOT NULL,
+            raised_at TEXT NOT NULL
+        )"""
+    )
+    con.execute(
         """CREATE TABLE IF NOT EXISTS following (
             username TEXT PRIMARY KEY,
             updated_at TEXT NOT NULL

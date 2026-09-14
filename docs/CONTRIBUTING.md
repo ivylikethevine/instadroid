@@ -57,12 +57,15 @@ Everything specific to one Instagram major version lives in its own directory,
 The oldest supported version is 440. [NEXT.md](NEXT.md) describes the design and walks through adding
 a version step by step. The short version:
 
-- **Use `scripts/new_profile.py`** to scaffold the directory, take a capture-mode baseline run, see
-  which selector keys each screen is missing, promote fixtures and mark the profile validated.
-- **Change the version's own directory, not shared code.** If 446 renamed a resource-id, override that
-  key in `v446/selectors.py`. If it changed behavior, override the `@versioned` function as a method
-  on `v446`'s `Profile`. Don't add `if version == ...` checks to `app/instadroid/`.
-- **Keep older profiles passing.** The whole existing test suite runs against `v445`, and
+- **Use `scripts/new_profile.py`** to take a capture-mode baseline run of the build, see which selector
+  keys each screen is missing, promote fixtures and record the build as validated. A version that
+  changes nothing gets no profile of its own; `fork` creates one only when something drifted.
+- **Change the version's own profile, not shared code.** If 447 renamed a resource-id, fork a `v447`
+  profile and override that key in `v447/selectors.py`. If it changed behavior, override the
+  `@versioned` function as a method on `v447`'s `Profile`. Don't add `if version == ...` checks to
+  `app/instadroid/`.
+- **Keep older versions passing.** The whole existing test suite runs against the root profile,
+  `v440`, `tests/test_replay.py` replays every validated version's fixtures, and
   `test_every_profile_meets_the_contract` checks every profile directory automatically.
 - **Fixtures must be synthetic or scrubbed.** A dump from a real feed goes into `vXYZ/fixtures/` only
   through `scripts/promote_dump.py`, which replaces the usernames, names, places and captions it can

@@ -1,7 +1,7 @@
 """Turn a real hierarchy dump into a replay fixture for a version profile.
 
-    python scripts/promote_dump.py local/data/debug/last_hierarchy.xml v446 home_feed
-    python scripts/promote_dump.py --update v445        # re-record every v445 fixture's expectations
+    python scripts/promote_dump.py local/data/debug/last_hierarchy.xml v440 home_feed_446
+    python scripts/promote_dump.py --update v440        # re-record every v440 fixture's expectations
 
 Writes app/igprofiles/<profile>/fixtures/<name>.xml, with the accounts, display names, places and
 captions it can identify replaced by placeholders, and <name>.expected.json, what the parsers find

@@ -4,6 +4,7 @@ import hashlib
 import re
 from datetime import UTC, datetime, timedelta
 from typing import cast
+from urllib.parse import urlsplit
 
 
 def log(*a: object) -> None:
@@ -69,3 +70,10 @@ def safe_filename(username: str) -> str | None:
     if not username or username in (".", "..") or not _SAFE_USERNAME.match(username):
         return None
     return username
+
+
+def redact_url(url: str) -> str:
+    """scheme://host/path only: no credentials in the netloc, no query string. Webhook and refresh URLs
+    carry tokens that must never land in the shared container log."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.hostname or ''}{f':{parts.port}' if parts.port else ''}{parts.path}"

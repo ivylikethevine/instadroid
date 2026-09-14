@@ -101,7 +101,15 @@ def ensure_logged_in(d: u2.Device) -> bool:
         if device.first(d, text=SELECTORS["login_page_markers"]):
             diagnostics.dump_debug(d, "login")
             raise RuntimeError(f"login page shown but form not recognised; see {config.DEBUG_DIR}")
-        return True  # no login screen; assume session is live
+        # No login screen, so the session is live, provided Instagram is still up: a build that
+        # crashes at startup is in front just long enough for the check above, then gone (seen live
+        # with 400.0.0.49.68), and every check since found nothing because nothing was there.
+        if d.app_current().get("package") != config.IG_PKG:
+            diagnostics.dump_debug(d, "login")
+            raise DeviceNotReady(
+                f"{config.IG_PKG} left the foreground right after launch (crashing at startup?)"
+            )
+        return True
     if not (config.IG_USERNAME and config.IG_PASSWORD):
         diagnostics.dump_debug(d, "login")
         raise RuntimeError("login screen shown but IG_USERNAME/IG_PASSWORD not set")

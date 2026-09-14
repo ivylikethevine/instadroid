@@ -5,15 +5,14 @@ import functools
 from collections.abc import Callable
 from typing import Any
 
-from igprofiles import BaseProfile, major_of
-from igprofiles import available as available_profiles
+from igprofiles import BaseProfile, covering, major_of, version_key
 from igprofiles import select as select_profile
 
 from . import config
 from .common import log
 
-# PROFILE is the IG_PROFILE profile from igprofiles/, reloaded by activate_profile() on connect and
-# after an install, which also sets PROFILE_WARNING when the installed Instagram doesn't match it.
+# PROFILE is the profile covering the installed Instagram (or IG_PROFILE), reloaded by activate_profile()
+# on connect and after an install. Until a device is connected it's provisionally the newest profile.
 PROFILE: BaseProfile = select_profile(config.IG_PROFILE)[0]
 PROFILE_WARNING: str | None = None
 _VERSIONED: set[str] = set()  # names of every @versioned function
@@ -60,26 +59,29 @@ def _unknown_hooks(profile: BaseProfile) -> list[str]:
 
 
 def activate_profile(installed: str | None) -> None:
-    """(Re)load the IG_PROFILE profile into PROFILE, and set PROFILE_WARNING for a bad
-    IG_PROFILE, an installed Instagram of a different major version, or a misnamed override."""
+    """(Re)load PROFILE for the `installed` Instagram: the profile covering it, or IG_PROFILE. Sets
+    PROFILE_WARNING for a bad IG_PROFILE, an IG_PROFILE that isn't the one covering the installed
+    version, an installed major version no build of which has been validated with its profile, or a
+    misnamed override."""
     global PROFILE, PROFILE_WARNING
-    PROFILE, config_warning = select_profile(config.IG_PROFILE)
-    warnings = [config_warning] if config_warning else []
+    PROFILE, select_warning = select_profile(config.IG_PROFILE, installed)
+    warnings = [select_warning] if select_warning else []
     installed_major = major_of(installed)
-    if installed and installed_major != PROFILE.major:
-        hint = f"run `scraper.py install` to get {PROFILE.apk_version}"
-        if f"v{installed_major}" in available_profiles():
-            hint += f", or set IG_PROFILE=v{installed_major}"
+    if installed and config.IG_PROFILE and (expected := covering(installed_major)) != PROFILE.name:
         warnings.append(
-            f"Instagram {installed} is installed but profile {PROFILE.name} targets {PROFILE.major}.x; {hint}"
+            f"IG_PROFILE={PROFILE.name} is set, but Instagram {installed} is covered by {expected or 'no profile'}"
         )
-    if not PROFILE.validated:
-        warnings.append(f"profile {PROFILE.name} is not validated yet (see docs/NEXT.md)")
+    if installed and installed_major not in {major_of(b) for b in PROFILE.own_validated}:
+        newest = max(PROFILE.own_validated, key=version_key) if PROFILE.own_validated else "none yet"
+        warnings.append(
+            f"Instagram {installed} hasn't been validated with profile {PROFILE.name}"
+            f" (newest validated: {newest}; see docs/NEXT.md)"
+        )
     if unknown := _unknown_hooks(PROFILE):
         warnings.append(
             f"profile {PROFILE.name} defines {', '.join(unknown)}, which match no @versioned function"
         )
     PROFILE_WARNING = "; ".join(warnings) or None
-    log(f"profile {PROFILE.name} (targets {PROFILE.apk_version}, installed: {installed or 'none'})")
+    log(f"profile {PROFILE.name} (installed: {installed or 'none'})")
     if PROFILE_WARNING:
         log("WARN:", PROFILE_WARNING)

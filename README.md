@@ -4,6 +4,7 @@
 
 [![instadroid image](https://img.shields.io/github/v/release/ivylikethevine/instadroid?logo=docker&logoColor=white&label=ghcr.io%2Finstadroid)](https://github.com/ivylikethevine/instadroid/pkgs/container/instadroid)
 [![coverage](https://img.shields.io/endpoint?url=https://ivylikethevine.github.io/instadroid/coverage.json)](https://github.com/ivylikethevine/instadroid/actions/workflows/pages.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ivylikethevine/instadroid/badge)](https://scorecard.dev/viewer/?uri=github.com/ivylikethevine/instadroid)
 
 A real, logged-in Instagram Android app running in redroid (a containerised Android device),
 driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom for FreshRSS.
@@ -63,6 +64,12 @@ host, unrelated to Instagram compatibility — see `CLAUDE.md` for the root caus
 now-validated safe procedure before running redroid here (or on any host you haven't personally
 tested it on).
 
+Switching `docker-compose.yml` to a different Android major version against the same
+`local/data/android` volume is what corrupted system state repeatedly here, so compose now refuses:
+a one-shot `android-data-guard` service runs before redroid, records the image in
+`local/data/android.image`, and fails with instructions when the configured image's Android version
+differs. Give another Android version its own volume instead.
+
 ## Host requirements
 
 - Docker + compose, privileged containers allowed, for redroid and the `app` container. `app` uses
@@ -108,15 +115,15 @@ adb -s 127.0.0.1:5555 install-multiple local/xapk/com.instagram.android.apk loca
 ```
 
 (needs [`apkeep`](https://github.com/EFForg/apkeep) on the host; apkmirror blocks scripted
-downloads, hence APKPure). The build installed is the active Instagram version profile's own
-`apk_version` (see below); `IG_APK_VERSION` overrides it, and `latest` means whatever APKPure has
-newest. Each pinned version is cached in its own `local/data/apk/<version>/` folder.
+downloads, hence APKPure). The build installed is the newest one validated with the version
+profiles (see below; `scraper.py profiles` shows it); `IG_APK_VERSION` overrides it, and `latest` means
+whatever APKPure has newest. Each pinned version is cached in its own `local/data/apk/<version>/` folder.
 `APK_CACHE_DIR`/`APK_FETCH_TIMEOUT` tune the cache location and download/install timeout — see
 `.env.example`.
 
-Auto-install only runs when Instagram is missing, so switching profiles doesn't replace an installed
-version by itself (the scraper warns when the installed major version doesn't match the profile). To
-switch, including a downgrade:
+Auto-install only runs when Instagram is missing, so a newer validated build doesn't replace an
+installed version by itself. The scraper picks the profile covering whatever is installed, and warns
+when no build of that major version has been validated. To switch, including a downgrade:
 
 ```bash
 docker compose exec app python scraper.py profiles           # what's available, and what each installs
@@ -139,13 +146,14 @@ The scraper runs the login step at the start of every scrape, so once the sessio
 device it is a no-op. If Instagram asks for a code or "confirm it's you", the run aborts with a
 `login_screen.jpg` / `login_hierarchy.xml` in `local/data/debug`; finish that step by hand and re-run.
 First-run interstitials (notifications, location, "set up on new device") are dismissed automatically.
-Everything specific to one Instagram version (selectors, the APK build to install, any behavior
-that differs, test fixtures) lives in its own directory under `app/igprofiles/`, e.g. `v445/`.
-`IG_PROFILE` picks one (default `v446`, the newest validated version; 440 is the oldest supported). The
-active profile is shown on `/status` and recorded in `runs.selector_profile`. A profile that isn't
-validated yet still runs, with a warning. `scripts/new_profile.py` handles the mechanical work of adding
-a version: scaffold, a capped capture-mode baseline run, a per-screen selector check, fixtures,
-validation. See `docs/NEXT.md` for the design and the steps.
+What's specific to a range of Instagram versions (selectors, any behavior that differs, the builds
+checked to work, test fixtures) lives in a version profile under `app/igprofiles/`. A profile exists
+only where Instagram changed something: today that's just `v440`, covering 440 (the oldest supported)
+onward. The scraper runs the highest profile at or below the installed version; `IG_PROFILE` forces
+one. The active profile is shown on `/status` and recorded in `runs.selector_profile`.
+`scripts/new_profile.py` handles the mechanical work of supporting a new build: a capped
+capture-mode baseline run, a per-screen selector check, fixtures, validation, and a new profile only
+when something drifted. See `docs/NEXT.md` for the design and the steps.
 
 If a run reports `no posts parsed on first screen`, look at `local/data/debug/last_hierarchy.xml`
 and `last_screen.jpg`, then fix it in that Instagram version's own profile directory rather than in
@@ -273,7 +281,10 @@ does. No real account data is used in any fixture.
 
 CI (`.github/workflows/ci.yml`) runs ruff, the test suite, `pip-audit` on the requirements file
 (also weekly), shellcheck on the scripts, hadolint plus a build and smoke test of the image,
-`docker compose config`, and gitleaks. Tests run with coverage there too, for visibility in the
+`docker compose config`, and gitleaks. `.github/workflows/scorecard.yml` publishes the OpenSSF Scorecard
+result weekly and on every push to `main` (the badge above).
+`.github/workflows/new-builds.yml` checks APKPure weekly and opens an issue when an Instagram build newer
+than every validated one appears. Tests run with coverage there too, for visibility in the
 run's own log. Dependabot watches pip, Docker base images and GitHub Actions.
 
 `.github/workflows/pages.yml` builds and deploys the [project site](https://ivylikethevine.github.io/instadroid/)
@@ -363,6 +374,28 @@ no run has finished within `POLL_MAX_HOURS` + 30min of the last one (the loop lo
 run has _succeeded_ for 2 × `POLL_MAX_HOURS` + 1h (e.g. a login challenge is waiting for you).
 Docker doesn't restart an unhealthy container by itself. After a long downtime the stack reports
 unhealthy until its first run finishes.
+
+**Manual lock and scrape-now**: before driving the device yourself in scrcpy, lock the scraper so a
+scheduled run can't start underneath you, and unlock when done:
+
+```bash
+docker compose exec app python scraper.py lock      # or: touch local/data/db/manual.lock
+docker compose exec app python scraper.py unlock    # or: rm local/data/db/manual.lock
+docker compose exec app python scraper.py scrape-now
+```
+
+A run already in progress finishes; a lock older than `LOCK_MAX_HOURS` (default 6) counts as
+forgotten and is ignored with a warning. `scrape-now` starts a run within about 30 seconds, but only
+once `RUN_NOW_MIN_MINUTES` (default 30) have passed since the last one. The feed server offers the
+same as `GET /control`, `POST`/`DELETE /control/lock` and `POST /control/scrape-now` (behind
+`FEED_TOKEN` when that's set), and `/status` shows both.
+
+**Failure alerts**: after each run the scraper raises an alert for a login challenge, for
+`ALERT_FAILED_RUNS` (default 3) failed runs in a row, and optionally for no new post in
+`ALERT_NO_POSTS_HOURS`. Each one is announced once when it's raised and once when it clears, as a
+POST to `ALERT_URL` (an [ntfy](https://ntfy.sh) topic URL works as is). With or without that, open
+alerts appear as the first entry of `/instagram.xml` and on `/status`, so the feed reader you already
+check shows them.
 
 A run that fails for a device reason — adb offline, redroid still booting so the uiautomator server
 can't start, Instagram refusing to come to the foreground — is retried after `RETRY_DELAYS_MINUTES`
@@ -461,6 +494,13 @@ serving, and the orphan sweep and retention handle both extensions. One side eff
 deduplicated by file bytes, so a story still live when you switch formats may be stored once more.
 In the feeds, every image carries its `width`/`height`, each entry gets a `<media:thumbnail>` (the
 cover image) for readers that show pictures in list view, and video/Reel titles start with ▶.
+
+**Backups**: at the end of a run, once the newest backup is `BACKUP_EVERY_HOURS` old (default 24), the
+scraper writes a consistent copy of the database to `BACKUP_DIR` (default `local/data/db/backups`)
+and keeps the newest `BACKUP_KEEP` (default 7); `docker compose exec app python scraper.py backup`
+takes one now. The expensive thing to lose is redroid's `/data`, with the logged-in session: stop
+redroid and run `scripts/snapshot-android-data.sh [--keep N]` before changing the redroid image or
+Instagram build, or a risky recovery step. It writes `local/data/backups/android-<time>.tar.gz`.
 
 Stories live in their own `stories` table and `media/stories` subdirectory, but share `RETAIN_DAYS`
 with posts (`MEDIA_MAX_MB`'s size cap only ever considers posts, not stories) — see "Stories" above.
