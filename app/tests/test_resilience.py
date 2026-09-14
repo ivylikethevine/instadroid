@@ -76,6 +76,40 @@ def test_empty_screen_guard_can_be_disabled(con, offline_scrape, monkeypatch):
     assert stats["warning"] is None
 
 
+def test_scrape_stats_report_cards_per_screen_and_shares(con, offline_scrape, monkeypatch):
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 3)
+    monkeypatch.setattr(scraper, "EMPTY_SCREEN_LIMIT", 0)
+    d = EmptyFeedDevice()
+
+    stats = scraper.scrape_once(d, con)
+
+    assert stats["cards_per_screen"] == 0.0
+    assert stats["share_captioned"] == 0.0
+    assert stats["share_complete"] == 0.0
+
+
+def test_scrape_once_flags_selector_drift_against_seeded_baseline(con, offline_scrape, monkeypatch):
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 3)
+    monkeypatch.setattr(scraper, "EMPTY_SCREEN_LIMIT", 0)
+    for _ in range(5):
+        scraper.record_run(
+            con,
+            "2026-09-11T00:00:00+00:00",
+            "2026-09-11T00:05:00+00:00",
+            0,
+            None,
+            {},
+            cards_per_screen=4.0,
+            share_captioned=0.8,
+            share_complete=0.9,
+        )
+    d = EmptyFeedDevice()  # every dump parses 0 cards — a stand-in for selectors gone stale
+
+    stats = scraper.scrape_once(d, con)
+
+    assert "selector drift?" in stats["warning"]
+
+
 def test_record_run_stores_a_warning(con):
     scraper.record_run(
         con, "2026-09-11T00:00:00+00:00", "2026-09-11T00:05:00+00:00", 0, None, {}, warning="w"

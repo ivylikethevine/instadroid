@@ -12,7 +12,9 @@ def profile_v445(monkeypatch):
     monkeypatch.setattr(scraper, "PROFILE", V445)
     monkeypatch.setattr(scraper, "SELECTORS", V445.selectors)
     monkeypatch.setattr(scraper, "PROFILE_WARNING", None)
-    monkeypatch.setattr(scraper, "IG_PROFILE", "")
+    # Explicit rather than "": activate_profile() re-resolves IG_PROFILE on every connect/install,
+    # and an empty one means DEFAULT_PROFILE, which moves forward independently of these fixtures.
+    monkeypatch.setattr(scraper, "IG_PROFILE", "v445")
     monkeypatch.setattr(scraper, "IG_APK_VERSION", "")
 
 

@@ -1,3 +1,7 @@
+---
+title: Version profiles
+---
+
 # Next: Instagram version profiles
 
 ## Why
@@ -8,7 +12,7 @@ been written against **445**. Rather than editing selectors in place and losing 
 baseline, each Instagram major version gets its own self-contained profile, and the scraper runs
 exactly one of them.
 
-- **Default:** `v445`, the validated baseline. `igprofiles.DEFAULT_PROFILE` moves forward as newer
+- **Default:** `v446`, the newest validated version. `igprofiles.DEFAULT_PROFILE` moves forward as newer
   versions are validated.
 - **Floor:** 440 (`igprofiles.MIN_MAJOR`). Profiles 440-444 are to be backfilled now that profiles
   can swap everything version-specific.
@@ -95,7 +99,9 @@ stored posts dedupe across Instagram upgrades.
 - [x] Profile system: directory profiles, loader with the 440 floor, `IG_PROFILE`, per-profile APK
   build, `@versioned` behavior overrides, contract tests, `scraper.py profiles`.
 - [x] `v445`: validated.
-- [ ] `v446`: partially validated (profile exists, inherits 445 unchanged). See the runs below.
+- [x] `v446`: validated (inherits 445's selectors unchanged; photos, carousels, Reels, stories and
+  permalinks all captured live, see the runs below). No `v446/fixtures/` yet, and
+  `DEFAULT_PROFILE` moved to `v446`.
 - [ ] `v440`-`v444`: to backfill.
 
 ## Run log
@@ -120,13 +126,28 @@ screens were recognized; cards per screen similar to the 445 run. Peak 2.21GiB, 
 host load 9.6. WebP confirmed live: the 1080x1883 Reel crop is 103KB and stories 97-137KB, against
 250-320KB for the 445 run's JPEG stories.
 
-Open for 446:
+**446 validation run, 2026-09-14 12:19-12:30 PDT** (`IG_PROFILE=v446`, `MAX_SCROLLS=15`,
+`MAX_STORIES_PER_RUN=5`, 3g limit): clean — no error, no run warning. 3 new stories and 6 new posts:
+3 photos, 1 carousel (cover plus 1 extra slide), 1 Reel, all `ig_version=446.0.0.49.77`, 5 of 6 with
+permalinks. redroid sampled at 1.1-2.0GiB (at most 67% of 3g) during the run. This closes the
+"no new photo/carousel on 446" gap, so v446 is marked validated. Note: the app image used for this
+run predated that day's scraper changes (no `runs.cards_per_screen` columns in the DB afterwards),
+which doesn't affect the selector result, since `igprofiles/` was unchanged. The container was
+started as `python scraper.py` without `once`, so after the run it went on into the daemon loop's
+sleep and had to be stopped by hand.
 
-- A *new* photo or carousel capture (only a Reel was new).
-- One card logged "no crop: media node not found" (no dump; it was an already-stored post).
-- In both 445 and 446 runs, an already-saved post gets re-processed as new (thewhorrorshowlive twice,
-  6 failed Copy link attempts, then merged). `_post_key()` is username + caption, so the likely
-  cause is the caption hashing differently truncated ("… more") vs expanded; unconfirmed.
+Still open (none of these are 446-specific; all were seen on 445 too):
 
-Next: a longer `IG_PROFILE=v446` run to see a new photo/carousel; if nothing breaks, mark v446
-validated and consider moving `DEFAULT_PROFILE` to it.
+- **"no crop: media node not found"**, 4 times in a row on one Reel card (vogadvil), which was then
+  stored with permalink and caption but no media file. No dump is taken on that path, so the card's
+  hierarchy is still unseen; wiring `_dump_debug` in there is the next step.
+- **Re-processing of a just-stored post**: 3 of the 6 new posts (a carousel, the Reel and a photo)
+  came back on a later screen, failed Copy link three times each, and were then merged into the row
+  stored moments earlier. This happens *within one run*, not just across runs, which fits the
+  truncated-vs-expanded caption hashing theory for `_post_key()`; still unconfirmed.
+- **One post without a permalink**: Copy link failed on every retry for one photo, so it's stored
+  under a hash id.
+- No `v446/fixtures/` yet: nothing in this run triggered a `last`/`empty_feed` dump to promote.
+
+Done: `DEFAULT_PROFILE` is now `v446` (a fresh install fetches 446, and a
+device still on 445 gets a mismatch warning until `scraper.py install`).

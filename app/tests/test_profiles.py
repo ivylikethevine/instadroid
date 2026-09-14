@@ -142,7 +142,7 @@ def test_activate_profile_does_not_suggest_a_profile_that_does_not_exist():
 def test_activate_profile_reports_a_bad_ig_profile(monkeypatch):
     monkeypatch.setattr(scraper, "IG_PROFILE", "v999")
     scraper.activate_profile("445.0.0.45.83")
-    assert scraper.PROFILE.name == "v445"
+    assert scraper.PROFILE.name == igprofiles.DEFAULT_PROFILE  # falls back rather than stopping
     assert (scraper.PROFILE_WARNING or "").startswith(
         "IG_PROFILE='v999': no profile directory igprofiles/v999/"
     )

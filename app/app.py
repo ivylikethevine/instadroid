@@ -2,7 +2,7 @@
 
 /instagram.xml            -> everything
 /instagram.xml?user=NAME  -> one account
-/stories.xml              -> currently unexpired stories
+/stories.xml              -> stored stories
 /opml                     -> one-step bulk subscribe: every feed above, as an OPML outline
 /media/<file>             -> cropped post images
 /status                   -> plain-HTML health/status page
@@ -263,34 +263,29 @@ def feed(request: Request, user: str | None = None, limit: int = 200):
 
 
 def _story_rows(limit: int):
-    """Unexpired stories, newest first. Empty (not an error) if the stories table doesn't exist
-    yet — same defensive shape as rows()."""
+    """All stored stories, newest first. Empty (not an error) if the stories table doesn't exist
+    yet — same defensive shape as rows(). Stories share RETAIN_DAYS with posts (pruned at the end
+    of every scrape), so unlike before there's no separate expiry filter here."""
     if not Path(DB_PATH).exists():
         return []
     with closing(_connect()) as con:
         con.row_factory = sqlite3.Row
         try:
             return con.execute(
-                "SELECT * FROM stories WHERE expires_at > ? ORDER BY scraped_at DESC LIMIT ?",
-                (datetime.now(UTC).isoformat(), max(1, min(limit, MAX_LIMIT))),
+                "SELECT * FROM stories ORDER BY scraped_at DESC LIMIT ?",
+                (max(1, min(limit, MAX_LIMIT)),),
             ).fetchall()
         except sqlite3.OperationalError:
             return []
 
 
 def _stories_stats():
-    """(count, latest scraped_at) among unexpired stories - the ETag input for /stories.xml. A
-    story expiring between requests must also change the ETag, which count-and-latest alone
-    wouldn't catch (nothing about an expired row's own fields changes) - see the etag_input below,
-    which folds in "how many are unexpired right now" rather than just an ever-growing max."""
+    """(count, latest scraped_at) - the ETag input for /stories.xml."""
     if not Path(DB_PATH).exists():
         return 0, ""
     with closing(_connect()) as con:
         try:
-            return con.execute(
-                "SELECT COUNT(*), COALESCE(MAX(scraped_at), '') FROM stories WHERE expires_at > ?",
-                (datetime.now(UTC).isoformat(),),
-            ).fetchone()
+            return con.execute("SELECT COUNT(*), COALESCE(MAX(scraped_at), '') FROM stories").fetchone()
         except sqlite3.OperationalError:
             return 0, ""
 
@@ -321,10 +316,7 @@ def stories_feed(request: Request, limit: int = 200):
         html = f"<p>{_img(r['media_file'])}</p>" if r["media_file"] else ""
         if r["media_file"]:
             _thumbnail(fe, r["media_file"])
-        expires = _dt(r["expires_at"])
         meta = [f"saved {scraped.strftime('%Y-%m-%d %H:%M UTC')}"]
-        if expires:
-            meta.append(f"expires {expires.strftime('%Y-%m-%d %H:%M UTC')}")
         html += f"<p><small>{' · '.join(meta)}</small></p>"
         fe.content(html, type="html")
 
@@ -545,14 +537,12 @@ def _run_result(run) -> tuple[str, str]:
     return "", "ok"
 
 
-def _active_stories_count() -> int:
+def _stories_count() -> int:
     if not Path(DB_PATH).exists():
         return 0
     with closing(_connect()) as con:
         try:
-            return con.execute(
-                "SELECT COUNT(*) FROM stories WHERE expires_at > ?", (datetime.now(UTC).isoformat(),)
-            ).fetchone()[0]
+            return con.execute("SELECT COUNT(*) FROM stories").fetchone()[0]
         except sqlite3.OperationalError:
             return 0
 
@@ -560,7 +550,7 @@ def _active_stories_count() -> int:
 @app.get("/status", response_class=HTMLResponse)
 def status_page():
     total, _ = _stats()
-    active_stories = _active_stories_count()
+    stories_count = _stories_count()
     users = _user_counts()
     runs = _recent_runs()
     device = _latest_device()
@@ -644,7 +634,7 @@ td, th {{ text-align: left; padding: 0.25rem 0.6rem; border-bottom: 1px solid #d
 <h2>Recent runs</h2>
 <table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Filtered</th><th>Link fails</th><th>Instagram</th><th>Peak mem</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="9">none</td></tr>'}</table>
 <h2>Totals</h2>
-<p>{total} post(s) stored across {len(users)} account(s), {active_stories} active stor{"y" if active_stories == 1 else "ies"}</p>
+<p>{total} post(s) stored across {len(users)} account(s), {stories_count} stor{"y" if stories_count == 1 else "ies"} stored</p>
 <table><tr><th>Account</th><th>Posts</th><th>Latest</th></tr>{users_rows or '<tr><td colspan="3">none</td></tr>'}</table>
 </body></html>"""
     return HTMLResponse(html)
