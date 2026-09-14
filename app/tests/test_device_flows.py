@@ -12,10 +12,11 @@ from pathlib import Path
 import adbutils
 import pytest
 import scraper
+from igprofiles import V445
 
 from tests.fakedevice import FakeDevice, hierarchy, node
 
-CAPTION = scraper.SELECTORS["caption_class"]
+CAPTION = V445.selectors["caption_class"]  # read at import, before conftest pins the profile
 ACTION_BAR = node("action_bar_container", bounds=(0, 142, 1080, 289))
 FOLLOWING_TITLE = node(
     "action_bar_title", cls="android.widget.TextView", text="Following", bounds=(150, 160, 500, 270)
@@ -215,6 +216,7 @@ def fast_offline(tmp_path, monkeypatch):
     monkeypatch.setattr(scraper, "MEDIA_DIR", tmp_path / "media")
     monkeypatch.setattr(scraper, "DEBUG_DIR", tmp_path / "debug")
     monkeypatch.setattr(scraper, "APK_CACHE_DIR", tmp_path / "apk")
+    monkeypatch.setattr(scraper, "IG_APK_VERSION", "")  # latest, the top-level cache layout
     monkeypatch.setattr(scraper, "human_pause", lambda *a, **k: None)
     monkeypatch.setattr(scraper.time, "sleep", lambda s: None)
     monkeypatch.setattr(scraper, "IG_USERNAME", "me")
@@ -333,6 +335,60 @@ def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch):
     assert install_call[3] == "install-multiple"
     assert install_call[4].endswith(f"{scraper.IG_PKG}.apk")
     assert install_call[5].endswith("config.arm64_v8a.apk")
+
+
+def test_installing_instagram_reresolves_the_selector_profile(monkeypatch):
+    d = FakeDevice({"home": home_screen()}, "launcher", installed=())
+    _apk_run(monkeypatch, d, [])
+    monkeypatch.setattr(
+        scraper, "PROFILE_WARNING", "Instagram version unknown (None); using selector profile 445"
+    )
+    assert scraper.ensure_logged_in(d) is True
+    assert scraper.PROFILE is V445 and scraper.PROFILE_WARNING is None  # now installed: 445.0.0.45.83
+
+
+def test_a_pinned_apk_version_gets_its_own_cache_folder(monkeypatch):
+    # An unpinned bundle already cached at the top level must not be installed for a pinned version.
+    xapk_dir = scraper.APK_CACHE_DIR / "xapk"
+    xapk_dir.mkdir(parents=True)
+    (xapk_dir / f"{scraper.IG_PKG}.apk").write_bytes(b"latest")
+    monkeypatch.setattr(scraper, "IG_APK_VERSION", "445.0.0.45.83")
+    d = FakeDevice({"home": home_screen()}, "launcher", installed=())
+    calls = []
+    _apk_run(monkeypatch, d, calls)
+    assert scraper.ensure_logged_in(d) is True
+    apkeep_call = next(c for c in calls if c[0] == "apkeep")
+    assert apkeep_call[2] == f"{scraper.IG_PKG}@445.0.0.45.83"
+    assert apkeep_call[-1] == str(scraper.APK_CACHE_DIR / "445.0.0.45.83")
+    install_call = next(c for c in calls if c[0] == "adb")
+    assert all("/445.0.0.45.83/" in arg for arg in install_call[4:])
+
+
+def test_install_version_replaces_a_newer_install_in_place(monkeypatch):
+    d = FakeDevice({"home": home_screen()}, "launcher", ig_version="446.0.0.49.77")
+    d.install = lambda: setattr(d, "ig_version", "445.0.0.45.83")  # what the downgrade installs
+    calls = []
+    _apk_run(monkeypatch, d, calls)
+    assert scraper.install_instagram_version(d, "445.0.0.45.83") == "445.0.0.45.83"
+    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{scraper.IG_PKG}@445.0.0.45.83"
+    install_call = next(c for c in calls if c[0] == "adb")
+    assert install_call[3:6] == ["install-multiple", "-r", "-d"]
+
+
+def test_install_version_defaults_to_the_pinned_version_and_skips_when_already_installed(monkeypatch):
+    monkeypatch.setattr(scraper, "IG_APK_VERSION", "445.0.0.45.83")
+    d = FakeDevice({"home": home_screen()}, "launcher")  # already reports 445.0.0.45.83
+    calls = []
+    _apk_run(monkeypatch, d, calls)
+    assert scraper.install_instagram_version(d) == "445.0.0.45.83"
+    assert calls == []
+
+
+def test_install_version_raises_when_the_device_reports_another_version(monkeypatch):
+    d = FakeDevice({"home": home_screen()}, "launcher", ig_version="446.0.0.49.77")
+    _apk_run(monkeypatch, d, [])  # the fake install leaves the version untouched
+    with pytest.raises(scraper.DeviceNotReady, match="device reports 446.0.0.49.77"):
+        scraper.install_instagram_version(d, "445.0.0.45.83")
 
 
 def test_ensure_logged_in_reuses_a_cached_apk(monkeypatch):
@@ -570,6 +626,8 @@ def test_scrape_once_end_to_end(fast_offline, monkeypatch):
         "link_clipboard_failures": 0,
         "warning": None,
         "filtered_posts": 0,
+        "mem_peak_mb": None,  # the fake device has no cgroup files: the memory guard is off
+        "oom_kills": None,
     }
     posts = {r["id"]: r for r in con.execute("SELECT * FROM posts")}
     assert set(posts) == {"TOP123", "OTHER1", "OLD1"}
@@ -577,6 +635,8 @@ def test_scrape_once_end_to_end(fast_offline, monkeypatch):
     assert posts["TOP123"]["url"] == "https://www.instagram.com/reel/TOP123/"
     assert posts["OTHER1"]["place"] == "San Diego, California"
     assert posts["OTHER1"]["caption"] == "Second caption"
+    assert posts["TOP123"]["ig_version"] == posts["OTHER1"]["ig_version"] == "445.0.0.45.83"
+    assert posts["OLD1"]["ig_version"] is None  # seeded before this run; never back-filled
     slides = con.execute("SELECT idx, file FROM media WHERE post_id='OTHER1' ORDER BY idx").fetchall()
     assert [tuple(s) for s in slides] == [(1, "OTHER1_1.jpg"), (2, "OTHER1_2.jpg")]
     for fn in ("TOP123.jpg", "OTHER1.jpg", "OTHER1_1.jpg", "OTHER1_2.jpg"):
@@ -610,6 +670,7 @@ def test_scrape_once_without_permalinks_falls_back_to_hash_ids_and_merges_a_plac
     assert stats["link_sheet_failures"] == 4  # two attempts per card
     merged = con.execute("SELECT * FROM posts WHERE id='placeholder'").fetchone()
     assert merged["caption"] == "Top card caption…"
+    assert merged["ig_version"] == "445.0.0.45.83"  # the placeholder had none; the merge fills it in
     assert merged["media_file"]
     other = con.execute("SELECT * FROM posts WHERE username='other_user'").fetchone()
     assert other["url"] is None and other["id"] == other["hash"]
@@ -840,6 +901,27 @@ def test_connect_device(monkeypatch):
     monkeypatch.setattr(scraper.adbutils.adb, "connect", lambda addr, timeout=None: None)
     monkeypatch.setattr(scraper.u2, "connect", lambda addr: dev)
     assert scraper.connect_device() is dev
+    assert scraper.PROFILE is V445 and scraper.PROFILE_WARNING is None  # device reports 445.0.0.45.83
+
+
+def test_connect_device_warns_when_no_profile_matches_the_installed_version(monkeypatch):
+    dev = feed_device()
+    dev.ig_version = "446.0.0.49.77"
+    monkeypatch.setattr(scraper.adbutils.adb, "connect", lambda addr, timeout=None: None)
+    monkeypatch.setattr(scraper.u2, "connect", lambda addr: dev)
+    scraper.connect_device()
+    assert scraper.PROFILE is V445
+    assert scraper.PROFILE_WARNING == "no selector profile for Instagram 446.0.0.49.77; using 445"
+
+
+def test_scrape_once_reports_the_profile_warning(monkeypatch):
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    monkeypatch.setattr(
+        scraper, "PROFILE_WARNING", "no selector profile for Instagram 446.0.0.49.77; using 445"
+    )
+    stats = scraper.scrape_once(feed_device(), scraper.db_init())
+    assert "no selector profile for Instagram 446.0.0.49.77" in stats["warning"]
 
 
 def _stop_after_first_sleep(monkeypatch):
@@ -891,4 +973,120 @@ def test_main_records_a_successful_run_with_device_versions(fast_offline, monkey
     run = con.execute("SELECT * FROM runs").fetchone()
     assert (run["new_posts"], run["new_stories"], run["warning"], run["error"]) == (2, 1, "w", None)
     assert (run["android_release"], run["ig_version"]) == ("13", "445.0.0.45.83")
+    assert run["selector_profile"] == "445"
     assert scraper.POLL_MIN_H * 3600 <= sleeps[0] <= scraper.POLL_MAX_H * 3600
+
+
+# --- memory guard ---------------------------------------------------------------------------------
+
+MIB = 1024 * 1024
+
+
+def cgroup_output(current_mib, max_mib=3072, oom_kill=0):
+    limit = "max" if max_mib is None else str(max_mib * MIB)
+    return f"{current_mib * MIB}\n{limit}\nlow 0\nhigh 0\nmax 12\noom 3\noom_kill {oom_kill}\n"
+
+
+def with_cgroup(d, readings):
+    """Make FakeDevice `d` answer the memory guard's cgroup read with successive `readings`
+    (cgroup_output() strings); the last one repeats."""
+    shell = d.shell
+    readings = list(readings)
+
+    def fake_shell(cmd):
+        joined = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if joined.startswith("cat /sys/fs/cgroup/memory.current"):
+            d.shell_calls.append(joined)
+            return type("Out", (), {"output": readings.pop(0) if len(readings) > 1 else readings[0]})()
+        return shell(cmd)
+
+    d.shell = fake_shell
+    return d
+
+
+def test_redroid_memory_parses_the_cgroup_files():
+    d = with_cgroup(feed_device(), [cgroup_output(1843, 3072, oom_kill=7)])
+    assert scraper._redroid_memory(d) == {"current": 1843 * MIB, "max": 3072 * MIB, "oom_kill": 7}
+    unlimited = with_cgroup(feed_device(), [cgroup_output(500, None)])
+    assert scraper._redroid_memory(unlimited)["max"] is None
+    assert scraper._redroid_memory(feed_device()) is None  # no cgroup files: guard off
+
+
+def test_scrape_once_starts_and_ends_with_instagram_stopped(monkeypatch):
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    d = feed_device()
+    scraper.scrape_once(d, scraper.db_init())
+    stops = [i for i, c in enumerate(d.shell_calls) if c == f"am force-stop {scraper.IG_PKG}"]
+    assert len(stops) == 2
+    assert stops[0] == 0 or all(
+        c.startswith("am force-stop") for c in d.shell_calls[: stops[0]]
+    )  # first thing
+    assert stops[1] > d.shell_calls.index("dumpsys package com.instagram.android")  # after the run
+
+
+def test_scrape_once_still_stops_instagram_when_the_run_raises(monkeypatch):
+    def boom(d):
+        raise scraper.DeviceNotReady("feed never opened")
+
+    monkeypatch.setattr(scraper, "open_target_feed", boom)
+    d = feed_device()
+    with pytest.raises(scraper.DeviceNotReady):
+        scraper.scrape_once(d, scraper.db_init())
+    assert d.shell_calls.count(f"am force-stop {scraper.IG_PKG}") == 2
+    for pkg in scraper.CACHED_APP_SWEEP:
+        assert d.shell_calls.count(f"am force-stop {pkg}") == 2
+
+
+def test_memory_guard_stops_the_run_before_the_limit(monkeypatch):
+    monkeypatch.setattr(scraper, "MEMORY_GUARD_PERCENT", 85)
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    # start, before stories, first screen: fine; second screen check: 2700 of 3072 MiB is 88%.
+    d = with_cgroup(
+        feed_device(), [cgroup_output(900), cgroup_output(1200), cgroup_output(1500), cgroup_output(2700)]
+    )
+    stats = scraper.scrape_once(d, scraper.db_init())
+    assert "stopped early: redroid memory at 2700 of 3072 MiB (MEMORY_GUARD_PERCENT=85)" in stats["warning"]
+    assert stats["mem_peak_mb"] == 2700
+    assert stats["oom_kills"] == 0
+
+
+def test_memory_guard_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(scraper, "MEMORY_GUARD_PERCENT", 0)
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    stats = scraper.scrape_once(with_cgroup(feed_device(), [cgroup_output(3000)]), scraper.db_init())
+    assert not (stats["warning"] or "").startswith("stopped early")
+    assert stats["mem_peak_mb"] == 3000  # still measured
+
+
+def test_memory_guard_skips_stories_when_already_over(monkeypatch):
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    d = with_cgroup(feed_device(), [cgroup_output(2900)])
+    stats = scraper.scrape_once(d, scraper.db_init())
+    assert stats["new_stories"] == 0
+    assert "skipped stories: redroid memory at 2900 of 3072 MiB" in stats["warning"]
+
+
+def test_oom_kills_during_a_run_are_reported(monkeypatch):
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    d = with_cgroup(feed_device(), [cgroup_output(900, oom_kill=7), cgroup_output(1000, oom_kill=9)])
+    stats = scraper.scrape_once(d, scraper.db_init())
+    assert stats["oom_kills"] == 2
+    assert "redroid OOM-killed 2 Android process(es)" in stats["warning"]
+
+
+def test_main_records_memory_stats(fast_offline, monkeypatch):
+    _stop_after_first_sleep(monkeypatch)
+    monkeypatch.setattr(scraper, "connect_device", feed_device)
+    stats = {"new": 0, "new_stories": 0, "warning": None, "mem_peak_mb": 1843, "oom_kills": 1}
+    monkeypatch.setattr(scraper, "scrape_once", lambda d, con: stats)
+    with pytest.raises(StopLoop):
+        scraper.main()
+    row = (
+        sqlite3.connect(fast_offline / "posts.sqlite")
+        .execute("SELECT mem_peak_mb, oom_kills FROM runs")
+        .fetchone()
+    )
+    assert row == (1843, 1)

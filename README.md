@@ -61,6 +61,10 @@ tested it on).
 - Docker + compose, privileged containers allowed, for redroid and the `app` container. `app` uses
   host networking to reach redroid's ADB port.
 - `adb` on the host. `scrcpy` is optional; `adb exec-out screencap -p > shot.png` is enough for checks.
+- About 3.5GB of free RAM and a few spare cores. redroid is capped at 3g of memory with no swap
+  (`REDROID_MEM_LIMIT`) and 4 CPUs (`REDROID_CPUS`); the app container at 256m and 1.5 CPUs. A live
+  scrape has measured close to 2GiB, and at the old 2g limit a run OOM-killed Android processes
+  and froze the host (see CLAUDE.md).
 
 ## First-time setup
 
@@ -92,9 +96,23 @@ adb -s 127.0.0.1:5555 install-multiple local/xapk/com.instagram.android.apk loca
 ```
 
 (needs [`apkeep`](https://github.com/EFForg/apkeep) on the host; apkmirror blocks scripted
-downloads, hence APKPure). `IG_APK_VERSION` pins a specific version instead of latest, and
+downloads, hence APKPure). `IG_APK_VERSION` picks the version to install: it defaults to
+`445.0.0.45.83`, the last version the selectors were validated against, and an empty value means
+latest. Each pinned version is cached in its own `local/data/apk/<version>/` folder.
 `APK_CACHE_DIR`/`APK_FETCH_TIMEOUT` tune the cache location and download/install timeout — see
 `.env.example`.
+
+Auto-install only runs when Instagram is missing, so changing `IG_APK_VERSION` doesn't replace an
+installed version by itself (the scraper logs a warning when they differ). To switch, including a
+downgrade:
+
+```bash
+docker compose exec app python scraper.py install            # IG_APK_VERSION
+docker compose exec app python scraper.py install 446.0.0.49.77
+```
+
+The saved login lives in `/data` and survives the replace, but an older Instagram may not accept
+data written by a newer one, so a downgrade can still need a fresh login.
 
 `tune-android.sh` disables a curated list of unused system apps to cut idle memory (see CLAUDE.md's
 "Reducing idle memory" for the measurement). One package must never be added to that list:
@@ -108,10 +126,14 @@ The scraper runs the login step at the start of every scrape, so once the sessio
 device it is a no-op. If Instagram asks for a code or "confirm it's you", the run aborts with a
 `login_screen.jpg` / `login_hierarchy.xml` in `local/data/debug`; finish that step by hand and re-run.
 First-run interstitials (notifications, location, "set up on new device") are dismissed automatically.
-Login and feed selectors live in `SELECTORS` in `app/scraper.py`.
+Login and feed selectors live in per-Instagram-version profiles under `app/igprofiles/`, picked
+from the installed version's major number at connect time (`v445.py` is the validated baseline; the
+active profile is shown on `/status` and recorded in `runs.selector_profile`). `IG_SELECTOR_PROFILE`
+forces one. See `NEXT.md` for the design.
 
 If a run reports `no posts parsed on first screen`, look at `local/data/debug/last_hierarchy.xml`
-and `last_screen.jpg`, then adjust `SELECTORS`.
+and `last_screen.jpg`, then override the changed selectors in that Instagram version's profile
+rather than editing an older one.
 `docker compose exec app python scraper.py dump` grabs a fresh dump any time.
 
 ## How a scrape works
@@ -300,7 +322,18 @@ challenges and every other error never retry early.
 
 Each run also records the installed Instagram `versionName` and the redroid image (`runs.ig_version`
 / `runs.redroid_image`, both on `/status`), so when the selectors break it's a lookup whether an
-Instagram update landed. Docker keeps at most 3 × 10MB of log per container (the `x-logging` block
+Instagram update landed. Each post also stores the version that scraped it (`posts.ig_version`,
+first-seen wins on a duplicate merge; `NULL` for posts from before this was added).
+
+Memory: redroid's Android never reclaims memory on its own here, so the scraper manages it. Every
+run starts and ends by force-stopping Instagram and a few cached system apps (the end even when the
+run fails), and `scraper.py login` stops Instagram when it's done. During a run the scraper reads
+redroid's container memory through adb before stories and before each screen, and stops early with
+a warning once it reaches `MEMORY_GUARD_PERCENT` (default 85) of the container's limit. Each run
+records its peak (`runs.mem_peak_mb`) and any kernel OOM kills inside redroid (`runs.oom_kills`,
+also a run warning), shown in `/status`'s "Peak mem" column.
+
+Docker keeps at most 3 × 10MB of log per container (the `x-logging` block
 in `docker-compose.yml`), and the healthcheck's own `GET /health` every 30s is left out of the
 access log.
 
@@ -400,9 +433,8 @@ Grouped by how much of the current architecture each would touch, roughly smalle
 - **Selector-drift canary**: record per-run parse stats (cards per screen, share with a real
   caption, share `complete`) and flag a drop against a rolling baseline — catches an Instagram UI
   change before runs go fully blank.
-- **`scripts/diagnose.sh`**: codify `CLAUDE.md`'s logcat triage (grep for `WATCHDOG KILLING`,
-  `FATAL EXCEPTION`, `Version mismatch`, `Can't downgrade database`) and print the matching fix;
-  optionally have the scraper save a filtered `logcat -d` into `DEBUG_DIR` on device failures.
+- **Have the scraper itself save a filtered `logcat -d` into `DEBUG_DIR` on device failures**, not
+  just on-demand — `scripts/diagnose.sh` (below) already does the on-demand triage.
 - **Guard `/data` against Android version mixing**: record the image tag in `local/data/android` on
   first boot and refuse to start a different Android major version against it — the appops.xml,
   idmap and telephony.db corruption in `CLAUDE.md` all came from exactly that.
