@@ -517,6 +517,8 @@ def status_page():
             device_line += f" — {escape(device['device_product'])}"
         if ig := _run_text(device, "ig_version"):
             device_line += f" · Instagram {escape(ig)}"
+        if profile := _run_text(device, "selector_profile"):
+            device_line += f" (selectors {escape(profile)})"
         if image := _run_text(device, "redroid_image"):
             device_line += f" · {escape(image)}"
 

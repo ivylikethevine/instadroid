@@ -92,9 +92,23 @@ adb -s 127.0.0.1:5555 install-multiple local/xapk/com.instagram.android.apk loca
 ```
 
 (needs [`apkeep`](https://github.com/EFForg/apkeep) on the host; apkmirror blocks scripted
-downloads, hence APKPure). `IG_APK_VERSION` pins a specific version instead of latest, and
+downloads, hence APKPure). `IG_APK_VERSION` picks the version to install: it defaults to
+`445.0.0.45.83`, the last version the selectors were validated against, and an empty value means
+latest. Each pinned version is cached in its own `local/data/apk/<version>/` folder.
 `APK_CACHE_DIR`/`APK_FETCH_TIMEOUT` tune the cache location and download/install timeout — see
 `.env.example`.
+
+Auto-install only runs when Instagram is missing, so changing `IG_APK_VERSION` doesn't replace an
+installed version by itself (the scraper logs a warning when they differ). To switch, including a
+downgrade:
+
+```bash
+docker compose exec app python scraper.py install            # IG_APK_VERSION
+docker compose exec app python scraper.py install 446.0.0.49.77
+```
+
+The saved login lives in `/data` and survives the replace, but an older Instagram may not accept
+data written by a newer one, so a downgrade can still need a fresh login.
 
 `tune-android.sh` disables a curated list of unused system apps to cut idle memory (see CLAUDE.md's
 "Reducing idle memory" for the measurement). One package must never be added to that list:
@@ -108,10 +122,14 @@ The scraper runs the login step at the start of every scrape, so once the sessio
 device it is a no-op. If Instagram asks for a code or "confirm it's you", the run aborts with a
 `login_screen.jpg` / `login_hierarchy.xml` in `local/data/debug`; finish that step by hand and re-run.
 First-run interstitials (notifications, location, "set up on new device") are dismissed automatically.
-Login and feed selectors live in `SELECTORS` in `app/scraper.py`.
+Login and feed selectors live in per-Instagram-version profiles under `app/igprofiles/`, picked
+from the installed version's major number at connect time (`v445.py` is the validated baseline; the
+active profile is shown on `/status` and recorded in `runs.selector_profile`). `IG_SELECTOR_PROFILE`
+forces one. See `NEXT.md` for the design.
 
 If a run reports `no posts parsed on first screen`, look at `local/data/debug/last_hierarchy.xml`
-and `last_screen.jpg`, then adjust `SELECTORS`.
+and `last_screen.jpg`, then override the changed selectors in that Instagram version's profile
+rather than editing an older one.
 `docker compose exec app python scraper.py dump` grabs a fresh dump any time.
 
 ## How a scrape works

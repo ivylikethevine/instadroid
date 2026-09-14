@@ -4,8 +4,9 @@ Instagram -> SQLite scraper driving a real Instagram app inside a redroid contai
 Strategy: open the chronological "Following" feed, scroll slowly, parse the accessibility
 tree for post cards, store new ones, stop once we hit posts we've already seen.
 
-Selectors live in the SELECTORS dict below. Instagram changes its UI a few times a year;
-when a run fails, look at the hierarchy dump in $DEBUG_DIR and adjust them.
+Selectors live in per-Instagram-version profiles under igprofiles/ (see NEXT.md). Instagram changes
+its UI a few times a year; when a run fails, look at the hierarchy dump in $DEBUG_DIR and override the
+changed selectors in that version's profile.
 """
 
 import hashlib
@@ -27,6 +28,8 @@ from zoneinfo import ZoneInfo
 
 import adbutils
 import uiautomator2 as u2
+from igprofiles import PROFILES
+from igprofiles import resolve as resolve_profile
 from lxml import etree
 from PIL import Image
 from uiautomator2.exceptions import DeviceError as U2DeviceError
@@ -65,8 +68,15 @@ IG_PKG = "com.instagram.android"
 # CLAUDE.md, where Instagram's package registration was orphaned but the app itself wasn't touched.
 # 0/false/empty falls back to the original behavior: raise and require a manual `adb install`.
 IG_AUTO_INSTALL = os.environ.get("IG_AUTO_INSTALL", "1").strip().lower() not in ("0", "false", "")
-IG_APK_VERSION = os.environ.get("IG_APK_VERSION", "")  # empty = whatever apkeep resolves as latest
+# The Instagram version auto-install and `scraper.py install` fetch. Defaults to the last version the
+# selectors were validated against (the 445 profile); an explicitly empty value means whatever apkeep
+# resolves as latest on APKPure.
+DEFAULT_IG_APK_VERSION = "445.0.0.45.83"
+IG_APK_VERSION = os.environ.get("IG_APK_VERSION", DEFAULT_IG_APK_VERSION).strip()
 APK_CACHE_DIR = Path(os.environ.get("APK_CACHE_DIR", "/apk"))
+# Force a selector profile by Instagram major version (e.g. "445") instead of matching the installed
+# version — for checking what a newer Instagram broke. Empty = match the installed version.
+IG_SELECTOR_PROFILE = os.environ.get("IG_SELECTOR_PROFILE", "").strip()
 APK_FETCH_TIMEOUT = float(os.environ.get("APK_FETCH_TIMEOUT", "300"))  # apkeep's own download
 DEBUG_KEEP = 12  # debug dump pairs to retain; older ones are pruned on every new dump
 DEBUG_RETAIN_DAYS = float(os.environ.get("DEBUG_RETAIN_DAYS", "7"))  # 0 disables age-based pruning
@@ -121,106 +131,12 @@ FRESHRSS_REFRESH_URL = os.environ.get("FRESHRSS_REFRESH_URL", "")
 FRESHRSS_REFRESH_TIMEOUT = float(os.environ.get("FRESHRSS_REFRESH_TIMEOUT", "10.0"))
 
 # --- Selectors (the fragile part) ---------------------------------------------------
-SELECTORS = {
-    # Every feed card has a header ViewGroup whose content-desc reads e.g.
-    #   "nykkyhex posted a video in Rich's San Diego 21 hours ago"
-    #   "clubsabbat posted a carousel in San Diego, California 3 days ago"
-    #   "someone posted a photo August 29"
-    "header_id": "row_feed_profile_header",
-    "header_desc": re.compile(
-        r"^(?P<user>[\w.]+) posted (?:an? )?(?P<kind>\w+)(?: in (?P<place>.+?))?"
-        r" (?P<date>\d+ (?:second|minute|hour|day|week)s? ago|[A-Z][a-z]+ \d{1,2}(?:, \d{4})?|Yesterday)$"
-    ),
-    # Resource-id substrings marking the media area of a card (used for the screenshot crop).
-    "media_ids": (
-        "carousel_media_group",
-        "media_group",
-        "row_feed_photo_imageview",
-        "zoomable_view_container",
-    ),
-    # Content-desc on the media itself ("Reel by Nykky Hex, Liked by ..., August 29" / "Photo 1 of 7 by ...").
-    "media_alt": re.compile(r"^(Photo|Video|Reel|Image|Carousel)\b", re.I),
-    "username_id": "row_feed_photo_profile_name",
-    # Caption widget ("<user> text… more"), share button, and the share sheet's Copy link entry.
-    "caption_class": "com.instagram.ui.widget.textview.IgTextLayoutView",
-    "timestamp": re.compile(
-        r"^(\d+ (?:second|minute|hour|day|week)s? ago|[A-Z][a-z]+ \d{1,2}(?:, \d{4})?|Yesterday)$"
-    ),
-    # Map the media description's leading word to the header's kind vocabulary.
-    "alt_kind": {
-        "reel": "video",
-        "video": "video",
-        "photo": "photo",
-        "image": "photo",
-        "carousel": "carousel",
-    },
-    "share_id": "row_feed_button_share",
-    "copy_link_desc": "Copy link",
-    # The Home feed's story tray (not present on the Following screen). Each item's content-desc
-    # is "<user>'s story, <index> of <total>, Unseen."/"...Seen." — index 0 is always the logged-in
-    # account's own story.
-    "story_tray_id": "reels_tray_container",
-    "story_item_desc": re.compile(
-        r"^(?P<user>[\w.]+)'s story, (?P<index>\d+) of (?P<total>\d+), (?P<seen>\w+)\.$"
-    ),
-    "story_viewer_id": "reel_viewer_root",
-    "story_media_id": "reel_viewer_media_container",
-    # The gradient behind the username/timestamp header, overlaid on the media itself — its bottom
-    # edge is where the crop should start, so the saved image doesn't bake in timestamp text that
-    # changes hour to hour (see capture_story_media()).
-    "story_shadow_id": "reel_viewer_top_shadow",
-    "story_timestamp_id": "reel_viewer_timestamp",
-    # Anything that means a share/bottom sheet is open. We never interact inside one except to
-    # tap "Copy link"; a stray tap there could message a contact.
-    "sheet_markers_text": ["Write a message…"],
-    "sheet_markers_desc": ["New group"],
-    "permalink": re.compile(r"https://www\.instagram\.com/(?P<type>p|reel|reels|tv)/(?P<code>[\w-]+)"),
-    # The "Home ⌄" title button at the top of the feed opens the Following/Favorites chooser.
-    "feed_switcher_desc": "Instagram Home Feed",
-    "following_text": "Following",
-    # The Following feed is its own screen: Back button + action_bar_title "Following".
-    "following_title_id": "action_bar_title",
-    # The bottom tab bar's own Home tab — for FEED_MODE=home, the deliberate alternative to the
-    # switcher-based navigation above.
-    "home_tab_id": "feed_tab",
-    # Own-profile navigation, for the followed-accounts allowlist (FOLLOWING_REFRESH_DAYS). The
-    # bottom tab bar's own-avatar tab; the "N following" stacked-avatar link on that profile; the
-    # Following-list screen itself (its view pager, present as soon as the screen loads regardless
-    # of list content); and each row's username. All confirmed live against a real account/device
-    # 2026-09-11 — see refresh_following_list().
-    "profile_tab_id": "profile_tab",
-    "following_link_id": "profile_header_following_stacked_familiar",
-    "following_list_screen_id": "unified_follow_list_view_pager",
-    "follow_list_username_id": "follow_list_username",
-    # Login screen. Instagram renames these occasionally; several candidates each.
-    "login_username_ids": ["login_username", "username"],
-    "login_username_hints": [
-        "Mobile number or email",
-        "Username, email or mobile number",
-        "Phone number, username or email",
-        "Username, email address or mobile number",
-    ],
-    "login_password_ids": ["password"],
-    "login_password_hints": ["Password"],
-    "login_button_texts": ["Log in", "Log In"],
-    "login_page_markers": ["Log in", "Log In", "Forgot password?"],
-    # The logged-out "Join Instagram" welcome screen (shown before the actual login form, e.g.
-    # after a fresh install or an invalidated session) has neither a login form nor the markers
-    # above, so it must be detected and tapped through separately.
-    "welcome_existing_profile_text": "I already have a profile",
-    # Post-login interstitials and the buttons that dismiss them.
-    "dismiss_texts": ["Not now", "Not Now", "Skip", "Save", "Continue", "Don’t allow", "Cancel", "OK"],
-    # Anything matching these means a human has to intervene.
-    "challenge_texts": [
-        "confirmation code",
-        "Confirm it's you",
-        "Suspicious login",
-        "security code",
-        "Enter the code",
-        "We Detected An Unusual Login",
-        "Help us confirm it's you",
-    ],
-}
+# One profile per Instagram major version lives in igprofiles/ (445 is the validated baseline; see
+# NEXT.md). SELECTORS/PROFILE are the active one, rebound by activate_profile() whenever the installed
+# version is (re)read. Until a device is connected they default to the newest profile.
+PROFILE = PROFILES[-1]
+SELECTORS = PROFILE.selectors
+PROFILE_WARNING: str | None = None  # set by activate_profile() when there was no exact version match
 # ------------------------------------------------------------------------------------
 
 # A caption is "weak" when it's really just the media description Instagram shows before the
@@ -405,7 +321,7 @@ def db_init():
     for col in ("link_sheet_failures", "link_clipboard_failures", "new_stories", "filtered_posts"):
         if col not in run_cols:
             con.execute(f"ALTER TABLE runs ADD COLUMN {col} INTEGER")
-    for col in ("warning", "ig_version", "redroid_image"):
+    for col in ("warning", "ig_version", "redroid_image", "selector_profile"):
         if col not in run_cols:
             con.execute(f"ALTER TABLE runs ADD COLUMN {col} TEXT")
     con.commit()
@@ -421,6 +337,16 @@ def _instagram_version(d) -> str | None:
     except Exception:
         return None
     return m.group(1) if m else None
+
+
+def activate_profile(version: str | None) -> None:
+    """Point SELECTORS/PROFILE at the selector profile for the installed Instagram `version`."""
+    global PROFILE, SELECTORS, PROFILE_WARNING
+    PROFILE, PROFILE_WARNING = resolve_profile(version, IG_SELECTOR_PROFILE)
+    SELECTORS = PROFILE.selectors
+    log(f"selector profile {PROFILE.major} (Instagram {version or 'not installed'})")
+    if PROFILE_WARNING:
+        log("WARN:", PROFILE_WARNING)
 
 
 def _device_snapshot(d) -> dict:
@@ -460,7 +386,7 @@ def record_run(
     con.execute(
         "INSERT INTO runs (started_at, finished_at, new_posts, error, android_release, android_sdk,"
         " device_product, link_sheet_failures, link_clipboard_failures, new_stories, warning, ig_version,"
-        " redroid_image, filtered_posts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " redroid_image, filtered_posts, selector_profile) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             started_at,
             finished_at,
@@ -476,6 +402,7 @@ def record_run(
             snapshot.get("ig_version"),
             snapshot.get("redroid_image"),
             filtered_posts,
+            snapshot.get("selector_profile"),
         ),
     )
     con.commit()
@@ -718,6 +645,14 @@ def connect_device():
     d = u2.connect(ADB_ADDR)
     d.implicitly_wait(10)
     log("device:", d.info.get("productName"), d.window_size())
+    version = _instagram_version(d)
+    activate_profile(version)
+    if version and IG_APK_VERSION and version != IG_APK_VERSION:
+        # Auto-install only fires when Instagram is missing, so a pin doesn't replace an existing
+        # install on its own.
+        log(
+            f"WARN: Instagram {version} installed but IG_APK_VERSION={IG_APK_VERSION}; run `scraper.py install`"
+        )
     return d
 
 
@@ -864,27 +799,34 @@ def _stop_instagram(d):
         log(f"WARN: could not force-stop {IG_PKG}:", repr(e))
 
 
-def _fetch_instagram_apk() -> list[Path]:
+def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
     """Return the APK(s) to install: the base APK first, then any config.*.apk split. Reuses a
     bundle already sitting in APK_CACHE_DIR (from a previous fetch, or dropped there by hand) so a
     reinstall after e.g. a /data/system reset (see CLAUDE.md) costs nothing over the network; only
     runs apkeep when the cache is empty.
+
+    `version` defaults to IG_APK_VERSION; empty means latest. A pinned version gets its own
+    APK_CACHE_DIR/<version>/ folder, so switching between versions (e.g. back to 445 to compare
+    selector profiles) never silently reinstalls whichever bundle happened to be cached last.
+    Unpinned keeps the original top-level layout.
     """
-    APK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    version = IG_APK_VERSION if version is None else version
+    cache_dir = APK_CACHE_DIR / version if version else APK_CACHE_DIR
+    cache_dir.mkdir(parents=True, exist_ok=True)
     # xapk_dir holds nothing but one unpacked Instagram bundle, so every *.apk in it belongs to
-    # this install (unlike APK_CACHE_DIR itself, which also holds the .xapk apkeep downloaded).
-    xapk_dir = APK_CACHE_DIR / "xapk"
+    # this install (unlike cache_dir itself, which also holds the .xapk apkeep downloaded).
+    xapk_dir = cache_dir / "xapk"
     cached = sorted(xapk_dir.glob("*.apk")) if xapk_dir.is_dir() else []
     if not cached:
-        cached = sorted(APK_CACHE_DIR.glob(f"{IG_PKG}*.apk"))
+        cached = sorted(cache_dir.glob(f"{IG_PKG}*.apk"))
     if not cached:
-        xapks = sorted(APK_CACHE_DIR.glob(f"{IG_PKG}*.xapk"))
+        xapks = sorted(cache_dir.glob(f"{IG_PKG}*.xapk"))
         if not xapks:
-            spec = f"{IG_PKG}@{IG_APK_VERSION}" if IG_APK_VERSION else IG_PKG
+            spec = f"{IG_PKG}@{version}" if version else IG_PKG
             log(f"fetching {spec} via apkeep (apk-pure)")
             try:
                 subprocess.run(
-                    ["apkeep", "-a", spec, "-d", "apk-pure", str(APK_CACHE_DIR)],
+                    ["apkeep", "-a", spec, "-d", "apk-pure", str(cache_dir)],
                     check=True,
                     capture_output=True,
                     text=True,
@@ -893,7 +835,7 @@ def _fetch_instagram_apk() -> list[Path]:
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 stderr = getattr(e, "stderr", "") or ""
                 raise DeviceNotReady(f"apkeep failed to fetch {IG_PKG}: {e!r}: {stderr[-2000:]}") from e
-            xapks = sorted(APK_CACHE_DIR.glob(f"{IG_PKG}*.xapk"))
+            xapks = sorted(cache_dir.glob(f"{IG_PKG}*.xapk"))
         if xapks:
             # apkeep hands back a bundle (base + per-density/abi/language splits); unpack it once
             # and cache the extracted APKs so a later reinstall skips both the download and this.
@@ -901,9 +843,9 @@ def _fetch_instagram_apk() -> list[Path]:
                 zf.extractall(xapk_dir)
             cached = sorted(xapk_dir.glob("*.apk"))
         else:
-            cached = sorted(APK_CACHE_DIR.glob(f"{IG_PKG}*.apk"))
+            cached = sorted(cache_dir.glob(f"{IG_PKG}*.apk"))
     if not cached:
-        raise DeviceNotReady(f"apkeep reported success but no {IG_PKG} apk was found in {APK_CACHE_DIR}")
+        raise DeviceNotReady(f"apkeep reported success but no {IG_PKG} apk was found in {cache_dir}")
     # The base APK (no "config." prefix) has to be install-multiple's first argument; order among
     # the config.*.apk splits themselves doesn't matter to adb.
     base = [p for p in cached if not p.name.startswith("config.")]
@@ -913,21 +855,45 @@ def _fetch_instagram_apk() -> list[Path]:
     return base + splits
 
 
-def _install_instagram(d) -> None:
+def _install_instagram(d, version: str | None = None, downgrade: bool = False) -> None:
     """Fetch (or reuse a cached) Instagram bundle and adb-install it, same as the manual
     `apkeep` + `install-multiple` steps in README.md's First-time setup. Raises DeviceNotReady on
     any failure so the caller's retry ladder (is_transient()) handles it rather than aborting the
-    whole run.
+    whole run. `downgrade` adds `-r -d`, replacing an installed newer version in place (allowed
+    because redroid is a userdebug build).
     """
-    apks = _fetch_instagram_apk()
-    cmd = ["adb", "-s", ADB_ADDR, "install-multiple" if len(apks) > 1 else "install", *map(str, apks)]
+    apks = _fetch_instagram_apk(version)
+    flags = ["-r", "-d"] if downgrade else []
+    cmd = ["adb", "-s", ADB_ADDR, "install-multiple" if len(apks) > 1 else "install", *flags, *map(str, apks)]
     log(f"installing {IG_PKG} ({len(apks)} apk(s))")
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=APK_FETCH_TIMEOUT)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         stderr = getattr(e, "stderr", "") or ""
         raise DeviceNotReady(f"adb install of {IG_PKG} failed: {e!r}: {stderr[-2000:]}") from e
-    log(f"installed {IG_PKG}", _instagram_version(d) or "(version unknown)")
+    installed = _instagram_version(d)
+    log(f"installed {IG_PKG}", installed or "(version unknown)")
+    activate_profile(installed)  # connect_device() activated before this version existed
+
+
+def install_instagram_version(d, version: str | None = None) -> str | None:
+    """`scraper.py install [VERSION]`: put exactly `version` (default IG_APK_VERSION; empty =
+    latest) on the device, replacing whatever is installed, including a newer version. A no-op if
+    that version is already installed. Returns the installed versionName.
+
+    Instagram's saved login lives in /data and survives the replace, but an older build may not
+    accept data written by a newer one, so a downgrade can still need a fresh login."""
+    version = IG_APK_VERSION if version is None else version.strip()
+    current = _instagram_version(d)
+    if version and current == version:
+        log(f"{IG_PKG} {current} already installed")
+        return current
+    log(f"replacing {IG_PKG} {current or '(not installed)'} with {version or 'latest'}")
+    _install_instagram(d, version, downgrade=True)
+    installed = _instagram_version(d)
+    if version and installed != version:
+        raise DeviceNotReady(f"asked adb to install {IG_PKG} {version}, but the device reports {installed}")
+    return installed
 
 
 def _redact_url(url: str) -> str:
@@ -1052,7 +1018,8 @@ def ensure_logged_in(d):
         # session is live" — a false positive that leaves the caller thinking it's logged in.
         _dump_debug(d, "login")
         raise DeviceNotReady(f"could not bring {IG_PKG} to the foreground; see {DEBUG_DIR}")
-    ok = d(text="OK")  # stray "Enter your password" style alert from a previous attempt
+    # Stray "Enter your password" style alert from a previous attempt.
+    ok = d(text=SELECTORS["stray_alert_ok_text"])
     if ok.exists(timeout=1):
         ok.click()
         human_pause()
@@ -1373,7 +1340,7 @@ def parse_hierarchy(xml: str):
     # The action bar floats over the list; remember where it ends so crops can skip it.
     clip_top = 0
     for n in root.iter("node"):
-        if (n.get("resource-id") or "").endswith("action_bar_container"):
+        if (n.get("resource-id") or "").endswith(SELECTORS["action_bar_id"]):
             m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", n.get("bounds") or "")
             if m:
                 clip_top = int(m.group(4))
@@ -1383,7 +1350,7 @@ def parse_hierarchy(xml: str):
         rid = (n.get("resource-id") or "").split("/")[-1]
         desc = n.get("content-desc") or ""
         text = n.get("text") or ""
-        if n.get("resource-id") == "android:id/list":
+        if n.get("resource-id") == SELECTORS["feed_list_id"]:
             in_list = True
             cur = _new_post("", "", "", "", clip_top)  # provisional: the header-less top card
             cur["headless"] = True
@@ -1446,7 +1413,11 @@ def parse_hierarchy(xml: str):
                 # live: zero caption-class nodes anywhere in a real dump of one) — the share
                 # button itself is the bottom of the card.
                 cur["complete"] = True
-        elif cur["headless"] and cur["kind"] in ("", "post") and desc.startswith("Turn sound"):
+        elif (
+            cur["headless"]
+            and cur["kind"] in ("", "post")
+            and desc.startswith(SELECTORS["mute_toggle_desc_prefix"])
+        ):
             cur["kind"] = "video"  # reels have a mute toggle and no media description
         elif not cur["alt"] and SELECTORS["media_alt"].match(desc):
             cur["alt"] = desc
@@ -1455,7 +1426,7 @@ def parse_hierarchy(xml: str):
         elif not cur["caption"] and text and n.get("class") == SELECTORS["caption_class"]:
             if cur["headless"] and not cur["username"]:
                 cur["username"] = text.split(" ", 1)[0]
-            cur["caption_truncated"] = bool(_MORE_SUFFIX.search(text))
+            cur["caption_truncated"] = bool(SELECTORS["caption_more_suffix"].search(text))
             cur["caption"] = clean_caption(text, cur["username"])
             cur["caption_bounds"] = n.get("bounds")
             if cur["share_bounds"]:
@@ -1474,16 +1445,13 @@ def parse_hierarchy(xml: str):
     return [p for p in posts if p["username"] and (p["caption"] or p["alt"])]
 
 
-_MORE_SUFFIX = re.compile(r"\s*(?:…|\.\.\.)?\s*more$")
-
-
 def clean_caption(text: str, user: str) -> str:
     """'user Caption text… more' -> 'Caption text…'. The app truncates long captions itself
     (see _expand_caption() for recovering the untruncated text)."""
     text = text.replace(" ", " ").strip()
     if text.startswith(user + " "):
         text = text[len(user) + 1 :]
-    return _MORE_SUFFIX.sub("…", text).strip()
+    return SELECTORS["caption_more_suffix"].sub("…", text).strip()
 
 
 def bounds_center(bounds: str):
@@ -1607,7 +1575,7 @@ def _on_feed(d):
 
 def _on_home_feed(d):
     """The Home feed keeps the bottom tab bar; the Following screen does not."""
-    return d(resourceIdMatches=".*:id/feed_tab").exists(timeout=0.5)
+    return d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}").exists(timeout=0.5)
 
 
 def _back_to_feed(d, tries=2):
@@ -1740,13 +1708,10 @@ def crop_media(d, bounds: str, pid: str, clip_top: int = 0, settle: float = 0):
     return fn
 
 
-_SLIDE_INDEX = re.compile(r"^(?:Photo|Video)\s+(\d+)\s+of\s+(\d+)\b", re.I)
-
-
 def carousel_count(alt: str) -> int:
     """Parse the slide total from a carousel card's media description ("Photo 1 of 7 by X, 317
     likes, 10 comments"). Returns 1 (not a carousel, or the format drifted) if it can't be parsed."""
-    m = _SLIDE_INDEX.match(alt or "")
+    m = SELECTORS["slide_index"].match(alt or "")
     return int(m.group(2)) if m else 1
 
 
@@ -1769,7 +1734,7 @@ def capture_carousel(d, p: dict, pid: str) -> list[str]:
         d.swipe(x2 - inset, cy, x1 + inset, cy, duration=random.uniform(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX))
         human_pause(0.8, 1.6)
         fresh = next((c for c in parse_hierarchy(d.dump_hierarchy()) if post_id(c) == key), None)
-        sm = _SLIDE_INDEX.match(fresh["alt"]) if fresh else None
+        sm = SELECTORS["slide_index"].match(fresh["alt"]) if fresh else None
         if not fresh or not sm or int(sm.group(1)) != slide:
             log(f"carousel: swipe didn't land on slide {slide}; stopping with {len(files)} extra")
             break
@@ -2270,6 +2235,8 @@ def scrape_once(d, con) -> dict:
     _stop_instagram(d)
     if push_error := _ping_freshrss(new, new_stories):
         warnings.append(push_error)
+    if PROFILE_WARNING:  # read at the end: an auto-install mid-run re-resolves the profile
+        warnings.append(PROFILE_WARNING)
     return {
         "new": new,
         "new_stories": new_stories,
@@ -2294,6 +2261,8 @@ def main():
         except Exception as e:  # keep the loop alive; log for debugging
             exc, error = e, repr(e)
             log("ERROR:", error)
+        if snapshot:  # connected, so a profile was activated (possibly re-activated by an install)
+            snapshot["selector_profile"] = str(PROFILE.major)
         record_run(
             con,
             started_at,
@@ -2324,6 +2293,12 @@ if __name__ == "__main__":
         print(stats["new"], "new posts,", stats["new_stories"], "new stories")
     elif len(sys.argv) > 1 and sys.argv[1] == "login":
         print("logged in:", ensure_logged_in(connect_device()))
+    elif len(sys.argv) > 1 and sys.argv[1] == "install":
+        if len(sys.argv) > 3:
+            print("usage: scraper.py install [VERSION]   (default IG_APK_VERSION; '' = latest)")
+            sys.exit(1)
+        d = connect_device()
+        print("installed:", install_instagram_version(d, sys.argv[2] if len(sys.argv) == 3 else None))
     elif len(sys.argv) > 1 and sys.argv[1] == "dump":
         d = connect_device()
         _dump_debug(d, "manual")

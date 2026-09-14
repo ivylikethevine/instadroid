@@ -89,6 +89,20 @@ def test_status_page_shows_instagram_version_and_image(tmp_path, monkeypatch):
     assert "Instagram 445.0.0.45.83" in body  # device line
     assert "<td>445.0.0.45.83</td>" in body  # per-run column
     assert "erstt/redroid:13.0.0_ndk_ChromeOS" in body
+    assert "selectors" not in body  # a runs table from before selector_profile existed
+
+
+def test_status_page_shows_the_selector_profile(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)
+    db = tmp_path / "posts.sqlite"
+    _add_runs(db, [(0.1, None, None)])
+    con = sqlite3.connect(db)
+    con.execute("ALTER TABLE runs ADD COLUMN ig_version TEXT")
+    con.execute("ALTER TABLE runs ADD COLUMN selector_profile TEXT")
+    con.execute("UPDATE runs SET android_release='13', ig_version='446.0.0.49.77', selector_profile='445'")
+    con.commit()
+    con.close()
+    assert "Instagram 446.0.0.49.77 (selectors 445)" in client.get("/status").text
 
 
 def test_status_page_shows_the_health_reason(tmp_path, monkeypatch):
