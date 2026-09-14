@@ -13,6 +13,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY scraper.py app.py entrypoint.sh ./
+COPY igprofiles ./igprofiles
 RUN chmod +x entrypoint.sh
 # /db, /media, /debug are bind-mounted by docker-compose in normal use; created here (owned by
 # app) so the image also runs standalone with no mounts, e.g. the CI smoke test. /apk likewise
