@@ -577,7 +577,7 @@ def status_page():
         if ig := _run_text(device, "ig_version"):
             device_line += f" · Instagram {escape(ig)}"
         if profile := _run_text(device, "selector_profile"):
-            device_line += f" (selectors {escape(profile)})"
+            device_line += f" (profile {escape(profile)})"
         if image := _run_text(device, "redroid_image"):
             device_line += f" · {escape(image)}"
 
