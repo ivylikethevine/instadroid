@@ -581,3 +581,53 @@ def test_dt_handles_naive_and_malformed_timestamps(tmp_path, monkeypatch):
     assert naive is not None and naive.tzinfo is not None  # naive input gets UTC attached
     aware = app._dt("2026-09-08T10:00:00+00:00")
     assert aware.tzinfo is not None
+
+
+def _write_image(path, size):
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, "blue").save(path)
+
+
+def test_feed_images_carry_their_dimensions_and_a_thumbnail(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)
+    _write_image(tmp_path / "media" / "ABC.jpg", (1080, 1350))
+    body = client.get("/instagram.xml").text
+    assert (
+        'src="http://feed.test/media/ABC.jpg" alt="" width="1080" height="1350"'
+        ' style="max-width:100%;height:auto"'
+    ) in body.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+    assert '<media:thumbnail url="http://feed.test/media/ABC.jpg" height="1350" width="1080"/>' in body
+
+
+def test_feed_image_without_a_file_on_disk_has_no_dimensions(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)  # ABC.jpg is in the DB but was never written
+    body = client.get("/instagram.xml").text.replace("&quot;", '"').replace("&gt;", ">").replace("&lt;", "<")
+    assert '<img src="http://feed.test/media/ABC.jpg" alt="" />' in body
+    assert '<media:thumbnail url="http://feed.test/media/ABC.jpg"/>' in body
+
+
+def test_video_titles_get_a_play_marker(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)
+    body = client.get("/instagram.xml").text
+    assert "<title>▶ other: video</title>" in body  # h2 is a video
+    assert "<title>someone: Hi &lt;there&gt;</title>" in body  # photos unchanged
+
+
+def test_stories_feed_images_carry_dimensions_and_a_thumbnail(tmp_path, monkeypatch):
+    db, client = _make_stories_db(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    _write_image(tmp_path / "media" / "stories" / "s1.webp", (1080, 1900))
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO stories VALUES ('s1','alice','stories/s1.webp','story','1h',?,?)",
+        ((now - timedelta(hours=1)).isoformat(), (now + timedelta(hours=20)).isoformat()),
+    )
+    con.commit()
+    con.close()
+    body = client.get("/stories.xml").text
+    assert 'width="1080" height="1900"' in body.replace("&quot;", '"')
+    assert (
+        '<media:thumbnail url="http://feed.test/media/stories/s1.webp" height="1900" width="1080"/>' in body
+    )

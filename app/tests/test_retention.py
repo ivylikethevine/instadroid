@@ -64,6 +64,20 @@ def test_prune_old_posts_removes_orphaned_media_regardless_of_retain_days(con_an
     assert {f.name for f in media.iterdir()} == {"kept.jpg"}
 
 
+def test_orphan_sweep_covers_both_media_formats(con_and_media, monkeypatch):
+    con, media = con_and_media
+    monkeypatch.setattr(scraper, "RETAIN_DAYS", 0)
+    _insert(con, media, "old", days_old=1, media_file="old.jpg")
+    _insert(con, media, "new", days_old=1, media_file="new.webp")
+    (media / "orphan.jpg").write_bytes(b"x")
+    (media / "orphan.webp").write_bytes(b"x")
+    (media / "notes.txt").write_bytes(b"x")  # not media: never touched
+
+    scraper._prune_old_posts(con)
+
+    assert {f.name for f in media.iterdir()} == {"old.jpg", "new.webp", "notes.txt"}
+
+
 def test_merge_bumps_updated_at_without_touching_scraped_at(con_and_media):
     # The feed's ETag keys off updated_at precisely so a merge like this is visible even though
     # scraped_at (when the post was first seen) never changes.

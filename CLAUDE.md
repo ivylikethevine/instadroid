@@ -278,7 +278,10 @@ What changed as a result:
   `memswap_limit: 256m`.
 - **`scraper.py` memory guard** (`MemoryGuard`, `MEMORY_GUARD_PERCENT`, default 85): the scraper
   reads redroid's own cgroup v2 files through adb (`/sys/fs/cgroup/memory.current`, `memory.max`,
-  `memory.events`; readable as the adb shell user). It checks before stories and before every
+  `memory.events`, `memory.stat`; readable as the adb shell user), and counts usage the way `docker
+  stats` does, excluding `inactive_file` cache. The first live 446 run showed why: counting that
+  cache, the guard stopped a run at "2756 of 3072 MiB" while `docker stats` peaked at ~2.3GiB, and
+  the kernel reclaims that cache before it would ever OOM-kill. It checks before stories and before every
   screen, and stops the run early with a warning once usage crosses the threshold. Each run records
   `runs.mem_peak_mb` and `runs.oom_kills` (the `oom_kill` delta over the run), shown in `/status`'s
   "Peak mem" column; any OOM kill also becomes a run warning.

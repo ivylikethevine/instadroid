@@ -13,6 +13,7 @@ import os
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from hashlib import sha256
 from html import escape
 from pathlib import Path
@@ -23,6 +24,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from feedgen.feed import FeedGenerator
+from PIL import Image
 
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
 MEDIA_DIR = os.environ.get("MEDIA_DIR", "/media")
@@ -50,6 +52,45 @@ def _connect():
     # The compose mount is already read-only; open read-only here too so a lock held by the
     # driver's writer never blocks a request.
     return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+
+
+@lru_cache(maxsize=4096)
+def _image_size_cached(path: str, mtime_ns: int, size: int) -> tuple[int, int] | None:
+    """(width, height) from the image header only. Keyed on mtime/size too, so a re-captured avatar
+    (same name, new file) isn't served its old dimensions."""
+    try:
+        with Image.open(path) as im:
+            return im.size
+    except Exception:  # truncated, or not an image at all
+        return None
+
+
+def _image_size(file: str) -> tuple[int, int] | None:
+    """Dimensions of a stored media file (relative to MEDIA_DIR), or None if it's missing."""
+    path = Path(MEDIA_DIR) / file
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return _image_size_cached(str(path), st.st_mtime_ns, st.st_size)
+
+
+def _img(file: str) -> str:
+    """An <img> for a stored media file. width/height let a reader reserve the space before the
+    image loads; the inline max-width/height:auto keeps a reader that honours those attributes but
+    narrows the column from stretching it."""
+    dims = _image_size(file)
+    size = f' width="{dims[0]}" height="{dims[1]}" style="max-width:100%;height:auto"' if dims else ""
+    return f'<img src="{PUBLIC_URL}/media/{file}" alt=""{size} />'
+
+
+def _thumbnail(fe, file: str) -> None:
+    """Attach a Media RSS <media:thumbnail> (the full cover image, with its dimensions when known)
+    for readers that show a picture in list view. Needs fg.load_extension("media")."""
+    thumb = {"url": f"{PUBLIC_URL}/media/{file}"}
+    if dims := _image_size(file):
+        thumb |= {"width": str(dims[0]), "height": str(dims[1])}
+    fe.media.thumbnail(thumb)
 
 
 def _dt(value):
@@ -168,6 +209,7 @@ def feed(request: Request, user: str | None = None, limit: int = 200):
     fg.title(title)
     fg.link(href=fg.id(), rel="self")
     fg.updated(datetime.now(UTC))
+    fg.load_extension("media")
 
     entries = rows(user, limit)
     extra_slides = _media_rows([r["id"] for r in entries])
@@ -178,7 +220,8 @@ def feed(request: Request, user: str | None = None, limit: int = 200):
         fe.id(f"{PUBLIC_URL}/post/{r['id']}")
         caption = r["caption"] or ""
         first_line = caption.split("\n", 1)[0][:90] or r["kind"] or "post"
-        fe.title(f"{r['username']}: {first_line}")
+        marker = "▶ " if r["kind"] == "video" else ""  # Reels and videos are stored as kind "video"
+        fe.title(f"{marker}{r['username']}: {first_line}")
         keys = r.keys()  # sqlite3.Row has no __contains__
         url = r["url"] if "url" in keys and r["url"] else f"https://www.instagram.com/{r['username']}/"
         fe.link(href=url)
@@ -191,7 +234,9 @@ def feed(request: Request, user: str | None = None, limit: int = 200):
         if avatar:
             html += f'<p><img src="{PUBLIC_URL}/media/{avatar}" alt="" width="48" height="48" /></p>'
         for slide in ([r["media_file"]] if r["media_file"] else []) + extra_slides.get(r["id"], []):
-            html += f'<p><img src="{PUBLIC_URL}/media/{slide}" alt="" /></p>'
+            html += f"<p>{_img(slide)}</p>"
+        if r["media_file"]:
+            _thumbnail(fe, r["media_file"])
         html += f"<p>{escape(caption).replace(chr(10), '<br/>')}</p>"
         # Both dates are also on the entry itself (<published>/<updated>) for readers that sort by
         # those, but spelling them out here means sorting-by-eye works in any reader.
@@ -262,6 +307,7 @@ def stories_feed(request: Request, limit: int = 200):
     fg.title("Instagram — Stories")
     fg.link(href=fg.id(), rel="self")
     fg.updated(datetime.now(UTC))
+    fg.load_extension("media")
 
     for r in _story_rows(limit):
         fe = fg.add_entry(order="append")
@@ -272,7 +318,9 @@ def stories_feed(request: Request, limit: int = 200):
         scraped = _dt(r["scraped_at"]) or datetime.now(UTC)
         fe.updated(scraped)
         fe.published(scraped)
-        html = f'<p><img src="{PUBLIC_URL}/media/{r["media_file"]}" alt="" /></p>' if r["media_file"] else ""
+        html = f"<p>{_img(r['media_file'])}</p>" if r["media_file"] else ""
+        if r["media_file"]:
+            _thumbnail(fe, r["media_file"])
         expires = _dt(r["expires_at"])
         meta = [f"saved {scraped.strftime('%Y-%m-%d %H:%M UTC')}"]
         if expires:
