@@ -52,6 +52,20 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   has the step-by-step. Going back in versions on one device means `-r -d`
   downgrades, which an older Instagram may reject with data a newer build wrote, so expect a fresh
   login.
+- **Detect and scaffold new Instagram builds in CI**: a scheduled workflow on a GitHub-hosted runner
+  lists builds with `apkeep -l -a com.instagram.android -d apk-pure`, runs `new_profile.scaffold()`
+  for any major version newer than the newest profile, and opens a draft PR. The PR includes a static
+  resource-id report: `aapt2 dump resources` on the new build's base APK (about a second) lists every
+  selector resource id missing from it, and the ids added or removed since the parent profile's build.
+  - A research pass on 2026-09-14 ran this on the cached 443-446 builds. All 18 Instagram resource ids
+    the selectors use were present in every one, matching the 445 selectors working unchanged on 446.
+  - 12 of the 17 required keys in `igprofiles/screens.py` are resource ids. A removed id is near-certain
+    drift, but text and content-desc keys can't be checked this way (those strings aren't in the APK),
+    and layout changes don't show up either.
+  - To confirm: whether APKPure serves GitHub's IP addresses, and that PRs opened with `GITHUB_TOKEN`
+    need the repository setting that allows Actions to create PRs (their CI then waits for approval).
+  - No account, session, dump or APK may end up in a cache or artifact: in a public repo, anyone can
+    read both.
 
 ### Large
 
@@ -86,3 +100,21 @@ Open investigations, new capture mechanisms, or changes to the container/process
   code natively — no NDK translation, sidestepping the whole "Which Android?" compatibility matrix
   (README.md). Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in
   the kernel).
+- **Device runs for new profiles outside a manual session**, in two parts:
+  - **redroid on a GitHub-hosted runner (untested).** The ubuntu-24.04 runner kernel (Azure) ships
+    `binder_linux` in its extra-modules package, and runners have sudo and 16 GB of RAM, but no public
+    example of redroid in Actions was found, and that package is sometimes missing from the mirrors.
+    A half-day `workflow_dispatch` test would settle it: modprobe binder, boot the image, install the
+    build, launch, dump. If it works, add a logged-out check to the scaffold PR: the build installs,
+    launches without crashing under the ARM translation, and shows the login screen. That can't test
+    feed selectors, since logging in from datacenter IPs triggers challenges and puts the account at
+    risk. The free arm64 runners, with official arm64 redroid images, would skip translation entirely
+    but are unvalidated.
+  - **Logged-in baselines, pulled by the host** (not a self-hosted runner: GitHub advises against those
+    on public repos, since fork PRs can target them). A systemd timer polls with a fine-grained token
+    for labelled work, e.g. a `needs-baseline` label. For each item it waits for a gap between polls,
+    runs `docker compose stop app` and `new_profile.py baseline vXYZ --yes` (whose memory and app
+    checks still apply), always runs `restore` and `docker compose start app` afterwards, and pushes
+    only `report.md` to the draft branch. Dumps and the session never leave the host. The remaining
+    risk is running unattended on the host that froze once (CLAUDE.md).
+  - Fixing selectors, login challenges, reviewing scrubbed fixtures and `validate` stay manual.

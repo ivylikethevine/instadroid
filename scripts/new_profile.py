@@ -348,6 +348,7 @@ class DumpReport:
     check: screens.ScreenCheck
     parsed: str  # what the parsers find under the profile, "" for a screen they don't read
     parsed_parent: str  # the same under the parent profile, when it differs
+    items: int = 0  # posts + story tray items + following rows parsed under the profile
 
 
 @dataclass
@@ -392,6 +393,13 @@ def _parse_summary(xml: str, screen: str) -> str:
     )
 
 
+def _item_count(xml: str, screen: str) -> int:
+    if screen not in PARSED_SCREENS:
+        return 0
+    found = parsing.parse_screen(xml)
+    return len(found["posts"]) + len(found["story_tray"]) + len(found["following_list"])
+
+
 def check_dumps(profile: BaseProfile, dumps: Path) -> list[DumpReport]:
     parent = parent_of(profile)
     reports = []
@@ -411,6 +419,7 @@ def check_dumps(profile: BaseProfile, dumps: Path) -> list[DumpReport]:
                 check=screens.check_screen(xml, screen, profile.selectors),
                 parsed=parsed,
                 parsed_parent=parsed_parent if parsed_parent != parsed else "",
+                items=_with_profile(profile, lambda xml=xml, screen=screen: _item_count(xml, screen)),
             )
         )
     return reports
@@ -524,16 +533,16 @@ def check(profile_name: str, dumps: Path | None = None) -> bool:
 
 
 def pick_fixtures(reports: list[DumpReport], wanted: Sequence[str] = PARSED_SCREENS) -> dict[str, Path]:
-    """{screen: dump} for the first clean, non-failure capture of each wanted screen. A feed screen
-    also needs at least one parsed post, or its fixture would only prove that nothing parses."""
-    picked: dict[str, Path] = {}
+    """{screen: dump} for the clean, non-failure capture of each wanted screen with the most parsed
+    items (the earliest on a tie). It needs at least one, or its fixture would only prove that nothing
+    parses."""
+    best: dict[str, DumpReport] = {}
     for r in reports:
-        if r.screen not in wanted or r.screen in picked or r.failure or not r.check.ok:
+        if r.screen not in wanted or r.failure or not r.check.ok or not r.items:
             continue
-        if r.screen == "feed" and r.parsed.startswith("0 post"):
-            continue
-        picked[r.screen] = r.path
-    return picked
+        if r.screen not in best or r.items > best[r.screen].items:
+            best[r.screen] = r
+    return {screen: r.path for screen, r in best.items()}
 
 
 def promote(profile_name: str, wanted: Sequence[str] = PARSED_SCREENS) -> int:

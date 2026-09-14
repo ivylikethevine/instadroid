@@ -60,15 +60,41 @@ def pseudonymize(xml: str) -> str:
     for username in found["following_list"]:
         alias(username, "user")
     root = etree.fromstring(xml.encode())
-    for n in root.iter("node"):  # "Liked by <someone> and others" names accounts no parser returns
+    selectors = versioning.PROFILE.selectors
+    for n in root.iter("node"):  # names on screen that no parser returns
         for attr in ("text", "content-desc"):
-            for handle in re.findall(r"\b(?:Liked by|by|@)\s?([\w.]{3,30})\b", n.get(attr) or ""):
+            value = n.get(attr) or ""
+            # A card header the post parser skipped (a suggested post, a card cut off at the edge).
+            if m := selectors["header_desc"].match(value):
+                alias(m["user"], "user")
+                alias(m["place"] or "", "Place ")
+            # Every story tray item, including the logged-in account's own (index 0, never parsed).
+            if m := selectors["story_item_desc"].match(value):
+                alias(m["user"], "user")
+            # "Liked by <someone>", "by <someone>", an @mention, "<someone> and 3 others",
+            # "Profile picture of <someone>", "<someone>'s story".
+            handles = re.findall(r"(?:\b(?:Liked by|by|of)\s|@)([\w.]{3,30})\b", value)
+            handles += re.findall(r"^([\w.]{3,30})(?: and \d+ others?$|'s story\b)", value)
+            # A collab post's two authors; both lowercase-initial, so "Search and explore" stays.
+            if (m := re.match(r"^([\w.]{3,30}) and ([\w.]{3,30})$", value)) and not (
+                m.group(1)[0].isupper() or m.group(2)[0].isupper()
+            ):
+                handles += [m.group(1), m.group(2)]
+            for handle in handles:
                 if handle not in ("others", "you") and not handle[0].isupper():
                     alias(handle, "user")
+            # A Reel's audio credit, "<artist> · <track>" (or "<account> · Original audio").
+            if m := re.match(r"^\s*(.+?) · (.+?)\s*$", value):
+                alias(m.group(1), "Artist ")
+                if m.group(2) != "Original audio":
+                    alias(m.group(2), "Track ")
+            # "Follow <display name>" on a suggested account.
+            if (m := re.match(r"^Follow (.+)$", value)) and m.group(1) not in ("back", "Back"):
+                alias(m.group(1), "Display ")
     ordered = sorted(names, key=len, reverse=True)  # "ab_c" before "ab"
     pattern = re.compile("|".join(rf"(?<![\w.]){re.escape(v)}(?![\w])" for v in ordered)) if ordered else None
     for n in root.iter("node"):
-        for attr in ("text", "content-desc"):
+        for attr in ("text", "content-desc", "hint"):
             if pattern and (value := n.get(attr)):
                 n.set(attr, pattern.sub(lambda m: names[m.group(0)], value))
     return etree.tostring(root, encoding="unicode", xml_declaration=False)
@@ -76,7 +102,7 @@ def pseudonymize(xml: str) -> str:
 
 def leftover_text(xml: str) -> list[str]:
     root = etree.fromstring(xml.encode())
-    values = {n.get(a) or "" for n in root.iter("node") for a in ("text", "content-desc")}
+    values = {n.get(a) or "" for n in root.iter("node") for a in ("text", "content-desc", "hint")}
     return sorted(v for v in values if v and not _CHROME.match(v))
 
 
