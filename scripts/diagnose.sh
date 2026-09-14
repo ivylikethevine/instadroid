@@ -15,7 +15,7 @@
 #
 # Usage: ./scripts/diagnose.sh [device-serial]   (defaults to the first `adb devices` entry)
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 S="${1:-$(adb devices | awk 'NR==2 {print $1}')}"
 
 OUT_DIR="local/data/debug"
