@@ -2,6 +2,7 @@
 (versioning.activate_profile / _apk_version), and per-version behavior overrides (@versioned)."""
 
 import types
+from collections.abc import Callable
 
 import igprofiles
 import pytest
@@ -15,23 +16,23 @@ from instadroid import config, install, parsing, versioning
     ("version", "major"),
     [("446.0.0.49.77", 446), ("445.0.0.45.83", 445), (None, None), ("", None), ("garbage", None)],
 )
-def test_major_of(version, major):
+def test_major_of(version: str | None, major: int | None) -> None:
     assert major_of(version) == major
 
 
-def test_available_profiles_are_the_vxyz_directories_at_or_above_the_floor():
+def test_available_profiles_are_the_vxyz_directories_at_or_above_the_floor() -> None:
     names = igprofiles.available()
     assert {"v445", "v446"} <= set(names)
     assert names == sorted(names)
     assert all(int(n[1:]) >= igprofiles.MIN_MAJOR for n in names)
 
 
-def test_default_profile_is_available():
+def test_default_profile_is_available() -> None:
     assert igprofiles.DEFAULT_PROFILE in igprofiles.available()
 
 
 @pytest.mark.parametrize("name", ["v445", "445", " V445 "])
-def test_load_accepts_a_name_with_or_without_the_v(name):
+def test_load_accepts_a_name_with_or_without_the_v(name: str) -> None:
     profile = igprofiles.load(name)
     assert (profile.name, profile.major, profile.apk_version) == ("v445", 445, "445.0.0.45.83")
 
@@ -44,12 +45,14 @@ def test_load_accepts_a_name_with_or_without_the_v(name):
         ("latest", "is not a profile name"),
     ],
 )
-def test_load_rejects_invalid_names(name, error):
+def test_load_rejects_invalid_names(name: str, error: str) -> None:
     with pytest.raises(ValueError, match=error.replace("(", r"\(").replace(")", r"\)")):
         igprofiles.load(name)
 
 
-def _fake_profile_dir(monkeypatch, name, profile_cls):
+def _fake_profile_dir(
+    monkeypatch: pytest.MonkeyPatch, name: str, profile_cls: type[BaseProfile] | None
+) -> None:
     monkeypatch.setattr(igprofiles, "available", lambda: ["v445", "v446", name])
     module = types.SimpleNamespace(Profile=profile_cls)
     real_import = igprofiles.importlib.import_module
@@ -60,7 +63,9 @@ def _fake_profile_dir(monkeypatch, name, profile_cls):
     )
 
 
-def test_load_rejects_a_profile_whose_major_does_not_match_its_directory(monkeypatch):
+def test_load_rejects_a_profile_whose_major_does_not_match_its_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Profile(BaseProfile):
         major, apk_version, selectors = 446, "446.0.0.49.77", {}
 
@@ -69,7 +74,7 @@ def test_load_rejects_a_profile_whose_major_does_not_match_its_directory(monkeyp
         igprofiles.load("v447")
 
 
-def test_load_rejects_an_apk_version_from_another_major(monkeypatch):
+def test_load_rejects_an_apk_version_from_another_major(monkeypatch: pytest.MonkeyPatch) -> None:
     class Profile(BaseProfile):
         major, apk_version, selectors = 447, "446.0.0.49.77", {}
 
@@ -78,13 +83,13 @@ def test_load_rejects_an_apk_version_from_another_major(monkeypatch):
         igprofiles.load("v447")
 
 
-def test_load_rejects_a_directory_without_a_profile_class(monkeypatch):
+def test_load_rejects_a_directory_without_a_profile_class(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_profile_dir(monkeypatch, "v447", None)
     with pytest.raises(ValueError, match=r"must define Profile\(BaseProfile\)"):
         igprofiles.load("v447")
 
 
-def test_select_falls_back_to_the_default_with_a_warning():
+def test_select_falls_back_to_the_default_with_a_warning() -> None:
     profile, warning = igprofiles.select("")
     assert profile.name == igprofiles.DEFAULT_PROFILE and warning is None
     profile, warning = igprofiles.select("v439")
@@ -98,7 +103,7 @@ def test_select_falls_back_to_the_default_with_a_warning():
 
 
 @pytest.mark.parametrize("name", igprofiles.available())
-def test_every_profile_meets_the_contract(name):
+def test_every_profile_meets_the_contract(name: str) -> None:
     profile = igprofiles.load(name)
     assert profile.major >= igprofiles.MIN_MAJOR
     assert major_of(profile.apk_version) == profile.major
@@ -108,14 +113,14 @@ def test_every_profile_meets_the_contract(name):
     assert not versioning._unknown_hooks(profile), "an override name matches no @versioned function"
 
 
-def test_v446_inherits_everything_from_v445_so_far():
+def test_v446_inherits_everything_from_v445_so_far() -> None:
     v445, v446 = igprofiles.load("v445"), igprofiles.load("v446")
     assert v446.selectors == v445.selectors
     assert isinstance(v446, type(v445))
     assert v446.apk_version == "446.0.0.49.77"
 
 
-def test_profile_fixtures_live_in_their_version_directory():
+def test_profile_fixtures_live_in_their_version_directory() -> None:
     path = igprofiles.fixture("445", "feed.xml")
     assert path.parts[-3:] == ("v445", "fixtures", "feed.xml") and path.is_file()
 
@@ -123,7 +128,7 @@ def test_profile_fixtures_live_in_their_version_directory():
 # --- selection in the scraper -------------------------------------------------------------------
 
 
-def test_activate_profile_loads_the_ig_profile_directory(monkeypatch):
+def test_activate_profile_loads_the_ig_profile_directory(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "IG_PROFILE", "v446")
     versioning.activate_profile("446.0.0.49.77")
     assert versioning.PROFILE.name == "v446"
@@ -131,7 +136,7 @@ def test_activate_profile_loads_the_ig_profile_directory(monkeypatch):
     assert versioning.PROFILE_WARNING is None
 
 
-def test_activate_profile_does_not_suggest_a_profile_that_does_not_exist():
+def test_activate_profile_does_not_suggest_a_profile_that_does_not_exist() -> None:
     versioning.activate_profile("460.0.0.1.1")
     assert versioning.PROFILE.name == "v445"
     assert versioning.PROFILE_WARNING == (
@@ -140,7 +145,7 @@ def test_activate_profile_does_not_suggest_a_profile_that_does_not_exist():
     )
 
 
-def test_activate_profile_reports_a_bad_ig_profile(monkeypatch):
+def test_activate_profile_reports_a_bad_ig_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "IG_PROFILE", "v999")
     versioning.activate_profile("445.0.0.45.83")
     assert versioning.PROFILE.name == igprofiles.DEFAULT_PROFILE  # falls back rather than stopping
@@ -159,7 +164,9 @@ def test_activate_profile_reports_a_bad_ig_profile(monkeypatch):
         ("latest", "", ""),
     ],
 )
-def test_apk_version_resolution(monkeypatch, argument, env, expected):
+def test_apk_version_resolution(
+    monkeypatch: pytest.MonkeyPatch, argument: str | None, env: str, expected: str
+) -> None:
     monkeypatch.setattr(config, "IG_APK_VERSION", env)
     assert install._apk_version(argument) == expected
 
@@ -170,11 +177,13 @@ def test_apk_version_resolution(monkeypatch, argument, env, expected):
 class _WithParserOverride(type(igprofiles.load("v445"))):
     """A v445 profile whose parse_hierarchy tags every post, calling the base implementation."""
 
-    def parse_hierarchy(self, base, xml):
+    def parse_hierarchy(self, base: Callable[[str], list[parsing.Post]], xml: str) -> list[parsing.Post]:
         return [{**p, "tagged_by": self.name} for p in base(xml)]
 
 
-def test_a_profile_method_overrides_a_versioned_function_and_receives_the_base(monkeypatch):
+def test_a_profile_method_overrides_a_versioned_function_and_receives_the_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     xml = igprofiles.fixture("v445", "feed.xml").read_text()
     baseline = parsing.parse_hierarchy(xml)
     monkeypatch.setattr(versioning, "PROFILE", _WithParserOverride())
@@ -183,7 +192,7 @@ def test_a_profile_method_overrides_a_versioned_function_and_receives_the_base(m
     assert {p["tagged_by"] for p in posts} == {"v445"}
 
 
-def test_overrides_are_inherited_by_newer_profiles(monkeypatch):
+def test_overrides_are_inherited_by_newer_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
     class Newer(_WithParserOverride):
         major = 446
 
@@ -192,16 +201,16 @@ def test_overrides_are_inherited_by_newer_profiles(monkeypatch):
     assert {p["tagged_by"] for p in parsing.parse_hierarchy(xml)} == {"v446"}
 
 
-def test_without_an_override_the_base_implementation_runs():
+def test_without_an_override_the_base_implementation_runs() -> None:
     assert "parse_hierarchy" in versioning._VERSIONED
     assert parsing.parse_hierarchy.base is not parsing.parse_hierarchy
     xml = igprofiles.fixture("v445", "feed.xml").read_text()
     assert parsing.parse_hierarchy(xml) == parsing.parse_hierarchy.base(xml)
 
 
-def test_a_misnamed_override_is_reported(monkeypatch):
+def test_a_misnamed_override_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     class Typo(type(igprofiles.load("v445"))):
-        def parse_heirarchy(self, base, xml):
+        def parse_heirarchy(self, base: Callable[[str], list[parsing.Post]], xml: str) -> list[parsing.Post]:
             return base(xml)
 
     monkeypatch.setattr(versioning, "select_profile", lambda requested: (Typo(), None))

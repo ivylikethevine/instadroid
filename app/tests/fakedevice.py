@@ -15,6 +15,7 @@ Only the slice of the uiautomator2 API the scraper actually uses is implemented.
 
 import re
 import zlib
+from collections.abc import Iterable
 
 from lxml import etree
 from PIL import Image
@@ -24,8 +25,18 @@ LAUNCHER_PKG = "com.android.launcher3"
 WIDTH, HEIGHT = 1080, 2340
 _BOUNDS = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 
+type Node = tuple[dict[str, str], list[Node]]
 
-def node(rid="", cls="android.view.View", text="", desc="", bounds=(0, 0, WIDTH, 100), children=(), **extra):
+
+def node(
+    rid: str = "",
+    cls: str = "android.view.View",
+    text: str = "",
+    desc: str = "",
+    bounds: tuple[int, int, int, int] = (0, 0, WIDTH, 100),
+    children: Iterable[Node] = (),
+    **extra: str | None,
+) -> Node:
     """One hierarchy node. A bare `rid` is expanded to Instagram's "<pkg>:id/<rid>" form."""
     if rid and ":" not in rid:
         rid = f"{IG_PKG}:id/{rid}"
@@ -41,10 +52,10 @@ def node(rid="", cls="android.view.View", text="", desc="", bounds=(0, 0, WIDTH,
     return attrs, list(children)
 
 
-def hierarchy(*children) -> str:
+def hierarchy(*children: Node) -> str:
     root = etree.Element("hierarchy", rotation="0")
 
-    def add(parent, n):
+    def add(parent: etree._Element, n: Node) -> None:
         attrs, kids = n
         el = etree.SubElement(parent, "node", attrs)
         for kid in kids:
@@ -55,21 +66,24 @@ def hierarchy(*children) -> str:
 
 
 class Out:
-    def __init__(self, output):
+    def __init__(self, output: str) -> None:
         self.output = output
 
 
-def _bounds(n):
+def _bounds(n: etree._Element) -> tuple[int, int, int, int]:
     m = _BOUNDS.match(n.get("bounds") or "")
-    return tuple(map(int, m.groups())) if m else (0, 0, 0, 0)
+    if not m:
+        return (0, 0, 0, 0)
+    x1, y1, x2, y2 = map(int, m.groups())
+    return (x1, y1, x2, y2)
 
 
-def _area(n):
+def _area(n: etree._Element) -> int:
     x1, y1, x2, y2 = _bounds(n)
     return (x2 - x1) * (y2 - y1)
 
 
-def _matches(n, key, value) -> bool:
+def _matches(n: etree._Element, key: str, value: str) -> bool:
     if key == "text":
         return (n.get("text") or "") == value
     if key == "textContains":
@@ -84,37 +98,37 @@ def _matches(n, key, value) -> bool:
 
 
 class FakeSelector:
-    def __init__(self, dev, kw, index=None):
+    def __init__(self, dev: FakeDevice, kw: dict[str, str], index: int | None = None) -> None:
         self._dev, self._kw, self._index = dev, kw, index
 
-    def _all(self):
+    def _all(self) -> list[etree._Element]:
         return [n for n in self._dev.nodes() if all(_matches(n, k, v) for k, v in self._kw.items())]
 
-    def _nodes(self):
+    def _nodes(self) -> list[etree._Element]:
         found = self._all()
         return found if self._index is None else found[self._index : self._index + 1]
 
-    def exists(self, timeout=0):
+    def exists(self, timeout: float = 0) -> bool:
         return bool(self._nodes())
 
     @property
-    def count(self):
+    def count(self) -> int:
         return len(self._all())
 
-    def __getitem__(self, i):
+    def __getitem__(self, i: int) -> FakeSelector:
         return FakeSelector(self._dev, self._kw, i)
 
-    def click(self):
+    def click(self) -> None:
         found = self._nodes()
         if not found:
             raise LookupError(f"no node matches {self._kw}")
         self._dev.tap(found[0])
 
-    def set_text(self, text):
+    def set_text(self, text: str) -> None:
         self._dev.typed.append((self._index, text))
 
     @property
-    def info(self):
+    def info(self) -> dict[str, dict[str, int]]:
         found = self._nodes()
         if not found:
             raise LookupError(f"no node matches {self._kw}")
@@ -127,19 +141,19 @@ class FakeDevice:
 
     def __init__(
         self,
-        screens: dict,
+        screens: dict[str, str],
         start: str,
         *,
-        back=None,
-        scroll=None,
-        pull=None,
-        hswipe=None,
-        foreign=("launcher",),
-        launch_screen="home",
-        launch_blocked=False,
-        installed=(IG_PKG,),
-        ig_version="445.0.0.45.83",
-    ):
+        back: dict[str, str] | None = None,
+        scroll: dict[str, str] | None = None,
+        pull: dict[str, str] | None = None,
+        hswipe: dict[str, str] | None = None,
+        foreign: Iterable[str] = ("launcher",),
+        launch_screen: str = "home",
+        launch_blocked: bool = False,
+        installed: Iterable[str] = (IG_PKG,),
+        ig_version: str = "445.0.0.45.83",
+    ) -> None:
         self.screens = {"launcher": hierarchy(), **screens}
         self.screen = start
         self.back, self.scroll, self.pull, self.hswipe = back or {}, scroll or {}, pull or {}, hswipe or {}
@@ -152,59 +166,63 @@ class FakeDevice:
         }
         self.clipboard = ""
         self.history = [start]
-        self.taps, self.presses, self.swipes, self.typed, self.launches = [], [], [], [], []
-        self.shell_calls = []
+        self.taps: list[tuple[int, int]] = []
+        self.presses: list[str] = []
+        self.swipes: list[tuple[int, int, int, int]] = []
+        self.typed: list[tuple[int | None, str]] = []
+        self.launches: list[str | None] = []
+        self.shell_calls: list[str] = []
 
     # --- state --------------------------------------------------------------------------------
-    def _go(self, screen):
+    def _go(self, screen: str | None) -> None:
         if screen:
             self.screen = screen
             self.history.append(screen)
 
-    def nodes(self):
+    def nodes(self) -> list[etree._Element]:
         return list(etree.fromstring(self.screens[self.screen].encode()).iter("node"))
 
-    def tap(self, n):
+    def tap(self, n: etree._Element) -> None:
         if n.get("clip") is not None:
             self.clipboard = n.get("clip")
         self._go(n.get("goto") or None)
 
     # --- uiautomator2 API ---------------------------------------------------------------------
-    def __call__(self, **kw):
+    def __call__(self, **kw: str) -> FakeSelector:
         return FakeSelector(self, kw)
 
-    def dump_hierarchy(self):
+    def dump_hierarchy(self) -> str:
         return self.screens[self.screen]
 
-    def screenshot(self):
+    def screenshot(self) -> Image.Image:
         # A solid colour per screen: crops of different screens hash differently, same screen alike.
         c = zlib.crc32(self.screen.encode())
         return Image.new("RGB", (WIDTH, HEIGHT), (c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF))
 
-    def window_size(self):
+    def window_size(self) -> tuple[int, int]:
         return WIDTH, HEIGHT
 
-    def implicitly_wait(self, seconds):
+    def implicitly_wait(self, seconds: float) -> None:
         pass
 
-    def app_list(self):
+    def app_list(self) -> list[str]:
         return list(self.installed)
 
-    def install(self, pkg=IG_PKG):
+    def install(self, pkg: str = IG_PKG) -> None:
         """Not part of the real uiautomator2 API; a test hook so a fake `adb install` (mocked at
         the subprocess level in scraper tests) can flip app_list() from absent to present."""
         if pkg not in self.installed:
             self.installed.append(pkg)
 
-    def app_current(self):
+    def app_current(self) -> dict[str, str]:
         return {"package": LAUNCHER_PKG if self.screen in self.foreign else IG_PKG}
 
-    def app_start(self, pkg, activity=None, stop=False):
+    def app_start(self, pkg: str, activity: str | None = None, stop: bool = False) -> None:
         self.launches.append(activity)
         if pkg == IG_PKG and self.screen in self.foreign and not self.launch_blocked:
             self._go(self.launch_screen)
 
-    def shell(self, cmd):
+    def shell(self, cmd: str | list[str]) -> Out:
         joined = " ".join(cmd) if isinstance(cmd, list) else cmd
         self.shell_calls.extend(joined.split("; "))  # one entry per command, as the device's sh runs them
         if "resolve-activity" in joined:
@@ -215,14 +233,14 @@ class FakeDevice:
             return Out(self.props.get(joined.split()[-1], ""))
         return Out("")
 
-    def press(self, key):
+    def press(self, key: str) -> None:
         self.presses.append(key)
         if key == "home":
             self._go("launcher")
         elif key == "back":
             self._go(self.back.get(self.screen))
 
-    def swipe(self, x1, y1, x2, y2, duration=None):
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration: float | None = None) -> None:
         self.swipes.append((x1, y1, x2, y2))
         if abs(x2 - x1) > abs(y2 - y1):
             self._go(self.hswipe.get(self.screen))
@@ -231,7 +249,7 @@ class FakeDevice:
         else:
             self._go(self.pull.get(self.screen))
 
-    def click(self, x, y):
+    def click(self, x: int, y: int) -> None:
         """Coordinate tap: the smallest node under the point that does something, else the smallest."""
         self.taps.append((x, y))
         hits = [n for n in self.nodes() if _contains(n, x, y)]
@@ -241,6 +259,6 @@ class FakeDevice:
             self.tap(min(pool, key=_area))
 
 
-def _contains(n, x, y) -> bool:
+def _contains(n: etree._Element, x: int, y: int) -> bool:
     x1, y1, x2, y2 = _bounds(n)
     return x1 <= x <= x2 and y1 <= y <= y2

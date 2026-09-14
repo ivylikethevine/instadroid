@@ -2,6 +2,8 @@
 hook that lets a profile replace any UI-dependent function."""
 
 import functools
+from collections.abc import Callable
+from typing import Any
 
 from igprofiles import BaseProfile, major_of
 from igprofiles import available as available_profiles
@@ -21,14 +23,14 @@ class _ActiveSelectors:
     """SELECTORS["key"] always reads the active PROFILE's selectors, so switching profiles is just
     reassigning PROFILE."""
 
-    def __getitem__(self, key: str):
+    def __getitem__(self, key: str) -> Any:
         return PROFILE.selectors[key]
 
 
 SELECTORS = _ActiveSelectors()
 
 
-def versioned(fn):
+def versioned(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Let an Instagram version profile replace this function: if the active PROFILE defines a method
     with the same name, calls go there instead, with this implementation passed first as `base` so
     the override can wrap or replace it. Mark anything that depends on Instagram's UI."""
@@ -36,7 +38,7 @@ def versioned(fn):
     _VERSIONED.add(name)
 
     @functools.wraps(fn)
-    def dispatch(*args, **kwargs):
+    def dispatch(*args: Any, **kwargs: Any) -> Any:
         override = getattr(PROFILE, name, None)
         if override is None:
             return fn(*args, **kwargs)

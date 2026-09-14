@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import NotRequired, TypedDict
 from urllib.parse import urlsplit
 
+import uiautomator2 as u2
+
 from . import (
     capture,
     common,
@@ -25,7 +27,7 @@ from . import (
 from .common import log
 
 
-def _startup_wait_seconds(con, now: datetime | None = None) -> float:
+def _startup_wait_seconds(con: sqlite3.Connection, now: datetime | None = None) -> float:
     """Seconds to wait before the first scrape after the process starts: whatever's left of the
     interval since the last recorded run finished. That interval is the first RETRY_DELAYS_MINUTES
     entry if the last run failed transiently (the retry it would have had), otherwise a normally
@@ -109,7 +111,7 @@ def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
     return None
 
 
-def scrape_once(d, con) -> RunStats:
+def scrape_once(d: u2.Device, con: sqlite3.Connection) -> RunStats:
     """One scrape run. Starts and ends with Instagram and the cached system apps force-stopped
     (_free_device_memory), the end in a `finally` so a run that raises halfway doesn't leave
     Instagram's ~800MiB resident until the next poll. Adds the run's redroid memory peak and OOM
@@ -130,7 +132,17 @@ def scrape_once(d, con) -> RunStats:
     return stats
 
 
-def _store_post(d, con, p: parsing.Post, h, pid, url, media, extra_media, ig_version) -> bool:
+def _store_post(
+    d: u2.Device,
+    con: sqlite3.Connection,
+    p: parsing.Post,
+    h: str,
+    pid: str,
+    url: str | None,
+    media: str | None,
+    extra_media: list[str],
+    ig_version: str | None,
+) -> bool:
     """Save a captured card (media cropped, permalink fetched, `pid` its final id): merge it into a
     stored duplicate (returns False) or insert it as a new post (True)."""
     if p["caption_truncated"]:
@@ -185,7 +197,7 @@ def _rename_media(pid: str, media: str, extra_media: list[str]) -> tuple[str, li
     return names[0], names[1:]
 
 
-def _scrape_feed(d, con, guard: device.MemoryGuard) -> RunStats:
+def _scrape_feed(d: u2.Device, con: sqlite3.Connection, guard: device.MemoryGuard) -> RunStats:
     config.DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     capture.reset_last_url(d)
     navigation.open_target_feed(d)
@@ -368,7 +380,7 @@ def _scrape_feed(d, con, guard: device.MemoryGuard) -> RunStats:
     }
 
 
-def main():
+def main() -> None:
     con = db.db_init()
     attempt = 0  # consecutive transient-failure retries so far
     if wait := _startup_wait_seconds(con):

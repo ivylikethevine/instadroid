@@ -14,7 +14,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && ln -s "$(python -c 'import adbutils; print(adbutils.adb_path())')" /usr/local/bin/adb \
     && adb version
-COPY scraper.py app.py entrypoint.sh ./
+COPY scraper.py app.py fileenv.py entrypoint.sh ./
 COPY instadroid ./instadroid
 COPY igprofiles ./igprofiles
 RUN chmod +x entrypoint.sh

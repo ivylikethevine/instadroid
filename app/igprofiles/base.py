@@ -1,5 +1,7 @@
 """What every Instagram version profile provides. See docs/NEXT.md for the full design."""
 
+from typing import Any
+
 
 class BaseProfile:
     """One Instagram major version's complete configuration, living in its own igprofiles/vXYZ/
@@ -25,12 +27,12 @@ class BaseProfile:
 
     major: int
     apk_version: str
-    selectors: dict
+    selectors: dict[str, Any]
     notes: str = ""  # free text shown by `scraper.py profiles`
 
     @property
     def name(self) -> str:
         return f"v{self.major}"
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<profile {self.name} ({self.apk_version})>"

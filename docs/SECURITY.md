@@ -30,14 +30,16 @@ The reports that matter most here aren't a CVE in a dependency (Dependabot and `
 track those). They are:
 
 - **Credential handling.** `IG_USERNAME` and `IG_PASSWORD` are read from `.env` as plain environment
-  variables. Any way they can leak (into logs, `/status`, debug dumps, the feeds, or the published
-  image) is in scope.
+  variables, or from files (`IG_PASSWORD_FILE`, e.g. a Docker secret). Any way they can leak (into
+  logs, `/status`, debug dumps, the feeds, or the published image) is in scope.
 - **The feed server** (`app.py`: `/instagram.xml`, `/stories.xml`, `/opml`, `/media`, `/status`,
-  `/health`). It has **no authentication**. Anything that reaches beyond what it's meant to serve is
-  in scope: path traversal out of the media directory, injection through captions or usernames
+  `/health`). It's unauthenticated unless `FEED_TOKEN` is set. Anything that reaches beyond what it's
+  meant to serve is in scope: getting past the token, a media signature that opens a file it wasn't
+  issued for, path traversal out of the media directory, injection through captions or usernames
   into the Atom/HTML output, or reading the database or `.env`.
 - **Secrets in logs.** `FRESHRSS_REFRESH_URL` carries an API token and is logged with its query
-  string stripped. A way to get the token into a log is in scope.
+  string stripped, and a `?token=` feed token is blanked in the access log. A way to get either token
+  into a log is in scope.
 - **The release pipeline and image**: the GitHub Actions workflows, the published
   `ghcr.io/ivylikethevine/instadroid` image and its build-provenance attestation, and the pinned
   `apkeep` binary baked into it.
@@ -46,10 +48,11 @@ track those). They are:
 
 These are known and documented, not vulnerabilities in themselves:
 
-- **The feed server is unauthenticated.** It binds `127.0.0.1` by default (`FEED_HOST`). Setting
-  `FEED_HOST=0.0.0.0` serves everything scraped, including media from private accounts you follow,
-  to anyone who can reach the port. Put it behind an authenticating reverse proxy before exposing
-  it. Built-in feed auth is on the roadmap.
+- **The feed server is unauthenticated by default.** It binds `127.0.0.1` by default (`FEED_HOST`).
+  Setting `FEED_HOST=0.0.0.0` without `FEED_TOKEN` serves everything scraped, including media from
+  private accounts you follow, to anyone who can reach the port. With `FEED_TOKEN`, the token travels
+  in plain HTTP unless a TLS reverse proxy sits in front, and it's embedded in `/opml`'s feed URLs
+  (so in whatever reader imports them). `/health` stays open and reveals the post count.
 - **ADB is unauthenticated.** redroid's adbd runs with `ro.adb.secure=0`, and compose publishes it
   on `127.0.0.1:5555`. Anyone who can reach that port can fully control the device, including the
   logged-in Instagram session. Never publish it beyond loopback.
@@ -67,8 +70,9 @@ These are known and documented, not vulnerabilities in themselves:
 
 ## Hardening checklist for operators
 
-- Keep `FEED_HOST=127.0.0.1` unless the feed is behind authentication.
-- `chmod 600 .env`, and never commit it (`.gitignore` already excludes it).
+- Keep `FEED_HOST=127.0.0.1` unless `FEED_TOKEN` is set, ideally behind TLS.
+- `chmod 600 .env`, and never commit it (`.gitignore` already excludes it). Or move the password out
+  of it with `IG_PASSWORD_FILE`.
 - Don't publish ADB (`5555`) or the feed port (`8000`) beyond the host.
 - Keep `local/data/` out of backups or sync folders you wouldn't trust with your Instagram session.
 - Verify a release image before running it:
