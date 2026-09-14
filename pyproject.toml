@@ -10,6 +10,7 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["app/tests"]
+pythonpath = ["app"]
 cache_dir = "local/.pytest_cache"
 
 [tool.coverage.run]

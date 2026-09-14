@@ -35,7 +35,7 @@ Before sending a change, run what CI runs:
 
 ```bash
 ruff check . && ruff format --check .      # also formats Python code blocks in Markdown
-PYTHONPATH=app pytest app/tests -q
+pytest -q
 shellcheck -S warning scripts/*.sh
 docker compose config -q
 ```

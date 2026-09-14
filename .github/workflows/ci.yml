@@ -42,9 +42,7 @@ jobs:
       - run: pip install -r app/requirements.txt -r scripts/requirements-dev.txt
       # pyproject.toml keeps coverage's data file in local/, which isn't in the checkout.
       - run: mkdir -p local
-      - run: python -m pytest app/tests -q --cov=app --cov-report=term
-        env:
-          PYTHONPATH: app
+      - run: python -m pytest -q --cov=app --cov-report=term
       # The README's coverage badge is published by .github/workflows/pages.yml instead of here —
       # it re-runs coverage and serves coverage.json from the project's GitHub Pages site, so
       # publishing it doesn't need a `contents: write` grant or a dedicated orphan branch in CI.
@@ -71,7 +69,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - run: sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+      # shellcheck is preinstalled on GitHub's ubuntu runners.
       - run: shellcheck -S warning ./scripts/*.sh
 
   docker:
@@ -96,13 +94,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Image smoke test
-        run: |
-          docker run --rm instadroid-app:ci python -c "import scraper; print('import ok')"
-          # network=host: the feed binds 127.0.0.1 by default, same as the compose service.
-          docker run --rm -d --name app --network host instadroid-app:ci
-          for _ in $(seq 1 20); do curl -fs localhost:8000/health && break; sleep 1; done
-          curl -fs localhost:8000/health | grep -q '"ok":true'
-          docker rm -f app
+        run: ./scripts/smoke-test.sh instadroid-app:ci
       - name: Validate compose file
         run: |
           cp .env.example .env

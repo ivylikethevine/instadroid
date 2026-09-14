@@ -48,7 +48,7 @@ services:
     command:
       - androidboot.redroid_gpu_mode=guest
       # Raising these makes screenshotted post crops sharper (screen resolution is the ceiling on
-      # crop quality — see MEDIA_QUALITY below), at the cost of slower boot/more memory.
+      # crop quality — see MEDIA_QUALITY in .env.example), at the cost of slower boot/more memory.
       - androidboot.redroid_width=${REDROID_WIDTH:-1080}
       - androidboot.redroid_height=${REDROID_HEIGHT:-2340}
       - androidboot.redroid_dpi=${REDROID_DPI:-420}
@@ -90,49 +90,12 @@ services:
       init-dirs:
         condition: service_completed_successfully
     network_mode: host         # so it can reach redroid's ADB port on the host loopback
-    env_file: .env             # IG_USERNAME / IG_PASSWORD for automated login
+    # Every setting (credentials, POLL_*, MAX_SCROLLS, ...) comes from .env; scraper.py owns the
+    # defaults and .env.example documents them. DB_PATH, MEDIA_DIR, DEBUG_DIR, APK_CACHE_DIR and
+    # ADB_ADDR already default to the mounts and port below.
+    env_file: .env
     environment:
-      ADB_ADDR: ${ADB_ADDR:-127.0.0.1:5555}   # redroid's forwarded ADB port
-      DB_PATH: /db/posts.sqlite
-      MEDIA_DIR: /media
-      DEBUG_DIR: /debug
-      POLL_MIN_HOURS: ${POLL_MIN_HOURS:-2.5}
-      POLL_MAX_HOURS: ${POLL_MAX_HOURS:-4.5}
-      MAX_SCROLLS: ${MAX_SCROLLS:-25}
-      STOP_AFTER_SEEN: ${STOP_AFTER_SEEN:-4}   # stop after N consecutive already-seen posts
-      RETAIN_DAYS: ${RETAIN_DAYS:-60}          # delete posts (and their media) older than this; 0 keeps forever
-      SCROLL_SWIPE_MIN: ${SCROLL_SWIPE_MIN:-0.6}   # seconds the swipe gesture itself takes
-      SCROLL_SWIPE_MAX: ${SCROLL_SWIPE_MAX:-1.0}
-      SCROLL_PAUSE_MIN: ${SCROLL_PAUSE_MIN:-1.5}   # seconds idle between scrolls
-      SCROLL_PAUSE_MAX: ${SCROLL_PAUSE_MAX:-4.0}
-      MEDIA_QUALITY: ${MEDIA_QUALITY:-95}          # encoder quality (1-95) for saved images
-      MEDIA_FORMAT: ${MEDIA_FORMAT:-webp}          # webp | jpeg; already-saved files keep their format
-      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8000}   # what FreshRSS can reach
-      FEED_HOST: ${FEED_HOST:-127.0.0.1}   # loopback only by default; set to 0.0.0.0 for LAN access
-      PERMALINK_RETRIES: ${PERMALINK_RETRIES:-2}   # extra share-sheet passes after the first
-      SHARE_TAP_TRIES: ${SHARE_TAP_TRIES:-2}       # taps on the share button before giving up
-      CLIPBOARD_TIMEOUT: ${CLIPBOARD_TIMEOUT:-6.0} # seconds to poll the clipboard for
-      MAX_CAROUSEL_SLIDES: ${MAX_CAROUSEL_SLIDES:-10}
-      VIDEO_SETTLE_SECONDS: ${VIDEO_SETTLE_SECONDS:-1.5}   # let autoplay/overlay settle before the still
-      AVATAR_REFRESH_DAYS: ${AVATAR_REFRESH_DAYS:-14}
-      MEDIA_MAX_MB: ${MEDIA_MAX_MB:-0}              # total media+DB size cap in MB; 0 disables
-      MAX_STORIES_PER_RUN: ${MAX_STORIES_PER_RUN:-10}
-      TIME_DISTRIBUTION: ${TIME_DISTRIBUTION:-uniform}   # uniform | lognormal | daynight
-      DEVICE_TIMEZONE: ${DEVICE_TIMEZONE:-}   # empty = leave the device's clock alone; also read by tune-android.sh
-      DAYNIGHT_QUIET_START: ${DAYNIGHT_QUIET_START:-0}
-      DAYNIGHT_QUIET_END: ${DAYNIGHT_QUIET_END:-6}
-      EMPTY_SCREEN_LIMIT: ${EMPTY_SCREEN_LIMIT:-3}         # empty screens in a row before reopening/stopping; 0 disables
-      RETRY_DELAYS_MINUTES: ${RETRY_DELAYS_MINUTES-2,5,15} # early retries after a transient device failure; empty disables
-      DEBUG_RETAIN_DAYS: ${DEBUG_RETAIN_DAYS:-7}   # delete debug .xml/.jpg/.png/.txt older than this; 0 disables
-      LOGCAT_TAIL_LINES: ${LOGCAT_TAIL_LINES:-2000}  # lines kept in the filtered logcat saved after a device failure
-      SCRAPE_ON_STARTUP: ${SCRAPE_ON_STARTUP:-0}   # 1 = scrape immediately on start instead of waiting out the poll interval
-      REDROID_IMAGE: *redroid_image                # recorded with each run
-      IG_AUTO_INSTALL: ${IG_AUTO_INSTALL:-1}       # fetch+install Instagram via apkeep if missing on the device
-      IG_PROFILE: ${IG_PROFILE:-}                  # Instagram version profile dir in app/igprofiles/ (e.g. v446); empty = the default (v445)
-      IG_APK_VERSION: ${IG_APK_VERSION:-}          # override the build to install; empty = the profile's own; "latest" = newest on APKPure
-      APK_CACHE_DIR: ${APK_CACHE_DIR:-/apk}         # cached xapk/apk, reused across installs
-      APK_FETCH_TIMEOUT: ${APK_FETCH_TIMEOUT:-300}  # seconds allowed for apkeep's download / adb install
-      MEMORY_GUARD_PERCENT: ${MEMORY_GUARD_PERCENT:-85}  # stop a run once redroid uses this % of its mem_limit; 0 disables
+      REDROID_IMAGE: *redroid_image   # recorded with each run
     volumes:
       - ./local/data/db:/db
       - ./local/data/media:/media
