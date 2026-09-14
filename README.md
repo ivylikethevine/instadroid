@@ -300,7 +300,8 @@ challenges and every other error never retry early.
 
 Each run also records the installed Instagram `versionName` and the redroid image (`runs.ig_version`
 / `runs.redroid_image`, both on `/status`), so when the selectors break it's a lookup whether an
-Instagram update landed. Docker keeps at most 3 × 10MB of log per container (the `x-logging` block
+Instagram update landed. Each post also stores the version that scraped it (`posts.ig_version`,
+first-seen wins on a duplicate merge; `NULL` for posts from before this was added). Docker keeps at most 3 × 10MB of log per container (the `x-logging` block
 in `docker-compose.yml`), and the healthcheck's own `GET /health` every 30s is left out of the
 access log.
 
@@ -400,9 +401,8 @@ Grouped by how much of the current architecture each would touch, roughly smalle
 - **Selector-drift canary**: record per-run parse stats (cards per screen, share with a real
   caption, share `complete`) and flag a drop against a rolling baseline — catches an Instagram UI
   change before runs go fully blank.
-- **`scripts/diagnose.sh`**: codify `CLAUDE.md`'s logcat triage (grep for `WATCHDOG KILLING`,
-  `FATAL EXCEPTION`, `Version mismatch`, `Can't downgrade database`) and print the matching fix;
-  optionally have the scraper save a filtered `logcat -d` into `DEBUG_DIR` on device failures.
+- **Have the scraper itself save a filtered `logcat -d` into `DEBUG_DIR` on device failures**, not
+  just on-demand — `scripts/diagnose.sh` (below) already does the on-demand triage.
 - **Guard `/data` against Android version mixing**: record the image tag in `local/data/android` on
   first boot and refuse to start a different Android major version against it — the appops.xml,
   idmap and telephony.db corruption in `CLAUDE.md` all came from exactly that.

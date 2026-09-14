@@ -335,7 +335,9 @@ def db_init():
         )"""
     )
     cols = {r["name"] for r in con.execute("PRAGMA table_info(posts)")}
-    for col in ("hash", "url", "place", "posted_at", "updated_at"):
+    # ig_version: the Instagram versionName that scraped the post, so a parsing quirk can be traced
+    # to the app build that produced it. NULL for posts stored before this column existed.
+    for col in ("hash", "url", "place", "posted_at", "updated_at", "ig_version"):
         if col not in cols:
             con.execute(f"ALTER TABLE posts ADD COLUMN {col} TEXT")
     # Backfill for rows written before updated_at existed, and a no-op once that's done.
@@ -412,6 +414,15 @@ def db_init():
     return con
 
 
+def _instagram_version(d) -> str | None:
+    """The installed Instagram versionName, or None if it isn't installed or adb misbehaves."""
+    try:
+        m = re.search(r"versionName=(\S+)", d.shell(["dumpsys", "package", IG_PKG]).output or "")
+    except Exception:
+        return None
+    return m.group(1) if m else None
+
+
 def _device_snapshot(d) -> dict:
     """Best-effort device/app versions for the runs table and status page: ro.build.* props, the
     installed Instagram versionName, and the redroid image tag compose passes in — so "which
@@ -424,18 +435,11 @@ def _device_snapshot(d) -> dict:
         except Exception:
             return None
 
-    def ig_version():
-        try:
-            m = re.search(r"versionName=(\S+)", d.shell(["dumpsys", "package", IG_PKG]).output or "")
-        except Exception:
-            return None
-        return m.group(1) if m else None
-
     return {
         "android_release": prop("ro.build.version.release"),
         "android_sdk": prop("ro.build.version.sdk"),
         "device_product": prop("ro.product.name") or prop("ro.build.product"),
-        "ig_version": ig_version(),
+        "ig_version": _instagram_version(d),
         "redroid_image": os.environ.get("REDROID_IMAGE") or None,
     }
 
@@ -598,6 +602,7 @@ def _migrate_dedupe(con):
                 r["media_file"],
                 posted_at,
                 datetime.now(UTC),
+                r["ig_version"],
             )
             if media_to_drop:
                 (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
@@ -657,7 +662,9 @@ def _find_duplicate(con, username, posted_at, posted_at_prec, caption, exclude_i
     return None
 
 
-def _merged_fields(existing, pid, url, h, kind, posted_date, place, caption, media, posted_at, now):
+def _merged_fields(
+    existing, pid, url, h, kind, posted_date, place, caption, media, posted_at, now, ig_version=None
+):
     """Compute the row that should replace `existing` (a sqlite3.Row from posts) once a
     duplicate for the same post is found: keep the permalink id/url over a hash id, a real
     caption over a weak/placeholder one, and whichever media crop already exists. Returns
@@ -687,6 +694,9 @@ def _merged_fields(existing, pid, url, h, kind, posted_date, place, caption, med
         "place": existing["place"] or place,
         "posted_at": existing["posted_at"] or (posted_at.isoformat() if posted_at else None),
         "updated_at": now.isoformat(),
+        # Listed explicitly because _write_merged's INSERT OR REPLACE would otherwise NULL it out.
+        # First-seen wins, same as scraped_at.
+        "ig_version": existing["ig_version"] or ig_version,
     }
     return final_id, fields, media_to_drop
 
@@ -917,8 +927,7 @@ def _install_instagram(d) -> None:
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         stderr = getattr(e, "stderr", "") or ""
         raise DeviceNotReady(f"adb install of {IG_PKG} failed: {e!r}: {stderr[-2000:]}") from e
-    m = re.search(r"versionName=(\S+)", d.shell(["dumpsys", "package", IG_PKG]).output or "")
-    log(f"installed {IG_PKG}", m.group(1) if m else "(version unknown)")
+    log(f"installed {IG_PKG}", _instagram_version(d) or "(version unknown)")
 
 
 def _redact_url(url: str) -> str:
@@ -2049,6 +2058,9 @@ def scrape_once(d, con) -> dict:
     except Exception:
         _last_url = ""
     open_target_feed(d)
+    # Read after opening the feed, not from main()'s snapshot: opening it can install Instagram
+    # (ensure_logged_in's auto-install), which would leave an earlier reading stale or empty.
+    ig_version = _instagram_version(d)
     if FOLLOWING_REFRESH_DAYS and _needs_following_refresh(con):
         try:
             refresh_following_list(d, con)
@@ -2192,6 +2204,7 @@ def scrape_once(d, con) -> dict:
                     media,
                     posted_at,
                     datetime.now(UTC),
+                    ig_version,
                 )
                 if media_to_drop:
                     (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
@@ -2214,7 +2227,7 @@ def scrape_once(d, con) -> dict:
             now_iso = datetime.now(UTC).isoformat()
             con.execute(
                 "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at,"
-                " hash, url, place, posted_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                " hash, url, place, posted_at, updated_at, ig_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     pid,
                     p["username"],
@@ -2228,6 +2241,7 @@ def scrape_once(d, con) -> dict:
                     p["place"],
                     posted_at.isoformat() if posted_at else None,
                     now_iso,
+                    ig_version,
                 ),
             )
             for i, fn in enumerate(extra_media, start=1):

@@ -93,6 +93,23 @@ def test_merge_bumps_updated_at_without_touching_scraped_at(con_and_media):
     assert media_to_drop is None
 
 
+def test_merge_keeps_the_first_seen_instagram_version(con_and_media):
+    con, _ = con_and_media
+    ts = datetime.now(UTC).isoformat()
+    con.execute(
+        "INSERT INTO posts (id, username, caption, scraped_at, hash, updated_at, ig_version)"
+        " VALUES ('h1','club','Reel by Club',?,'h1',?,'400.0.0.1.1')",
+        (ts, ts),
+    )
+    existing = con.execute("SELECT * FROM posts WHERE id='h1'").fetchone()
+    final_id, fields, _ = scraper._merged_fields(
+        existing, "h1", None, "h2", "video", "1 day ago", None, "Real caption", None, None,
+        datetime.now(UTC), "445.0.0.45.83",
+    )  # fmt: skip
+    scraper._write_merged(con, existing["id"], final_id, fields)
+    assert con.execute("SELECT ig_version FROM posts WHERE id=?", (final_id,)).fetchone()[0] == "400.0.0.1.1"
+
+
 def test_db_init_backfills_updated_at_for_rows_from_before_the_column_existed(tmp_path, monkeypatch):
     db = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
