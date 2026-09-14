@@ -14,7 +14,7 @@ permissions:
 jobs:
   lint:
     if: github.event.pull_request.draft != true
-    name: Lint (ruff)
+    name: Lint (ruff + pyright)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -23,9 +23,12 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.14"
-      - run: pip install -r scripts/requirements-dev.txt
+          cache: pip
+      # The app's own requirements too: pyright resolves imports against them.
+      - run: pip install -r app/requirements.txt -r scripts/requirements-dev.txt
       - run: ruff check .
       - run: ruff format --check .
+      - run: pyright
 
   test:
     if: github.event.pull_request.draft != true

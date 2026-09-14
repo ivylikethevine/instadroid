@@ -242,7 +242,7 @@ everything else it reconciles. Each run's `/status` page shows how many posts a 
 ```bash
 python -m venv local/.venv && . local/.venv/bin/activate
 pip install -r scripts/requirements-dev.txt -r app/requirements.txt
-ruff check . && ruff format --check .
+ruff check . && ruff format --check . && pyright
 pytest -q                              # parser, feed, and device-flow tests; temp SQLite db
 pytest -q --cov=app --cov-report=term-missing   # with coverage
 ```

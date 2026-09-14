@@ -1,12 +1,12 @@
 """Instagram version profiles: discovery and loading (igprofiles), selection and install versions
-(scraper.activate_profile / _apk_version), and per-version behavior overrides (@versioned)."""
+(versioning.activate_profile / _apk_version), and per-version behavior overrides (@versioned)."""
 
 import types
 
 import igprofiles
 import pytest
-import scraper
 from igprofiles import BaseProfile, major_of
+from instadroid import config, install, parsing, versioning
 
 # --- discovery and loading ---------------------------------------------------------------------
 
@@ -105,7 +105,7 @@ def test_every_profile_meets_the_contract(name):
     # Every selector key the scraper reads must exist, so a profile can't silently drop one.
     baseline = igprofiles.load("v445").selectors
     assert set(baseline) <= set(profile.selectors), set(baseline) - set(profile.selectors)
-    assert not scraper._unknown_hooks(profile), "an override name matches no @versioned function"
+    assert not versioning._unknown_hooks(profile), "an override name matches no @versioned function"
 
 
 def test_v446_inherits_everything_from_v445_so_far():
@@ -124,26 +124,27 @@ def test_profile_fixtures_live_in_their_version_directory():
 
 
 def test_activate_profile_loads_the_ig_profile_directory(monkeypatch):
-    monkeypatch.setattr(scraper, "IG_PROFILE", "v446")
-    scraper.activate_profile("446.0.0.49.77")
-    assert scraper.PROFILE.name == "v446" and scraper.SELECTORS is scraper.PROFILE.selectors
-    assert scraper.PROFILE_WARNING is None
+    monkeypatch.setattr(config, "IG_PROFILE", "v446")
+    versioning.activate_profile("446.0.0.49.77")
+    assert versioning.PROFILE.name == "v446"
+    assert versioning.SELECTORS["header_id"] == versioning.PROFILE.selectors["header_id"]
+    assert versioning.PROFILE_WARNING is None
 
 
 def test_activate_profile_does_not_suggest_a_profile_that_does_not_exist():
-    scraper.activate_profile("460.0.0.1.1")
-    assert scraper.PROFILE.name == "v445"
-    assert scraper.PROFILE_WARNING == (
+    versioning.activate_profile("460.0.0.1.1")
+    assert versioning.PROFILE.name == "v445"
+    assert versioning.PROFILE_WARNING == (
         "Instagram 460.0.0.1.1 is installed but profile v445 targets 445.x;"
         " run `scraper.py install` to get 445.0.0.45.83"
     )
 
 
 def test_activate_profile_reports_a_bad_ig_profile(monkeypatch):
-    monkeypatch.setattr(scraper, "IG_PROFILE", "v999")
-    scraper.activate_profile("445.0.0.45.83")
-    assert scraper.PROFILE.name == igprofiles.DEFAULT_PROFILE  # falls back rather than stopping
-    assert (scraper.PROFILE_WARNING or "").startswith(
+    monkeypatch.setattr(config, "IG_PROFILE", "v999")
+    versioning.activate_profile("445.0.0.45.83")
+    assert versioning.PROFILE.name == igprofiles.DEFAULT_PROFILE  # falls back rather than stopping
+    assert (versioning.PROFILE_WARNING or "").startswith(
         "IG_PROFILE='v999': no profile directory igprofiles/v999/"
     )
 
@@ -159,8 +160,8 @@ def test_activate_profile_reports_a_bad_ig_profile(monkeypatch):
     ],
 )
 def test_apk_version_resolution(monkeypatch, argument, env, expected):
-    monkeypatch.setattr(scraper, "IG_APK_VERSION", env)
-    assert scraper._apk_version(argument) == expected
+    monkeypatch.setattr(config, "IG_APK_VERSION", env)
+    assert install._apk_version(argument) == expected
 
 
 # --- per-version behavior overrides ------------------------------------------------------------
@@ -175,9 +176,9 @@ class _WithParserOverride(type(igprofiles.load("v445"))):
 
 def test_a_profile_method_overrides_a_versioned_function_and_receives_the_base(monkeypatch):
     xml = igprofiles.fixture("v445", "feed.xml").read_text()
-    baseline = scraper.parse_hierarchy(xml)
-    monkeypatch.setattr(scraper, "PROFILE", _WithParserOverride())
-    posts = scraper.parse_hierarchy(xml)
+    baseline = parsing.parse_hierarchy(xml)
+    monkeypatch.setattr(versioning, "PROFILE", _WithParserOverride())
+    posts = parsing.parse_hierarchy(xml)
     assert [p["username"] for p in posts] == [p["username"] for p in baseline]
     assert {p["tagged_by"] for p in posts} == {"v445"}
 
@@ -187,15 +188,15 @@ def test_overrides_are_inherited_by_newer_profiles(monkeypatch):
         major = 446
 
     xml = igprofiles.fixture("v445", "feed.xml").read_text()
-    monkeypatch.setattr(scraper, "PROFILE", Newer())
-    assert {p["tagged_by"] for p in scraper.parse_hierarchy(xml)} == {"v446"}
+    monkeypatch.setattr(versioning, "PROFILE", Newer())
+    assert {p["tagged_by"] for p in parsing.parse_hierarchy(xml)} == {"v446"}
 
 
 def test_without_an_override_the_base_implementation_runs():
-    assert "parse_hierarchy" in scraper._VERSIONED
-    assert scraper.parse_hierarchy.base is not scraper.parse_hierarchy
+    assert "parse_hierarchy" in versioning._VERSIONED
+    assert parsing.parse_hierarchy.base is not parsing.parse_hierarchy
     xml = igprofiles.fixture("v445", "feed.xml").read_text()
-    assert scraper.parse_hierarchy(xml) == scraper.parse_hierarchy.base(xml)
+    assert parsing.parse_hierarchy(xml) == parsing.parse_hierarchy.base(xml)
 
 
 def test_a_misnamed_override_is_reported(monkeypatch):
@@ -203,8 +204,9 @@ def test_a_misnamed_override_is_reported(monkeypatch):
         def parse_heirarchy(self, base, xml):
             return base(xml)
 
-    monkeypatch.setattr(scraper, "select_profile", lambda requested: (Typo(), None))
-    scraper.activate_profile("445.0.0.45.83")
+    monkeypatch.setattr(versioning, "select_profile", lambda requested: (Typo(), None))
+    versioning.activate_profile("445.0.0.45.83")
     assert (
-        scraper.PROFILE_WARNING == "profile v445 defines parse_heirarchy, which match no @versioned function"
+        versioning.PROFILE_WARNING
+        == "profile v445 defines parse_heirarchy, which match no @versioned function"
     )
