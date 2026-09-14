@@ -6,19 +6,26 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  publish:
-    name: Build & push ghcr image
+  build:
+    name: Build & push (untagged)
     runs-on: ubuntu-latest
-    environment: publish
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Set lowercase image name
-        run: echo "IMAGE=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "image=$(echo "ghcr.io/$REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -26,11 +33,129 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        id: build
         with:
           context: app
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ github.ref_name }}
-            ${{ env.IMAGE }}:latest
+          outputs: type=image,name=${{ steps.image.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Smoke test image
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker run --rm "$IMAGE@$DIGEST" python -c "import scraper; print('import ok')"
+          docker run --rm -d --name app --network host "$IMAGE@$DIGEST"
+          for _ in $(seq 1 20); do curl -fs localhost:8000/health && break; sleep 1; done
+          curl -fs localhost:8000/health | grep -q '"ok":true'
+          docker rm -f app
+
+  publish:
+    name: Approve & tag release image
+    needs: build
+    runs-on: ubuntu-latest
+    environment: publish
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.final-digest.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: meta
+        with:
+          images: ${{ needs.build.outputs.image }}
+          flavor: latest=auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Tag built digest with release tags
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          tag_args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && tag_args+=(-t "$tag")
+          done <<< "$TAGS"
+          docker buildx imagetools create "${tag_args[@]}" "$IMAGE@$DIGEST"
+      - name: Resolve final manifest digest
+        id: final-digest
+        env:
+          # First line of $TAGS is a stable, always-present reference to inspect.
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          ref=$(head -n1 <<< "$TAGS")
+          digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ needs.build.outputs.image }}
+          subject-digest: ${{ steps.final-digest.outputs.digest }}
+          push-to-registry: true
+
+  release:
+    name: Create GitHub Release
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Build release notes
+        id: notes
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          TAGS: ${{ needs.publish.outputs.tags }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          {
+            echo "## Images"
+            echo
+            echo "| Image | Tag | Digest |"
+            echo "|---|---|---|"
+            while IFS= read -r tag; do
+              [ -n "$tag" ] || continue
+              echo "| \`$IMAGE\` | \`${tag#*:}\` | \`$DIGEST\` |"
+            done <<< "$TAGS"
+            echo
+            echo "### Pull"
+            echo
+            echo '```bash'
+            echo "docker pull $IMAGE@$DIGEST"
+            first_tag=$(head -n1 <<< "$TAGS")
+            echo "# or by tag: docker pull $first_tag"
+            echo '```'
+            echo
+            echo "### Compose quickstart"
+            echo
+            echo "\`docker-compose.yml\` builds the app image locally (\`build: ./app\`) rather than"
+            echo "pulling this published one. To use this release instead, override the app service:"
+            echo
+            echo '```yaml'
+            echo "services:"
+            echo "  app:"
+            echo "    image: $IMAGE@$DIGEST"
+            echo '```'
+            echo
+            echo "### Verify provenance"
+            echo
+            echo '```bash'
+            echo "gh attestation verify oci://$IMAGE@$DIGEST --repo $REPOSITORY"
+            echo '```'
+          } >> release-notes.md
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          body_path: release-notes.md
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

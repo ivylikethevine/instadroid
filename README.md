@@ -227,6 +227,16 @@ CI (`.github/workflows/ci.yml`) runs ruff, the test suite, `pip-audit` on the re
 `docker compose config`, and gitleaks. Dependabot watches pip, Docker base images and GitHub
 Actions.
 
+### Releases
+
+Pushing a `vX.Y.Z` tag runs `.github/workflows/publish.yml`: it builds and smoke-tests the app
+image first, with no approval needed, so a broken build just fails. Only once that build succeeds
+does the `publish` job wait for approval against the `publish` GitHub Environment — approving it
+tags and pushes the already-built image (no rebuild) and attests its provenance. A final job then
+creates a GitHub Release with the image digest, pull command, a compose snippet, and the
+attestation-verify command. A tag like `v1.0.0-rc1` is treated as a prerelease and never moves
+`:latest`.
+
 ## FreshRSS
 
 Subscribe to `http://<host>:8000/instagram.xml` (set `PUBLIC_URL` in compose to whatever
@@ -523,3 +533,26 @@ The most invasive items — each changes the container/process topology, not jus
 - **Investigate a Rust rewrite**: evaluate rewriting the driver (uiautomator2 automation + parsing,
   ~1,000 lines of Python today) in Rust — worth weighing once the automation logic stabilizes, not
   before.
+
+### Project health and supply chain
+
+- **Security policy**: no `SECURITY.md` exists yet. The interesting reports here aren't "a CVE in a
+  dependency" — Dependabot and `pip-audit` already cover that — but credential handling
+  (`IG_PASSWORD` is a plain env var today; see "Credentials from a file" above) and the
+  unauthenticated feed server (see "Optional feed auth" above). Also worth noting: with the project
+  `EXPERIMENTAL UNTIL v1.0.0`, there's no supported-version table to promise yet.
+- **OpenSSF registration and badges**: two distinct things. Scorecard is automatable (a scheduled
+  `ossf/scorecard-action` run publishing to the public dashboard plus a README badge) and this repo
+  already scores well on several of its checks — every workflow action SHA-pinned,
+  `persist-credentials: false` everywhere, CodeQL, gitleaks, a pinned base image, Dependabot — with
+  signed/attested releases now closing another gap (see "Releases" above); branch protection,
+  fuzzing, and a published security policy remain open. Best Practices (bestpractices.dev) is a
+  manual self-certification questionnaire, not a CI job, which is why it's listed here rather than
+  wired into a workflow.
+- **Test coverage badge**: `pyproject.toml` already configures `[tool.coverage.run]` and
+  "Development" above already documents the `--cov` invocation, but `ci.yml`'s `test` job doesn't run
+  with coverage, so there's no number to publish yet. Either a third-party service
+  (Codecov/Coveralls — needs an account and a token, and adds an external CI dependency) or a
+  self-contained shields.io endpoint backed by a gist would work. One honest caveat either way: the
+  device-driving code is exercised through `app/tests/fakedevice.py`, so a headline percentage will
+  read higher than real-device confidence warrants.
