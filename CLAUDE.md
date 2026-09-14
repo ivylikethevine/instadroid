@@ -117,6 +117,18 @@ needs a manual `adb install` afterward. See README.md's "First-time setup" for t
 `adb -s 127.0.0.1:5555 logcat -d` (grep for `WATCHDOG KILLING`, `FATAL EXCEPTION`, `Version
 mismatch`, `Can't downgrade database`) before restarting the container again.** Each blind restart
 costs 1-9+ minutes; the log almost always names the actual blocked call directly.
+`scripts/diagnose.sh` runs this triage (plus a host `dmesg` check, for failures early enough that
+adb isn't even up yet — see below) and prints the matching fix in one command.
+
+**Note on `docker logs ig-redroid`: it stays almost empty even during a real startup failure, by
+design.** redroid's image `ENTRYPOINT` is Android's `/init` directly (confirmed via `docker image
+inspect`) — there's no wrapper piping `logcat` to the container's stdout. Being privileged, `/init`
+and the kernel binder driver write straight to the *host's* kernel ring buffer instead, so a
+binder-level or pre-`adb` crash (like the Android-15 hwservicemanager crash within ~3s of boot, or
+the 2026-09-10 kernel panic) only ever shows up in host `dmesg`/`journalctl -k`, never in `docker
+logs`. There is no supported `androidboot.*` flag to change this — redroid's documented options
+cover display/network/GPU tuning only, nothing log-level-related. `scripts/diagnose.sh` checks both
+sources so you don't have to remember which failure class lives where.
 
 ## Host GPU mode tried and rejected
 

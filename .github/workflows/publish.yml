@@ -76,8 +76,8 @@ jobs:
           images: ${{ needs.build.outputs.image }}
           flavor: latest=auto
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
       - name: Tag built digest with release tags
         env:
           IMAGE: ${{ needs.build.outputs.image }}

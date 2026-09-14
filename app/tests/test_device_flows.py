@@ -577,6 +577,8 @@ def test_scrape_once_end_to_end(fast_offline, monkeypatch):
     assert posts["TOP123"]["url"] == "https://www.instagram.com/reel/TOP123/"
     assert posts["OTHER1"]["place"] == "Anytown, Somewhere"
     assert posts["OTHER1"]["caption"] == "Second caption"
+    assert posts["TOP123"]["ig_version"] == posts["OTHER1"]["ig_version"] == "445.0.0.45.83"
+    assert posts["OLD1"]["ig_version"] is None  # seeded before this run; never back-filled
     slides = con.execute("SELECT idx, file FROM media WHERE post_id='OTHER1' ORDER BY idx").fetchall()
     assert [tuple(s) for s in slides] == [(1, "OTHER1_1.jpg"), (2, "OTHER1_2.jpg")]
     for fn in ("TOP123.jpg", "OTHER1.jpg", "OTHER1_1.jpg", "OTHER1_2.jpg"):
@@ -610,6 +612,7 @@ def test_scrape_once_without_permalinks_falls_back_to_hash_ids_and_merges_a_plac
     assert stats["link_sheet_failures"] == 4  # two attempts per card
     merged = con.execute("SELECT * FROM posts WHERE id='placeholder'").fetchone()
     assert merged["caption"] == "Top card caption…"
+    assert merged["ig_version"] == "445.0.0.45.83"  # the placeholder had none; the merge fills it in
     assert merged["media_file"]
     other = con.execute("SELECT * FROM posts WHERE username='other_user'").fetchone()
     assert other["url"] is None and other["id"] == other["hash"]
