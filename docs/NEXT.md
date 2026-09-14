@@ -1,3 +1,7 @@
+---
+title: Version profiles
+---
+
 # Next: Instagram version profiles
 
 ## Why

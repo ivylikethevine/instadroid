@@ -1,0 +1,79 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Only one deploy in flight at a time; a newer push to main should win over an in-progress older
+# one rather than queuing behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (coverage + Jekyll)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Coverage badge data: re-run the test suite with coverage (same command as ci.yml's `test`
+      # job) so the number reflects this exact commit, then write it as a shields.io endpoint JSON
+      # alongside the built site (below) instead of on a dedicated orphan branch.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: pip install -r app/requirements.txt -r scripts/requirements-dev.txt
+      - run: mkdir -p local # pyproject.toml keeps coverage's data file there
+      - run: python -m pytest app/tests -q --cov=app --cov-report=term
+        env:
+          PYTHONPATH: app
+      - name: Total coverage
+        id: coverage
+        run: echo "percent=$(python -m coverage report --format=total)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1.0.13
+        with:
+          source: docs
+          destination: docs/_site
+
+      - name: Write coverage.json into the built site
+        env:
+          PERCENT: ${{ steps.coverage.outputs.percent }}
+        run: |
+          case "$PERCENT" in
+            ''|*[!0-9]*) echo "unexpected coverage value: '$PERCENT'" >&2; exit 1 ;;
+          esac
+          if [ "$PERCENT" -ge 90 ]; then color=brightgreen
+          elif [ "$PERCENT" -ge 75 ]; then color=green
+          elif [ "$PERCENT" -ge 60 ]; then color=yellow
+          else color=red
+          fi
+          printf '{"schemaVersion": 1, "label": "coverage", "message": "%s%%", "color": "%s"}\n' \
+            "$PERCENT" "$color" > docs/_site/coverage.json
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/_site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # to deploy to Pages
+      id-token: write # to verify the deployment originated from this workflow run
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        id: deployment

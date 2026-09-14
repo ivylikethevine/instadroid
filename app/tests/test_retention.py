@@ -246,31 +246,120 @@ def test_record_run_stores_new_stories_count(con_and_media):
     assert con.execute("SELECT new_stories FROM runs").fetchone()[0] == 3
 
 
+def test_record_run_stores_selector_drift_stats(con_and_media):
+    con, _ = con_and_media
+    started = datetime.now(UTC).isoformat()
+    finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
+
+    scraper.record_run(
+        con, started, finished, 0, None, {}, cards_per_screen=4.5, share_captioned=0.8, share_complete=0.9
+    )
+
+    row = con.execute("SELECT cards_per_screen, share_captioned, share_complete FROM runs").fetchone()
+    assert row["cards_per_screen"] == 4.5
+    assert row["share_captioned"] == 0.8
+    assert row["share_complete"] == 0.9
+
+
+def _insert_run(con, **stats):
+    started = datetime.now(UTC).isoformat()
+    scraper.record_run(con, started, started, 0, stats.pop("error", None), {}, **stats)
+
+
+def test_selector_drift_flags_a_drop_below_the_baseline(con_and_media, monkeypatch):
+    con, _ = con_and_media
+    monkeypatch.setattr(scraper, "SELECTOR_DRIFT_MIN_RUNS", 3)
+    for _ in range(5):
+        _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
+
+    warning = scraper._check_selector_drift(
+        con, cards_per_screen=1.0, share_captioned=0.8, share_complete=0.9
+    )
+
+    assert warning is not None
+    assert "cards/screen" in warning
+    assert "1.00 vs 4.00 baseline (5 runs)" in warning
+
+
+def test_selector_drift_silent_when_in_line_with_baseline(con_and_media, monkeypatch):
+    con, _ = con_and_media
+    monkeypatch.setattr(scraper, "SELECTOR_DRIFT_MIN_RUNS", 3)
+    for _ in range(5):
+        _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
+
+    warning = scraper._check_selector_drift(
+        con, cards_per_screen=3.6, share_captioned=0.75, share_complete=0.85
+    )
+
+    assert warning is None
+
+
+def test_selector_drift_silent_with_too_few_baseline_runs(con_and_media, monkeypatch):
+    con, _ = con_and_media
+    monkeypatch.setattr(scraper, "SELECTOR_DRIFT_MIN_RUNS", 3)
+    _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
+    _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
+
+    # Only 2 prior runs, below SELECTOR_DRIFT_MIN_RUNS — nothing to judge against yet.
+    warning = scraper._check_selector_drift(
+        con, cards_per_screen=0.0, share_captioned=0.0, share_complete=0.0
+    )
+
+    assert warning is None
+
+
+def test_selector_drift_ignores_failed_runs_in_the_baseline(con_and_media, monkeypatch):
+    con, _ = con_and_media
+    monkeypatch.setattr(scraper, "SELECTOR_DRIFT_MIN_RUNS", 3)
+    for _ in range(4):
+        _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
+    # A failed run with no parse stats at all (error set, cards_per_screen NULL) must not count
+    # toward, or break, the baseline query.
+    _insert_run(con, error="DeviceNotReady")
+
+    warning = scraper._check_selector_drift(
+        con, cards_per_screen=3.6, share_captioned=0.75, share_complete=0.85
+    )
+
+    assert warning is None
+
+
+def test_selector_drift_disabled_when_baseline_runs_is_zero(con_and_media, monkeypatch):
+    con, _ = con_and_media
+    monkeypatch.setattr(scraper, "SELECTOR_DRIFT_BASELINE_RUNS", 0)
+    for _ in range(5):
+        _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
+
+    warning = scraper._check_selector_drift(
+        con, cards_per_screen=0.0, share_captioned=0.0, share_complete=0.0
+    )
+
+    assert warning is None
+
+
 def test_db_init_creates_an_empty_stories_table(con_and_media):
     con, _ = con_and_media
     assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 0
     scraper.db_init()  # re-run must be a no-op, not a crash
 
 
-def _insert_story(con, media_dir, story_id, hours_old, username="u", media_file=None):
-    now = datetime.now(UTC)
-    scraped_at = (now - timedelta(hours=hours_old)).isoformat()
-    expires_at = (now - timedelta(hours=hours_old - scraper.STORY_RETAIN_HOURS)).isoformat()
+def _insert_story(con, media_dir, story_id, days_old, username="u", media_file=None):
+    scraped_at = (datetime.now(UTC) - timedelta(days=days_old)).isoformat()
     if media_file:
         (media_dir / "stories").mkdir(parents=True, exist_ok=True)
         (media_dir / media_file).write_bytes(b"x")
     con.execute(
-        "INSERT INTO stories (id, username, media_file, kind, posted_date, scraped_at, expires_at)"
-        " VALUES (?,?,?,?,?,?,?)",
-        (story_id, username, media_file, "story", "1h", scraped_at, expires_at),
+        "INSERT INTO stories (id, username, media_file, kind, posted_date, scraped_at) VALUES (?,?,?,?,?,?)",
+        (story_id, username, media_file, "story", "1h", scraped_at),
     )
     con.commit()
 
 
-def test_prune_expired_stories_removes_only_rows_past_their_expiry(con_and_media):
+def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(con_and_media, monkeypatch):
     con, media = con_and_media
-    _insert_story(con, media, "old", hours_old=30, media_file="stories/old.jpg")
-    _insert_story(con, media, "fresh", hours_old=1, media_file="stories/fresh.jpg")
+    monkeypatch.setattr(scraper, "RETAIN_DAYS", 30)
+    _insert_story(con, media, "old", days_old=45, media_file="stories/old.jpg")
+    _insert_story(con, media, "fresh", days_old=1, media_file="stories/fresh.jpg")
 
     scraper._prune_expired_stories(con)
 
@@ -280,13 +369,25 @@ def test_prune_expired_stories_removes_only_rows_past_their_expiry(con_and_media
     assert (media / "stories" / "fresh.jpg").exists()
 
 
-def test_prune_expired_stories_noop_when_none_expired(con_and_media):
+def test_prune_expired_stories_noop_when_none_past_retain_days(con_and_media, monkeypatch):
     con, media = con_and_media
-    _insert_story(con, media, "fresh", hours_old=1, media_file="stories/fresh.jpg")
+    monkeypatch.setattr(scraper, "RETAIN_DAYS", 30)
+    _insert_story(con, media, "fresh", days_old=1, media_file="stories/fresh.jpg")
 
     scraper._prune_expired_stories(con)
 
     assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 1
+
+
+def test_prune_expired_stories_disabled_when_retain_days_is_zero(con_and_media, monkeypatch):
+    con, media = con_and_media
+    monkeypatch.setattr(scraper, "RETAIN_DAYS", 0)
+    _insert_story(con, media, "ancient", days_old=9999, media_file="ancient.jpg")
+
+    scraper._prune_expired_stories(con)
+
+    assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 1
+    assert (media / "ancient.jpg").exists()
 
 
 def test_launch_app_falls_back_to_monkey_launch_without_recursing_forever():
@@ -351,8 +452,8 @@ def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(tmp_path, mon
 
     con = scraper.db_init()  # must not raise, and must not loop forever on the corrupt row
 
-    # dedupe (v1), accounts backfill (v2)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+    # dedupe (v1), accounts backfill (v2), story-retention cleanup (v3)
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 3
     ids = {r[0] for r in con.execute("SELECT id FROM posts")}
     assert ids == {"bad", "good"}  # the corrupt row is left alone, not dropped or crashed on
 
@@ -386,7 +487,7 @@ def test_migration_backfills_an_accounts_row_for_every_existing_username(tmp_pat
 
     con = scraper.db_init()
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 2  # accounts backfill (v2)
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 3  # accounts backfill (v2) + v3
     assert con.execute("SELECT username FROM accounts WHERE username='club'").fetchone() is not None
     # media_file / the media table are untouched: no backfill needed there.
     assert con.execute("SELECT media_file FROM posts WHERE id='h1'").fetchone()[0] == "h1.jpg"
