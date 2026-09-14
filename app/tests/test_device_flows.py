@@ -17,6 +17,7 @@ from igprofiles.v445.selectors import SELECTORS as SELECTORS_445
 
 from tests.fakedevice import FakeDevice, hierarchy, node
 
+SAVE_FAILURE_LOGCAT = scraper._save_failure_logcat  # captured before conftest stubs it out
 CAPTION = SELECTORS_445["caption_class"]  # read at import, before conftest pins the profile
 ACTION_BAR = node("action_bar_container", bounds=(0, 142, 1080, 289))
 FOLLOWING_TITLE = node(
@@ -1135,3 +1136,160 @@ def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file(fast_offline, 
     header = scraper.parse_hierarchy(d.screens["older"])[0]["header_bounds"]
     assert scraper.capture_avatar(d, header, "old_user") == "avatars/old_user.webp"
     assert sorted(f.name for f in avatars.iterdir()) == ["old_user.webp"]
+
+
+# --- startup wait ---------------------------------------------------------------------------------
+
+
+def _record_last_run(con, minutes_ago, error=None):
+    finished = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
+    scraper.record_run(con, finished, finished, 0, error, {})
+
+
+@pytest.fixture
+def poll_window(monkeypatch):
+    monkeypatch.setattr(scraper, "POLL_MIN_H", 2.5)
+    monkeypatch.setattr(scraper, "POLL_MAX_H", 4.5)
+    monkeypatch.setattr(scraper, "TIME_DISTRIBUTION", "uniform")
+    monkeypatch.setattr(scraper, "RETRY_DELAYS_MINUTES", [2.0, 5.0])
+    monkeypatch.setattr(scraper, "SCRAPE_ON_STARTUP", False)
+
+
+def test_startup_scrapes_immediately_with_no_recorded_run(poll_window):
+    assert scraper._startup_wait_seconds(scraper.db_init()) == 0
+
+
+def test_startup_waits_out_the_rest_of_the_poll_interval(poll_window):
+    con = scraper.db_init()
+    _record_last_run(con, minutes_ago=60)
+    wait = scraper._startup_wait_seconds(con)
+    assert 1.5 * 3600 - 5 <= wait <= 3.5 * 3600
+
+
+def test_startup_does_not_wait_when_the_last_run_is_old(poll_window):
+    con = scraper.db_init()
+    _record_last_run(con, minutes_ago=5 * 60)
+    assert scraper._startup_wait_seconds(con) == 0
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "DeviceNotReady('redroid still booting')",
+        "LaunchUiAutomationError('server quit')",
+        "AdbError('offline')",
+    ],
+)
+def test_startup_after_a_transient_failure_waits_only_for_the_first_retry(poll_window, error):
+    con = scraper.db_init()
+    _record_last_run(con, minutes_ago=0.5, error=error)
+    assert 85 <= scraper._startup_wait_seconds(con) <= 90  # 2 minutes, minus the 30s already passed
+
+
+def test_startup_after_a_non_transient_failure_waits_a_full_interval(poll_window):
+    con = scraper.db_init()
+    _record_last_run(
+        con, minutes_ago=1, error="RuntimeError(\"Instagram wants a human: 'Confirm it's you'\")"
+    )
+    assert scraper._startup_wait_seconds(con) >= 2.5 * 3600 - 65
+
+
+def test_scrape_on_startup_skips_the_wait(poll_window, monkeypatch):
+    monkeypatch.setattr(scraper, "SCRAPE_ON_STARTUP", True)
+    con = scraper.db_init()
+    _record_last_run(con, minutes_ago=1)
+    assert scraper._startup_wait_seconds(con) == 0
+
+
+def test_main_waits_before_its_first_scrape(fast_offline, monkeypatch):
+    sleeps = _stop_after_first_sleep(monkeypatch)
+    monkeypatch.setattr(scraper, "_startup_wait_seconds", lambda con: 123.0)
+    connects = []
+    monkeypatch.setattr(scraper, "connect_device", lambda: connects.append(1))
+    with pytest.raises(StopLoop):
+        scraper.main()
+    assert sleeps == [123.0] and connects == []  # slept first, never connected
+
+
+# --- failure logcat -------------------------------------------------------------------------------
+
+LOGCAT = """\
+09-14 17:16:39.100  1234  1250 I ActivityManager: Start proc 5678:com.instagram.android
+09-14 17:16:39.200  1234  1250 D Something: chatter
+09-14 17:16:40.000   512   530 E AndroidRuntime: FATAL EXCEPTION IN SYSTEM PROCESS: main
+09-14 17:16:40.010   512   530 F libc    : Fatal signal 6 (SIGABRT)
+09-14 17:16:41.000   400   400 I lowmemorykiller: Kill 'com.android.settings' (8123), uid 1000
+09-14 17:16:42.000   512   540 W Watchdog: *** WATCHDOG KILLING SYSTEM PROCESS: Blocked in handler
+"""
+
+
+def test_filter_logcat_keeps_errors_fatals_and_known_signatures(monkeypatch):
+    monkeypatch.setattr(scraper, "LOGCAT_TAIL_LINES", 2000)
+    kept = scraper._filter_logcat(LOGCAT)
+    assert [line.split(": ", 1)[0].split()[-1] for line in kept] == [
+        "AndroidRuntime",
+        "libc",
+        "lowmemorykiller",
+        "Watchdog",
+    ]
+    monkeypatch.setattr(scraper, "LOGCAT_TAIL_LINES", 2)
+    assert len(scraper._filter_logcat(LOGCAT)) == 2  # the tail, not the head
+    assert "WATCHDOG KILLING" in scraper._filter_logcat(LOGCAT)[-1]
+
+
+def test_save_failure_logcat_writes_a_filtered_file(fast_offline, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=LOGCAT, stderr="")
+
+    monkeypatch.setattr(scraper.subprocess, "run", fake_run)
+    path = SAVE_FAILURE_LOGCAT("DeviceNotReady('could not bring com.instagram.android to the foreground')")
+    assert calls == [["adb", "-s", scraper.ADB_ADDR, "logcat", "-d", "-v", "threadtime"]]
+    assert path.parent == scraper.DEBUG_DIR and path.name.startswith("logcat_") and path.suffix == ".txt"
+    text = path.read_text()
+    assert text.startswith("# run failed: DeviceNotReady('could not bring")
+    assert "FATAL EXCEPTION" in text and "Something: chatter" not in text
+
+
+def test_save_failure_logcat_tolerates_an_unreachable_device(fast_offline, monkeypatch):
+    monkeypatch.setattr(
+        scraper.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error: device offline"),
+    )
+    assert SAVE_FAILURE_LOGCAT("AdbError('offline')") is None
+    assert not list(scraper.DEBUG_DIR.glob("logcat_*")) if scraper.DEBUG_DIR.exists() else True
+
+
+def test_main_saves_a_logcat_only_for_device_failures(fast_offline, monkeypatch, no_real_logcat):
+    def run_main_once(error):
+        _stop_after_first_sleep(monkeypatch)
+
+        def failing():
+            raise error
+
+        monkeypatch.setattr(scraper, "connect_device", failing)
+        with pytest.raises(StopLoop):
+            scraper.main()
+
+    run_main_once(adbutils.AdbError("device 127.0.0.1:5555 not online"))
+    assert len(no_real_logcat) == 1 and no_real_logcat[0].startswith("AdbError")
+    run_main_once(RuntimeError("Instagram wants a human"))
+    assert len(no_real_logcat) == 1  # a login challenge isn't a device failure
+
+
+def test_failure_logcats_are_pruned_like_other_debug_files(fast_offline, monkeypatch):
+    monkeypatch.setattr(scraper, "DEBUG_KEEP", 2)
+    scraper.DEBUG_DIR.mkdir(parents=True)
+    for i in range(4):
+        f = scraper.DEBUG_DIR / f"logcat_2026091{i}T000000Z.txt"
+        f.write_text("x")
+        os.utime(f, (1_800_000_000 + i, 1_800_000_000 + i))
+    monkeypatch.setattr(scraper, "DEBUG_RETAIN_DAYS", 0)
+    scraper._prune_debug_dumps()
+    assert sorted(f.name for f in scraper.DEBUG_DIR.iterdir()) == [
+        "logcat_20260912T000000Z.txt",
+        "logcat_20260913T000000Z.txt",
+    ]

@@ -124,7 +124,9 @@ services:
       DAYNIGHT_QUIET_END: ${DAYNIGHT_QUIET_END:-6}
       EMPTY_SCREEN_LIMIT: ${EMPTY_SCREEN_LIMIT:-3}         # empty screens in a row before reopening/stopping; 0 disables
       RETRY_DELAYS_MINUTES: ${RETRY_DELAYS_MINUTES-2,5,15} # early retries after a transient device failure; empty disables
-      DEBUG_RETAIN_DAYS: ${DEBUG_RETAIN_DAYS:-7}   # delete debug .xml/.jpg/.png older than this; 0 disables
+      DEBUG_RETAIN_DAYS: ${DEBUG_RETAIN_DAYS:-7}   # delete debug .xml/.jpg/.png/.txt older than this; 0 disables
+      LOGCAT_TAIL_LINES: ${LOGCAT_TAIL_LINES:-2000}  # lines kept in the filtered logcat saved after a device failure
+      SCRAPE_ON_STARTUP: ${SCRAPE_ON_STARTUP:-0}   # 1 = scrape immediately on start instead of waiting out the poll interval
       REDROID_IMAGE: *redroid_image                # recorded with each run
       IG_AUTO_INSTALL: ${IG_AUTO_INSTALL:-1}       # fetch+install Instagram via apkeep if missing on the device
       IG_PROFILE: ${IG_PROFILE:-}                  # Instagram version profile dir in app/igprofiles/ (e.g. v446); empty = the default (v445)
