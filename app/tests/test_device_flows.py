@@ -638,11 +638,12 @@ def test_scrape_once_end_to_end(fast_offline, monkeypatch):
     assert posts["TOP123"]["ig_version"] == posts["OTHER1"]["ig_version"] == "445.0.0.45.83"
     assert posts["OLD1"]["ig_version"] is None  # seeded before this run; never back-filled
     slides = con.execute("SELECT idx, file FROM media WHERE post_id='OTHER1' ORDER BY idx").fetchall()
-    assert [tuple(s) for s in slides] == [(1, "OTHER1_1.jpg"), (2, "OTHER1_2.jpg")]
-    for fn in ("TOP123.jpg", "OTHER1.jpg", "OTHER1_1.jpg", "OTHER1_2.jpg"):
+    assert [tuple(s) for s in slides] == [(1, "OTHER1_1.webp"), (2, "OTHER1_2.webp")]
+    for fn in ("TOP123.webp", "OTHER1.webp", "OTHER1_1.webp", "OTHER1_2.webp"):
         assert (media / fn).exists()
-    assert (media / "avatars" / "other_user.jpg").exists()
-    assert (media / "avatars" / "old_user.jpg").exists()
+        assert (media / fn).read_bytes()[8:12] == b"WEBP"  # the default MEDIA_FORMAT
+    assert (media / "avatars" / "other_user.webp").exists()
+    assert (media / "avatars" / "old_user.webp").exists()
     stories = con.execute("SELECT username, media_file FROM stories").fetchall()
     assert [s["username"] for s in stories] == ["alice"]  # bob's viewer never opened, carol was seen
     assert (media / stories[0]["media_file"]).exists()
@@ -982,9 +983,14 @@ def test_main_records_a_successful_run_with_device_versions(fast_offline, monkey
 MIB = 1024 * 1024
 
 
-def cgroup_output(current_mib, max_mib=3072, oom_kill=0):
+def cgroup_output(current_mib, max_mib=3072, oom_kill=0, inactive_file_mib=0):
+    """memory.current, memory.max, memory.events, then (part of) memory.stat, as `cat` prints them."""
     limit = "max" if max_mib is None else str(max_mib * MIB)
-    return f"{current_mib * MIB}\n{limit}\nlow 0\nhigh 0\nmax 12\noom 3\noom_kill {oom_kill}\n"
+    usage = (current_mib + inactive_file_mib) * MIB
+    return (
+        f"{usage}\n{limit}\nlow 0\nhigh 0\nmax 12\noom 3\noom_kill {oom_kill}\noom_group_kill 0\n"
+        f"anon {current_mib * MIB}\nfile {inactive_file_mib * MIB}\ninactive_file {inactive_file_mib * MIB}\n"
+    )
 
 
 def with_cgroup(d, readings):
@@ -1010,6 +1016,13 @@ def test_redroid_memory_parses_the_cgroup_files():
     unlimited = with_cgroup(feed_device(), [cgroup_output(500, None)])
     assert scraper._redroid_memory(unlimited)["max"] is None
     assert scraper._redroid_memory(feed_device()) is None  # no cgroup files: guard off
+
+
+def test_redroid_memory_excludes_reclaimable_file_cache():
+    # The live reading that stopped a run too early: 2756MiB counted, but ~600MiB was file cache.
+    d = with_cgroup(feed_device(), [cgroup_output(2150, 3072, inactive_file_mib=606)])
+    assert scraper._redroid_memory(d)["current"] == 2150 * MIB
+    assert scraper.MemoryGuard(d).exceeded() is None  # 70% of the limit, not 90%
 
 
 def test_scrape_once_starts_and_ends_with_instagram_stopped(monkeypatch):
@@ -1090,3 +1103,24 @@ def test_main_records_memory_stats(fast_offline, monkeypatch):
         .fetchone()
     )
     assert row == (1843, 1)
+
+
+# --- media format ---------------------------------------------------------------------------------
+
+
+def test_jpeg_media_format_still_writes_jpegs(fast_offline, monkeypatch):
+    from PIL import Image
+
+    monkeypatch.setattr(scraper, "MEDIA_FORMAT", "jpeg")
+    path = scraper.capture_story_media(Image.new("RGB", (200, 400), "red"), "[0,0][200,400]", 0, "s")
+    assert path.name == "s.jpg" and path.read_bytes()[:3] == b"\xff\xd8\xff"
+
+
+def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file(fast_offline, monkeypatch):
+    avatars = scraper.MEDIA_DIR / "avatars"
+    avatars.mkdir(parents=True)
+    (avatars / "old_user.jpg").write_bytes(b"old jpeg")  # captured before switching MEDIA_FORMAT
+    d = feed_device(start="older")
+    header = scraper.parse_hierarchy(d.screens["older"])[0]["header_bounds"]
+    assert scraper.capture_avatar(d, header, "old_user") == "avatars/old_user.webp"
+    assert sorted(f.name for f in avatars.iterdir()) == ["old_user.webp"]

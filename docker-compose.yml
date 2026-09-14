@@ -105,7 +105,8 @@ services:
       SCROLL_SWIPE_MAX: ${SCROLL_SWIPE_MAX:-1.0}
       SCROLL_PAUSE_MIN: ${SCROLL_PAUSE_MIN:-1.5}   # seconds idle between scrolls
       SCROLL_PAUSE_MAX: ${SCROLL_PAUSE_MAX:-4.0}
-      MEDIA_QUALITY: ${MEDIA_QUALITY:-95}          # JPEG quality (1-95) for saved post crops
+      MEDIA_QUALITY: ${MEDIA_QUALITY:-95}          # encoder quality (1-95) for saved images
+      MEDIA_FORMAT: ${MEDIA_FORMAT:-webp}          # webp | jpeg; already-saved files keep their format
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8000}   # what FreshRSS can reach
       FEED_HOST: ${FEED_HOST:-127.0.0.1}   # loopback only by default; set to 0.0.0.0 for LAN access
       PERMALINK_RETRIES: ${PERMALINK_RETRIES:-2}   # extra share-sheet passes after the first

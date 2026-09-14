@@ -349,8 +349,8 @@ access log.
   overnight.
 - `DEVICE_TIMEZONE` (e.g. `America/Los_Angeles`) is applied to the device by `tune-android.sh`
   (takes effect immediately, no reboot) and defines "local" for `daynight`. It's empty by default
-  on purpose — see "Fingerprint consistency" in the Roadmap: a timezone that doesn't match the
-  network egress may be a worse signal than the device's default GMT.
+  on purpose: a timezone that doesn't match the network egress may be a worse signal than the
+  device's default GMT.
 - `MAX_SCROLLS` 25 is roughly 10–15 posts per run on this feed layout (each new post costs a
   share-sheet round trip). If you follow enough accounts to post more than that in a ~3-hour
   window, raise the poll frequency slowly (lower `POLL_MIN_HOURS`/`POLL_MAX_HOURS`) rather than
@@ -385,6 +385,14 @@ otherwise grow disk use with no bound but time. Debug dumps in `local/data/debug
 and only the newest 12 hierarchy/screenshot pairs are kept; any `.xml`/`.jpg`/`.png` there older
 than `DEBUG_RETAIN_DAYS` (default 7) is deleted at the end of every run. Other files in that
 directory (e.g. scratch `test*.sqlite` databases) are never touched.
+
+Saved images are WebP by default (`MEDIA_FORMAT=jpeg` switches back). Re-encoding real crops,
+WebP came out ~36% smaller than JPEG at the default `MEDIA_QUALITY=95` and ~56% smaller at 90.
+Switching formats needs no migration: the database stores each file's name, so earlier files keep
+serving, and the orphan sweep and retention handle both extensions. One side effect: stories are
+deduplicated by file bytes, so a story still live when you switch formats may be stored once more.
+In the feeds, every image carries its `width`/`height`, each entry gets a `<media:thumbnail>` (the
+cover image) for readers that show pictures in list view, and video/Reel titles start with ▶.
 
 Stories are unrelated to all of the above: they live in their own `stories` table and
 `media/stories` subdirectory, and are always deleted `STORY_RETAIN_HOURS` after capture regardless
@@ -424,6 +432,14 @@ Grouped by how much of the current architecture each would touch, roughly smalle
   recreates, all well inside `POLL_MIN_HOURS`. With `restart: unless-stopped`, a restart loop would
   become a scrape loop. On startup, wait out whatever's left of the poll interval since the last
   recorded run instead.
+- **Selector profiles for Instagram 440-444**: only 445 is validated today (446 is in progress, see
+  `NEXT.md`), and anything older falls back to the 445 profile with a warning. For each of 440, 441,
+  442, 443 and 444: confirm apkeep can still fetch a build from APKPure (`scraper.py install
+  <version>`), take a short baseline run with `IG_SELECTOR_PROFILE=445`, and add an
+  `app/igprofiles/v44N.py` that overrides only the keys that differ, with fixture tests from that
+  version's `scraper.py dump`. These subclass `V445` (the validated baseline) rather than the other
+  way round, so 445 stays untouched. Going back in versions on one device means `-r -d` downgrades,
+  which an older Instagram may reject with data a newer build wrote, so expect a fresh login.
 
 ### Operations and observability
 
@@ -476,9 +492,6 @@ These extend the existing scrape/store/serve flow without changing its shape.
 
 ### Feed serving
 
-- **Smaller images, richer entries**: media averages ~260KB per post as JPEG; WebP would roughly
-  halve disk and bandwidth. Add `width`/`height` to `<img>`, an Atom thumbnail for list views, and
-  a ▶ marker on video/Reel titles.
 - **Optional feed auth**: a token or basic auth, needed before `FEED_HOST=0.0.0.0` is safe —
   otherwise media from private accounts you follow is served to anyone on the LAN.
 
@@ -490,42 +503,6 @@ These extend the existing scrape/store/serve flow without changing its shape.
   unconfirmed whether one exists. (A followed-accounts allowlist now filters the fallback's
   suggested posts after the fact — see "Followed-accounts allowlist" above — but reaching the real
   feed directly would still be cheaper than the extra Following-list navigation that costs.)
-
-### Anti-detection: timing and device tuning
-
-No infrastructure change needed — these would extend the existing pause/scroll randomization and
-`tune-android.sh` (timing distributions and device timezone already exist; see "Staying under the
-radar"). Investigated but **not** implemented — display density is already covered by
-`REDROID_WIDTH`/`HEIGHT`/`DPI`, so the remaining gaps are locale and GPS:
-
-- **Locale**: `adb shell settings put system system_locales <locale>` writes the setting but a
-  running system doesn't pick it up without a broadcast of `android.intent.action.LOCALE_CHANGED` —
-  and this device's `adb shell` gets a `SecurityException` sending that broadcast (`not allowed to
-  send broadcast ... from ... uid=2000`), confirmed live. The usual fallback, a reboot to force the
-  property to be re-read at boot, is too heavy for routine per-account tuning (redroid's own ~35s
-  boot budget, doubled or worse if this became a per-run thing). Needs a materially different
-  approach, not just wiring up the setting.
-- **Mock GPS location**: `adb emu geo fix <lon> <lat>` — the standard way to fake a location on the
-  Android Emulator — is a no-op on redroid; confirmed live (no response, no error, nothing changes).
-  That command talks to the official AVD's QEMU console, which redroid's non-QEMU virtualization
-  doesn't expose. A real implementation needs a mock-location provider app installed and driven
-  through Developer Options (`ACCESS_MOCK_LOCATION` + "select mock location app"), a materially
-  bigger lift than the other items here — and moot without the proxy/VPN item below anyway, since a
-  GPS fix with no matching network egress is its own mismatch.
-
-**Fingerprint consistency**: locale, timezone, and GPS all need to agree with each other *and* with
-wherever the network traffic egresses (see the proxy/VPN items below) — a mismatch between IP
-geolocation, GPS, and device timezone is an easy signal for Instagram to notice. That's why
-`DEVICE_TIMEZONE` defaults to empty rather than some plausible-looking value: setting it alone, with
-no matching IP/GPS, may be a worse signal than leaving the device on its default GMT.
-
-### Anti-detection: networking
-
-Needs changes to `docker-compose.yml`'s network setup, not just app code — redroid currently has no
-network config beyond the default bridge and a published ADB port.
-
-- **IP proxy support**: route redroid's network traffic through a per-account HTTP/SOCKS proxy.
-- **VPN support**: route through a VPN client (e.g. WireGuard) instead of/alongside a proxy.
 
 ### Documentation
 
@@ -542,16 +519,6 @@ network config beyond the default bridge and a published ADB port.
 
 The most invasive items — each changes the container/process topology, not just code inside it.
 
-- **Multiple Android VMs**: `docker-compose.yml` runs exactly one `redroid` + one `app`, and
-  `redroid` mounts one `/data` volume. Running several in parallel (one per account) means
-  per-instance compose services *and* per-instance `/data` volumes — the appops.xml/idmap/
-  telephony.db corruption incidents in `CLAUDE.md` are a direct warning against ever pointing two
-  instances at the same volume.
-- **Pure ADB backend for a real phone**: an alternative to redroid that drives a physical Android
-  device over USB/network ADB, for accounts where an emulator's fingerprint is too great a risk.
-  The driver already talks to its device purely over an ADB address, so the automation layer may
-  mostly carry over, but it's still a distinct backend from the emulated one, with its own
-  device-management story.
 - **arm64 host support**: on an arm64 host, official `redroid/redroid` images run Instagram's arm64
   code natively — no NDK translation, sidestepping the whole "Which Android?" compatibility matrix.
   Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in the kernel).
@@ -560,27 +527,21 @@ The most invasive items — each changes the container/process topology, not jus
   with a helper that promotes a `DEBUG_DIR` dump into a sanitised fixture — would catch real
   Instagram UI drift that synthetic screens can't. Splitting `scraper.py` (~1,700
   lines) into selectors/db/navigation/parsing/capture/retention modules, with numbered migrations
-  in place of ad-hoc `PRAGMA user_version` checks, is a precondition for multi-account support and
-  for the Rust evaluation below.
+  in place of ad-hoc `PRAGMA user_version` checks, is a precondition for the Rust evaluation below.
 - **Investigate a Rust rewrite**: evaluate rewriting the driver (uiautomator2 automation + parsing,
   ~1,000 lines of Python today) in Rust — worth weighing once the automation logic stabilizes, not
   before.
 
 ### Project health and supply chain
 
-- **Security policy**: no `SECURITY.md` exists yet. The interesting reports here aren't "a CVE in a
-  dependency" — Dependabot and `pip-audit` already cover that — but credential handling
-  (`IG_PASSWORD` is a plain env var today; see "Credentials from a file" above) and the
-  unauthenticated feed server (see "Optional feed auth" above). Also worth noting: with the project
-  `EXPERIMENTAL UNTIL v1.0.0`, there's no supported-version table to promise yet.
 - **OpenSSF registration and badges**: two distinct things. Scorecard is automatable (a scheduled
   `ossf/scorecard-action` run publishing to the public dashboard plus a README badge) and this repo
   already scores well on several of its checks — every workflow action SHA-pinned,
   `persist-credentials: false` everywhere, CodeQL, gitleaks, a pinned base image, Dependabot — with
-  signed/attested releases now closing another gap (see "Releases" above); branch protection,
-  fuzzing, and a published security policy remain open. Best Practices (bestpractices.dev) is a
-  manual self-certification questionnaire, not a CI job, which is why it's listed here rather than
-  wired into a workflow.
+  signed/attested releases and a published security policy (`SECURITY.md`) now closing more gaps
+  (see "Releases" above); branch protection and fuzzing remain open. Best Practices
+  (bestpractices.dev) is a manual self-certification questionnaire, not a CI job, which is why it's
+  listed here rather than wired into a workflow.
 - **Test coverage badge**: `pyproject.toml` already configures `[tool.coverage.run]` and
   "Development" above already documents the `--cov` invocation, but `ci.yml`'s `test` job doesn't run
   with coverage, so there's no number to publish yet. Either a third-party service

@@ -58,7 +58,16 @@ SCROLL_SWIPE_MIN = float(os.environ.get("SCROLL_SWIPE_MIN", "0.6"))
 SCROLL_SWIPE_MAX = float(os.environ.get("SCROLL_SWIPE_MAX", "1.0"))
 SCROLL_PAUSE_MIN = float(os.environ.get("SCROLL_PAUSE_MIN", "1.5"))
 SCROLL_PAUSE_MAX = float(os.environ.get("SCROLL_PAUSE_MAX", "4.0"))
-MEDIA_QUALITY = int(os.environ.get("MEDIA_QUALITY", "95"))  # JPEG quality for saved post crops
+MEDIA_QUALITY = int(os.environ.get("MEDIA_QUALITY", "95"))  # encoder quality for saved images
+# Format for every saved image (post crops, carousel slides, avatars, stories). WebP measured ~36%
+# smaller than JPEG at quality 95 and ~56% smaller at 90, re-encoding real crops (2026-09-14). Files
+# already written keep their extension and stay valid after a switch, since the database stores each
+# file name. An unrecognized value falls back to webp.
+MEDIA_FORMAT = os.environ.get("MEDIA_FORMAT", "webp").strip().lower()
+if MEDIA_FORMAT not in ("webp", "jpeg"):
+    print(f"WARN: unknown MEDIA_FORMAT {MEDIA_FORMAT!r}; falling back to webp", flush=True)
+    MEDIA_FORMAT = "webp"
+MEDIA_EXTS = (".jpg", ".webp")  # every extension this scraper has ever written
 IG_USERNAME = os.environ.get("IG_USERNAME", "")
 IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
 IG_PKG = "com.instagram.android"
@@ -97,8 +106,8 @@ TIME_DISTRIBUTION = os.environ.get("TIME_DISTRIBUTION", "uniform")  # uniform | 
 # "Local" time for the daynight distribution below — deliberately not applied anywhere by default
 # (empty = leave the device's own clock/timezone alone). Set this to match wherever the account's
 # network traffic appears to originate; see tune-android.sh, which applies the same value to the
-# device itself via `service call alarm`, and README's "Fingerprint consistency" for why a mismatch
-# between the two (or with a proxy/VPN's egress, once that exists) is worse than setting neither.
+# device itself via `service call alarm`, and README's "Staying under the radar" for why a timezone
+# that doesn't match the network's egress is worse than setting neither.
 DEVICE_TIMEZONE = os.environ.get("DEVICE_TIMEZONE", "")
 DAYNIGHT_QUIET_START = int(os.environ.get("DAYNIGHT_QUIET_START", "0"))  # local hour, inclusive
 DAYNIGHT_QUIET_END = int(os.environ.get("DAYNIGHT_QUIET_END", "6"))  # local hour, exclusive
@@ -820,7 +829,11 @@ def _redroid_memory(d) -> dict | None:
     """redroid's own container memory, read through adb from the cgroup v2 files the container sees
     as /sys/fs/cgroup (readable by the adb shell user): {"current": bytes, "max": bytes or None when
     unlimited, "oom_kill": kernel OOM kills in this container since it started}. None when the files
-    aren't there (e.g. a cgroup v1 host) or adb fails, which turns the memory guard off."""
+    aren't there (e.g. a cgroup v1 host) or adb fails, which turns the memory guard off.
+
+    "current" excludes inactive file cache, the same working-set figure `docker stats` shows: the
+    kernel reclaims that cache before it ever OOM-kills, so counting it stopped a run at "2756 of
+    3072 MiB" while the real usage was ~2.3GiB (2026-09-14)."""
     try:
         out = d.shell(
             [
@@ -828,15 +841,17 @@ def _redroid_memory(d) -> dict | None:
                 "/sys/fs/cgroup/memory.current",
                 "/sys/fs/cgroup/memory.max",
                 "/sys/fs/cgroup/memory.events",
+                "/sys/fs/cgroup/memory.stat",
             ]
         ).output
         lines = (out or "").split()
-        current, limit = int(lines[0]), lines[1]
-        events = dict(zip(lines[2::2], lines[3::2], strict=False))
+        usage, limit = int(lines[0]), lines[1]
+        # memory.events and memory.stat are both "key value" lines, so one dict covers both.
+        stats = dict(zip(lines[2::2], lines[3::2], strict=False))
         return {
-            "current": current,
+            "current": max(0, usage - int(stats.get("inactive_file", 0))),
             "max": None if limit == "max" else int(limit),
-            "oom_kill": int(events.get("oom_kill", 0)),
+            "oom_kill": int(stats.get("oom_kill", 0)),
         }
     except Exception:
         return None
@@ -1777,8 +1792,23 @@ def post_id(p):
     return _digest(_post_key(p))
 
 
+def _media_ext() -> str:
+    return ".webp" if MEDIA_FORMAT == "webp" else ".jpg"
+
+
+def _save_media(img: Image.Image, path: Path) -> None:
+    """Encode `img` to `path` in MEDIA_FORMAT at MEDIA_QUALITY (the caller picks the extension via
+    _media_ext())."""
+    img = img.convert("RGB")
+    if MEDIA_FORMAT == "webp":
+        img.save(path, "WEBP", quality=MEDIA_QUALITY)
+    else:
+        img.save(path, "JPEG", quality=MEDIA_QUALITY)
+
+
 def crop_media(d, bounds: str, pid: str, clip_top: int = 0, settle: float = 0):
-    """Screenshot the visible post image and save it as "{pid}.jpg". Returns filename or None.
+    """Screenshot the visible post image and save it as "{pid}.webp" (or .jpg, see MEDIA_FORMAT).
+    Returns filename or None.
     `settle` delays the shot (e.g. for a video/Reel, so autoplay has started and the initial
     audio-label overlay has faded) before it's taken — still one image, just a better-timed one."""
     m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
@@ -1795,8 +1825,8 @@ def crop_media(d, bounds: str, pid: str, clip_top: int = 0, settle: float = 0):
         human_pause(settle, settle * 1.4)
     img: Image.Image = d.screenshot()
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-    fn = f"{pid}.jpg"
-    img.crop((x1, y1, x2, y2)).convert("RGB").save(MEDIA_DIR / fn, quality=MEDIA_QUALITY)
+    fn = f"{pid}{_media_ext()}"
+    _save_media(img.crop((x1, y1, x2, y2)), MEDIA_DIR / fn)
     return fn
 
 
@@ -1873,8 +1903,13 @@ def capture_avatar(d, header_bounds: str, username: str) -> str | None:
     avatar_dir = MEDIA_DIR / "avatars"
     avatar_dir.mkdir(parents=True, exist_ok=True)
     img: Image.Image = d.screenshot()
-    fn = f"{safe_user}.jpg"
-    img.crop(box).convert("RGB").save(avatar_dir / fn, quality=MEDIA_QUALITY)
+    fn = f"{safe_user}{_media_ext()}"
+    _save_media(img.crop(box), avatar_dir / fn)
+    # The orphan sweep never looks in avatars/, so drop this account's avatar in any other format
+    # here (e.g. its old .jpg after switching MEDIA_FORMAT) rather than leaving it behind forever.
+    for ext in MEDIA_EXTS:
+        if ext != _media_ext():
+            (avatar_dir / f"{safe_user}{ext}").unlink(missing_ok=True)
     return f"avatars/{fn}"
 
 
@@ -1946,8 +1981,8 @@ def capture_story_media(img: Image.Image, media_bounds: str, clip_top: int, tmp_
         return None
     stories_dir = MEDIA_DIR / "stories"
     stories_dir.mkdir(parents=True, exist_ok=True)
-    path = stories_dir / f"{tmp_name}.jpg"
-    img.crop((x1, y1, x2, y2)).convert("RGB").save(path, quality=MEDIA_QUALITY)
+    path = stories_dir / f"{tmp_name}{_media_ext()}"
+    _save_media(img.crop((x1, y1, x2, y2)), path)
     return path
 
 
@@ -2047,7 +2082,7 @@ def scrape_stories(d, con) -> int:
             (
                 digest,
                 captured["username"],
-                f"stories/{digest}.jpg",
+                f"stories/{digest}{captured['path'].suffix}",
                 "story",
                 captured["posted_date"],
                 now.isoformat(),
@@ -2056,7 +2091,7 @@ def scrape_stories(d, con) -> int:
         )
         con.commit()
         if cur.rowcount:
-            captured["path"].rename(MEDIA_DIR / "stories" / f"{digest}.jpg")
+            captured["path"].rename(MEDIA_DIR / "stories" / f"{digest}{captured['path'].suffix}")
             new += 1
             log(f"new story: {captured['username']}")
         else:
@@ -2096,10 +2131,10 @@ def _prune_old_posts(con):
     if MEDIA_DIR.exists():
         kept = {r[0] for r in con.execute("SELECT media_file FROM posts WHERE media_file IS NOT NULL")}
         kept |= {r[0] for r in con.execute("SELECT file FROM media")}
-        # Only ever written media_file names are *.jpg (crop_media()), and this glob is
+        # Only ever written media_file names are *.jpg/*.webp (crop_media()), and these globs are
         # non-recursive, so pointing MEDIA_DIR at the wrong directory can't delete unrelated files
         # and avatars/ (its own subdirectory) is never touched by this sweep.
-        orphans = [f for f in MEDIA_DIR.glob("*.jpg") if f.name not in kept]
+        orphans = [f for ext in MEDIA_EXTS for f in MEDIA_DIR.glob(f"*{ext}") if f.name not in kept]
         for f in orphans:
             f.unlink(missing_ok=True)
         if orphans:
@@ -2302,11 +2337,12 @@ def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
                 log(f"merged duplicate: {p['username']} -> {final_id}")
                 break
             if media and pid != h:
-                (MEDIA_DIR / media).rename(MEDIA_DIR / f"{pid}.jpg")
-                media = f"{pid}.jpg"
+                new_media = f"{pid}{Path(media).suffix}"
+                (MEDIA_DIR / media).rename(MEDIA_DIR / new_media)
+                media = new_media
                 renamed = []
                 for i, fn in enumerate(extra_media, start=1):
-                    new_fn = f"{pid}_{i}.jpg"
+                    new_fn = f"{pid}_{i}{Path(fn).suffix}"
                     (MEDIA_DIR / fn).rename(MEDIA_DIR / new_fn)
                     renamed.append(new_fn)
                 extra_media = renamed

@@ -107,7 +107,34 @@ it keeps the feed alive when a release changes nothing, which is common.
   pin, per-version APK cache, `scraper.py install`, 445 install default)
 - [ ] Step 2: V446 overrides. Logged in on 445 (2026-09-14), but the first 445 baseline run
   pushed redroid into OOM kills and froze the host (CLAUDE.md, "Host freeze during a scrape at the
-  2g limit"). Memory limits and the in-scraper memory guard are now in place; the 445 baseline
-  still needs a clean run, with the user's go-ahead. That run's dumps don't show broken 445
-  selectors: the feed switcher left an empty popup focused, so every hierarchy dump missed the feed.
+  2g limit"). That run's dumps didn't show broken 445 selectors: the feed switcher left an empty
+  popup focused, so every hierarchy dump missed the feed.
+  **Clean 445 baseline, 2026-09-14 10:37-10:45 PDT** (3g limit, 4 CPUs, `MAX_SCROLLS=5`,
+  `MAX_STORIES_PER_RUN=2`): 445 selectors work. 2 stories, 2 posts (a Reel and a carousel with an
+  extra slide), both with permalinks, captions, media and `ig_version=445.0.0.45.83`. Peak redroid
+  memory 2.40GiB (80% of 3g, just under the 85% guard), 0 OOM kills, max host load 7.8, Instagram
+  force-stopped at the end. Rough edges: an early "left Instagram while closing a sheet;
+  relaunching", and Copy link often left the clipboard empty (6 of 8 attempts); both affected cards
+  turned out to be already-saved posts and were merged, so nothing was lost. A full 25-screen run
+  will likely reach the guard and stop early at 3g.
+  **446 with the 445 selectors, 2026-09-14 10:47-10:49 PDT**: `scraper.py install 446.0.0.49.77`
+  upgraded in place and the login survived. Stories still work (2 captured). Posts weren't reached:
+  the memory guard stopped the run right after stories at "2756 of 3072 MiB", but that figure wrongly
+  included reclaimable file cache (`docker stats` peaked at 2.31GiB). The guard now excludes
+  `inactive_file`.
+  **446 rerun with the 445 selectors, 2026-09-14 10:56-11:02 PDT** (fixed guard, first WebP build):
+  the 445 selectors work on 446 as far as this run reached. 2 stories; 1 new post (a Reel, with
+  permalink, caption, crop, `ig_version=446.0.0.49.77`); already-saved posts on later screens were
+  recognized (seen-streak 2); cards per screen similar to the 445 run. Peak 2.21GiB (`docker
+  stats`), guard not tripped, 0 OOM kills, max host load 9.6, Instagram stopped after. WebP
+  confirmed live: the 1080x1883 Reel crop is 103KB and the stories 97-137KB, against 250-320KB for
+  the 445 run's JPEG stories.
+  Not yet covered on 446: a *new* photo or carousel capture (only a Reel was new), and one card on
+  screen 3 logged "no crop: media node not found" (no dump saved; it turned out to be an
+  already-stored post). Also seen in both runs: an already-saved post gets re-processed as new
+  (thewhorrorshowlive twice, 6 failed Copy link attempts, then merged). `_post_key()` is username +
+  caption, so the likely cause is the caption hashing differently truncated ("… more") vs expanded;
+  unconfirmed.
+  Next: a longer 446 run to see a new photo/carousel; if nothing breaks, add `V446(V445)` as an empty
+  subclass so the "no selector profile" warning goes away.
 - [ ] Step 3: structural hooks, if needed
