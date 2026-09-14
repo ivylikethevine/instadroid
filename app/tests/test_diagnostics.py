@@ -3,7 +3,7 @@ import os
 import time
 
 import pytest
-import scraper
+from instadroid import config, db, device, diagnostics
 
 
 class Out:
@@ -25,16 +25,16 @@ class VersionedDevice:
 
 def test_device_snapshot_records_instagram_version_and_image(monkeypatch):
     monkeypatch.setenv("REDROID_IMAGE", "erstt/redroid:13.0.0_ndk_ChromeOS")
-    snapshot = scraper._device_snapshot(VersionedDevice())
+    snapshot = device.device_snapshot(VersionedDevice())
     assert snapshot["android_release"] == "13"
     assert snapshot["ig_version"] == "445.0.0.45.83"
     assert snapshot["redroid_image"] == "erstt/redroid:13.0.0_ndk_ChromeOS"
 
 
 def test_record_run_stores_versions(tmp_path, monkeypatch):
-    monkeypatch.setattr(scraper, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    con = scraper.db_init()
-    scraper.record_run(
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
+    con = db.db_init()
+    db.record_run(
         con, "2026-09-11T00:00:00+00:00", "2026-09-11T00:05:00+00:00", 0, None,
         {"ig_version": "445.0.0.45.83", "redroid_image": "img:tag"},
     )  # fmt: skip
@@ -46,8 +46,8 @@ def test_record_run_stores_versions(tmp_path, monkeypatch):
 def debug_dir(tmp_path, monkeypatch):
     d = tmp_path / "debug"
     d.mkdir()
-    monkeypatch.setattr(scraper, "DEBUG_DIR", d)
-    monkeypatch.setattr(scraper, "DEBUG_RETAIN_DAYS", 7)
+    monkeypatch.setattr(config, "DEBUG_DIR", d)
+    monkeypatch.setattr(config, "DEBUG_RETAIN_DAYS", 7)
     return d
 
 
@@ -66,7 +66,7 @@ def test_prune_debug_removes_old_loose_artifacts_but_not_other_files(debug_dir):
     scratch_dir = debug_dir / "testmedia3"
     scratch_dir.mkdir()
 
-    scraper._prune_debug_dumps()
+    diagnostics.prune_debug_dumps()
 
     assert not old_png.exists() and not old_xml.exists()
     assert fresh_png.exists()
@@ -74,12 +74,12 @@ def test_prune_debug_removes_old_loose_artifacts_but_not_other_files(debug_dir):
 
 
 def test_prune_debug_still_caps_dump_pairs_by_count(debug_dir, monkeypatch):
-    monkeypatch.setattr(scraper, "DEBUG_KEEP", 2)
+    monkeypatch.setattr(config, "DEBUG_KEEP", 2)
     for i in range(4):
         _touch(debug_dir / f"d{i}_hierarchy.xml", days_old=0.1 * (4 - i))
         _touch(debug_dir / f"d{i}_screen.jpg", days_old=0.1 * (4 - i))
 
-    scraper._prune_debug_dumps()
+    diagnostics.prune_debug_dumps()
 
     assert sorted(p.name for p in debug_dir.iterdir()) == [
         "d2_hierarchy.xml",
@@ -90,15 +90,15 @@ def test_prune_debug_still_caps_dump_pairs_by_count(debug_dir, monkeypatch):
 
 
 def test_prune_debug_age_rule_can_be_disabled(debug_dir, monkeypatch):
-    monkeypatch.setattr(scraper, "DEBUG_RETAIN_DAYS", 0)
+    monkeypatch.setattr(config, "DEBUG_RETAIN_DAYS", 0)
     old = _touch(debug_dir / "header.png", days_old=100)
-    scraper._prune_debug_dumps()
+    diagnostics.prune_debug_dumps()
     assert old.exists()
 
 
 def test_prune_debug_tolerates_a_missing_directory(tmp_path, monkeypatch):
-    monkeypatch.setattr(scraper, "DEBUG_DIR", tmp_path / "nope")
-    scraper._prune_debug_dumps()  # must not raise
+    monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "nope")
+    diagnostics.prune_debug_dumps()  # must not raise
 
 
 def test_healthcheck_requests_are_left_out_of_the_access_log(tmp_path, monkeypatch):

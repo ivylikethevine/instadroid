@@ -26,7 +26,7 @@ app/igprofiles/
   v445/
     __init__.py    class Profile(BaseProfile): major, apk_version, selectors, notes, overrides
     selectors.py   the full selector dict
-    fixtures/      screen dumps for this version's tests (kept out of the Docker image)
+    fixtures/      scrubbed screen dumps + .expected.json replay records (kept out of the image)
   v446/
     __init__.py    class Profile(v445.Profile): only what differs
     selectors.py   {**v445 selectors, <changed keys>}
@@ -39,7 +39,7 @@ Everything specific to one Instagram version lives in its directory:
 | Selectors (resource-ids, content-desc patterns, UI strings) | `vXYZ/selectors.py` |
 | The exact APK build `scraper.py install` and auto-install fetch | `Profile.apk_version` |
 | Behavior that differs (parsing, navigation, capture, login) | methods on `Profile` (below) |
-| Test fixtures (hierarchy dumps) | `vXYZ/fixtures/` |
+| Test fixtures (hierarchy dumps and what they must parse to) | `vXYZ/fixtures/` |
 | Human notes on what's validated (`scraper.py profiles` prints them) | `Profile.notes` |
 
 ### Choosing a profile
@@ -58,7 +58,7 @@ Each run records the active profile in `runs.selector_profile` (e.g. `v445`), ne
 ### Swapping behavior, not just data
 
 Selectors alone can't express a structural change (`parse_hierarchy()` has card ordering built in,
-for instance). Every function in `scraper.py` that depends on Instagram's UI is marked `@versioned`:
+for instance). Every function in `app/instadroid/` that depends on Instagram's UI is marked `@versioned`:
 about 30 of them, covering login, feed navigation, the following list, post parsing, captions,
 sheets, permalinks, carousels, avatars and stories. A profile replaces one by defining a method of
 the same name, which receives the base implementation first:
@@ -76,7 +76,7 @@ class Profile(Profile445):
 
 Overrides are inherited, so an older or newer profile subclassing another gets its fixes too. A
 method name that matches no `@versioned` function is reported as a profile warning, so a typo can't
-silently do nothing. The shared code in `scraper.py` is the implementation for the default profile;
+silently do nothing. The shared code in `app/instadroid/` is the implementation for the default profile;
 when a version needs something different, it goes in that version's directory, never as a
 version check in shared code. `_post_key()` (post identity) is deliberately **not** versioned, so
 stored posts dedupe across Instagram upgrades.
@@ -92,9 +92,13 @@ stored posts dedupe across Instagram upgrades.
    only with memory headroom (see CLAUDE.md's host-freeze section). Pass overrides with `-e`
    (`docker compose run --rm --no-deps -e IG_PROFILE=v444 -e MAX_SCROLLS=5 app python scraper.py
    once`) or put them in `.env`; compose no longer forwards shell variables for these.
-4. **Dump what differs** (`scraper.py dump`, and the automatic `last`/`empty_feed` dumps). Save the
-   relevant ones under `v444/fixtures/`, override the changed selector keys or `@versioned`
-   functions, and add tests that load that profile and its fixtures.
+4. **Dump what differs** (`scraper.py dump`, and the automatic `last`/`empty_feed` dumps). Check each
+   against the parent profile first — `python scripts/promote_dump.py <dump> v445 <name>` prints what
+   parses (no posts, or posts without captions, means drift) — then promote the useful ones under
+   `v444` the same way. The script scrubs accounts, names, places and captions, and records what the
+   parsers find in `<name>.expected.json` for `tests/test_replay.py`; read the leftover text it
+   prints before committing. Override the changed selector keys or `@versioned` functions until the
+   fixtures parse correctly, then re-record with `promote_dump.py --update v444`.
 
 ## Status
 

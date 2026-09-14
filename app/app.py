@@ -17,6 +17,7 @@ from functools import lru_cache
 from hashlib import sha256
 from html import escape
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 from xml.etree.ElementTree import Element, SubElement, tostring
 
@@ -49,7 +50,7 @@ Path(MEDIA_DIR).mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 
 
-def _query(sql: str, args=(), default=None, one: bool = False):
+def _query(sql: str, args=(), default=None, one: bool = False) -> Any:
     """Run a read-only query and return its rows (or first row with `one`), or `default` when the
     database or table doesn't exist yet (the scraper creates both on its first start). Read-only so
     the scraper's writer lock never blocks a request."""

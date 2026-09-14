@@ -50,7 +50,7 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   "scraper needs attention" entry in `/instagram.xml`, since the feed is already being read.
 - **Instagram update path**: install-on-missing is automatic (see README.md's "First-time setup"),
   but an _outdated_ install isn't handled yet — detect the forced "update Instagram" screen (as a
-  challenge-style stop) and reuse `_fetch_instagram_apk()`/`_install_instagram()` (`scraper.py`)
+  challenge-style stop) and reuse `install.install_instagram()` (`app/instadroid/install.py`)
   with the version profile's `apk_version` bumped (or a new `app/igprofiles/vXYZ/`), plus a `scraper.py dump` smoke check, keeping the previous xapk in
   `APK_CACHE_DIR` for rollback.
 - **OpenSSF registration and badges**: two distinct things. Scorecard is automatable (a scheduled
@@ -73,8 +73,9 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   `docs/NEXT.md`'s "Adding a version" steps will recur. Script the mechanical parts into one
   command (e.g. `scraper.py new-profile <version>`): scaffold `app/igprofiles/vXYZ/` subclassing the
   current default, install that build, take a short capped baseline run (only with memory headroom),
-  and diff each screen's dump against the parent profile's selectors — reporting which selector keys
-  matched nothing and saving those dumps as candidate fixtures. The human step that stays is deciding
+  and run each screen's dump through `scripts/promote_dump.py` under the parent profile — which
+  already reports what parses and saves scrubbed fixtures — plus a report of which selector keys
+  matched nothing. The human step that stays is deciding
   what the new selectors or `@versioned` overrides should be, then marking the profile validated.
 
 ### Large
@@ -100,17 +101,17 @@ Open investigations, new capture mechanisms, or changes to the container/process
 - **Real video capture**: still a poster-frame still — Reels/videos never get the actual video. Likely needs screen recording rather than a screenshot,
   plus somewhere to store and serve a video file per post, and meaningfully longer dwell time per
   video post (see README.md's "Staying under the radar") — a real cost/benefit call, not just effort.
-- **Replay tests and a module split**: `scrape_once()` and the other device flows now run in CI
-  against `tests/fakedevice.py`, but its screens are hand-written. Replaying _recorded_ sequences —
-  with a helper that promotes a `DEBUG_DIR` dump into a sanitised fixture — would catch real
-  Instagram UI drift that synthetic screens can't. Splitting `scraper.py` (~2,500
-  lines) into db/navigation/parsing/capture/retention modules (selectors already live in
-  `app/igprofiles/`), with numbered migrations
-  in place of ad-hoc `PRAGMA user_version` checks, is a precondition for the Rust evaluation below.
+- **Replay whole navigation sequences**: the scraper is now split into `app/instadroid/` modules,
+  and single recorded screens replay through the parsers (`scripts/promote_dump.py` scrubs a
+  `DEBUG_DIR` dump into `igprofiles/vXYZ/fixtures/`, `tests/test_replay.py` checks it). The device
+  flows still run against hand-written `tests/fakedevice.py` screens; recording a real run's
+  sequence of dumps and taps, and replaying it through `fakedevice`, would catch navigation drift
+  (a moved tab, a new interstitial) the same way.
 - **arm64 host support**: on an arm64 host, official `redroid/redroid` images run Instagram's arm64
   code natively — no NDK translation, sidestepping the whole "Which Android?" compatibility matrix
   (README.md). Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in
   the kernel).
-- **Investigate a Rust rewrite**: evaluate rewriting the driver (uiautomator2 automation + parsing,
-  ~1,000 lines of Python today) in Rust — worth weighing once the automation logic stabilizes, not
-  before.
+- **Investigate a Rust rewrite**: evaluated on 2026-09-14 and decided against for now — about 3-5
+  weeks including a hand-written uiautomator2 client, for little gain (the app container is ~4% of
+  memory, and run time is device waits). Revisit if profile work stays selector-only for a while, or
+  a low-RAM/arm64 host or single-binary distribution becomes a real need.

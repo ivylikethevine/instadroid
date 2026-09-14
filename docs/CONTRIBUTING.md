@@ -35,6 +35,7 @@ Before sending a change, run what CI runs:
 
 ```bash
 ruff check . && ruff format --check .      # also formats Python code blocks in Markdown
+pyright
 pytest -q
 shellcheck -S warning scripts/*.sh
 docker compose config -q
@@ -43,6 +44,11 @@ docker compose config -q
 Most device-driving code is tested against `app/tests/fakedevice.py`, a scripted stand-in for a
 device, so the suite needs no emulator and no Instagram account. New behavior should come with tests
 there.
+
+The scraper lives in `app/instadroid/` (the package docstring lists the modules); `app/scraper.py` is
+only the command line. Modules call each other as `device.human_pause(...)` and read settings as
+`config.NAME`, never `from .device import human_pause`, so a test's `monkeypatch.setattr(device,
+"human_pause", ...)` reaches every caller.
 
 ## Supporting an Instagram version
 
@@ -53,11 +59,12 @@ a version step by step. The short version:
 
 - **Change the version's own directory, not shared code.** If 446 renamed a resource-id, override that
   key in `v446/selectors.py`. If it changed behavior, override the `@versioned` function as a method
-  on `v446`'s `Profile`. Don't add `if version == ...` checks to `scraper.py`.
+  on `v446`'s `Profile`. Don't add `if version == ...` checks to `app/instadroid/`.
 - **Keep older profiles passing.** The whole existing test suite runs against `v445`, and
   `test_every_profile_meets_the_contract` checks every profile directory automatically.
 - **Fixtures must be synthetic or scrubbed.** A dump from a real feed goes into `vXYZ/fixtures/` only
-  with usernames, captions, places and any other personal details replaced.
+  through `scripts/promote_dump.py`, which replaces the usernames, names, places and captions it can
+  identify, and only after you've read the leftover text it prints.
 
 ## Running against a real device
 

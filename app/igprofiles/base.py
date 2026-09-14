@@ -9,9 +9,9 @@ class BaseProfile:
     Required on every profile:
       major        the Instagram major version it targets (must match the directory name, >= 440)
       apk_version  the exact build `scraper.py install` and auto-install fetch for this profile
-      selectors    the full selector dict scraper.py reads through SELECTORS
+      selectors    the full selector dict the scraper reads through SELECTORS
 
-    Behavior overrides: a profile can replace any scraper.py function marked @versioned by defining a
+    Behavior overrides: a profile can replace any instadroid function marked @versioned by defining a
     method of the same name. It receives the base implementation first, so it can wrap or replace it:
 
         def parse_hierarchy(self, base, xml):

@@ -108,7 +108,7 @@ reinstalling (`local/xapk/*.apk` was still on disk from the original setup, no n
 needed) since wiping the package database orphaned its `/data/app` registration.
 
 **Update (2026-09-14):** this reinstall step is now automatic — `ensure_logged_in()` in
-`scraper.py` detects a missing `com.instagram.android` and fetches/installs it itself (via
+`app/instadroid/navigation.py` detects a missing `com.instagram.android` and fetches/installs it itself (via
 `apkeep`, cached under `local/data/apk`), so a package-database reset like this one no longer
 needs a manual `adb install` afterward. See README.md's "First-time setup" for the new flow and
 `IG_AUTO_INSTALL` to opt back out.
@@ -224,8 +224,8 @@ this container's `lmkd` never reclaims anything, so once Instagram is opened by 
 there fully resident for the entire ~2.5-4.5h gap until the next one — every run before this fix
 was paying that ~820MiB tax continuously, not just while actually scraping.
 
-Fix: `scraper.py`'s `scrape_once()` now force-stops `com.instagram.android` itself at the very end
-of a run (`_free_device_memory()`, which force-stops it along with the cached-app sweep) — same reasoning as
+Fix: `scrape_once()` (now in `app/instadroid/scrape.py`) force-stops `com.instagram.android` itself at the very end
+of a run (`device.free_device_memory()`, which force-stops it along with the cached-app sweep) — same reasoning as
 that sweep: this container can't rely on `lmkd` to do it, so the scraper does it explicitly instead.
 Confirmed safe **the hard way**: the very first live test of this (a rushed manual `am force-stop`
 + immediate `scraper.py once`, run back-to-back with other manual `adb`/`am` commands in between)
@@ -278,7 +278,7 @@ What changed as a result:
   equal to it (no container swap, which is the thrashing mode that stalls a host), and a CPU cap
   `cpus: 4` (`REDROID_CPUS`, half this host's 8 cores). The app container also got
   `memswap_limit: 256m`.
-- **`scraper.py` memory guard** (`MemoryGuard`, `MEMORY_GUARD_PERCENT`, default 85): the scraper
+- **Memory guard** (`device.MemoryGuard` in `app/instadroid/`, `MEMORY_GUARD_PERCENT`, default 85): the scraper
   reads redroid's own cgroup v2 files through adb (`/sys/fs/cgroup/memory.current`, `memory.max`,
   `memory.events`, `memory.stat`; readable as the adb shell user), and counts usage the way `docker
   stats` does, excluding `inactive_file` cache. The first live 446 run showed why: counting that

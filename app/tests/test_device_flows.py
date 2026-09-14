@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,13 +13,26 @@ from pathlib import Path
 import adbutils
 import igprofiles
 import pytest
-import scraper
+import uiautomator2 as u2
 from igprofiles.v445.selectors import SELECTORS as SELECTORS_445
+from instadroid import (
+    capture,
+    config,
+    db,
+    device,
+    diagnostics,
+    install,
+    navigation,
+    parsing,
+    scrape,
+    stories,
+    versioning,
+)
 from PIL import Image, ImageDraw
 
 from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, hierarchy, node
 
-SAVE_FAILURE_LOGCAT = scraper._save_failure_logcat  # captured before conftest stubs it out
+SAVE_FAILURE_LOGCAT = diagnostics.save_failure_logcat  # captured before conftest stubs it out
 CAPTION = SELECTORS_445["caption_class"]  # read at import, before conftest pins the profile
 ACTION_BAR = node("action_bar_container", bounds=(0, 142, 1080, 289))
 FOLLOWING_TITLE = node(
@@ -215,17 +229,17 @@ def feed_device_with_following(pages, main_scroll=None, **kw):
 
 @pytest.fixture(autouse=True)
 def fast_offline(tmp_path, monkeypatch):
-    monkeypatch.setattr(scraper, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    monkeypatch.setattr(scraper, "MEDIA_DIR", tmp_path / "media")
-    monkeypatch.setattr(scraper, "DEBUG_DIR", tmp_path / "debug")
-    monkeypatch.setattr(scraper, "APK_CACHE_DIR", tmp_path / "apk")
-    monkeypatch.setattr(scraper, "IG_APK_VERSION", "latest")  # the top-level cache layout
-    monkeypatch.setattr(scraper, "human_pause", lambda *a, **k: None)
-    monkeypatch.setattr(scraper.time, "sleep", lambda s: None)
-    monkeypatch.setattr(scraper, "IG_USERNAME", "me")
-    monkeypatch.setattr(scraper, "IG_PASSWORD", "hunter2")
-    monkeypatch.setattr(scraper, "_last_url", "")
-    monkeypatch.setattr(scraper, "CLIPBOARD_TIMEOUT", 0.01)
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
+    monkeypatch.setattr(config, "MEDIA_DIR", tmp_path / "media")
+    monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "debug")
+    monkeypatch.setattr(config, "APK_CACHE_DIR", tmp_path / "apk")
+    monkeypatch.setattr(config, "IG_APK_VERSION", "latest")  # the top-level cache layout
+    monkeypatch.setattr(device, "human_pause", lambda *a, **k: None)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.setattr(config, "IG_USERNAME", "me")
+    monkeypatch.setattr(config, "IG_PASSWORD", "hunter2")
+    monkeypatch.setattr(capture, "_last_url", "")
+    monkeypatch.setattr(config, "CLIPBOARD_TIMEOUT", 0.01)
     return tmp_path
 
 
@@ -252,7 +266,7 @@ def text_screen(text, goto=None):
 def test_login_fills_the_form_and_dismisses_interstitials():
     screens = {"login": login_screen(), "notnow": text_screen("Not now", goto="home"), "home": home_screen()}
     d = FakeDevice(screens, "login")
-    assert scraper.ensure_logged_in(d) is True
+    assert navigation.ensure_logged_in(d) is True
     assert d.typed == [(0, "me"), (1, "hunter2")]
     assert d.screen == "home"
     assert d.launches == ["com.instagram.mainactivity.LauncherActivity"]  # resolved, not monkey
@@ -265,13 +279,13 @@ def test_login_taps_through_the_logged_out_welcome_screen():
         "home": home_screen(),
     }
     d = FakeDevice(screens, "welcome")
-    assert scraper.ensure_logged_in(d) is True
+    assert navigation.ensure_logged_in(d) is True
     assert "login" in d.history
 
 
 def test_login_dismisses_a_stray_ok_alert_and_accepts_a_live_session():
     d = FakeDevice({"alert": text_screen("OK", goto="home"), "home": home_screen()}, "alert")
-    assert scraper.ensure_logged_in(d) is True
+    assert navigation.ensure_logged_in(d) is True
     assert d.typed == []
 
 
@@ -286,24 +300,24 @@ def test_login_dismisses_a_stray_ok_alert_and_accepts_a_live_session():
 )  # fmt: skip
 def test_login_failures_raise_with_a_debug_dump(screens, start, match, fast_offline):
     with pytest.raises(RuntimeError, match=match):
-        scraper.ensure_logged_in(FakeDevice(screens, start))
+        navigation.ensure_logged_in(FakeDevice(screens, start))
     assert (fast_offline / "debug" / "login_hierarchy.xml").exists()
 
 
 def test_login_without_credentials_raises(monkeypatch):
-    monkeypatch.setattr(scraper, "IG_PASSWORD", "")
+    monkeypatch.setattr(config, "IG_PASSWORD", "")
     with pytest.raises(RuntimeError, match="not set"):
-        scraper.ensure_logged_in(FakeDevice({"login": login_screen()}, "login"))
+        navigation.ensure_logged_in(FakeDevice({"login": login_screen()}, "login"))
 
 
 def test_login_raises_when_instagram_is_not_installed_and_auto_install_is_off(monkeypatch):
-    monkeypatch.setattr(scraper, "IG_AUTO_INSTALL", False)
+    monkeypatch.setattr(config, "IG_AUTO_INSTALL", False)
     with pytest.raises(RuntimeError, match="not installed"):
-        scraper.ensure_logged_in(FakeDevice({}, "launcher", installed=()))
+        navigation.ensure_logged_in(FakeDevice({}, "launcher", installed=()))
 
 
 def _apk_run(monkeypatch, d, calls, *, fail_on=None):
-    """Patch scraper.subprocess.run to fake apkeep + adb install without touching the network or a
+    """Patch subprocess.run to fake apkeep + adb install without touching the network or a
     real device, recording every invocation into `calls`. `fail_on` (argv[0], "apkeep" or "adb")
     makes that step raise CalledProcessError. A successful "adb install"/"install-multiple" flips
     `d`'s installed set, same as a real adb install would."""
@@ -315,63 +329,63 @@ def _apk_run(monkeypatch, d, calls, *, fail_on=None):
         if cmd[0] == "apkeep":
             out_dir = Path(cmd[cmd.index("-d") + 2])
             out_dir.mkdir(parents=True, exist_ok=True)
-            xapk = out_dir / f"{scraper.IG_PKG}@1.0.0.xapk"
+            xapk = out_dir / f"{config.IG_PKG}@1.0.0.xapk"
             with zipfile.ZipFile(xapk, "w") as zf:
-                zf.writestr(f"{scraper.IG_PKG}.apk", b"base")
+                zf.writestr(f"{config.IG_PKG}.apk", b"base")
                 zf.writestr("config.arm64_v8a.apk", b"split")
                 zf.writestr("manifest.json", b"{}")
         elif cmd[0] == "adb":
             d.install()
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(scraper.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
 
 def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch):
     d = FakeDevice({"home": home_screen()}, "launcher", installed=())
     calls = []
     _apk_run(monkeypatch, d, calls)
-    assert scraper.ensure_logged_in(d) is True
+    assert navigation.ensure_logged_in(d) is True
     apkeep_call = next(c for c in calls if c[0] == "apkeep")
-    assert apkeep_call[:3] == ["apkeep", "-a", scraper.IG_PKG]
+    assert apkeep_call[:3] == ["apkeep", "-a", config.IG_PKG]
     install_call = next(c for c in calls if c[0] == "adb")
     assert install_call[3] == "install-multiple"
-    assert install_call[4].endswith(f"{scraper.IG_PKG}.apk")
+    assert install_call[4].endswith(f"{config.IG_PKG}.apk")
     assert install_call[5].endswith("config.arm64_v8a.apk")
 
 
 def test_installing_instagram_reactivates_the_profile(monkeypatch):
     d = FakeDevice({"home": home_screen()}, "launcher", installed=())
     _apk_run(monkeypatch, d, [])
-    monkeypatch.setattr(scraper, "PROFILE_WARNING", "stale warning from before the install")
-    assert scraper.ensure_logged_in(d) is True
-    assert scraper.PROFILE.name == "v445" and scraper.PROFILE_WARNING is None  # installed 445.0.0.45.83
+    monkeypatch.setattr(versioning, "PROFILE_WARNING", "stale warning from before the install")
+    assert navigation.ensure_logged_in(d) is True
+    assert versioning.PROFILE.name == "v445" and versioning.PROFILE_WARNING is None  # installed 445.0.0.45.83
 
 
 def test_auto_install_fetches_the_profiles_own_apk_version(monkeypatch):
-    monkeypatch.setattr(scraper, "IG_APK_VERSION", "")
-    monkeypatch.setattr(scraper, "PROFILE", igprofiles.load("v446"))
+    monkeypatch.setattr(config, "IG_APK_VERSION", "")
+    monkeypatch.setattr(versioning, "PROFILE", igprofiles.load("v446"))
     d = FakeDevice({"home": home_screen()}, "launcher", installed=(), ig_version="446.0.0.49.77")
     calls = []
     _apk_run(monkeypatch, d, calls)
-    monkeypatch.setattr(scraper, "IG_PROFILE", "v446")
-    assert scraper.ensure_logged_in(d) is True
-    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{scraper.IG_PKG}@446.0.0.49.77"
+    monkeypatch.setattr(config, "IG_PROFILE", "v446")
+    assert navigation.ensure_logged_in(d) is True
+    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{config.IG_PKG}@446.0.0.49.77"
 
 
 def test_a_pinned_apk_version_gets_its_own_cache_folder(monkeypatch):
     # An unpinned bundle already cached at the top level must not be installed for a pinned version.
-    xapk_dir = scraper.APK_CACHE_DIR / "xapk"
+    xapk_dir = config.APK_CACHE_DIR / "xapk"
     xapk_dir.mkdir(parents=True)
-    (xapk_dir / f"{scraper.IG_PKG}.apk").write_bytes(b"latest")
-    monkeypatch.setattr(scraper, "IG_APK_VERSION", "445.0.0.45.83")
+    (xapk_dir / f"{config.IG_PKG}.apk").write_bytes(b"latest")
+    monkeypatch.setattr(config, "IG_APK_VERSION", "445.0.0.45.83")
     d = FakeDevice({"home": home_screen()}, "launcher", installed=())
     calls = []
     _apk_run(monkeypatch, d, calls)
-    assert scraper.ensure_logged_in(d) is True
+    assert navigation.ensure_logged_in(d) is True
     apkeep_call = next(c for c in calls if c[0] == "apkeep")
-    assert apkeep_call[2] == f"{scraper.IG_PKG}@445.0.0.45.83"
-    assert apkeep_call[-1] == str(scraper.APK_CACHE_DIR / "445.0.0.45.83")
+    assert apkeep_call[2] == f"{config.IG_PKG}@445.0.0.45.83"
+    assert apkeep_call[-1] == str(config.APK_CACHE_DIR / "445.0.0.45.83")
     install_call = next(c for c in calls if c[0] == "adb")
     assert all("/445.0.0.45.83/" in arg for arg in install_call[4:])
 
@@ -381,36 +395,36 @@ def test_install_version_replaces_a_newer_install_in_place(monkeypatch):
     d.install = lambda: setattr(d, "ig_version", "445.0.0.45.83")  # what the downgrade installs
     calls = []
     _apk_run(monkeypatch, d, calls)
-    assert scraper.install_instagram_version(d, "445.0.0.45.83") == "445.0.0.45.83"
-    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{scraper.IG_PKG}@445.0.0.45.83"
+    assert install.install_instagram_version(d, "445.0.0.45.83") == "445.0.0.45.83"
+    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{config.IG_PKG}@445.0.0.45.83"
     install_call = next(c for c in calls if c[0] == "adb")
     assert install_call[3:6] == ["install-multiple", "-r", "-d"]
 
 
 def test_install_version_defaults_to_the_pinned_version_and_skips_when_already_installed(monkeypatch):
-    monkeypatch.setattr(scraper, "IG_APK_VERSION", "445.0.0.45.83")
+    monkeypatch.setattr(config, "IG_APK_VERSION", "445.0.0.45.83")
     d = FakeDevice({"home": home_screen()}, "launcher")  # already reports 445.0.0.45.83
     calls = []
     _apk_run(monkeypatch, d, calls)
-    assert scraper.install_instagram_version(d) == "445.0.0.45.83"
+    assert install.install_instagram_version(d) == "445.0.0.45.83"
     assert calls == []
 
 
 def test_install_version_raises_when_the_device_reports_another_version(monkeypatch):
     d = FakeDevice({"home": home_screen()}, "launcher", ig_version="446.0.0.49.77")
     _apk_run(monkeypatch, d, [])  # the fake install leaves the version untouched
-    with pytest.raises(scraper.DeviceNotReady, match="device reports 446.0.0.49.77"):
-        scraper.install_instagram_version(d, "445.0.0.45.83")
+    with pytest.raises(device.DeviceNotReady, match="device reports 446.0.0.49.77"):
+        install.install_instagram_version(d, "445.0.0.45.83")
 
 
 def test_ensure_logged_in_reuses_a_cached_apk(monkeypatch):
-    xapk_dir = scraper.APK_CACHE_DIR / "xapk"
+    xapk_dir = config.APK_CACHE_DIR / "xapk"
     xapk_dir.mkdir(parents=True)
-    (xapk_dir / f"{scraper.IG_PKG}.apk").write_bytes(b"base")
+    (xapk_dir / f"{config.IG_PKG}.apk").write_bytes(b"base")
     d = FakeDevice({"home": home_screen()}, "launcher", installed=())
     calls = []
     _apk_run(monkeypatch, d, calls)
-    assert scraper.ensure_logged_in(d) is True
+    assert navigation.ensure_logged_in(d) is True
     assert not any(c[0] == "apkeep" for c in calls)
     install_call = next(c for c in calls if c[0] == "adb")
     assert install_call[3] == "install"  # single apk: no -multiple
@@ -419,22 +433,22 @@ def test_ensure_logged_in_reuses_a_cached_apk(monkeypatch):
 def test_ensure_logged_in_raises_transiently_when_apkeep_fails(monkeypatch):
     d = FakeDevice({}, "launcher", installed=())
     _apk_run(monkeypatch, d, [], fail_on="apkeep")
-    with pytest.raises(scraper.DeviceNotReady):
-        scraper.ensure_logged_in(d)
+    with pytest.raises(device.DeviceNotReady):
+        navigation.ensure_logged_in(d)
 
 
 def test_ensure_logged_in_raises_transiently_when_install_fails(monkeypatch):
     d = FakeDevice({}, "launcher", installed=())
     _apk_run(monkeypatch, d, [], fail_on="adb")
-    with pytest.raises(scraper.DeviceNotReady):
-        scraper.ensure_logged_in(d)
+    with pytest.raises(device.DeviceNotReady):
+        navigation.ensure_logged_in(d)
 
 
 def test_app_that_never_foregrounds_is_a_transient_device_failure():
     d = FakeDevice({}, "launcher", launch_blocked=True)
-    with pytest.raises(scraper.DeviceNotReady) as exc:
-        scraper.ensure_logged_in(d)
-    assert scraper.is_transient(exc.value)
+    with pytest.raises(device.DeviceNotReady) as exc:
+        navigation.ensure_logged_in(d)
+    assert device.is_transient(exc.value)
     assert len(d.launches) == 4  # the first launch plus three retries
 
 
@@ -443,13 +457,13 @@ def test_app_that_never_foregrounds_is_a_transient_device_failure():
 
 def test_open_following_feed_goes_through_the_switcher():
     d = feed_device()
-    assert scraper.open_following_feed(d) is True
+    assert navigation.open_following_feed(d) is True
     assert d.history[-2:] == ["menu", "following"]
 
 
 def test_open_following_feed_reenters_a_following_screen_left_over_from_last_run():
     d = feed_device(start="following")
-    assert scraper.open_following_feed(d) is True
+    assert navigation.open_following_feed(d) is True
     assert d.history == ["following", "home", "menu", "following"]
 
 
@@ -457,81 +471,81 @@ def test_open_following_feed_backs_out_of_an_unrelated_screen():
     d = feed_device(start="profile")
     d.screens["profile"] = hierarchy(node(text="Edit profile"))
     d.back["profile"] = "home"
-    assert scraper.open_following_feed(d) is True
+    assert navigation.open_following_feed(d) is True
     assert d.presses[0] == "back"
 
 
 def test_open_following_feed_gives_up_when_the_switcher_never_opens(fast_offline):
     d = FakeDevice({"home": home_screen(switcher_goto="")}, "home")
-    assert scraper.open_following_feed(d) is False
+    assert navigation.open_following_feed(d) is False
     assert (fast_offline / "debug" / "feed_switch_hierarchy.xml").exists()
 
 
 def test_close_sheets_relaunches_if_back_leaves_the_app():
     d = feed_device(start="share_top")
     d.back["share_top"] = "launcher"
-    assert scraper.close_sheets(d) is True
+    assert navigation.close_sheets(d) is True
     assert d.screen == "home"
 
 
 def test_back_to_feed_relaunches_from_outside_the_app():
     d = feed_device(start="launcher", launch_screen="following")
-    assert scraper._back_to_feed(d) is True
+    assert navigation.back_to_feed(d) is True
 
 
 # --- permalinks -------------------------------------------------------------------------------
 
 
 def top_card_id(d):
-    return scraper.post_id(scraper.parse_hierarchy(d.dump_hierarchy())[0])
+    return parsing.post_id(parsing.parse_hierarchy(d.dump_hierarchy())[0])
 
 
 def test_fetch_permalink_copies_and_canonicalises_the_link():
     d = feed_device(start="following")
-    assert scraper.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/reel/TOP123/", None)
+    assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/reel/TOP123/", None)
     assert d.screen == "following"
 
 
 def test_fetch_permalink_reports_a_sheet_that_never_opens(fast_offline):
     d = feed_device(top_share="", start="following")
-    assert scraper.fetch_permalink(d, top_card_id(d)) == (None, "sheet")
+    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "sheet")
     assert (fast_offline / "debug" / "share_sheet_hierarchy.xml").exists()
 
 
 def test_fetch_permalink_reports_a_clipboard_that_never_updates():
     d = feed_device(top_share="share_noclip", start="following")
-    assert scraper.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
+    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
 
 
 def test_fetch_permalink_ignores_the_previous_posts_link_left_in_the_clipboard(monkeypatch):
-    monkeypatch.setattr(scraper, "_last_url", TOP_URL)
+    monkeypatch.setattr(capture, "_last_url", TOP_URL)
     d = feed_device(start="following")
-    assert scraper.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
+    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
 
 
 def test_fetch_permalink_when_the_card_is_gone():
-    assert scraper.fetch_permalink(feed_device(start="following"), "no-such-card") == (None, "sheet")
+    assert capture.fetch_permalink(feed_device(start="following"), "no-such-card") == (None, "sheet")
 
 
 def test_fetch_permalink_refuses_to_act_inside_a_stuck_sheet():
     d = feed_device(start="share_top")
     d.back["share_top"] = "share_top"
-    assert scraper.fetch_permalink(d, "anything") == (None, "sheet")
+    assert capture.fetch_permalink(d, "anything") == (None, "sheet")
     assert d.taps == []  # never tapped anything inside the sheet
 
 
 def test_force_stop_is_one_shell_call_and_best_effort():
     d = feed_device(start="following")
 
-    scraper._free_device_memory(d)
+    device.free_device_memory(d)
 
-    assert d.shell_calls == [f"am force-stop {pkg}" for pkg in (*scraper.CACHED_APP_SWEEP, scraper.IG_PKG)]
+    assert d.shell_calls == [f"am force-stop {pkg}" for pkg in (*device.CACHED_APP_SWEEP, config.IG_PKG)]
 
     def raising_shell(cmd):
         raise RuntimeError("device offline")
 
     d.shell = raising_shell
-    scraper._force_stop(d, scraper.IG_PKG)  # must not raise
+    device.force_stop(d, config.IG_PKG)  # must not raise
 
 
 def _caption_card(text, goto=None):
@@ -557,10 +571,10 @@ def test_expand_caption_taps_more_and_returns_the_full_text():
         },
         "following",
     )
-    p = scraper.parse_hierarchy(d.dump_hierarchy())[0]
+    p = parsing.parse_hierarchy(d.dump_hierarchy())[0]
     assert p["caption_truncated"] is True
 
-    assert scraper._expand_caption(d, p) == "Short start continues on with the full text"
+    assert capture.expand_caption(d, p) == "Short start continues on with the full text"
 
 
 def test_expand_caption_falls_back_to_the_truncated_text_when_the_tap_does_nothing():
@@ -570,9 +584,9 @@ def test_expand_caption_falls_back_to_the_truncated_text_when_the_tap_does_nothi
         },  # no goto: tap is inert
         "following",
     )
-    p = scraper.parse_hierarchy(d.dump_hierarchy())[0]
+    p = parsing.parse_hierarchy(d.dump_hierarchy())[0]
 
-    assert scraper._expand_caption(d, p) == "Short start…"
+    assert capture.expand_caption(d, p) == "Short start…"
     assert d.screen == "following"  # never knocked off the feed
 
 
@@ -581,10 +595,10 @@ def test_expand_caption_is_a_noop_for_a_caption_that_was_never_truncated():
         {"following": following_screen(_caption_card("someone_nice Whole caption, no more span"))},
         "following",
     )
-    p = scraper.parse_hierarchy(d.dump_hierarchy())[0]
+    p = parsing.parse_hierarchy(d.dump_hierarchy())[0]
     assert p["caption_truncated"] is False
 
-    assert scraper._expand_caption(d, p) == "Whole caption, no more span"
+    assert capture.expand_caption(d, p) == "Whole caption, no more span"
     assert d.taps == []  # nothing to tap
 
 
@@ -602,15 +616,15 @@ def _seed_post(con, pid, username, caption, days_ago, h=None, url=None):
 
 
 def test_scrape_once_end_to_end(fast_offline, monkeypatch):
-    monkeypatch.setattr(scraper, "MAX_CAROUSEL_SLIDES", 3)
-    monkeypatch.setattr(scraper, "STOP_AFTER_SEEN", 1)
+    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 3)
+    monkeypatch.setattr(config, "STOP_AFTER_SEEN", 1)
     media = fast_offline / "media"
-    con = scraper.db_init()
+    con = db.db_init()
     d = feed_device()
-    old_card = scraper.parse_hierarchy(d.screens["older"])[0]
-    _seed_post(con, "OLD1", "old_user", "Old caption", 2, h=scraper.post_id(old_card))
+    old_card = parsing.parse_hierarchy(d.screens["older"])[0]
+    _seed_post(con, "OLD1", "old_user", "Old caption", 2, h=parsing.post_id(old_card))
 
-    stats = scraper.scrape_once(d, con)
+    stats = scrape.scrape_once(d, con)
 
     assert stats == {
         "new": 2,
@@ -640,28 +654,28 @@ def test_scrape_once_end_to_end(fast_offline, monkeypatch):
         assert (media / fn).read_bytes()[8:12] == b"WEBP"  # the default MEDIA_FORMAT
     assert (media / "avatars" / "other_user.webp").exists()
     assert (media / "avatars" / "old_user.webp").exists()
-    stories = con.execute("SELECT username, media_file FROM stories").fetchall()
-    assert [s["username"] for s in stories] == ["alice"]  # bob's viewer never opened, carol was seen
-    assert (media / stories[0]["media_file"]).exists()
+    stored_stories = con.execute("SELECT username, media_file FROM stories").fetchall()
+    assert [s["username"] for s in stored_stories] == ["alice"]  # bob's viewer never opened, carol was seen
+    assert (media / stored_stories[0]["media_file"]).exists()
     assert d.presses[-1] == "home"
-    for pkg in scraper.CACHED_APP_SWEEP:
+    for pkg in device.CACHED_APP_SWEEP:
         assert f"am force-stop {pkg}" in d.shell_calls
-    assert f"am force-stop {scraper.IG_PKG}" in d.shell_calls
+    assert f"am force-stop {config.IG_PKG}" in d.shell_calls
 
 
 def test_scrape_once_without_permalinks_falls_back_to_hash_ids_and_merges_a_placeholder(monkeypatch):
-    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(scraper, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(scraper, "MAX_SCROLLS", 2)
-    monkeypatch.setattr(scraper, "PERMALINK_RETRIES", 1)
-    monkeypatch.setattr(scraper, "SHARE_TAP_TRIES", 1)
-    con = scraper.db_init()
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 2)
+    monkeypatch.setattr(config, "PERMALINK_RETRIES", 1)
+    monkeypatch.setattr(config, "SHARE_TAP_TRIES", 1)
+    con = db.db_init()
     # Stored earlier, before the caption rendered: same author and day, placeholder caption.
     _seed_post(con, "placeholder", "someone_nice", "Reel by Someone Nice", 3)
     d = feed_device(top_share="", other_share="")
     d.scroll = {}  # scrolling shows nothing new: only the two cards above are in play
 
-    stats = scraper.scrape_once(d, con)
+    stats = scrape.scrape_once(d, con)
 
     assert stats["new"] == 1  # the Reel merged into the placeholder instead of being stored twice
     assert stats["link_sheet_failures"] == 4  # two attempts per card
@@ -674,27 +688,27 @@ def test_scrape_once_without_permalinks_falls_back_to_hash_ids_and_merges_a_plac
 
 
 def test_scrape_once_drops_a_permalink_that_belongs_to_another_account(monkeypatch):
-    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(scraper, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
-    con = scraper.db_init()
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    con = db.db_init()
     _seed_post(con, "TOP123", "someone_else", "Unrelated", 10, h="unrelated")
 
-    scraper.scrape_once(feed_device(), con)
+    scrape.scrape_once(feed_device(), con)
 
     row = con.execute("SELECT * FROM posts WHERE username='someone_nice'").fetchone()
     assert row["url"] is None and row["id"] != "TOP123"  # stored under its hash, not the stale link
 
 
 def test_scrape_once_treats_an_edited_caption_as_the_same_post(monkeypatch):
-    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(scraper, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
-    con = scraper.db_init()
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    con = db.db_init()
     _seed_post(con, "TOP123", "someone_nice", "Caption before the edit", 3, h="old-hash")
     d = feed_device()
 
-    stats = scraper.scrape_once(d, con)
+    stats = scrape.scrape_once(d, con)
 
     row = con.execute("SELECT hash FROM posts WHERE id='TOP123'").fetchone()
     assert row["hash"] == top_card_id(feed_device(start="following"))  # re-keyed to the new caption
@@ -725,38 +739,37 @@ def test_open_home_feed_navigates_via_the_home_tab(fast_offline):
     # feed_device()'s own back map already sends "following" -> "home"; open_home_feed() has no
     # switcher to tap, so this is the same recovery path open_following_feed() itself relies on.
     d = feed_device(start="following")
-    assert scraper.open_home_feed(d) is True
+    assert navigation.open_home_feed(d) is True
     assert d.screen == "home"
 
 
 def test_on_target_feed_matches_feed_mode(fast_offline, monkeypatch):
     home = FakeDevice({"home": home_feed_screen()}, "home")
     following = FakeDevice({"following": following_screen()}, "following")
-    monkeypatch.setattr(scraper, "FEED_MODE", "home")
-    assert scraper._on_target_feed(home) is True
-    assert scraper._on_target_feed(following) is False
-    monkeypatch.setattr(scraper, "FEED_MODE", "chrono")
-    assert scraper._on_target_feed(home) is False
-    assert scraper._on_target_feed(following) is True
+    monkeypatch.setattr(config, "FEED_MODE", "home")
+    assert navigation.on_target_feed(home) is True
+    assert navigation.on_target_feed(following) is False
+    monkeypatch.setattr(config, "FEED_MODE", "chrono")
+    assert navigation.on_target_feed(home) is False
+    assert navigation.on_target_feed(following) is True
 
 
 def test_open_target_feed_dispatches_by_feed_mode(fast_offline, monkeypatch):
     d = feed_device(start="home")
-    monkeypatch.setattr(scraper, "FEED_MODE", "home")
-    assert scraper.open_target_feed(d) is True
+    monkeypatch.setattr(config, "FEED_MODE", "home")
+    assert navigation.open_target_feed(d) is True
     assert d.screen == "home"
     d = feed_device(start="home")
-    monkeypatch.setattr(scraper, "FEED_MODE", "chrono")
-    assert scraper.open_target_feed(d) is True
+    monkeypatch.setattr(config, "FEED_MODE", "chrono")
+    assert navigation.open_target_feed(d) is True
     assert d.screen == "following"
 
 
 def test_unknown_feed_mode_falls_back_to_chrono():
-    # A subprocess, not importlib.reload(scraper) -- scraper.py is a shared, stateful module across
-    # the whole test session (its exception classes are identity-checked elsewhere, per test_push.py's
-    # own note), and reloading it in place would rebind those classes out from under other test files.
+    # A subprocess: FEED_MODE is resolved at import, and reloading config in place would leak into
+    # every other test in the session.
     result = subprocess.run(
-        [sys.executable, "-c", "import scraper; print(scraper.FEED_MODE)"],
+        [sys.executable, "-c", "from instadroid import config; print(config.FEED_MODE)"],
         cwd=Path(__file__).parent.parent,
         env={**os.environ, "FEED_MODE": "algorithmic"},
         capture_output=True,
@@ -767,22 +780,22 @@ def test_unknown_feed_mode_falls_back_to_chrono():
 
 
 def test_scrape_once_stays_on_home_feed_when_feed_mode_is_home(fast_offline, monkeypatch):
-    monkeypatch.setattr(scraper, "FEED_MODE", "home")
-    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
-    monkeypatch.setattr(scraper, "STOP_AFTER_SEEN", 1)
-    con = scraper.db_init()
+    monkeypatch.setattr(config, "FEED_MODE", "home")
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    monkeypatch.setattr(config, "STOP_AFTER_SEEN", 1)
+    con = db.db_init()
     # Seed every card already-known so nothing new needs the share-sheet round trip -- this test
     # is about which feed scrape_once() navigates to, not about re-testing that flow.
-    for i, card in enumerate(scraper.parse_hierarchy(home_feed_screen())):
-        _seed_post(con, f"SEEN{i}", card["username"], "already stored", 1, h=scraper.post_id(card))
+    for i, card in enumerate(parsing.parse_hierarchy(home_feed_screen())):
+        _seed_post(con, f"SEEN{i}", card["username"], "already stored", 1, h=parsing.post_id(card))
     d = FakeDevice(
         {"home": home_feed_screen(), "following": following_screen(), "menu": MENU},
         "home",
         back={"following": "home", "menu": "home"},
     )
 
-    scraper.scrape_once(d, con)
+    scrape.scrape_once(d, con)
 
     assert "following" not in d.history  # never navigated to the chronological feed
     assert "menu" not in d.history  # never opened the switcher either
@@ -790,7 +803,7 @@ def test_scrape_once_stays_on_home_feed_when_feed_mode_is_home(fast_offline, mon
 
 def test_open_own_following_list_navigates_from_the_feed(fast_offline):
     d = feed_device_with_following([["alice", "bob"]], start="following")
-    assert scraper.open_own_following_list(d) is True
+    assert navigation.open_own_following_list(d) is True
     assert d.screen == "following_list"
     assert d.history[-3:] == ["following", "profile", "following_list"]
 
@@ -800,44 +813,44 @@ def test_open_own_following_list_leaves_and_reenters_when_already_on_the_list_sc
     # started mid-scroll instead of at the top, collecting 9 of 30 followed accounts instead of a
     # fresh scroll's 27+ — accepting "already there" as done is the bug this guards against.
     d = feed_device_with_following([["alice", "bob"]], start="following_list")
-    assert scraper.open_own_following_list(d) is True
+    assert navigation.open_own_following_list(d) is True
     assert d.screen == "following_list"
     assert d.history.count("following_list") == 2  # left, then genuinely navigated back in
 
 
 def test_scrape_following_list_scrolls_until_no_new_username_appears(fast_offline, monkeypatch):
-    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
     d = feed_device_with_following([["alice", "bob"], ["carol"]], main_scroll={}, start="following_list")
-    assert scraper.scrape_following_list(d) == ["alice", "bob", "carol"]
+    assert navigation.scrape_following_list(d) == ["alice", "bob", "carol"]
 
 
 def test_scrape_following_list_returns_none_when_nothing_is_ever_parsed(fast_offline, monkeypatch):
-    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
     d = feed_device_with_following([[]], main_scroll={}, start="following_list")
-    assert scraper.scrape_following_list(d) is None
+    assert navigation.scrape_following_list(d) is None
 
 
 def test_refresh_following_list_replaces_the_stored_list(fast_offline, monkeypatch):
-    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
-    con = scraper.db_init()
+    monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    con = db.db_init()
     con.execute("INSERT INTO following (username, updated_at) VALUES ('stale_unfollowed', '2020-01-01')")
     con.commit()
     d = feed_device_with_following([["alice", "bob"]], main_scroll={}, start="following")
 
-    n = scraper.refresh_following_list(d, con)
+    n = navigation.refresh_following_list(d, con)
 
     assert n == 2
     assert {r[0] for r in con.execute("SELECT username FROM following")} == {"alice", "bob"}
 
 
 def test_refresh_following_list_keeps_the_existing_list_on_a_failed_scrape(fast_offline, monkeypatch):
-    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
-    con = scraper.db_init()
+    monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    con = db.db_init()
     con.execute("INSERT INTO following (username, updated_at) VALUES ('good_data', '2020-01-01')")
     con.commit()
     d = feed_device_with_following([[]], main_scroll={}, start="following")  # empty list = parse failure
 
-    n = scraper.refresh_following_list(d, con)
+    n = navigation.refresh_following_list(d, con)
 
     assert n is None
     assert {r[0] for r in con.execute("SELECT username FROM following")} == {"good_data"}
@@ -846,16 +859,16 @@ def test_refresh_following_list_keeps_the_existing_list_on_a_failed_scrape(fast_
 def test_scrape_once_filters_posts_from_accounts_not_on_the_refreshed_following_list(
     fast_offline, monkeypatch
 ):
-    monkeypatch.setattr(scraper, "FOLLOWING_REFRESH_DAYS", 7)
-    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
-    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(scraper, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(scraper, "MAX_SCROLLS", 2)
-    con = scraper.db_init()  # following table starts empty -> due for a refresh this run
+    monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 7)
+    monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 2)
+    con = db.db_init()  # following table starts empty -> due for a refresh this run
     # Only someone_nice is on the (about-to-be-scraped) Following list; other_user is not.
     d = feed_device_with_following([["someone_nice"]], main_scroll={})
 
-    stats = scraper.scrape_once(d, con)
+    stats = scrape.scrape_once(d, con)
 
     assert {r[0] for r in con.execute("SELECT username FROM following")} == {"someone_nice"}
     assert stats["filtered_posts"] >= 1
@@ -870,16 +883,16 @@ def test_scrape_once_does_not_filter_before_the_first_successful_refresh(fast_of
     # Enabled but never yet refreshed, and this run's own refresh attempt also finds nothing
     # (empty Following-list screen) -- an empty allowlist must mean "not initialized," not "filter
     # everything," or turning the feature on would silently drop every post on its first run.
-    monkeypatch.setattr(scraper, "FOLLOWING_REFRESH_DAYS", 7)
-    monkeypatch.setattr(scraper, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
-    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(scraper, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(scraper, "MAX_SCROLLS", 2)
-    monkeypatch.setattr(scraper, "STOP_AFTER_SEEN", 1)
-    con = scraper.db_init()
+    monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 7)
+    monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 2)
+    monkeypatch.setattr(config, "STOP_AFTER_SEEN", 1)
+    con = db.db_init()
     d = feed_device_with_following([[]], main_scroll={})  # the refresh itself finds nothing
 
-    stats = scraper.scrape_once(d, con)
+    stats = scrape.scrape_once(d, con)
 
     assert stats["filtered_posts"] == 0
     posts = {r[0] for r in con.execute("SELECT username FROM posts")}
@@ -895,30 +908,34 @@ class StopLoop(Exception):
 
 def test_connect_device(monkeypatch):
     dev = feed_device()
-    monkeypatch.setattr(scraper.adbutils.adb, "connect", lambda addr, timeout=None: None)
-    monkeypatch.setattr(scraper.u2, "connect", lambda addr: dev)
-    assert scraper.connect_device() is dev
-    assert scraper.PROFILE.name == "v445" and scraper.PROFILE_WARNING is None  # device reports 445.0.0.45.83
+    monkeypatch.setattr(adbutils.adb, "connect", lambda addr, timeout=None: None)
+    monkeypatch.setattr(u2, "connect", lambda addr: dev)
+    assert device.connect_device() is dev
+    assert (
+        versioning.PROFILE.name == "v445" and versioning.PROFILE_WARNING is None
+    )  # device reports 445.0.0.45.83
 
 
 def test_connect_device_warns_when_the_installed_version_differs_from_the_profile(monkeypatch):
     dev = feed_device()
     dev.ig_version = "446.0.0.49.77"
-    monkeypatch.setattr(scraper.adbutils.adb, "connect", lambda addr, timeout=None: None)
-    monkeypatch.setattr(scraper.u2, "connect", lambda addr: dev)
-    scraper.connect_device()
-    assert scraper.PROFILE.name == "v445"  # the configured profile wins; nothing switches on its own
-    assert scraper.PROFILE_WARNING == (
+    monkeypatch.setattr(adbutils.adb, "connect", lambda addr, timeout=None: None)
+    monkeypatch.setattr(u2, "connect", lambda addr: dev)
+    device.connect_device()
+    assert versioning.PROFILE.name == "v445"  # the configured profile wins; nothing switches on its own
+    assert versioning.PROFILE_WARNING == (
         "Instagram 446.0.0.49.77 is installed but profile v445 targets 445.x;"
         " run `scraper.py install` to get 445.0.0.45.83, or set IG_PROFILE=v446"
     )
 
 
 def test_scrape_once_reports_the_profile_warning(monkeypatch):
-    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
-    monkeypatch.setattr(scraper, "PROFILE_WARNING", "Instagram 446.0.0.49.77 is installed but profile v445")
-    stats = scraper.scrape_once(feed_device(), scraper.db_init())
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    monkeypatch.setattr(
+        versioning, "PROFILE_WARNING", "Instagram 446.0.0.49.77 is installed but profile v445"
+    )
+    stats = scrape.scrape_once(feed_device(), db.db_init())
     assert "Instagram 446.0.0.49.77 is installed but profile v445" in stats["warning"]
 
 
@@ -929,22 +946,22 @@ def _stop_after_first_sleep(monkeypatch):
         sleeps.append(seconds)
         raise StopLoop
 
-    monkeypatch.setattr(scraper.time, "sleep", sleep)
-    monkeypatch.setattr(scraper, "TIME_DISTRIBUTION", "uniform")
+    monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(config, "TIME_DISTRIBUTION", "uniform")
     return sleeps
 
 
 def test_main_records_a_transient_failure_and_retries_early(fast_offline, monkeypatch):
     sleeps = _stop_after_first_sleep(monkeypatch)
-    monkeypatch.setattr(scraper, "RETRY_DELAYS_MINUTES", [2.0])
+    monkeypatch.setattr(config, "RETRY_DELAYS_MINUTES", [2.0])
 
     def offline():
         raise adbutils.AdbError("device 127.0.0.1:5555 not online")
 
-    monkeypatch.setattr(scraper, "connect_device", offline)
+    monkeypatch.setattr(device, "connect_device", offline)
 
     with pytest.raises(StopLoop):
-        scraper.main()
+        scrape.main()
 
     run = sqlite3.connect(fast_offline / "posts.sqlite").execute("SELECT error FROM runs").fetchone()
     assert run[0].startswith("AdbError")
@@ -953,7 +970,7 @@ def test_main_records_a_transient_failure_and_retries_early(fast_offline, monkey
 
 def test_main_records_a_successful_run_with_device_versions(fast_offline, monkeypatch):
     sleeps = _stop_after_first_sleep(monkeypatch)
-    monkeypatch.setattr(scraper, "connect_device", feed_device)
+    monkeypatch.setattr(device, "connect_device", feed_device)
     stats = {
         "new": 2,
         "new_stories": 1,
@@ -961,10 +978,10 @@ def test_main_records_a_successful_run_with_device_versions(fast_offline, monkey
         "link_clipboard_failures": 0,
         "warning": "w",
     }
-    monkeypatch.setattr(scraper, "scrape_once", lambda d, con: stats)
+    monkeypatch.setattr(scrape, "scrape_once", lambda d, con: stats)
 
     with pytest.raises(StopLoop):
-        scraper.main()
+        scrape.main()
 
     con = sqlite3.connect(fast_offline / "posts.sqlite")
     con.row_factory = sqlite3.Row
@@ -972,7 +989,7 @@ def test_main_records_a_successful_run_with_device_versions(fast_offline, monkey
     assert (run["new_posts"], run["new_stories"], run["warning"], run["error"]) == (2, 1, "w", None)
     assert (run["android_release"], run["ig_version"]) == ("13", "445.0.0.45.83")
     assert run["selector_profile"] == "v445"
-    assert scraper.POLL_MIN_H * 3600 <= sleeps[0] <= scraper.POLL_MAX_H * 3600
+    assert config.POLL_MIN_H * 3600 <= sleeps[0] <= config.POLL_MAX_H * 3600
 
 
 # --- memory guard ---------------------------------------------------------------------------------
@@ -1009,25 +1026,25 @@ def with_cgroup(d, readings):
 
 def test_redroid_memory_parses_the_cgroup_files():
     d = with_cgroup(feed_device(), [cgroup_output(1843, 3072, oom_kill=7)])
-    assert scraper._redroid_memory(d) == {"current": 1843 * MIB, "max": 3072 * MIB, "oom_kill": 7}
+    assert device._redroid_memory(d) == {"current": 1843 * MIB, "max": 3072 * MIB, "oom_kill": 7}
     unlimited = with_cgroup(feed_device(), [cgroup_output(500, None)])
-    assert scraper._redroid_memory(unlimited)["max"] is None
-    assert scraper._redroid_memory(feed_device()) is None  # no cgroup files: guard off
+    assert device._redroid_memory(unlimited)["max"] is None
+    assert device._redroid_memory(feed_device()) is None  # no cgroup files: guard off
 
 
 def test_redroid_memory_excludes_reclaimable_file_cache():
     # The live reading that stopped a run too early: 2756MiB counted, but ~600MiB was file cache.
     d = with_cgroup(feed_device(), [cgroup_output(2150, 3072, inactive_file_mib=606)])
-    assert scraper._redroid_memory(d)["current"] == 2150 * MIB
-    assert scraper.MemoryGuard(d).exceeded() is None  # 70% of the limit, not 90%
+    assert device._redroid_memory(d)["current"] == 2150 * MIB
+    assert device.MemoryGuard(d).exceeded() is None  # 70% of the limit, not 90%
 
 
 def test_scrape_once_starts_and_ends_with_instagram_stopped(monkeypatch):
-    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
     d = feed_device()
-    scraper.scrape_once(d, scraper.db_init())
-    stops = [i for i, c in enumerate(d.shell_calls) if c == f"am force-stop {scraper.IG_PKG}"]
+    scrape.scrape_once(d, db.db_init())
+    stops = [i for i, c in enumerate(d.shell_calls) if c == f"am force-stop {config.IG_PKG}"]
     assert len(stops) == 2
     assert stops[0] == 0 or all(
         c.startswith("am force-stop") for c in d.shell_calls[: stops[0]]
@@ -1037,43 +1054,43 @@ def test_scrape_once_starts_and_ends_with_instagram_stopped(monkeypatch):
 
 def test_scrape_once_still_stops_instagram_when_the_run_raises(monkeypatch):
     def boom(d):
-        raise scraper.DeviceNotReady("feed never opened")
+        raise device.DeviceNotReady("feed never opened")
 
-    monkeypatch.setattr(scraper, "open_target_feed", boom)
+    monkeypatch.setattr(navigation, "open_target_feed", boom)
     d = feed_device()
-    with pytest.raises(scraper.DeviceNotReady):
-        scraper.scrape_once(d, scraper.db_init())
-    assert d.shell_calls.count(f"am force-stop {scraper.IG_PKG}") == 2
-    for pkg in scraper.CACHED_APP_SWEEP:
+    with pytest.raises(device.DeviceNotReady):
+        scrape.scrape_once(d, db.db_init())
+    assert d.shell_calls.count(f"am force-stop {config.IG_PKG}") == 2
+    for pkg in device.CACHED_APP_SWEEP:
         assert d.shell_calls.count(f"am force-stop {pkg}") == 2
 
 
 def test_memory_guard_stops_the_run_before_the_limit(monkeypatch):
-    monkeypatch.setattr(scraper, "MEMORY_GUARD_PERCENT", 85)
-    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MEMORY_GUARD_PERCENT", 85)
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     # start, before stories, first screen: fine; second screen check: 2700 of 3072 MiB is 88%.
     d = with_cgroup(
         feed_device(), [cgroup_output(900), cgroup_output(1200), cgroup_output(1500), cgroup_output(2700)]
     )
-    stats = scraper.scrape_once(d, scraper.db_init())
+    stats = scrape.scrape_once(d, db.db_init())
     assert "stopped early: redroid memory at 2700 of 3072 MiB (MEMORY_GUARD_PERCENT=85)" in stats["warning"]
     assert stats["mem_peak_mb"] == 2700
     assert stats["oom_kills"] == 0
 
 
 def test_memory_guard_can_be_disabled(monkeypatch):
-    monkeypatch.setattr(scraper, "MEMORY_GUARD_PERCENT", 0)
-    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
-    stats = scraper.scrape_once(with_cgroup(feed_device(), [cgroup_output(3000)]), scraper.db_init())
+    monkeypatch.setattr(config, "MEMORY_GUARD_PERCENT", 0)
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    stats = scrape.scrape_once(with_cgroup(feed_device(), [cgroup_output(3000)]), db.db_init())
     assert not (stats["warning"] or "").startswith("stopped early")
     assert stats["mem_peak_mb"] == 3000  # still measured
 
 
 def test_memory_guard_skips_stories_when_already_over(monkeypatch):
-    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
     d = with_cgroup(feed_device(), [cgroup_output(2900)])
-    stats = scraper.scrape_once(d, scraper.db_init())
+    stats = scrape.scrape_once(d, db.db_init())
     assert stats["new_stories"] == 0
     assert "skipped stories: redroid memory at 2900 of 3072 MiB" in stats["warning"]
 
@@ -1093,47 +1110,47 @@ def _story_frame(seed, overlay=False):
 
 
 def test_a_recaptured_story_is_not_stored_twice(monkeypatch):
-    con = scraper.db_init()
+    con = db.db_init()
     frame = _story_frame(0)
     d = feed_device(start="home")
     d.screenshot = lambda: frame
-    assert scraper.scrape_stories(d, con) == 1
+    assert stories.scrape_stories(d, con) == 1
 
     d = feed_device(start="home")  # same unseen story next run, captured with an overlay on top
     d.screenshot = lambda: _story_frame(0, overlay=True)
-    assert scraper.scrape_stories(d, con) == 0
+    assert stories.scrape_stories(d, con) == 0
 
     d = feed_device(start="home")  # a different frame from the same account is still new
     d.screenshot = lambda: _story_frame(1)
-    assert scraper.scrape_stories(d, con) == 1
+    assert stories.scrape_stories(d, con) == 1
     assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 2
-    assert len(list((scraper.MEDIA_DIR / "stories").iterdir())) == 2  # discarded crops removed
+    assert len(list((config.MEDIA_DIR / "stories").iterdir())) == 2  # discarded crops removed
 
 
 def test_a_blank_story_frame_is_discarded(monkeypatch):
-    con = scraper.db_init()
+    con = db.db_init()
     d = feed_device(start="home")
     d.screenshot = lambda: Image.new("RGB", (WIDTH, HEIGHT), (2, 2, 2))
-    assert scraper.scrape_stories(d, con) == 0
+    assert stories.scrape_stories(d, con) == 0
     assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 0
 
 
 def test_oom_kills_during_a_run_are_reported(monkeypatch):
-    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
     d = with_cgroup(feed_device(), [cgroup_output(900, oom_kill=7), cgroup_output(1000, oom_kill=9)])
-    stats = scraper.scrape_once(d, scraper.db_init())
+    stats = scrape.scrape_once(d, db.db_init())
     assert stats["oom_kills"] == 2
     assert "redroid OOM-killed 2 Android process(es)" in stats["warning"]
 
 
 def test_main_records_memory_stats(fast_offline, monkeypatch):
     _stop_after_first_sleep(monkeypatch)
-    monkeypatch.setattr(scraper, "connect_device", feed_device)
+    monkeypatch.setattr(device, "connect_device", feed_device)
     stats = {"new": 0, "new_stories": 0, "warning": None, "mem_peak_mb": 1843, "oom_kills": 1}
-    monkeypatch.setattr(scraper, "scrape_once", lambda d, con: stats)
+    monkeypatch.setattr(scrape, "scrape_once", lambda d, con: stats)
     with pytest.raises(StopLoop):
-        scraper.main()
+        scrape.main()
     row = (
         sqlite3.connect(fast_offline / "posts.sqlite")
         .execute("SELECT mem_peak_mb, oom_kills FROM runs")
@@ -1148,18 +1165,18 @@ def test_main_records_memory_stats(fast_offline, monkeypatch):
 def test_jpeg_media_format_still_writes_jpegs(fast_offline, monkeypatch):
     from PIL import Image
 
-    monkeypatch.setattr(scraper, "MEDIA_FORMAT", "jpeg")
-    path = scraper.capture_story_media(Image.new("RGB", (200, 400), "red"), "[0,0][200,400]", 0, "s")
+    monkeypatch.setattr(config, "MEDIA_FORMAT", "jpeg")
+    path = stories.capture_story_media(Image.new("RGB", (200, 400), "red"), "[0,0][200,400]", 0, "s")
     assert path.name == "s.jpg" and path.read_bytes()[:3] == b"\xff\xd8\xff"
 
 
 def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file(fast_offline, monkeypatch):
-    avatars = scraper.MEDIA_DIR / "avatars"
+    avatars = config.MEDIA_DIR / "avatars"
     avatars.mkdir(parents=True)
     (avatars / "old_user.jpg").write_bytes(b"old jpeg")  # captured before switching MEDIA_FORMAT
     d = feed_device(start="older")
-    header = scraper.parse_hierarchy(d.screens["older"])[0]["header_bounds"]
-    assert scraper.capture_avatar(d, header, "old_user") == "avatars/old_user.webp"
+    header = parsing.parse_hierarchy(d.screens["older"])[0]["header_bounds"]
+    assert capture.capture_avatar(d, header, "old_user") == "avatars/old_user.webp"
     assert sorted(f.name for f in avatars.iterdir()) == ["old_user.webp"]
 
 
@@ -1168,33 +1185,33 @@ def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file(fast_offline, 
 
 def _record_last_run(con, minutes_ago, error=None):
     finished = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
-    scraper.record_run(con, finished, finished, 0, error, {})
+    db.record_run(con, finished, finished, 0, error, {})
 
 
 @pytest.fixture
 def poll_window(monkeypatch):
-    monkeypatch.setattr(scraper, "POLL_MIN_H", 2.5)
-    monkeypatch.setattr(scraper, "POLL_MAX_H", 4.5)
-    monkeypatch.setattr(scraper, "TIME_DISTRIBUTION", "uniform")
-    monkeypatch.setattr(scraper, "RETRY_DELAYS_MINUTES", [2.0, 5.0])
-    monkeypatch.setattr(scraper, "SCRAPE_ON_STARTUP", False)
+    monkeypatch.setattr(config, "POLL_MIN_H", 2.5)
+    monkeypatch.setattr(config, "POLL_MAX_H", 4.5)
+    monkeypatch.setattr(config, "TIME_DISTRIBUTION", "uniform")
+    monkeypatch.setattr(config, "RETRY_DELAYS_MINUTES", [2.0, 5.0])
+    monkeypatch.setattr(config, "SCRAPE_ON_STARTUP", False)
 
 
 def test_startup_scrapes_immediately_with_no_recorded_run(poll_window):
-    assert scraper._startup_wait_seconds(scraper.db_init()) == 0
+    assert scrape._startup_wait_seconds(db.db_init()) == 0
 
 
 def test_startup_waits_out_the_rest_of_the_poll_interval(poll_window):
-    con = scraper.db_init()
+    con = db.db_init()
     _record_last_run(con, minutes_ago=60)
-    wait = scraper._startup_wait_seconds(con)
+    wait = scrape._startup_wait_seconds(con)
     assert 1.5 * 3600 - 5 <= wait <= 3.5 * 3600
 
 
 def test_startup_does_not_wait_when_the_last_run_is_old(poll_window):
-    con = scraper.db_init()
+    con = db.db_init()
     _record_last_run(con, minutes_ago=5 * 60)
-    assert scraper._startup_wait_seconds(con) == 0
+    assert scrape._startup_wait_seconds(con) == 0
 
 
 @pytest.mark.parametrize(
@@ -1206,33 +1223,33 @@ def test_startup_does_not_wait_when_the_last_run_is_old(poll_window):
     ],
 )
 def test_startup_after_a_transient_failure_waits_only_for_the_first_retry(poll_window, error):
-    con = scraper.db_init()
+    con = db.db_init()
     _record_last_run(con, minutes_ago=0.5, error=error)
-    assert 85 <= scraper._startup_wait_seconds(con) <= 90  # 2 minutes, minus the 30s already passed
+    assert 85 <= scrape._startup_wait_seconds(con) <= 90  # 2 minutes, minus the 30s already passed
 
 
 def test_startup_after_a_non_transient_failure_waits_a_full_interval(poll_window):
-    con = scraper.db_init()
+    con = db.db_init()
     _record_last_run(
         con, minutes_ago=1, error="RuntimeError(\"Instagram wants a human: 'Confirm it's you'\")"
     )
-    assert scraper._startup_wait_seconds(con) >= 2.5 * 3600 - 65
+    assert scrape._startup_wait_seconds(con) >= 2.5 * 3600 - 65
 
 
 def test_scrape_on_startup_skips_the_wait(poll_window, monkeypatch):
-    monkeypatch.setattr(scraper, "SCRAPE_ON_STARTUP", True)
-    con = scraper.db_init()
+    monkeypatch.setattr(config, "SCRAPE_ON_STARTUP", True)
+    con = db.db_init()
     _record_last_run(con, minutes_ago=1)
-    assert scraper._startup_wait_seconds(con) == 0
+    assert scrape._startup_wait_seconds(con) == 0
 
 
 def test_main_waits_before_its_first_scrape(fast_offline, monkeypatch):
     sleeps = _stop_after_first_sleep(monkeypatch)
-    monkeypatch.setattr(scraper, "_startup_wait_seconds", lambda con: 123.0)
+    monkeypatch.setattr(scrape, "_startup_wait_seconds", lambda con: 123.0)
     connects = []
-    monkeypatch.setattr(scraper, "connect_device", lambda: connects.append(1))
+    monkeypatch.setattr(device, "connect_device", lambda: connects.append(1))
     with pytest.raises(StopLoop):
-        scraper.main()
+        scrape.main()
     assert sleeps == [123.0] and connects == []  # slept first, never connected
 
 
@@ -1249,17 +1266,17 @@ LOGCAT = """\
 
 
 def test_filter_logcat_keeps_errors_fatals_and_known_signatures(monkeypatch):
-    monkeypatch.setattr(scraper, "LOGCAT_TAIL_LINES", 2000)
-    kept = scraper._filter_logcat(LOGCAT)
+    monkeypatch.setattr(config, "LOGCAT_TAIL_LINES", 2000)
+    kept = diagnostics._filter_logcat(LOGCAT)
     assert [line.split(": ", 1)[0].split()[-1] for line in kept] == [
         "AndroidRuntime",
         "libc",
         "lowmemorykiller",
         "Watchdog",
     ]
-    monkeypatch.setattr(scraper, "LOGCAT_TAIL_LINES", 2)
-    assert len(scraper._filter_logcat(LOGCAT)) == 2  # the tail, not the head
-    assert "WATCHDOG KILLING" in scraper._filter_logcat(LOGCAT)[-1]
+    monkeypatch.setattr(config, "LOGCAT_TAIL_LINES", 2)
+    assert len(diagnostics._filter_logcat(LOGCAT)) == 2  # the tail, not the head
+    assert "WATCHDOG KILLING" in diagnostics._filter_logcat(LOGCAT)[-1]
 
 
 def test_save_failure_logcat_writes_a_filtered_file(fast_offline, monkeypatch):
@@ -1269,10 +1286,10 @@ def test_save_failure_logcat_writes_a_filtered_file(fast_offline, monkeypatch):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout=LOGCAT, stderr="")
 
-    monkeypatch.setattr(scraper.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     path = SAVE_FAILURE_LOGCAT("DeviceNotReady('could not bring com.instagram.android to the foreground')")
-    assert calls == [["adb", "-s", scraper.ADB_ADDR, "logcat", "-d", "-v", "threadtime"]]
-    assert path.parent == scraper.DEBUG_DIR and path.name.startswith("logcat_") and path.suffix == ".txt"
+    assert calls == [["adb", "-s", config.ADB_ADDR, "logcat", "-d", "-v", "threadtime"]]
+    assert path.parent == config.DEBUG_DIR and path.name.startswith("logcat_") and path.suffix == ".txt"
     text = path.read_text()
     assert text.startswith("# run failed: DeviceNotReady('could not bring")
     assert "FATAL EXCEPTION" in text and "Something: chatter" not in text
@@ -1280,12 +1297,12 @@ def test_save_failure_logcat_writes_a_filtered_file(fast_offline, monkeypatch):
 
 def test_save_failure_logcat_tolerates_an_unreachable_device(fast_offline, monkeypatch):
     monkeypatch.setattr(
-        scraper.subprocess,
+        subprocess,
         "run",
         lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error: device offline"),
     )
     assert SAVE_FAILURE_LOGCAT("AdbError('offline')") is None
-    assert not list(scraper.DEBUG_DIR.glob("logcat_*")) if scraper.DEBUG_DIR.exists() else True
+    assert not list(config.DEBUG_DIR.glob("logcat_*")) if config.DEBUG_DIR.exists() else True
 
 
 def test_main_saves_a_logcat_only_for_device_failures(fast_offline, monkeypatch, no_real_logcat):
@@ -1295,9 +1312,9 @@ def test_main_saves_a_logcat_only_for_device_failures(fast_offline, monkeypatch,
         def failing():
             raise error
 
-        monkeypatch.setattr(scraper, "connect_device", failing)
+        monkeypatch.setattr(device, "connect_device", failing)
         with pytest.raises(StopLoop):
-            scraper.main()
+            scrape.main()
 
     run_main_once(adbutils.AdbError("device 127.0.0.1:5555 not online"))
     assert len(no_real_logcat) == 1 and no_real_logcat[0].startswith("AdbError")
@@ -1306,15 +1323,15 @@ def test_main_saves_a_logcat_only_for_device_failures(fast_offline, monkeypatch,
 
 
 def test_failure_logcats_are_pruned_like_other_debug_files(fast_offline, monkeypatch):
-    monkeypatch.setattr(scraper, "DEBUG_KEEP", 2)
-    scraper.DEBUG_DIR.mkdir(parents=True)
+    monkeypatch.setattr(config, "DEBUG_KEEP", 2)
+    config.DEBUG_DIR.mkdir(parents=True)
     for i in range(4):
-        f = scraper.DEBUG_DIR / f"logcat_2026091{i}T000000Z.txt"
+        f = config.DEBUG_DIR / f"logcat_2026091{i}T000000Z.txt"
         f.write_text("x")
         os.utime(f, (1_800_000_000 + i, 1_800_000_000 + i))
-    monkeypatch.setattr(scraper, "DEBUG_RETAIN_DAYS", 0)
-    scraper._prune_debug_dumps()
-    assert sorted(f.name for f in scraper.DEBUG_DIR.iterdir()) == [
+    monkeypatch.setattr(config, "DEBUG_RETAIN_DAYS", 0)
+    diagnostics.prune_debug_dumps()
+    assert sorted(f.name for f in config.DEBUG_DIR.iterdir()) == [
         "logcat_20260912T000000Z.txt",
         "logcat_20260913T000000Z.txt",
     ]

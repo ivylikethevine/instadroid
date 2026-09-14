@@ -1,6 +1,6 @@
 import igprofiles
 import pytest
-import scraper
+from instadroid import config, diagnostics, versioning
 
 V445 = igprofiles.load("v445")
 
@@ -9,13 +9,12 @@ V445 = igprofiles.load("v445")
 def profile_v445(monkeypatch):
     """Every existing fixture and fake screen was captured from Instagram 445, so the suite as a
     whole is the v445 regression suite: pin that profile unless a test selects another itself."""
-    monkeypatch.setattr(scraper, "PROFILE", V445)
-    monkeypatch.setattr(scraper, "SELECTORS", V445.selectors)
-    monkeypatch.setattr(scraper, "PROFILE_WARNING", None)
+    monkeypatch.setattr(versioning, "PROFILE", V445)
+    monkeypatch.setattr(versioning, "PROFILE_WARNING", None)
     # Explicit rather than "": activate_profile() re-resolves IG_PROFILE on every connect/install,
     # and an empty one means DEFAULT_PROFILE, which moves forward independently of these fixtures.
-    monkeypatch.setattr(scraper, "IG_PROFILE", "v445")
-    monkeypatch.setattr(scraper, "IG_APK_VERSION", "")
+    monkeypatch.setattr(config, "IG_PROFILE", "v445")
+    monkeypatch.setattr(config, "IG_APK_VERSION", "")
 
 
 @pytest.fixture(autouse=True)
@@ -24,5 +23,5 @@ def no_real_logcat(monkeypatch):
     developer host could reach a live redroid. Record the calls instead; the logcat tests call the
     original through test_device_flows.SAVE_FAILURE_LOGCAT."""
     calls = []
-    monkeypatch.setattr(scraper, "_save_failure_logcat", lambda error: calls.append(error))
+    monkeypatch.setattr(diagnostics, "save_failure_logcat", lambda error: calls.append(error))
     return calls
