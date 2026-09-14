@@ -639,6 +639,9 @@ def test_scrape_once_end_to_end(fast_offline, monkeypatch):
         "filtered_posts": 0,
         "mem_peak_mb": None,  # the fake device has no cgroup files: the memory guard is off
         "oom_kills": None,
+        "cards_per_screen": 1.75,  # 2 cards on screen 0, 1 on screen 1 (see the log below)
+        "share_captioned": 1.0,
+        "share_complete": 1.0,
     }
     posts = {r["id"]: r for r in con.execute("SELECT * FROM posts")}
     assert set(posts) == {"TOP123", "OTHER1", "OLD1"}

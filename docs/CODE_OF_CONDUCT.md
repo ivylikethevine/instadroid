@@ -1,3 +1,7 @@
+---
+title: Code of Conduct
+---
+
 # Code of conduct
 
 instadroid is a small project, and this is meant to keep it a place where anyone can report a bug,
