@@ -61,6 +61,10 @@ tested it on).
 - Docker + compose, privileged containers allowed, for redroid and the `app` container. `app` uses
   host networking to reach redroid's ADB port.
 - `adb` on the host. `scrcpy` is optional; `adb exec-out screencap -p > shot.png` is enough for checks.
+- About 3.5GB of free RAM and a few spare cores. redroid is capped at 3g of memory with no swap
+  (`REDROID_MEM_LIMIT`) and 4 CPUs (`REDROID_CPUS`); the app container at 256m and 1.5 CPUs. A live
+  scrape has measured close to 2GiB, and at the old 2g limit a run OOM-killed Android processes
+  and froze the host (see CLAUDE.md).
 
 ## First-time setup
 
@@ -319,7 +323,17 @@ challenges and every other error never retry early.
 Each run also records the installed Instagram `versionName` and the redroid image (`runs.ig_version`
 / `runs.redroid_image`, both on `/status`), so when the selectors break it's a lookup whether an
 Instagram update landed. Each post also stores the version that scraped it (`posts.ig_version`,
-first-seen wins on a duplicate merge; `NULL` for posts from before this was added). Docker keeps at most 3 × 10MB of log per container (the `x-logging` block
+first-seen wins on a duplicate merge; `NULL` for posts from before this was added).
+
+Memory: redroid's Android never reclaims memory on its own here, so the scraper manages it. Every
+run starts and ends by force-stopping Instagram and a few cached system apps (the end even when the
+run fails), and `scraper.py login` stops Instagram when it's done. During a run the scraper reads
+redroid's container memory through adb before stories and before each screen, and stops early with
+a warning once it reaches `MEMORY_GUARD_PERCENT` (default 85) of the container's limit. Each run
+records its peak (`runs.mem_peak_mb`) and any kernel OOM kills inside redroid (`runs.oom_kills`,
+also a run warning), shown in `/status`'s "Peak mem" column.
+
+Docker keeps at most 3 × 10MB of log per container (the `x-logging` block
 in `docker-compose.yml`), and the healthcheck's own `GET /health` every 30s is left out of the
 access log.
 

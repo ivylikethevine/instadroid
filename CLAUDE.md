@@ -245,10 +245,59 @@ run relaunches it. This does **not** lower the peak *during* an active scrape �
 open and using its ~820MiB then, same as always — it only stops paying that cost through the idle
 gap between runs, which is most of the container's time.
 
-**On `mem_limit`: do not lower it.** The 1.98GiB peak measured here (99% of the current `2g`) is
+**On `mem_limit`: do not lower it.** (Since raised to 3g, see "Host freeze during a scrape at the 2g
+limit" below.) The 1.98GiB peak measured here (99% of the then-current `2g`) is
 real, live-account data under a genuinely heavy run (many carousels and Reels, several permalink
 retries) — a materially worse case than whatever produced the older 1.1-1.26GiB figure. `2g` held
 without an OOM kill, but with far less headroom than previously believed. Worth remeasuring peak
 again after some real-world runs settle, before ever considering it as a candidate to lower.
+
+## Host freeze during a scrape at the 2g limit (2026-09-14)
+
+**This incident was caused by Claude, not by redroid alone.** Right after `scraper.py login` (which
+left Instagram open), Claude started `docker compose run --rm --no-deps app python scraper.py once`
+without checking memory headroom. redroid sat at 1.7-1.99GiB of its 2GiB `mem_limit` for the whole
+run (sampled every ~4s), and between 10:16:39 and 10:17:16 PDT the kernel memcg OOM killer killed 7
+Android processes inside the container (`journalctl -k`: `Memory cgroup out of memory: Killed process
+... (d.process.media)`, `ackageinstaller`, `ndroid.keychain`, `d.process.acore`, ...). Each kill dumped
+the container's ~875-process table to the kernel log (~1,400 lines in a minute). The user's whole
+desktop froze until they stopped the scrape container. No hung-task/lockup lines were logged and an
+unrelated `rustc` build was running at the same time, so the freeze isn't *proven* to be the OOM
+storm, but the timing matches and nothing else in the logs does.
+
+Also learned: a Bash tool call that came back "rejected" had in fact already started that container
+and ran for ~8 minutes. `docker events --since ...` is what reconstructed the timeline. And the
+container's "unhealthy" status was noise: the healthcheck probes the feed server, which
+`scraper.py once` doesn't start.
+
+What changed as a result:
+
+- **`docker-compose.yml`**: redroid `mem_limit` 2g → **3g** (`REDROID_MEM_LIMIT`), `memswap_limit`
+  equal to it (no container swap, which is the thrashing mode that stalls a host), and a CPU cap
+  `cpus: 4` (`REDROID_CPUS`, half this host's 8 cores). The app container also got
+  `memswap_limit: 256m`.
+- **`scraper.py` memory guard** (`MemoryGuard`, `MEMORY_GUARD_PERCENT`, default 85): the scraper
+  reads redroid's own cgroup v2 files through adb (`/sys/fs/cgroup/memory.current`, `memory.max`,
+  `memory.events`; readable as the adb shell user). It checks before stories and before every
+  screen, and stops the run early with a warning once usage crosses the threshold. Each run records
+  `runs.mem_peak_mb` and `runs.oom_kills` (the `oom_kill` delta over the run), shown in `/status`'s
+  "Peak mem" column; any OOM kill also becomes a run warning.
+- **`scrape_once()` force-stops Instagram and the cached apps at the start of a run as well as the
+  end**, the end now in a `finally`, so a run never begins on top of a still-open Instagram and a
+  run that raises doesn't leave ~800MiB resident. `scraper.py login` force-stops Instagram when it
+  finishes, too.
+
+**Before any device-driving run (login, once, a manual scrape): check `docker stats` headroom,
+force-stop Instagram, and ask the user first.** Optional host-side mitigation, the user's call since
+it's host-wide: `sysctl vm.oom_dump_tasks=0` stops each OOM kill from dumping every process to the
+kernel log.
+
+The partial 445 run from this incident is **not** evidence that the 445 selectors are broken. It
+captured 2 stories (10:16:42/47, exactly when the OOM kills began), then its `feed_switch` and `last`
+debug dumps (10:18:40-41) contain nothing but a 22px-tall, empty Instagram `context_menu` popup:
+the feed switcher's menu opened a window that never filled in (the known guest-GPU-mode switcher
+quirk above, possibly worsened by the OOM kills). While that popup had focus, `dump_hierarchy()` saw
+only the popup, even though the screenshot shows a normal Home feed, so every screen parsed zero
+posts. A clean 445 baseline still needs to be taken.
 
 See `README.md`'s "Which Android?" section for the fuller compatibility history.

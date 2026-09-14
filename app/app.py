@@ -457,6 +457,17 @@ def _run_new_stories(run) -> str:
     return str(run["new_stories"] or 0)
 
 
+def _run_memory(run) -> str:
+    """redroid's peak memory during a run ("1843 MiB"), plus its OOM kills when there were any, or
+    "—" when it wasn't measured (the cgroup wasn't readable, or a row from before these columns)."""
+    keys = run.keys()
+    peak = run["mem_peak_mb"] if "mem_peak_mb" in keys else None
+    ooms = run["oom_kills"] if "oom_kills" in keys else None
+    if peak is None:
+        return "—"
+    return f"{peak} MiB" + (f", {ooms} OOM kill(s)" if ooms else "")
+
+
 def _run_filtered_posts(run) -> str:
     """filtered_posts for a run (posts dropped by the followed-accounts allowlist, when enabled),
     or "—" against a runs row from before that column existed."""
@@ -552,6 +563,7 @@ def status_page():
         f"<td>{escape(_run_filtered_posts(r))}</td>"
         f"<td>{escape(_link_failures(r))}</td>"
         f"<td>{escape(_run_text(r, 'ig_version') or '—')}</td>"
+        f"<td>{escape(_run_memory(r))}</td>"
         f"{_result_cell(r)}</tr>"
         for r in runs
     )
@@ -582,7 +594,7 @@ td, th {{ text-align: left; padding: 0.25rem 0.6rem; border-bottom: 1px solid #d
 <h2>Last scrape</h2>
 {latest_html}
 <h2>Recent runs</h2>
-<table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Filtered</th><th>Link fails</th><th>Instagram</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="8">none</td></tr>'}</table>
+<table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Filtered</th><th>Link fails</th><th>Instagram</th><th>Peak mem</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="9">none</td></tr>'}</table>
 <h2>Totals</h2>
 <p>{total} post(s) stored across {len(users)} account(s), {active_stories} active stor{"y" if active_stories == 1 else "ies"}</p>
 <table><tr><th>Account</th><th>Posts</th><th>Latest</th></tr>{users_rows or '<tr><td colspan="3">none</td></tr>'}</table>

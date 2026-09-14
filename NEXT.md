@@ -105,5 +105,9 @@ it keeps the feed alive when a release changes nothing, which is common.
 
 - [x] Step 1: profile refactor (`app/igprofiles/`, activation, `runs.selector_profile`, conftest
   pin, per-version APK cache, `scraper.py install`, 445 install default)
-- [ ] Step 2: V446 overrides (blocked on login)
+- [ ] Step 2: V446 overrides. Logged in on 445 (2026-09-14), but the first 445 baseline run
+  pushed redroid into OOM kills and froze the host (CLAUDE.md, "Host freeze during a scrape at the
+  2g limit"). Memory limits and the in-scraper memory guard are now in place; the 445 baseline
+  still needs a clean run, with the user's go-ahead. That run's dumps don't show broken 445
+  selectors: the feed switcher left an empty popup focused, so every hierarchy dump missed the feed.
 - [ ] Step 3: structural hooks, if needed
