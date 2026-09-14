@@ -4,11 +4,12 @@ Instagram -> SQLite scraper driving a real Instagram app inside a redroid contai
 Strategy: open the chronological "Following" feed, scroll slowly, parse the accessibility
 tree for post cards, store new ones, stop once we hit posts we've already seen.
 
-Selectors live in per-Instagram-version profiles under igprofiles/ (see NEXT.md). Instagram changes
+Selectors live in per-Instagram-version profiles under igprofiles/ (see docs/NEXT.md). Instagram changes
 its UI a few times a year; when a run fails, look at the hierarchy dump in $DEBUG_DIR and override the
 changed selectors in that version's profile.
 """
 
+import functools
 import hashlib
 import math
 import os
@@ -28,8 +29,9 @@ from zoneinfo import ZoneInfo
 
 import adbutils
 import uiautomator2 as u2
-from igprofiles import PROFILES
-from igprofiles import resolve as resolve_profile
+from igprofiles import BaseProfile, major_of
+from igprofiles import available as available_profiles
+from igprofiles import select as select_profile
 from lxml import etree
 from PIL import Image
 from uiautomator2.exceptions import DeviceError as U2DeviceError
@@ -58,7 +60,16 @@ SCROLL_SWIPE_MIN = float(os.environ.get("SCROLL_SWIPE_MIN", "0.6"))
 SCROLL_SWIPE_MAX = float(os.environ.get("SCROLL_SWIPE_MAX", "1.0"))
 SCROLL_PAUSE_MIN = float(os.environ.get("SCROLL_PAUSE_MIN", "1.5"))
 SCROLL_PAUSE_MAX = float(os.environ.get("SCROLL_PAUSE_MAX", "4.0"))
-MEDIA_QUALITY = int(os.environ.get("MEDIA_QUALITY", "95"))  # JPEG quality for saved post crops
+MEDIA_QUALITY = int(os.environ.get("MEDIA_QUALITY", "95"))  # encoder quality for saved images
+# Format for every saved image (post crops, carousel slides, avatars, stories). WebP measured ~36%
+# smaller than JPEG at quality 95 and ~56% smaller at 90, re-encoding real crops (2026-09-14). Files
+# already written keep their extension and stay valid after a switch, since the database stores each
+# file name. An unrecognized value falls back to webp.
+MEDIA_FORMAT = os.environ.get("MEDIA_FORMAT", "webp").strip().lower()
+if MEDIA_FORMAT not in ("webp", "jpeg"):
+    print(f"WARN: unknown MEDIA_FORMAT {MEDIA_FORMAT!r}; falling back to webp", flush=True)
+    MEDIA_FORMAT = "webp"
+MEDIA_EXTS = (".jpg", ".webp")  # every extension this scraper has ever written
 IG_USERNAME = os.environ.get("IG_USERNAME", "")
 IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
 IG_PKG = "com.instagram.android"
@@ -68,19 +79,21 @@ IG_PKG = "com.instagram.android"
 # CLAUDE.md, where Instagram's package registration was orphaned but the app itself wasn't touched.
 # 0/false/empty falls back to the original behavior: raise and require a manual `adb install`.
 IG_AUTO_INSTALL = os.environ.get("IG_AUTO_INSTALL", "1").strip().lower() not in ("0", "false", "")
-# The Instagram version auto-install and `scraper.py install` fetch. Defaults to the last version the
-# selectors were validated against (the 445 profile); an explicitly empty value means whatever apkeep
-# resolves as latest on APKPure.
-DEFAULT_IG_APK_VERSION = "445.0.0.45.83"
-IG_APK_VERSION = os.environ.get("IG_APK_VERSION", DEFAULT_IG_APK_VERSION).strip()
+# Which Instagram version profile to run: a directory under igprofiles/ ("v445", or just "445").
+# Everything version-specific (selectors, the APK build to install, behavior overrides) lives there.
+# Empty = igprofiles.DEFAULT_PROFILE. See docs/NEXT.md.
+IG_PROFILE = os.environ.get("IG_PROFILE", "").strip()
+# Override the Instagram build auto-install and `scraper.py install` fetch. Empty = the active
+# profile's own apk_version; "latest" = whatever apkeep resolves as latest on APKPure.
+IG_APK_VERSION = os.environ.get("IG_APK_VERSION", "").strip()
 APK_CACHE_DIR = Path(os.environ.get("APK_CACHE_DIR", "/apk"))
-# Force a selector profile by Instagram major version (e.g. "445") instead of matching the installed
-# version — for checking what a newer Instagram broke. Empty = match the installed version.
-IG_SELECTOR_PROFILE = os.environ.get("IG_SELECTOR_PROFILE", "").strip()
 APK_FETCH_TIMEOUT = float(os.environ.get("APK_FETCH_TIMEOUT", "300"))  # apkeep's own download
 DEBUG_KEEP = 12  # debug dump pairs to retain; older ones are pruned on every new dump
 DEBUG_RETAIN_DAYS = float(os.environ.get("DEBUG_RETAIN_DAYS", "7"))  # 0 disables age-based pruning
-_DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png")
+_DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png", ".txt")
+# How much of a filtered logcat to keep per device failure (see _save_failure_logcat()).
+LOGCAT_TAIL_LINES = int(os.environ.get("LOGCAT_TAIL_LINES", "2000"))
+LOGCAT_TIMEOUT = 30.0  # seconds for `adb logcat -d`
 PERMALINK_RETRIES = int(os.environ.get("PERMALINK_RETRIES", "2"))  # extra share-sheet passes after the first
 SHARE_TAP_TRIES = int(os.environ.get("SHARE_TAP_TRIES", "2"))  # taps on the share button before giving up
 CAPTION_EXPAND_TRIES = int(
@@ -97,8 +110,8 @@ TIME_DISTRIBUTION = os.environ.get("TIME_DISTRIBUTION", "uniform")  # uniform | 
 # "Local" time for the daynight distribution below — deliberately not applied anywhere by default
 # (empty = leave the device's own clock/timezone alone). Set this to match wherever the account's
 # network traffic appears to originate; see tune-android.sh, which applies the same value to the
-# device itself via `service call alarm`, and README's "Fingerprint consistency" for why a mismatch
-# between the two (or with a proxy/VPN's egress, once that exists) is worse than setting neither.
+# device itself via `service call alarm`, and README's "Staying under the radar" for why a timezone
+# that doesn't match the network's egress is worse than setting neither.
 DEVICE_TIMEZONE = os.environ.get("DEVICE_TIMEZONE", "")
 DAYNIGHT_QUIET_START = int(os.environ.get("DAYNIGHT_QUIET_START", "0"))  # local hour, inclusive
 DAYNIGHT_QUIET_END = int(os.environ.get("DAYNIGHT_QUIET_END", "6"))  # local hour, exclusive
@@ -123,6 +136,10 @@ FOLLOWING_LIST_EMPTY_LIMIT = int(os.environ.get("FOLLOWING_LIST_EMPTY_LIMIT", "3
 RETRY_DELAYS_MINUTES = [
     float(x) for x in os.environ.get("RETRY_DELAYS_MINUTES", "2,5,15").split(",") if x.strip()
 ]
+# 0 (default): on startup, wait out whatever's left of the poll interval since the last recorded run
+# before scraping, so a `docker compose up`, recreate or crash-restart isn't an extra off-schedule
+# scrape (see _startup_wait_seconds()). 1: scrape immediately on every start, the old behavior.
+SCRAPE_ON_STARTUP = os.environ.get("SCRAPE_ON_STARTUP", "0").strip().lower() in ("1", "true", "yes")
 # FreshRSS's own "online cron" actualize URL (https://.../i/?c=feed&a=actualize&user=...&token=...),
 # GETed after a run stores something new so it fetches now instead of waiting out its own poll
 # interval or per-feed TTL. Empty disables. Any reader with an equivalent plain-GET refresh webhook
@@ -135,13 +152,34 @@ FRESHRSS_REFRESH_URL = os.environ.get("FRESHRSS_REFRESH_URL", "")
 MEMORY_GUARD_PERCENT = float(os.environ.get("MEMORY_GUARD_PERCENT", "85"))
 FRESHRSS_REFRESH_TIMEOUT = float(os.environ.get("FRESHRSS_REFRESH_TIMEOUT", "10.0"))
 
-# --- Selectors (the fragile part) ---------------------------------------------------
-# One profile per Instagram major version lives in igprofiles/ (445 is the validated baseline; see
-# NEXT.md). SELECTORS/PROFILE are the active one, rebound by activate_profile() whenever the installed
-# version is (re)read. Until a device is connected they default to the newest profile.
-PROFILE = PROFILES[-1]
+# --- Version profile (the fragile part) ----------------------------------------------
+# PROFILE is the IG_PROFILE package from igprofiles/ and SELECTORS its selector dict. Both are
+# reloaded by activate_profile() on connect and after an install, which also sets PROFILE_WARNING
+# when the installed Instagram doesn't match the profile. See docs/NEXT.md.
+PROFILE: BaseProfile = select_profile(IG_PROFILE)[0]
 SELECTORS = PROFILE.selectors
-PROFILE_WARNING: str | None = None  # set by activate_profile() when there was no exact version match
+PROFILE_WARNING: str | None = None
+_VERSIONED: set[str] = set()  # names of every @versioned function
+
+
+def versioned(fn):
+    """Let an Instagram version profile replace this function: if the active PROFILE defines a method
+    with the same name, calls go there instead, with this implementation passed first as `base` so
+    the override can wrap or replace it. Mark anything that depends on Instagram's UI."""
+    name = fn.__name__
+    _VERSIONED.add(name)
+
+    @functools.wraps(fn)
+    def dispatch(*args, **kwargs):
+        override = getattr(PROFILE, name, None)
+        if override is None:
+            return fn(*args, **kwargs)
+        return override(fn, *args, **kwargs)
+
+    dispatch.base = fn
+    return dispatch
+
+
 # ------------------------------------------------------------------------------------
 
 # A caption is "weak" when it's really just the media description Instagram shows before the
@@ -171,6 +209,54 @@ def is_transient(e: BaseException) -> bool:
     challenges and parsing/logic errors are deliberately not transient: retrying those early either
     can't help or, for a challenge, looks worse to Instagram."""
     return isinstance(e, (DeviceNotReady, adbutils.AdbError, adbutils.AdbTimeout, U2DeviceError))
+
+
+def _transient_error_names() -> set[str]:
+    """Class names is_transient() accepts, subclasses included, for matching a stored runs.error
+    (which is repr(exception), so it starts with the class name)."""
+
+    def walk(cls):
+        yield cls
+        for sub in cls.__subclasses__():
+            yield from walk(sub)
+
+    return {
+        c.__name__
+        for base in (DeviceNotReady, adbutils.AdbError, adbutils.AdbTimeout, U2DeviceError)
+        for c in walk(base)
+    }
+
+
+def _startup_wait_seconds(con, now: datetime | None = None) -> float:
+    """Seconds to wait before the first scrape after the process starts: whatever's left of the
+    interval since the last recorded run finished. That interval is the first RETRY_DELAYS_MINUTES
+    entry if the last run failed transiently (the retry it would have had), otherwise a normally
+    sampled poll interval. 0 with no recorded run, SCRAPE_ON_STARTUP set, or an unreadable row.
+
+    Without this, every `docker compose up`, recreate or crash-restart scraped immediately: three runs
+    landed within 40 minutes on 2026-09-11, and with `restart: unless-stopped` a restart loop would
+    become a scrape loop."""
+    if SCRAPE_ON_STARTUP:
+        return 0.0
+    try:
+        row = con.execute("SELECT finished_at, error FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return 0.0
+    if not row:
+        return 0.0
+    try:
+        finished = datetime.fromisoformat(row[0])
+    except TypeError, ValueError:
+        return 0.0
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=UTC)
+    error = row[1] or ""
+    if error and RETRY_DELAYS_MINUTES and error.split("(", 1)[0] in _transient_error_names():
+        interval = RETRY_DELAYS_MINUTES[0] * 60
+    else:
+        interval = sample_duration(POLL_MIN_H, POLL_MAX_H) * 3600
+    elapsed = ((now or datetime.now(UTC)) - finished).total_seconds()
+    return max(0.0, interval - elapsed)
 
 
 def next_sleep_seconds(error: BaseException | None, attempt: int) -> tuple[float, int]:
@@ -351,12 +437,38 @@ def _instagram_version(d) -> str | None:
     return m.group(1) if m else None
 
 
-def activate_profile(version: str | None) -> None:
-    """Point SELECTORS/PROFILE at the selector profile for the installed Instagram `version`."""
+def _unknown_hooks(profile: BaseProfile) -> list[str]:
+    """Public methods a profile defines that don't match any @versioned function: almost certainly a
+    typo, and otherwise silently never called."""
+    base = set(dir(BaseProfile))
+    return sorted(
+        a
+        for a in dir(profile)
+        if not a.startswith("_") and a not in base and callable(getattr(profile, a)) and a not in _VERSIONED
+    )
+
+
+def activate_profile(installed: str | None) -> None:
+    """(Re)load the IG_PROFILE profile into PROFILE/SELECTORS, and set PROFILE_WARNING for a bad
+    IG_PROFILE, an installed Instagram of a different major version, or a misnamed override."""
     global PROFILE, SELECTORS, PROFILE_WARNING
-    PROFILE, PROFILE_WARNING = resolve_profile(version, IG_SELECTOR_PROFILE)
+    PROFILE, config_warning = select_profile(IG_PROFILE)
     SELECTORS = PROFILE.selectors
-    log(f"selector profile {PROFILE.major} (Instagram {version or 'not installed'})")
+    warnings = [config_warning] if config_warning else []
+    installed_major = major_of(installed)
+    if installed and installed_major != PROFILE.major:
+        hint = f"run `scraper.py install` to get {PROFILE.apk_version}"
+        if f"v{installed_major}" in available_profiles():
+            hint += f", or set IG_PROFILE=v{installed_major}"
+        warnings.append(
+            f"Instagram {installed} is installed but profile {PROFILE.name} targets {PROFILE.major}.x; {hint}"
+        )
+    if unknown := _unknown_hooks(PROFILE):
+        warnings.append(
+            f"profile {PROFILE.name} defines {', '.join(unknown)}, which match no @versioned function"
+        )
+    PROFILE_WARNING = "; ".join(warnings) or None
+    log(f"profile {PROFILE.name} (targets {PROFILE.apk_version}, installed: {installed or 'none'})")
     if PROFILE_WARNING:
         log("WARN:", PROFILE_WARNING)
 
@@ -662,17 +774,11 @@ def connect_device():
     d = u2.connect(ADB_ADDR)
     d.implicitly_wait(10)
     log("device:", d.info.get("productName"), d.window_size())
-    version = _instagram_version(d)
-    activate_profile(version)
-    if version and IG_APK_VERSION and version != IG_APK_VERSION:
-        # Auto-install only fires when Instagram is missing, so a pin doesn't replace an existing
-        # install on its own.
-        log(
-            f"WARN: Instagram {version} installed but IG_APK_VERSION={IG_APK_VERSION}; run `scraper.py install`"
-        )
+    activate_profile(_instagram_version(d))
     return d
 
 
+@versioned
 def _launch_app(d):
     """Bring IG_PKG to the foreground. uiautomator2's app_start() defaults to `monkey -c
     LAUNCHER` when no activity is given, which on this device silently no-ops (exit code 251,
@@ -768,6 +874,7 @@ def _first(d, **kinds):
     return None
 
 
+@versioned
 def _challenge_present(d):
     for t in SELECTORS["challenge_texts"]:
         if d(textContains=t).exists(timeout=0.5):
@@ -820,7 +927,11 @@ def _redroid_memory(d) -> dict | None:
     """redroid's own container memory, read through adb from the cgroup v2 files the container sees
     as /sys/fs/cgroup (readable by the adb shell user): {"current": bytes, "max": bytes or None when
     unlimited, "oom_kill": kernel OOM kills in this container since it started}. None when the files
-    aren't there (e.g. a cgroup v1 host) or adb fails, which turns the memory guard off."""
+    aren't there (e.g. a cgroup v1 host) or adb fails, which turns the memory guard off.
+
+    "current" excludes inactive file cache, the same working-set figure `docker stats` shows: the
+    kernel reclaims that cache before it ever OOM-kills, so counting it stopped a run at "2756 of
+    3072 MiB" while the real usage was ~2.3GiB (2026-09-14)."""
     try:
         out = d.shell(
             [
@@ -828,15 +939,17 @@ def _redroid_memory(d) -> dict | None:
                 "/sys/fs/cgroup/memory.current",
                 "/sys/fs/cgroup/memory.max",
                 "/sys/fs/cgroup/memory.events",
+                "/sys/fs/cgroup/memory.stat",
             ]
         ).output
         lines = (out or "").split()
-        current, limit = int(lines[0]), lines[1]
-        events = dict(zip(lines[2::2], lines[3::2], strict=False))
+        usage, limit = int(lines[0]), lines[1]
+        # memory.events and memory.stat are both "key value" lines, so one dict covers both.
+        stats = dict(zip(lines[2::2], lines[3::2], strict=False))
         return {
-            "current": current,
+            "current": max(0, usage - int(stats.get("inactive_file", 0))),
             "max": None if limit == "max" else int(limit),
-            "oom_kill": int(events.get("oom_kill", 0)),
+            "oom_kill": int(stats.get("oom_kill", 0)),
         }
     except Exception:
         return None
@@ -891,18 +1004,26 @@ def _free_device_memory(d):
     _stop_instagram(d)
 
 
+def _apk_version(version: str | None = None) -> str:
+    """The Instagram build to fetch: `version` if given, else IG_APK_VERSION, else the active
+    profile's apk_version. "latest" (or an empty string) means whatever apkeep resolves as latest."""
+    if version is None:
+        version = IG_APK_VERSION or PROFILE.apk_version
+    version = version.strip()
+    return "" if version.lower() == "latest" else version
+
+
 def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
     """Return the APK(s) to install: the base APK first, then any config.*.apk split. Reuses a
     bundle already sitting in APK_CACHE_DIR (from a previous fetch, or dropped there by hand) so a
     reinstall after e.g. a /data/system reset (see CLAUDE.md) costs nothing over the network; only
     runs apkeep when the cache is empty.
 
-    `version` defaults to IG_APK_VERSION; empty means latest. A pinned version gets its own
-    APK_CACHE_DIR/<version>/ folder, so switching between versions (e.g. back to 445 to compare
-    selector profiles) never silently reinstalls whichever bundle happened to be cached last.
-    Unpinned keeps the original top-level layout.
+    `version` is resolved by _apk_version(). A pinned version gets its own APK_CACHE_DIR/<version>/
+    folder, so switching between versions (e.g. back to 445 to compare profiles) never silently
+    reinstalls whichever bundle happened to be cached last. "latest" keeps the top-level layout.
     """
-    version = IG_APK_VERSION if version is None else version
+    version = _apk_version(version)
     cache_dir = APK_CACHE_DIR / version if version else APK_CACHE_DIR
     cache_dir.mkdir(parents=True, exist_ok=True)
     # xapk_dir holds nothing but one unpacked Instagram bundle, so every *.apk in it belongs to
@@ -969,13 +1090,14 @@ def _install_instagram(d, version: str | None = None, downgrade: bool = False) -
 
 
 def install_instagram_version(d, version: str | None = None) -> str | None:
-    """`scraper.py install [VERSION]`: put exactly `version` (default IG_APK_VERSION; empty =
-    latest) on the device, replacing whatever is installed, including a newer version. A no-op if
-    that version is already installed. Returns the installed versionName.
+    """`scraper.py install [VERSION]`: put exactly `version` (default: the active profile's
+    apk_version, see _apk_version(); "latest" = newest on APKPure) on the device, replacing whatever
+    is installed, including a newer version. A no-op if that version is already installed. Returns
+    the installed versionName.
 
     Instagram's saved login lives in /data and survives the replace, but an older build may not
     accept data written by a newer one, so a downgrade can still need a fresh login."""
-    version = IG_APK_VERSION if version is None else version.strip()
+    version = _apk_version(version)
     current = _instagram_version(d)
     if version and current == version:
         log(f"{IG_PKG} {current} already installed")
@@ -1018,8 +1140,8 @@ def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
 
 
 def _prune_debug_dumps():
-    """Keep only the newest DEBUG_KEEP hierarchy+screenshot pairs, and delete any debug artifact
-    (.xml/.jpg/.png, top level only) older than DEBUG_RETAIN_DAYS — manual dumps and one-off
+    """Keep only the newest DEBUG_KEEP hierarchy+screenshot pairs and DEBUG_KEEP failure logcats, and
+    delete any debug artifact (.xml/.jpg/.png/.txt, top level only) older than DEBUG_RETAIN_DAYS — manual dumps and one-off
     screenshots don't belong to a pair and otherwise never age out. Anything else in DEBUG_DIR
     (e.g. a scratch test*.sqlite a DB_PATH may still point at) is left alone. Best-effort: a file
     that can't be removed is logged and skipped, never raised."""
@@ -1029,6 +1151,7 @@ def _prune_debug_dumps():
         for old in hierarchies[:-DEBUG_KEEP]:
             stem = old.name.removesuffix("_hierarchy.xml")
             doomed += [old, DEBUG_DIR / f"{stem}_screen.jpg", DEBUG_DIR / f"{stem}_screen.png"]
+        doomed += sorted(DEBUG_DIR.glob("logcat_*.txt"), key=lambda p: p.stat().st_mtime)[:-DEBUG_KEEP]
         if DEBUG_RETAIN_DAYS > 0:
             cutoff = time.time() - DEBUG_RETAIN_DAYS * 86400
             doomed += [
@@ -1046,6 +1169,62 @@ def _prune_debug_dumps():
             log(f"WARN: could not prune debug file {f.name!r}:", repr(e))
 
 
+# What a failure logcat keeps besides error/fatal lines: the crash-loop signatures this project has
+# actually hit (CLAUDE.md; scripts/diagnose.sh greps for the same ones), plus kills and ANRs.
+_LOGCAT_SIGNATURES = re.compile(
+    r"WATCHDOG KILLING|FATAL EXCEPTION|ANR in |Version mismatch in Idmap|Can't downgrade database|"
+    r"Bad operation #|There must be exactly one installer|lowmemorykiller|am_kill|am_crash|am_anr"
+)
+_LOGCAT_PRIORITY = re.compile(r"^\S+\s+\S+\s+\d+\s+\d+\s+([VDIWEF])\s")  # `-v threadtime` lines
+
+
+def _filter_logcat(text: str) -> list[str]:
+    """Error/fatal lines and known crash signatures from `logcat -v threadtime` output, last
+    LOGCAT_TAIL_LINES of them."""
+    kept = []
+    for line in text.splitlines():
+        m = _LOGCAT_PRIORITY.match(line)
+        if (m and m.group(1) in "EF") or _LOGCAT_SIGNATURES.search(line):
+            kept.append(line)
+    return kept[-LOGCAT_TAIL_LINES:] if LOGCAT_TAIL_LINES > 0 else kept
+
+
+def _save_failure_logcat(error: str) -> Path | None:
+    """After a device failure, save a filtered `adb logcat -d` to DEBUG_DIR/logcat_<utc>.txt, so the
+    evidence CLAUDE.md says to read before restarting anything is already on disk. Uses the adb CLI
+    rather than the uiautomator2 connection, which is often exactly what failed. Best-effort: a device
+    too far gone for adb just gets a log line."""
+    try:
+        out = subprocess.run(
+            ["adb", "-s", ADB_ADDR, "logcat", "-d", "-v", "threadtime"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=LOGCAT_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log("WARN: could not read logcat after the failure:", repr(e))
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        log("WARN: could not read logcat after the failure:", (out.stderr or "no output").strip()[:200])
+        return None
+    lines = _filter_logcat(out.stdout)
+    path = DEBUG_DIR / f"logcat_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.txt"
+    header = [
+        f"# run failed: {error.splitlines()[0][:500] if error else '?'}",
+        f"# adb logcat -d: error/fatal lines and known crash signatures, last {len(lines)} kept",
+    ]
+    try:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(header + lines) + "\n")
+    except OSError as e:
+        log("WARN: could not write the failure logcat:", repr(e))
+        return None
+    _prune_debug_dumps()
+    log(f"saved filtered logcat ({len(lines)} lines) to {path}")
+    return path
+
+
 def _dump_debug(d, name, xml=None):
     """Save a hierarchy + screenshot pair for later inspection. Pass `xml` when the caller
     already has a fresh dump, to avoid a redundant device round-trip. Best-effort: a debug dump is
@@ -1061,6 +1240,7 @@ def _dump_debug(d, name, xml=None):
         log(f"WARN: could not write debug dump {name!r}:", repr(e))
 
 
+@versioned
 def _dismiss_interstitials(d, rounds=4):
     for _ in range(rounds):
         btn = _first(d, text=SELECTORS["dismiss_texts"])
@@ -1070,6 +1250,7 @@ def _dismiss_interstitials(d, rounds=4):
         human_pause(1.5, 3)
 
 
+@versioned
 def _login_form(d):
     """Return (username_field, password_field) or None. Instagram's login screen is Jetpack
     Compose: the labels are plain Views and the two EditTexts carry no id, so we go by order."""
@@ -1083,6 +1264,7 @@ def _login_form(d):
     return edits[0], edits[1]
 
 
+@versioned
 def ensure_logged_in(d):
     """If the login screen is showing, fill credentials from the environment and log in.
 
@@ -1165,11 +1347,13 @@ def ensure_logged_in(d):
     return True
 
 
+@versioned
 def _on_following_feed(d):
     t = d(resourceIdMatches=f".*:id/{SELECTORS['following_title_id']}$", text=SELECTORS["following_text"])
     return t.exists(timeout=1)
 
 
+@versioned
 def open_following_feed(d):
     ensure_logged_in(d)
     if d.app_current().get("package") != IG_PKG:
@@ -1222,6 +1406,7 @@ def open_following_feed(d):
     return False
 
 
+@versioned
 def open_home_feed(d):
     """The FEED_MODE=home alternative to open_following_feed(): navigate to (and stay on) the
     algorithmic Home feed. No switcher involved — just the bottom tab bar's own Home tab, tapped
@@ -1275,6 +1460,7 @@ def open_target_feed(d):
     return open_home_feed(d) if FEED_MODE == "home" else open_following_feed(d)
 
 
+@versioned
 def _on_following_list(d):
     """The Following-list screen (reached via own profile -> "N following"), independent of
     whether the list itself has any rows on screen yet — this is the screen's own view pager,
@@ -1282,6 +1468,7 @@ def _on_following_list(d):
     return d(resourceIdMatches=f".*:id/{SELECTORS['following_list_screen_id']}$").exists(timeout=2)
 
 
+@versioned
 def open_own_following_list(d):
     """Navigate from wherever the app is to the logged-in account's own Following list. Returns
     True once the list screen is confirmed on screen, False if navigation failed after a few
@@ -1332,6 +1519,7 @@ def open_own_following_list(d):
     return False
 
 
+@versioned
 def parse_following_list(xml: str) -> list[str]:
     """Every username row currently on screen on the Following-list screen, in the order they
     appear. Deliberately narrow: only the row's own username TextView (follow_list_username) is
@@ -1346,6 +1534,7 @@ def parse_following_list(xml: str) -> list[str]:
     ]
 
 
+@versioned
 def scrape_following_list(d) -> list[str] | None:
     """Scroll the already-open Following list from wherever it starts, collecting every distinct
     username, and return them in first-seen order. Stops after FOLLOWING_LIST_EMPTY_LIMIT
@@ -1419,6 +1608,7 @@ def _new_post(user, kind, date, place, clip_top):
     }
 
 
+@versioned
 def parse_hierarchy(xml: str):
     """Return a list of post dicts found in the current screen's accessibility tree.
 
@@ -1537,6 +1727,7 @@ def parse_hierarchy(xml: str):
     return [p for p in posts if p["username"] and (p["caption"] or p["alt"])]
 
 
+@versioned
 def clean_caption(text: str, user: str) -> str:
     """'user Caption text… more' -> 'Caption text…'. The app truncates long captions itself
     (see _expand_caption() for recovering the untruncated text)."""
@@ -1564,6 +1755,7 @@ def _bounds_bottom_right(bounds: str, inset: int = 10):
     return max(x1, x2 - inset), max(y1, y2 - inset)
 
 
+@versioned
 def _expand_caption(d, p: dict) -> str:
     """Tap a truncated caption's "... more" to expand it in place, and return the full text.
     "more" is a clickable span at the end of the caption's last line, not a separate touch
@@ -1600,6 +1792,7 @@ def _expand_caption(d, p: dict) -> str:
     return p["caption"]
 
 
+@versioned
 def parse_story_tray(xml: str) -> list[dict]:
     """Return the Home feed's story tray items (empty if the tray isn't on screen — it only
     appears on Home, not on Following), skipping index 0 (always the logged-in account's own
@@ -1633,6 +1826,7 @@ def parse_story_tray(xml: str) -> list[dict]:
     return items
 
 
+@versioned
 def _sheet_open(d):
     if d(description=SELECTORS["copy_link_desc"]).exists(timeout=0.3):
         return True
@@ -1641,6 +1835,7 @@ def _sheet_open(d):
     return any(d(description=t).exists(timeout=0.3) for t in SELECTORS["sheet_markers_desc"])
 
 
+@versioned
 def close_sheets(d, max_back=2):
     """Back out of any open share/bottom sheet without touching its contents."""
     for i in range(max_back):
@@ -1657,6 +1852,7 @@ def close_sheets(d, max_back=2):
     return not _sheet_open(d)
 
 
+@versioned
 def _on_feed(d):
     """True when a feed list with post rows is showing (title bars hide while scrolled, so
     they are not a reliable signal)."""
@@ -1665,11 +1861,13 @@ def _on_feed(d):
     ).exists(timeout=0.5)
 
 
+@versioned
 def _on_home_feed(d):
     """The Home feed keeps the bottom tab bar; the Following screen does not."""
     return d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}").exists(timeout=0.5)
 
 
+@versioned
 def _back_to_feed(d, tries=2):
     """If a tap opened a profile/hashtag/etc., back out until a feed is showing again. Never
     backs out of the app: if we somehow left it, relaunch instead."""
@@ -1688,6 +1886,7 @@ def _back_to_feed(d, tries=2):
 _last_url = ""
 
 
+@versioned
 def fetch_permalink(d, post_hash: str) -> tuple[str | None, str | None]:
     """Open the share sheet for the post with this hash, pick 'Copy link', read the clipboard.
 
@@ -1777,8 +1976,24 @@ def post_id(p):
     return _digest(_post_key(p))
 
 
+def _media_ext() -> str:
+    return ".webp" if MEDIA_FORMAT == "webp" else ".jpg"
+
+
+def _save_media(img: Image.Image, path: Path) -> None:
+    """Encode `img` to `path` in MEDIA_FORMAT at MEDIA_QUALITY (the caller picks the extension via
+    _media_ext())."""
+    img = img.convert("RGB")
+    if MEDIA_FORMAT == "webp":
+        img.save(path, "WEBP", quality=MEDIA_QUALITY)
+    else:
+        img.save(path, "JPEG", quality=MEDIA_QUALITY)
+
+
+@versioned
 def crop_media(d, bounds: str, pid: str, clip_top: int = 0, settle: float = 0):
-    """Screenshot the visible post image and save it as "{pid}.jpg". Returns filename or None.
+    """Screenshot the visible post image and save it as "{pid}.webp" (or .jpg, see MEDIA_FORMAT).
+    Returns filename or None.
     `settle` delays the shot (e.g. for a video/Reel, so autoplay has started and the initial
     audio-label overlay has faded) before it's taken — still one image, just a better-timed one."""
     m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
@@ -1795,11 +2010,12 @@ def crop_media(d, bounds: str, pid: str, clip_top: int = 0, settle: float = 0):
         human_pause(settle, settle * 1.4)
     img: Image.Image = d.screenshot()
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-    fn = f"{pid}.jpg"
-    img.crop((x1, y1, x2, y2)).convert("RGB").save(MEDIA_DIR / fn, quality=MEDIA_QUALITY)
+    fn = f"{pid}{_media_ext()}"
+    _save_media(img.crop((x1, y1, x2, y2)), MEDIA_DIR / fn)
     return fn
 
 
+@versioned
 def carousel_count(alt: str) -> int:
     """Parse the slide total from a carousel card's media description ("Photo 1 of 7 by X, 317
     likes, 10 comments"). Returns 1 (not a carousel, or the format drifted) if it can't be parsed."""
@@ -1807,6 +2023,7 @@ def carousel_count(alt: str) -> int:
     return int(m.group(2)) if m else 1
 
 
+@versioned
 def capture_carousel(d, p: dict, pid: str) -> list[str]:
     """Swipe through a carousel's remaining slides in place and crop each one. `pid` already has
     slide 1 captured by the caller via crop_media(); this walks slides 2..total (capped at
@@ -1848,6 +2065,7 @@ def _safe_filename(username: str) -> str | None:
     return username
 
 
+@versioned
 def _avatar_bounds(header_bounds: str):
     """The header's own bounds crop to a leading square avatar with a small inset — the avatar
     ImageView has no addressable node (row_feed_profile_header is a collapsed leaf in the
@@ -1862,6 +2080,7 @@ def _avatar_bounds(header_bounds: str):
     return x1 + pad, y1 + pad, x1 + pad + (size - 2 * pad), y2 - pad
 
 
+@versioned
 def capture_avatar(d, header_bounds: str, username: str) -> str | None:
     """Crop the account's avatar from its own feed header and save it once per account, in its own
     subdirectory so the retention orphan sweep (which only globs MEDIA_DIR's top level) never
@@ -1873,8 +2092,13 @@ def capture_avatar(d, header_bounds: str, username: str) -> str | None:
     avatar_dir = MEDIA_DIR / "avatars"
     avatar_dir.mkdir(parents=True, exist_ok=True)
     img: Image.Image = d.screenshot()
-    fn = f"{safe_user}.jpg"
-    img.crop(box).convert("RGB").save(avatar_dir / fn, quality=MEDIA_QUALITY)
+    fn = f"{safe_user}{_media_ext()}"
+    _save_media(img.crop(box), avatar_dir / fn)
+    # The orphan sweep never looks in avatars/, so drop this account's avatar in any other format
+    # here (e.g. its old .jpg after switching MEDIA_FORMAT) rather than leaving it behind forever.
+    for ext in MEDIA_EXTS:
+        if ext != _media_ext():
+            (avatar_dir / f"{safe_user}{ext}").unlink(missing_ok=True)
     return f"avatars/{fn}"
 
 
@@ -1932,6 +2156,7 @@ def _enforce_size_cap(con):
         log(f"retention: removed {removed} additional post(s) to stay under {MEDIA_MAX_MB}MB")
 
 
+@versioned
 def capture_story_media(img: Image.Image, media_bounds: str, clip_top: int, tmp_name: str) -> Path | None:
     """Crop a story's current frame — from a screenshot already taken by the caller, not one taken
     here — into MEDIA_DIR/stories. clip_top skips the username/timestamp header overlay so the
@@ -1946,11 +2171,12 @@ def capture_story_media(img: Image.Image, media_bounds: str, clip_top: int, tmp_
         return None
     stories_dir = MEDIA_DIR / "stories"
     stories_dir.mkdir(parents=True, exist_ok=True)
-    path = stories_dir / f"{tmp_name}.jpg"
-    img.crop((x1, y1, x2, y2)).convert("RGB").save(path, quality=MEDIA_QUALITY)
+    path = stories_dir / f"{tmp_name}{_media_ext()}"
+    _save_media(img.crop((x1, y1, x2, y2)), path)
     return path
 
 
+@versioned
 def capture_story(d, item: dict) -> dict | None:
     """Open one tray item's story, capture its current frame, and always exit back to the Home
     feed via Back. Never tap forward inside the viewer (past this one open tap): the message/like/
@@ -2006,6 +2232,7 @@ def capture_story(d, item: dict) -> dict | None:
     return {"username": item["username"], "posted_date": posted_date, "path": path} if path else None
 
 
+@versioned
 def scrape_stories(d, con) -> int:
     """Visit each not-yet-seen account's story from the Home feed's tray, capture its current
     frame, and return to the Following feed afterward. Stories have no stable public id the way
@@ -2047,7 +2274,7 @@ def scrape_stories(d, con) -> int:
             (
                 digest,
                 captured["username"],
-                f"stories/{digest}.jpg",
+                f"stories/{digest}{captured['path'].suffix}",
                 "story",
                 captured["posted_date"],
                 now.isoformat(),
@@ -2056,7 +2283,7 @@ def scrape_stories(d, con) -> int:
         )
         con.commit()
         if cur.rowcount:
-            captured["path"].rename(MEDIA_DIR / "stories" / f"{digest}.jpg")
+            captured["path"].rename(MEDIA_DIR / "stories" / f"{digest}{captured['path'].suffix}")
             new += 1
             log(f"new story: {captured['username']}")
         else:
@@ -2096,10 +2323,10 @@ def _prune_old_posts(con):
     if MEDIA_DIR.exists():
         kept = {r[0] for r in con.execute("SELECT media_file FROM posts WHERE media_file IS NOT NULL")}
         kept |= {r[0] for r in con.execute("SELECT file FROM media")}
-        # Only ever written media_file names are *.jpg (crop_media()), and this glob is
+        # Only ever written media_file names are *.jpg/*.webp (crop_media()), and these globs are
         # non-recursive, so pointing MEDIA_DIR at the wrong directory can't delete unrelated files
         # and avatars/ (its own subdirectory) is never touched by this sweep.
-        orphans = [f for f in MEDIA_DIR.glob("*.jpg") if f.name not in kept]
+        orphans = [f for ext in MEDIA_EXTS for f in MEDIA_DIR.glob(f"*{ext}") if f.name not in kept]
         for f in orphans:
             f.unlink(missing_ok=True)
         if orphans:
@@ -2302,11 +2529,12 @@ def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
                 log(f"merged duplicate: {p['username']} -> {final_id}")
                 break
             if media and pid != h:
-                (MEDIA_DIR / media).rename(MEDIA_DIR / f"{pid}.jpg")
-                media = f"{pid}.jpg"
+                new_media = f"{pid}{Path(media).suffix}"
+                (MEDIA_DIR / media).rename(MEDIA_DIR / new_media)
+                media = new_media
                 renamed = []
                 for i, fn in enumerate(extra_media, start=1):
-                    new_fn = f"{pid}_{i}.jpg"
+                    new_fn = f"{pid}_{i}{Path(fn).suffix}"
                     (MEDIA_DIR / fn).rename(MEDIA_DIR / new_fn)
                     renamed.append(new_fn)
                 extra_media = renamed
@@ -2369,6 +2597,11 @@ def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
 def main():
     con = db_init()
     attempt = 0  # consecutive transient-failure retries so far
+    if wait := _startup_wait_seconds(con):
+        log(
+            f"last run was recent; waiting {wait / 60:.1f}m before the first scrape (SCRAPE_ON_STARTUP=1 skips)"
+        )
+        time.sleep(wait)
     while True:
         started_at = datetime.now(UTC).isoformat()
         snapshot, stats, error, exc = {}, {}, None, None
@@ -2380,8 +2613,10 @@ def main():
         except Exception as e:  # keep the loop alive; log for debugging
             exc, error = e, repr(e)
             log("ERROR:", error)
+            if is_transient(e):
+                _save_failure_logcat(error)
         if snapshot:  # connected, so a profile was activated (possibly re-activated by an install)
-            snapshot["selector_profile"] = str(PROFILE.major)
+            snapshot["selector_profile"] = PROFILE.name
         record_run(
             con,
             started_at,
@@ -2418,9 +2653,14 @@ if __name__ == "__main__":
             print("logged in:", ensure_logged_in(d))
         finally:
             _stop_instagram(d)  # don't leave ~800MiB resident for whatever runs next
+    elif len(sys.argv) > 1 and sys.argv[1] == "profiles":
+        for name in available_profiles():
+            p = select_profile(name)[0]
+            active = " (active)" if p.name == PROFILE.name else ""
+            print(f"{p.name}{active}  installs {p.apk_version}  {p.notes}")
     elif len(sys.argv) > 1 and sys.argv[1] == "install":
         if len(sys.argv) > 3:
-            print("usage: scraper.py install [VERSION]   (default IG_APK_VERSION; '' = latest)")
+            print("usage: scraper.py install [VERSION|latest]   (default: the active profile's apk_version)")
             sys.exit(1)
         d = connect_device()
         print("installed:", install_instagram_version(d, sys.argv[2] if len(sys.argv) == 3 else None))

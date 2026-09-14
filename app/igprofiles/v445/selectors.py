@@ -1,8 +1,8 @@
-"""Selectors for Instagram 445.x: the baseline every later profile layers on top of.
+"""Selectors for Instagram 445.x.
 
-Moved verbatim from scraper.py's SELECTORS dict (validated live through 445.0.0.45.83), plus the few
-UI strings that used to be hardcoded inline in scraper.py. Don't edit these to fix a newer Instagram
-version: override the changed keys in that version's own profile instead (see NEXT.md).
+Moved verbatim from scraper.py's original SELECTORS dict (validated live on 445.0.0.45.83), plus the
+few UI strings that used to be hardcoded inline in scraper.py. To support another Instagram version,
+don't edit these: give that version its own igprofiles/vXYZ/selectors.py (see docs/NEXT.md).
 """
 
 import re
@@ -120,8 +120,3 @@ SELECTORS = {
     # A stray "Enter your password"-style alert left over from a previous login attempt.
     "stray_alert_ok_text": "OK",
 }
-
-
-class V445:
-    major = 445
-    selectors = SELECTORS

@@ -117,6 +117,8 @@ needs a manual `adb install` afterward. See README.md's "First-time setup" for t
 `adb -s 127.0.0.1:5555 logcat -d` (grep for `WATCHDOG KILLING`, `FATAL EXCEPTION`, `Version
 mismatch`, `Can't downgrade database`) before restarting the container again.** Each blind restart
 costs 1-9+ minutes; the log almost always names the actual blocked call directly.
+The running scraper also saves a filtered copy automatically after any device failure
+(`local/data/debug/logcat_<time>.txt`), so check there first.
 `scripts/diagnose.sh` runs this triage (plus a host `dmesg` check, for failures early enough that
 adb isn't even up yet — see below) and prints the matching fix in one command.
 
@@ -278,7 +280,10 @@ What changed as a result:
   `memswap_limit: 256m`.
 - **`scraper.py` memory guard** (`MemoryGuard`, `MEMORY_GUARD_PERCENT`, default 85): the scraper
   reads redroid's own cgroup v2 files through adb (`/sys/fs/cgroup/memory.current`, `memory.max`,
-  `memory.events`; readable as the adb shell user). It checks before stories and before every
+  `memory.events`, `memory.stat`; readable as the adb shell user), and counts usage the way `docker
+  stats` does, excluding `inactive_file` cache. The first live 446 run showed why: counting that
+  cache, the guard stopped a run at "2756 of 3072 MiB" while `docker stats` peaked at ~2.3GiB, and
+  the kernel reclaims that cache before it would ever OOM-kill. It checks before stories and before every
   screen, and stops the run early with a warning once usage crosses the threshold. Each run records
   `runs.mem_peak_mb` and `runs.oom_kills` (the `oom_kill` delta over the run), shown in `/status`'s
   "Peak mem" column; any OOM kill also becomes a run warning.
