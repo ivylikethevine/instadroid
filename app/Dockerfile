@@ -1,4 +1,5 @@
 FROM python:3.14-slim
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends android-tools-adb curl ca-certificates && rm -rf /var/lib/apt/lists/*
 # apkeep fetches the Instagram APK from APKPure when the device doesn't have it installed (see
 # _fetch_instagram_apk() in scraper.py) — pinned to a specific release + checksum rather than
@@ -17,5 +18,5 @@ RUN chmod +x entrypoint.sh
 # app) so the image also runs standalone with no mounts, e.g. the CI smoke test. /apk likewise
 # caches the downloaded Instagram APK (see APK_CACHE_DIR in scraper.py).
 RUN mkdir -p /db /media /debug /apk && chown app:app /db /media /debug /apk
-USER app
+USER 1000
 CMD ["./entrypoint.sh"]
