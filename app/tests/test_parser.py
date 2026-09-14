@@ -1,10 +1,10 @@
 from datetime import UTC, datetime
-from pathlib import Path
 
+import igprofiles
 import pytest
 import scraper
 
-FIXTURE = (Path(__file__).parent / "fixture_feed.xml").read_text()
+FIXTURE = igprofiles.fixture("v445", "feed.xml").read_text()
 
 
 def test_parse_hierarchy_finds_both_cards_and_skips_sponsored():
@@ -336,7 +336,7 @@ def test_capture_story_media_crops_and_saves_under_a_stories_subdirectory(tmp_pa
 
     path = scraper.capture_story_media(img, "[0,0][200,400]", 50, "tmpstory")
 
-    assert path == tmp_path / "stories" / "tmpstory.jpg"
+    assert path == tmp_path / "stories" / "tmpstory.webp"
     assert path.exists()
 
 
