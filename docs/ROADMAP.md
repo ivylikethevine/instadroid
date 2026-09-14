@@ -24,6 +24,11 @@ A config flag, one function, a CI tweak, or docs.
   specific Instagram APK versions against each image, kept current as Instagram updates — right now
   that history is narrative, not a lookup. The raw data now accumulates on its own: every run
   records the Instagram `versionName` and redroid image (`runs.ig_version` / `runs.redroid_image`).
+- **OpenAPI spec, kept current automatically**: `app/app.py` is FastAPI, so the spec already exists
+  at runtime (`app.openapi()`, served at `/openapi.json`). Commit it as `docs/openapi.json` via a tiny
+  export script, and have CI regenerate it and fail on drift (or commit the regenerated file back),
+  so the committed spec can't fall behind the routes. Worth adding `response_model`s / summaries to the
+  JSON endpoints (`/health`, `/users`) so the spec says more than "returns something".
 
 ### Medium
 
@@ -64,6 +69,13 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   dumps. `docs/NEXT.md` has the step-by-step. Going back in versions on one device means `-r -d`
   downgrades, which an older Instagram may reject with data a newer build wrote, so expect a fresh
   login.
+- **Semi-automate new profile development**: Instagram ships a major version roughly weekly, so
+  `docs/NEXT.md`'s "Adding a version" steps will recur. Script the mechanical parts into one
+  command (e.g. `scraper.py new-profile <version>`): scaffold `app/igprofiles/vXYZ/` subclassing the
+  current default, install that build, take a short capped baseline run (only with memory headroom),
+  and diff each screen's dump against the parent profile's selectors — reporting which selector keys
+  matched nothing and saving those dumps as candidate fixtures. The human step that stays is deciding
+  what the new selectors or `@versioned` overrides should be, then marking the profile validated.
 
 ### Large
 

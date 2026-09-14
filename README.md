@@ -194,9 +194,12 @@ is made and every visit exits via Back. Advancing a story via tap was tried duri
 on this host, reliably ejects Instagram to the OS launcher once a single-frame story's queue is
 exhausted (Back, by contrast, always returns cleanly to the tray). Given that, multi-frame stories
 only ever contribute their currently-shown frame, not the whole reel — a deliberate scope decision,
-not a "not yet implemented" gap. Stories have no permalink/shortcode the way posts do, so each is
-identified by a content hash of its own cropped image (the crop skips the header overlay so
-identical stories don't hash differently as their relative timestamp ticks over between runs).
+not a "not yet implemented" gap. Stories have no permalink/shortcode the way posts do, so a
+capture is matched by how it looks: a crop within 10 bits (of 64) of a perceptual hash of a story
+the same account had stored in the last day is a re-capture and is discarded, and so is a
+near-black viewer transition frame. (An exact byte hash missed these, since every capture
+re-encodes a fresh screenshot.) The crop skips the header overlay, so the relative timestamp
+ticking over between runs doesn't change it.
 Captured stories are served at `/stories.xml` and share `RETAIN_DAYS` with posts — no separate
 story-retention window.
 
@@ -240,8 +243,8 @@ everything else it reconciles. Each run's `/status` page shows how many posts a 
 python -m venv local/.venv && . local/.venv/bin/activate
 pip install -r scripts/requirements-dev.txt -r app/requirements.txt
 ruff check . && ruff format --check .
-PYTHONPATH=app pytest app/tests -q     # parser, feed, and device-flow tests; temp SQLite db
-PYTHONPATH=app pytest app/tests -q --cov=app --cov-report=term-missing   # with coverage
+pytest -q                              # parser, feed, and device-flow tests; temp SQLite db
+pytest -q --cov=app --cov-report=term-missing   # with coverage
 ```
 
 The device-driving code (login, feed navigation, share sheet, carousels, stories, the scrape loop)
@@ -284,9 +287,14 @@ every subscription failed with "Failed to resolve domain" until `PUBLIC_URL` use
 
 **One-step bulk subscribe**: `/opml` is an OPML outline listing all of the above — the aggregate
 feed, `/stories.xml`, and one entry per account in `/users` — nested under a single "Instagram"
-category. Import it into FreshRSS (Subscription management → Import/Export → choose file) instead
-of subscribing to each account by hand; a rename (`scraper.py rename`) still needs re-subscribing
-as before, since the OPML only reflects `/users` at the time it's fetched.
+category. It's a subscription list, not a feed: adding `/opml` as a feed URL fails with FreshRSS's
+"A feed could not be found at …/opml" (SimplePie only parses RSS/Atom). Either:
+
+- **Import it once**: Subscription management → Import/Export, then import the file saved from
+  `/opml`.
+- **Keep it in sync** (FreshRSS 1.20+): create a category and set its *Dynamic OPML* URL to
+  `$PUBLIC_URL/opml`. FreshRSS then re-reads the outline on its own schedule, so accounts that
+  appear later (or a rename via `scraper.py rename`) are picked up without re-importing.
 
 **Push instead of poll**: by default FreshRSS finds new posts on its own poll interval. To have
 the scraper tell it instead, set `FRESHRSS_REFRESH_URL` in `.env` to FreshRSS's "online cron"

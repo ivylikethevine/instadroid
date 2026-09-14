@@ -14,8 +14,9 @@ import igprofiles
 import pytest
 import scraper
 from igprofiles.v445.selectors import SELECTORS as SELECTORS_445
+from PIL import Image, ImageDraw
 
-from tests.fakedevice import FakeDevice, hierarchy, node
+from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, hierarchy, node
 
 SAVE_FAILURE_LOGCAT = scraper._save_failure_logcat  # captured before conftest stubs it out
 CAPTION = SELECTORS_445["caption_class"]  # read at import, before conftest pins the profile
@@ -519,37 +520,18 @@ def test_fetch_permalink_refuses_to_act_inside_a_stuck_sheet():
     assert d.taps == []  # never tapped anything inside the sheet
 
 
-def test_sweep_cached_apps_force_stops_every_package_and_skips_a_failure(monkeypatch):
-    d = feed_device(start="following")
-    real_shell = d.shell
-    calls = []
-
-    def flaky_shell(cmd):
-        calls.append(cmd)
-        if "com.android.keychain" in cmd:
-            raise RuntimeError("device offline")
-        return real_shell(cmd)
-
-    monkeypatch.setattr(d, "shell", flaky_shell)
-
-    scraper._sweep_cached_apps(d)  # must not raise despite the keychain failure
-
-    swept = {c[2] for c in calls}
-    assert swept == set(scraper.CACHED_APP_SWEEP)  # every package attempted, including after the failure
-
-
-def test_stop_instagram_force_stops_the_app_and_is_best_effort():
+def test_force_stop_is_one_shell_call_and_best_effort():
     d = feed_device(start="following")
 
-    scraper._stop_instagram(d)
+    scraper._free_device_memory(d)
 
-    assert f"am force-stop {scraper.IG_PKG}" in d.shell_calls
+    assert d.shell_calls == [f"am force-stop {pkg}" for pkg in (*scraper.CACHED_APP_SWEEP, scraper.IG_PKG)]
 
     def raising_shell(cmd):
         raise RuntimeError("device offline")
 
     d.shell = raising_shell
-    scraper._stop_instagram(d)  # must not raise
+    scraper._force_stop(d, scraper.IG_PKG)  # must not raise
 
 
 def _caption_card(text, goto=None):
@@ -1094,6 +1076,46 @@ def test_memory_guard_skips_stories_when_already_over(monkeypatch):
     stats = scraper.scrape_once(d, scraper.db_init())
     assert stats["new_stories"] == 0
     assert "skipped stories: redroid memory at 2900 of 3072 MiB" in stats["warning"]
+
+
+_NOISE = Image.effect_noise((WIDTH // 8, HEIGHT // 8), 80)  # random, so generated once
+
+
+def _story_frame(seed, overlay=False):
+    """A photo-like screenshot (noise), optionally with a bar drawn over its lower part, the way a
+    tooltip or reply box can differ between two captures of the same story."""
+    img = _NOISE.resize((WIDTH, HEIGHT)).convert("RGB")
+    if seed:
+        img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    if overlay:
+        ImageDraw.Draw(img).rectangle((100, HEIGHT - 400, WIDTH - 100, HEIGHT - 300), fill="white")
+    return img
+
+
+def test_a_recaptured_story_is_not_stored_twice(monkeypatch):
+    con = scraper.db_init()
+    frame = _story_frame(0)
+    d = feed_device(start="home")
+    d.screenshot = lambda: frame
+    assert scraper.scrape_stories(d, con) == 1
+
+    d = feed_device(start="home")  # same unseen story next run, captured with an overlay on top
+    d.screenshot = lambda: _story_frame(0, overlay=True)
+    assert scraper.scrape_stories(d, con) == 0
+
+    d = feed_device(start="home")  # a different frame from the same account is still new
+    d.screenshot = lambda: _story_frame(1)
+    assert scraper.scrape_stories(d, con) == 1
+    assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 2
+    assert len(list((scraper.MEDIA_DIR / "stories").iterdir())) == 2  # discarded crops removed
+
+
+def test_a_blank_story_frame_is_discarded(monkeypatch):
+    con = scraper.db_init()
+    d = feed_device(start="home")
+    d.screenshot = lambda: Image.new("RGB", (WIDTH, HEIGHT), (2, 2, 2))
+    assert scraper.scrape_stories(d, con) == 0
+    assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 0
 
 
 def test_oom_kills_during_a_run_are_reported(monkeypatch):
