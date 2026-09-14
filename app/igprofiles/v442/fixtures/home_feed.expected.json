@@ -1,0 +1,21 @@
+{
+ "posts": [],
+ "story_tray": [
+  {
+   "username": "user1",
+   "seen": false,
+   "bounds": "[294,210][588,493]"
+  },
+  {
+   "username": "user2",
+   "seen": false,
+   "bounds": "[588,210][882,493]"
+  },
+  {
+   "username": "user3",
+   "seen": false,
+   "bounds": "[882,210][1080,493]"
+  }
+ ],
+ "following_list": []
+}

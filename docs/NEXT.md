@@ -146,7 +146,100 @@ should be.
   `DEFAULT_PROFILE` moved to `v446`.
 - [x] Tooling for adding versions: `scripts/new_profile.py` (scaffold, capture-mode baseline, selector
   check per screen, fixture promotion, validation), `igprofiles/screens.py`, `Profile.validated`.
-- [ ] `v440`-`v444`: to backfill with that tooling.
+- [x] `v444`, `v443`, `v442`: validated 2026-09-14 with the tooling, each unchanged from its parent
+  (see the run log). Replay fixtures (`feed`, `home_feed`) promoted and reviewed.
+- [ ] `v441`: baseline taken 2026-09-14, and `check` found every required key; promote and validate still to do.
+- [ ] `v440`: scaffolded (`440.1.0.46.86`), baseline not taken yet.
+- [ ] Profiles only where something changes (plan below).
+- [ ] Old-build probe: can `400.0.0.49.68` install, launch and keep the login? (plan below)
+- [ ] Scan all fixtures and committed example data for real data leaked from testing (plan below).
+
+## Plan (paused 2026-09-14)
+
+Work stopped after the v441 baseline. **Device state when paused:** redroid running, Instagram
+441.0.0.43.81 installed, the `app` service stopped. Before starting `app` again, either finish the
+steps below or put the default build back with `python scripts/new_profile.py restore`.
+
+Builds APKPure serves (`apkeep -l -a com.instagram.android -d apk-pure`, 2026-09-14): 129, from
+`360.0.0.52.192` to `446.0.0.49.77`. Every major from 360 to 446 is listed except 371, 376, 382, 386,
+389, 406 and 418; 440-446 have one build each (`440.1.0.46.86`, `441.0.0.43.81`, `442.0.0.46.79`,
+`443.0.0.48.82`, `444.0.0.46.85`). Listed isn't proven installable.
+
+### 1. Finish v441
+
+No device needed: `check v441` (its report is already in `local/data/debug/profile-dev/v441/`),
+`promote v441`, read the leftover text, `validate v441`.
+
+### 2. Profiles only where something changes
+
+A profile that changes nothing shouldn't exist. Instead, the scraper uses **the highest profile
+whose major is at or below the installed version**.
+
+- **Profiles mark change points.** vN covers every build from N up to the next profile. The lowest
+  profile holds the full selectors. Since 440-446 have all run on the 445 selectors unchanged, the
+  only profile becomes `v440`: v445's selectors and fixtures move there, and v441-v446 are deleted.
+- **Enforce it:** a test that every profile except the lowest differs from its parent, in its
+  selectors or by defining an override method.
+- **Automatic selection:** `activate_profile(installed)` picks the covering profile. `IG_PROFILE`
+  becomes an optional override (empty = automatic). Before a device is connected, the newest profile
+  is the provisional one. A build newer than every validated build runs with a warning, and one
+  below the lowest profile is an error.
+- **`validated` becomes a tuple of builds** on the covering profile (e.g. `440.1.0.46.86` through
+  `446.0.0.49.77`), replacing the bool.
+- **Fixtures stay per build**, named `<screen>_<major>.xml` (e.g. `feed_444.xml`), so the replay tests
+  still prove every validated version parses. `test_replay.py` and `new_profile.validation_problems()`
+  strip the suffix to find the screen.
+- **Default install:** the newest validated build across all profiles, replacing `DEFAULT_PROFILE`
+  and each profile's `apk_version`. `IG_APK_VERSION` still overrides it.
+- **`scripts/new_profile.py` works on builds:**
+  - `baseline <build>` runs under whichever profile covers the build; dev directories are keyed by
+    major.
+  - `check` is unchanged.
+  - If nothing drifted, `validate <build>` appends the build to the covering profile's `validated`
+    and promotes its fixtures there.
+  - Only on drift does `fork <build>` create a new vN subclassing the covering profile (today's
+    `scaffold`).
+  - `restore` installs the newest validated build.
+- **Also touches:** `igprofiles/__init__.py` (`select`, `load`, `DEFAULT_PROFILE`, `MIN_MAJOR` = the
+  lowest profile), `base.py`, `versioning.py`, `install._apk_version()`, `scraper.py profiles` (show
+  each profile's range and validated builds), `conftest.py` (pin `v440`), and the tests that name
+  `v445`/`v446` (test_profiles, test_device_flows, test_parser, test_health, test_compat,
+  test_profile_dev). Docs: this file's design section, README, CONTRIBUTING, `.env.example`
+  (`IG_PROFILE`), COMPATIBILITY.
+- **Backfilling below the lowest profile later** means the new root holds that version's full
+  selectors, and the old root becomes a subclass holding only what changed.
+
+### 3. v440 and the old-build probe
+
+- **v440** through the new tooling: `baseline 440.1.0.46.86`, then `check`, then `validate` (or `fork`
+  on drift). About 12 minutes of device time.
+- **Probe `400.0.0.49.68`** (below the floor, so no profile and no scrape):
+  `docker compose run --rm --no-deps -v "$PWD/app:/app:ro" app python scraper.py install 400.0.0.49.68`,
+  then `scraper.py login` and `scraper.py dump`. Record whether it installs, whether it launches
+  without crashing under the ARM translation, whether the login survives a 441 → 400 downgrade, and
+  whether Instagram shows a forced "update" screen. A failed login means `scraper.py login` retypes
+  the `.env` credentials, which can hit a challenge.
+- Then `restore` (newest validated build), stop redroid, and `docker compose start app` if it should
+  be running.
+
+### 4. Scan for leaked real data
+
+Look for real data that got into committed files:
+- every `app/igprofiles/*/fixtures/*` (XML text, content-desc and hint attributes, and the
+  `.expected.json` files);
+- test files and the synthetic screens in `tests/fakedevice.py` and `test_device_flows.py`;
+- docs examples (NEXT.md's run log names accounts, e.g. "vogadvil"), CLAUDE.md and README;
+- anything else committed under `docs/` or `scripts/`;
+- git history, not just the working tree.
+
+Search for the real handles and names seen in local dumps and scratch databases
+(`local/data/debug/profile-dev/*/posts.sqlite`, `local/data/db/posts.sqlite`), the logged-in
+account's own username, email addresses, phone numbers, real permalink shortcodes, and caption
+text. `scripts/promote_dump.py` scrubs what it recognises: during this backfill it missed the own
+story tray item, suggested-post headers, @mentions, "Follow <name>", collab "a and b" headers and
+Reel audio credits, each now fixed with a test in `test_profile_dev.py`. Earlier fixtures were
+promoted before those fixes.
+
 
 ## Run log
 
@@ -192,6 +285,26 @@ Still open (none of these are 446-specific; all were seen on 445 too):
 - **One post without a permalink**: Copy link failed on every retry for one photo, so it's stored
   under a hash id.
 - No `v446/fixtures/` yet: nothing in this run triggered a `last`/`empty_feed` dump to promote.
+
+**Backfill with `scripts/new_profile.py`, 2026-09-14 15:08-15:43 PDT** (3g limit, 4 CPUs, capture mode,
+`MAX_SCROLLS=5`, `MAX_STORIES_PER_RUN=2`, scratch database). redroid was started once and stepped down one
+build at a time (446 → 444 → 443 → 442 → 441) with `baseline`. Every downgrade kept the login.
+
+| Build | Profile | Result | Peak memory |
+|---|---|---|---|
+| 444.0.0.46.85 | `v444` (from v445) | 2 stories, 2 posts (a Reel, a photo), full captions, media, permalinks; Following feed reached through the switcher | 2048 MiB |
+| 443.0.0.48.82 | `v443` (from v444) | same | 2179 MiB |
+| 442.0.0.46.79 | `v442` (from v443) | same | 2153 MiB |
+| 441.0.0.43.81 | `v441` (from v442) | same (baseline and check only; not promoted or validated yet) | 2088 MiB |
+
+`check` found every required selector key on every captured screen: the feed switcher menu, the
+Following feed, the Home feed and story tray, the story viewer, the share sheet and the feed. No
+selector changed, so all of them are identical to v445, which is what prompted the "profiles
+only where something changes" plan above. Not captured (so unchecked): the own profile, the Following
+list (`--following` wasn't used) and the login form (the session held). Two things learned:
+`timestamp` is off screen whenever a tall Reel fills it, so it's now optional on feed screens; and
+`promote_dump.py` needed more scrubbing rules (see the leak scan plan). The already-known Copy link
+clipboard misses on a card that's back on screen showed up here too.
 
 Done: `DEFAULT_PROFILE` is now `v446` (a fresh install fetches 446, and a
 device still on 445 gets a mismatch warning until `scraper.py install`).

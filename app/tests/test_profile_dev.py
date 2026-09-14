@@ -185,7 +185,8 @@ def test_parse_version_wants_a_full_supported_build(version: str) -> None:
 
 @pytest.fixture
 def scratch_profiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """A directory scaffolded profiles land in, importable as igprofiles.vXYZ next to the real ones."""
+    """A directory scaffolded profiles land in, importable as igprofiles.vXYZ next to the real ones. Tests
+    scaffold a hypothetical v447, a version with no real profile, whose nearest profile is v446."""
     root = tmp_path / "igprofiles"
     root.mkdir()
     monkeypatch.setattr(igprofiles, "__path__", [str(root), *igprofiles.__path__])
@@ -196,43 +197,41 @@ def scratch_profiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     monkeypatch.setattr(new_profile, "PROFILES_DIR", root)
     monkeypatch.setattr(igprofiles, "fixture", lambda name, filename: root / name / "fixtures" / filename)
     yield root
-    for mod in [
-        m for m in sys.modules if m.startswith("igprofiles.v44") and m[len("igprofiles.") :][:4] < "v445"
-    ]:
+    for mod in [m for m in sys.modules if m.startswith("igprofiles.v447")]:
         del sys.modules[mod]
 
 
 def test_scaffold_creates_an_unvalidated_profile_inheriting_the_nearest_one(scratch_profiles: Path) -> None:
-    path = new_profile.scaffold("444.0.0.34.72", root=scratch_profiles, today=date(2026, 9, 14))
-    assert path == scratch_profiles / "v444"
-    profile = igprofiles.load("v444")
-    assert (profile.major, profile.apk_version, profile.validated) == (444, "444.0.0.34.72", False)
+    path = new_profile.scaffold("447.0.0.34.72", root=scratch_profiles, today=date(2026, 9, 14))
+    assert path == scratch_profiles / "v447"
+    profile = igprofiles.load("v447")
+    assert (profile.major, profile.apk_version, profile.validated) == (447, "447.0.0.34.72", False)
     assert isinstance(profile, type(V445))
     assert profile.selectors == V445.selectors and profile.selectors is not V445.selectors
-    assert new_profile.parent_of(profile).name == "v445"  # type: ignore[union-attr]
+    assert new_profile.parent_of(profile).name == "v446"  # type: ignore[union-attr]
     assert not versioning._unknown_hooks(profile)
     assert "2026-09-14" in (path / "__init__.py").read_text()
     with pytest.raises(ValueError, match="already exists"):
-        new_profile.scaffold("444.0.0.34.72", root=scratch_profiles)
+        new_profile.scaffold("447.0.0.34.72", root=scratch_profiles)
 
 
 def test_scaffold_rejects_an_unknown_parent(scratch_profiles: Path) -> None:
     with pytest.raises(ValueError, match="no profile v999"):
-        new_profile.scaffold("444.0.0.34.72", parent="v999", root=scratch_profiles)
+        new_profile.scaffold("447.0.0.34.72", parent="v999", root=scratch_profiles)
 
 
 def test_an_unvalidated_profile_runs_with_a_warning(
     scratch_profiles: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    new_profile.scaffold("444.0.0.34.72", root=scratch_profiles)
-    monkeypatch.setattr(config, "IG_PROFILE", "v444")
-    versioning.activate_profile("444.0.0.34.72")
-    assert versioning.PROFILE.name == "v444"
-    assert versioning.PROFILE_WARNING == "profile v444 is not validated yet (see docs/NEXT.md)"
+    new_profile.scaffold("447.0.0.34.72", root=scratch_profiles)
+    monkeypatch.setattr(config, "IG_PROFILE", "v447")
+    versioning.activate_profile("447.0.0.34.72")
+    assert versioning.PROFILE.name == "v447"
+    assert versioning.PROFILE_WARNING == "profile v447 is not validated yet (see docs/NEXT.md)"
 
 
 def test_mark_validated_flips_only_the_flag(scratch_profiles: Path) -> None:
-    init = new_profile.scaffold("444.0.0.34.72", root=scratch_profiles) / "__init__.py"
+    init = new_profile.scaffold("447.0.0.34.72", root=scratch_profiles) / "__init__.py"
     before = init.read_text()
     new_profile.mark_validated(init)
     assert init.read_text() == before.replace("validated = False", "validated = True")
@@ -373,11 +372,11 @@ def test_check_report_flags_drift_popups_and_uncaptured_screens(tmp_path: Path) 
 def test_check_compares_parsing_with_the_parent_when_it_differs(
     scratch_profiles: Path, tmp_path: Path
 ) -> None:
-    path = new_profile.scaffold("444.0.0.34.72", root=scratch_profiles)
+    path = new_profile.scaffold("447.0.0.34.72", root=scratch_profiles)
     (path / "selectors.py").write_text(
         (path / "selectors.py").read_text() + 'SELECTORS["share_id"] = "row_feed_share_button"\n'
     )
-    profile = igprofiles.load("v444")
+    profile = igprofiles.load("v447")
     report = new_profile.check_dumps(profile, _dumps(tmp_path / "d", {"001-feed": FEED_XML}))[0]
     assert report.check.missing_required == ["share_id"]
     assert report.parsed_parent and report.parsed != report.parsed_parent
@@ -390,7 +389,7 @@ def _record_run(db_path: Path, **values: object) -> None:
         " error TEXT, warning TEXT, ig_version TEXT, new_stories INTEGER, mem_peak_mb INTEGER,"
         " redroid_image TEXT, android_release TEXT)"
     )
-    row = {"ig_version": "444.0.0.34.72", "error": None, "new_posts": 3, "new_stories": 1} | values
+    row = {"ig_version": "447.0.0.34.72", "error": None, "new_posts": 3, "new_stories": 1} | values
     con.execute(
         f"INSERT INTO runs ({','.join(row)}) VALUES ({','.join('?' * len(row))})", tuple(row.values())
     )
@@ -401,16 +400,16 @@ def _record_run(db_path: Path, **values: object) -> None:
 def test_validation_needs_fixtures_and_a_clean_baseline_of_the_right_version(
     scratch_profiles: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    new_profile.scaffold("444.0.0.34.72", root=scratch_profiles)
-    profile = igprofiles.load("v444")
+    new_profile.scaffold("447.0.0.34.72", root=scratch_profiles)
+    profile = igprofiles.load("v447")
     problems = new_profile.validation_problems(profile, None)
     assert any("no replay fixtures" in p for p in problems) and any("no baseline run" in p for p in problems)
 
-    dev = tmp_path / "dev" / "v444"
+    dev = tmp_path / "dev" / "v447"
     monkeypatch.setattr(new_profile, "dev_dir", lambda p: dev)
     _dumps(dev / "dumps", {"001-feed": FEED_XML, "002-feed": FEED_XML})
-    assert new_profile.promote("v444") == 0
-    fixtures = scratch_profiles / "v444" / "fixtures"
+    assert new_profile.promote("v447") == 0
+    fixtures = scratch_profiles / "v447" / "fixtures"
     assert (fixtures / "feed.xml").exists() and (fixtures / "feed.expected.json").exists()
 
     db_path = dev / "posts.sqlite"
@@ -421,8 +420,8 @@ def test_validation_needs_fixtures_and_a_clean_baseline_of_the_right_version(
 
     _record_run(db_path)
     assert new_profile.validation_problems(profile, new_profile.run_summary(db_path)) == []
-    assert new_profile.validate("v444") == 0
-    assert "validated = True" in (scratch_profiles / "v444" / "__init__.py").read_text()
+    assert new_profile.validate("v447") == 0
+    assert "validated = True" in (scratch_profiles / "v447" / "__init__.py").read_text()
 
 
 def test_promote_skips_screens_without_a_clean_capture(
@@ -439,3 +438,32 @@ def test_promote_skips_screens_without_a_clean_capture(
 
 def test_default_profile_is_validated() -> None:
     assert igprofiles.load(igprofiles.DEFAULT_PROFILE).validated
+
+
+def test_pseudonymize_catches_names_no_parser_returns() -> None:
+    import promote_dump
+
+    xml = hierarchy(
+        node("reels_tray_container", children=[node(desc="me.myself's story, 0 of 24, Unseen.")]),
+        node("row_feed_profile_header", desc="suggested.acct posted a video in Some Cafe 5 days ago"),
+        node(cls="android.widget.Button", desc="Follow Freddie Mercury"),
+        node(desc="suggested.acct and 3 others"),
+        node(cls="android.widget.Button", desc="@a_friend"),
+        node(desc="Profile picture of other.person"),
+        node(cls="android.widget.EditText", hint="Add a comment for other.person..."),
+        node("secondary_label", text=" Big Band · Some Song"),
+        node(cls="android.widget.Button", desc="collab.shop and other.person"),
+    )
+    clean = promote_dump.pseudonymize(xml)
+    for name in (
+        "me.myself",
+        "suggested.acct",
+        "Freddie Mercury",
+        "Some Cafe",
+        "a_friend",
+        "other.person",
+        "Big Band",
+        "Some Song",
+    ):
+        assert name not in clean, name
+    assert "Follow Display 1" in clean and "@user" in clean

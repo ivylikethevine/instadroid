@@ -28,8 +28,10 @@ class Screen:
 
 SCREENS: dict[str, Screen] = {
     "feed": Screen(
-        required=("feed_list_id", "header_id", "header_desc", "share_id", "media_ids", "timestamp"),
+        required=("feed_list_id", "header_id", "header_desc", "share_id", "media_ids"),
+        # timestamp sits under the caption, off screen whenever a tall Reel fills it (seen live on 444).
         optional=(
+            "timestamp",
             "action_bar_id",
             "caption_class",
             "media_alt",

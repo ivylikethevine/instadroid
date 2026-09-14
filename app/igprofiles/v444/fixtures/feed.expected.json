@@ -1,0 +1,42 @@
+{
+ "posts": [
+  {
+   "kind": "video",
+   "username": "user1",
+   "posted_date": "14 minutes ago",
+   "place": "",
+   "caption": "Caption 1…",
+   "caption_bounds": "[32,1426][1080,1475]",
+   "caption_truncated": true,
+   "bounds": "[0,63][1080,1305]",
+   "share_bounds": "[436,1305][499,1426]",
+   "header_bounds": null,
+   "clip_top": 210,
+   "alt": "",
+   "headless": true,
+   "complete": true,
+   "merged_reel": false,
+   "id": "b677ffc92cd4b86b"
+  },
+  {
+   "kind": "photo",
+   "username": "user2",
+   "posted_date": "2 hours ago",
+   "place": "",
+   "caption": "",
+   "caption_bounds": null,
+   "caption_truncated": false,
+   "bounds": "[0,1695][1080,2214]",
+   "share_bounds": null,
+   "header_bounds": "[0,1558][1080,1695]",
+   "clip_top": 210,
+   "alt": "Photo by Display 1, 12 likes, 2 comments",
+   "headless": false,
+   "complete": false,
+   "merged_reel": false,
+   "id": "edf267e67feeccfa"
+  }
+ ],
+ "story_tray": [],
+ "following_list": []
+}
