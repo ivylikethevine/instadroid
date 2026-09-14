@@ -57,7 +57,7 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   (bestpractices.dev) is a manual self-certification questionnaire, not a CI job, which is why it's
   listed here rather than wired into a workflow.
 - **Profiles for Instagram 440-444**: 440 is the supported floor, and only `v445` (validated) and
-  `v446` (partial) exist today. The profile system can now swap everything version-specific, so each
+  `v446` (both validated) exist today. The profile system can now swap everything version-specific, so each
   of 440, 441, 442, 443 and 444 gets its own `app/igprofiles/v44N/` directory: confirm APKPure still
   serves a build (`scraper.py install <version>`), start from the 445 selectors, take a short
   `IG_PROFILE=v44N` baseline run, and override only what differs, with fixtures from that version's

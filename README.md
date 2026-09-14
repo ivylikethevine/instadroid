@@ -132,7 +132,7 @@ device it is a no-op. If Instagram asks for a code or "confirm it's you", the ru
 First-run interstitials (notifications, location, "set up on new device") are dismissed automatically.
 Everything specific to one Instagram version (selectors, the APK build to install, any behavior
 that differs, test fixtures) lives in its own directory under `app/igprofiles/`, e.g. `v445/`.
-`IG_PROFILE` picks one (default `v445`, the validated baseline; 440 is the oldest supported). The
+`IG_PROFILE` picks one (default `v446`, the newest validated version; 440 is the oldest supported). The
 active profile is shown on `/status` and recorded in `runs.selector_profile`. See `docs/NEXT.md` for
 the design and how to add a version.
 
