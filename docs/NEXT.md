@@ -83,22 +83,58 @@ stored posts dedupe across Instagram upgrades.
 
 ## Adding a version (e.g. backfilling 440-444)
 
-1. **Fetch it.** `docker compose exec app python scraper.py install 444.x.y.z` (confirm APKPure
-   still serves that build). A downgrade on a device that ran a newer build may need a fresh login.
-2. **Create `app/igprofiles/v444/`.** `selectors.py` starting as `{**SELECTORS_445}`, and an
-   `__init__.py` with `Profile(Profile445)` setting `major = 444`, `apk_version`, `notes`.
-   `test_every_profile_meets_the_contract` picks the directory up automatically.
-3. **Baseline run** with `IG_PROFILE=v444`, short (`MAX_SCROLLS=5`, `MAX_STORIES_PER_RUN=2`), and
-   only with memory headroom (see CLAUDE.md's host-freeze section). Pass overrides with `-e`
-   (`docker compose run --rm --no-deps -e IG_PROFILE=v444 -e MAX_SCROLLS=5 app python scraper.py
-   once`) or put them in `.env`; compose no longer forwards shell variables for these.
-4. **Dump what differs** (`scraper.py dump`, and the automatic `last`/`empty_feed` dumps). Check each
-   against the parent profile first — `python scripts/promote_dump.py <dump> v445 <name>` prints what
-   parses (no posts, or posts without captions, means drift) — then promote the useful ones under
-   `v444` the same way. The script scrubs accounts, names, places and captions, and records what the
-   parsers find in `<name>.expected.json` for `tests/test_replay.py`; read the leftover text it
-   prints before committing. Override the changed selector keys or `@versioned` functions until the
-   fixtures parse correctly, then re-record with `promote_dump.py --update v444`.
+`scripts/new_profile.py` does the mechanical parts. It runs on the host from the dev venv, since it
+writes into `app/igprofiles/`. The steps that touch the device go through `docker compose run` with
+this working tree's `app/` mounted into the container, so a selector edit is live on the next run
+without rebuilding the image. What stays manual is deciding what the new selectors or overrides
+should be.
+
+1. **Find the exact build** on APKPure (e.g. `444.0.0.x.y`; the major version alone isn't enough).
+2. **Scaffold** it: `python scripts/new_profile.py scaffold 444.0.0.x.y`. This creates
+   `app/igprofiles/v444/`, with a `Profile` subclassing the nearest existing profile (v445 for 444,
+   then v444 for 443 once that exists, so each one inherits the fixes before it), selectors starting
+   as the parent's, and `validated = False`. `--parent vXYZ` picks another parent. An unvalidated
+   profile runs, with a warning on every run.
+3. **Baseline**: `python scripts/new_profile.py baseline v444`. This is a device-driving run, so read
+   CLAUDE.md's host-freeze section first. Before asking for confirmation it refuses to start if:
+   - the `app` service is running (its scraper loop drives the same device; `docker compose stop app`),
+   - redroid is already over 60% of its memory limit,
+   - or the host has less than 2GiB available.
+
+   Then it installs the profile's build (`scraper.py install`, a `-r -d` downgrade when needed, which
+   may need a fresh login) and does one run capped at `MAX_SCROLLS=5` and `MAX_STORIES_PER_RUN=2`
+   (`--scrolls`, `--stories`; `--following` also visits the Following list). The run uses a scratch
+   database and media directory, so nothing reaches the real feed or FreshRSS.
+
+   In capture mode (`PROFILE_CAPTURE_DIR`) the scraper saves every screen it visits: feed screens,
+   the Home feed with its story tray, the feed switcher menu, the Following feed, a story viewer, a
+   share sheet, the profile and Following list, and the login form. That's up to 3 of each, plus
+   every failure dump. They land in `local/data/debug/profile-dev/v444/dumps/` along with
+   `baseline.log`.
+
+   `python scripts/new_profile.py new 444.0.0.x.y` does steps 2-4 in one go.
+4. **Check**: `python scripts/new_profile.py check v444` (run automatically after a baseline). For
+   each captured screen it lists the selector keys the scraper needs there that matched nothing, and
+   what the parsers find under the new profile and its parent. It also flags dumps with almost no
+   Instagram UI (a popup holding focus, the launcher). The report is saved as `report.md`. Which keys
+   belong to which screen is defined in `app/igprofiles/screens.py`. A required key missing from
+   every dump of its screen is drift: find the new resource-id, content-desc or text in the dump (the
+   screenshot next to it shows the screen) and override that key in `v444/selectors.py`. For a
+   structural change, override the `@versioned` function as a method on `Profile`. Re-run `check`
+   (no device needed), then `baseline --no-install` to try the fix live.
+5. **Promote**: `python scripts/new_profile.py promote v444` scrubs the first clean feed, Home feed
+   and Following-list capture into `v444/fixtures/` through `scripts/promote_dump.py`. Read the
+   leftover text it prints before committing. `tests/test_replay.py` then pins both what those
+   fixtures parse to and that each still has its screen's required selector keys.
+6. **Validate**: `python scripts/new_profile.py validate v444`. It checks for fixtures that still
+   replay, and a baseline run of the right major version that stored posts without an error. Then it
+   flips `validated = True` and prints a `docs/COMPATIBILITY.md` row. Update the profile's `notes`,
+   and add a run log entry below.
+7. **Restore** the device before restarting the app service:
+   `python scripts/new_profile.py restore` installs `DEFAULT_PROFILE`'s build again.
+
+`scraper.py once` records its run in the `runs` table like a scheduled run, which is what `check` and
+`validate` read from the baseline's scratch database.
 
 ## Status
 
@@ -108,7 +144,9 @@ stored posts dedupe across Instagram upgrades.
 - [x] `v446`: validated (inherits 445's selectors unchanged; photos, carousels, Reels, stories and
   permalinks all captured live, see the runs below). No `v446/fixtures/` yet, and
   `DEFAULT_PROFILE` moved to `v446`.
-- [ ] `v440`-`v444`: to backfill.
+- [x] Tooling for adding versions: `scripts/new_profile.py` (scaffold, capture-mode baseline, selector
+  check per screen, fixture promotion, validation), `igprofiles/screens.py`, `Profile.validated`.
+- [ ] `v440`-`v444`: to backfill with that tooling.
 
 ## Run log
 

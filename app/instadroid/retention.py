@@ -8,7 +8,7 @@ from . import config
 from .common import log
 
 
-def _delete_post(con, post_id: str):
+def _delete_post(con: sqlite3.Connection, post_id: str) -> None:
     """Delete one post row, its extra-slide media rows, and unlink every file involved (cover +
     slides). Reads media_file straight off the posts row rather than only the media table, since a
     row can predate carousel capture (or be inserted directly, as tests do) with no media rows."""
@@ -21,7 +21,7 @@ def _delete_post(con, post_id: str):
     discard_media(*files)
 
 
-def discard_media(*files: str | None):
+def discard_media(*files: str | None) -> None:
     """Unlink media files (relative to MEDIA_DIR), skipping None/empty names and missing files."""
     for fn in files:
         if fn:
@@ -48,7 +48,7 @@ def _media_and_db_size_mb() -> float:
     return total / (1024 * 1024)
 
 
-def _enforce_size_cap(con):
+def _enforce_size_cap(con: sqlite3.Connection) -> None:
     """Delete the oldest posts, one at a time, until total size is back under MEDIA_MAX_MB or
     there's nothing left to delete. 0 disables. Runs after age-based pruning and the orphan sweep,
     so it only ever has to make up the difference."""
@@ -68,7 +68,7 @@ def _enforce_size_cap(con):
         log(f"retention: removed {removed} additional post(s) to stay under {config.MEDIA_MAX_MB}MB")
 
 
-def prune_expired_stories(con):
+def prune_expired_stories(con: sqlite3.Connection) -> None:
     """Stories share RETAIN_DAYS with posts (0 disables deletion) rather than expiring on their own
     schedule — once captured, a story is kept exactly as long as everything else."""
     if config.RETAIN_DAYS <= 0:
@@ -82,7 +82,7 @@ def prune_expired_stories(con):
         log(f"retention: removed {cur.rowcount} expired stor{'y' if cur.rowcount == 1 else 'ies'}")
 
 
-def prune_old_posts(con):
+def prune_old_posts(con: sqlite3.Connection) -> None:
     """Delete posts older than RETAIN_DAYS (0 disables), any media file no row references any
     more, and (if MEDIA_MAX_MB is set) additional oldest posts until total size is back under the
     cap — in that order, so disk use stays flat instead of growing forever."""

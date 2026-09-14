@@ -28,7 +28,7 @@ class PostRow(TypedDict):
     ig_version: str | None
 
 
-def db_init():
+def db_init() -> sqlite3.Connection:
     Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(config.DB_PATH)
     con.row_factory = sqlite3.Row
@@ -134,7 +134,7 @@ def db_init():
     return con
 
 
-def _migrate(con):
+def _migrate(con: sqlite3.Connection) -> None:
     """Run each MIGRATIONS entry the database hasn't had yet, in order. PRAGMA user_version counts
     how many have run, and is bumped only after each one finishes, so a crash mid-migration retries
     it on the next start. Append new migrations; never reorder or remove one."""
@@ -145,7 +145,7 @@ def _migrate(con):
         con.commit()
 
 
-def _add_columns(con, table: str, columns: dict[str, str]):
+def _add_columns(con: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
     """ALTER TABLE ADD COLUMN for each {name: type} the table doesn't have yet."""
     existing = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
     for col, kind in columns.items():
@@ -153,7 +153,15 @@ def _add_columns(con, table: str, columns: dict[str, str]):
             con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
 
 
-def record_run(con, started_at, finished_at, new_posts, error, snapshot: Mapping[str, object], **stats):
+def record_run(
+    con: sqlite3.Connection,
+    started_at: str,
+    finished_at: str,
+    new_posts: int,
+    error: str | None,
+    snapshot: Mapping[str, object],
+    **stats: object,
+) -> None:
     """Insert one runs row. `snapshot` (see device.device_snapshot()) and `stats` are keyed by runs column
     name, so a new metric only needs its column in db_init() and a key in scrape._scrape_feed()'s result."""
     row = {
@@ -172,7 +180,24 @@ def record_run(con, started_at, finished_at, new_posts, error, snapshot: Mapping
     con.commit()
 
 
-def check_selector_drift(con, cards_per_screen, share_captioned, share_complete):
+def version_pairs(con: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every redroid image / Instagram build / profile combination this database has run, with its
+    run count, clean runs (no error, no warning), posts stored and last run date: the raw data for
+    docs/COMPATIBILITY.md (`scraper.py compat`). Runs that never read the device are left out."""
+    return con.execute(
+        """SELECT redroid_image, ig_version, selector_profile, COUNT(*) AS runs,
+                  SUM(error IS NULL AND COALESCE(warning, '') = '') AS clean_runs,
+                  SUM(error IS NULL) AS ok_runs, COALESCE(SUM(new_posts), 0) AS new_posts,
+                  MAX(started_at) AS last_run
+           FROM runs WHERE ig_version IS NOT NULL
+           GROUP BY redroid_image, ig_version, selector_profile
+           ORDER BY redroid_image, ig_version, selector_profile"""
+    ).fetchall()
+
+
+def check_selector_drift(
+    con: sqlite3.Connection, cards_per_screen: float, share_captioned: float, share_complete: float
+) -> str | None:
     """Compare this run's parse yield against the rolling average of the last
     SELECTOR_DRIFT_BASELINE_RUNS successful runs; returns a warning string if any metric falls
     below SELECTOR_DRIFT_THRESHOLD of its baseline, else None. Requires at least
@@ -200,7 +225,7 @@ def check_selector_drift(con, cards_per_screen, share_captioned, share_complete)
     return "selector drift? " + "; ".join(dropped) if dropped else None
 
 
-def upsert_account(con, username: str, avatar_file: str | None = None):
+def upsert_account(con: sqlite3.Connection, username: str, avatar_file: str | None = None) -> None:
     if avatar_file:
         con.execute(
             "INSERT INTO accounts (username, avatar_file, avatar_updated_at) VALUES (?,?,?)"
@@ -213,12 +238,12 @@ def upsert_account(con, username: str, avatar_file: str | None = None):
     con.commit()
 
 
-def needs_avatar_refresh(con, username: str) -> bool:
+def needs_avatar_refresh(con: sqlite3.Connection, username: str) -> bool:
     row = con.execute("SELECT avatar_updated_at FROM accounts WHERE username=?", (username,)).fetchone()
     return common.older_than(row and row["avatar_updated_at"], config.AVATAR_REFRESH_DAYS)
 
 
-def needs_following_refresh(con) -> bool:
+def needs_following_refresh(con: sqlite3.Connection) -> bool:
     """Unlike _needs_avatar_refresh, this is a single global check, not per-account: the whole
     Following list is captured (and replaced) in one pass, so there's one "when was this last
     done" timestamp, not one per row. No rows at all means never successfully refreshed."""
@@ -227,7 +252,7 @@ def needs_following_refresh(con) -> bool:
     )
 
 
-def rename_account(con, old: str, new: str) -> int:
+def rename_account(con: sqlite3.Connection, old: str, new: str) -> int:
     """Reconcile a followed account's history after it renamed itself: repoint every post from
     `old` to `new` and fold `old`'s accounts row (avatar, stable account_id if set) into `new`.
     There is no detection here — Instagram's numeric user id is never present in the feed's
@@ -263,14 +288,16 @@ def rename_account(con, old: str, new: str) -> int:
     return moved
 
 
-def _safe_parse_posted_at(posted_date, scraped_at_iso):
+def _safe_parse_posted_at(
+    posted_date: str | None, scraped_at_iso: str | None
+) -> tuple[datetime | None, int | None]:
     """parsing.parse_posted_at(), tolerant of a malformed/legacy scraped_at that fromisoformat rejects.
     Returns (None, None) instead of raising, so one corrupt row can't abort the whole migration."""
     now = common.parse_iso(scraped_at_iso)
-    return (now and parsing.parse_posted_at(posted_date, now)) or (None, None)
+    return (now and posted_date and parsing.parse_posted_at(posted_date, now)) or (None, None)
 
 
-def _migrate_dedupe(con):
+def _migrate_dedupe(con: sqlite3.Connection) -> None:
     """Migration 1: backfill posted_at for rows written before that column existed, then merge any
     rows parsing.same_post() considers duplicates — the bug that let a card get stored twice when its caption
     hadn't rendered on the first pass. Uses the same merge path as a live scrape. A single corrupt
@@ -302,7 +329,7 @@ def _migrate_dedupe(con):
     log(f"dedupe migration: merged {merged} duplicate row(s)")
 
 
-def _migrate_accounts(con):
+def _migrate_accounts(con: sqlite3.Connection) -> None:
     """Migration 2: give every username already in posts an accounts row, so avatar capture and
     rename_account() have something to attach to for accounts seen before that table existed."""
     log("running one-time accounts backfill")
@@ -313,7 +340,7 @@ def _migrate_accounts(con):
             log(f"WARN: accounts backfill skipped {username!r}:", repr(e))
 
 
-def _migrate_story_retention(con):
+def _migrate_story_retention(con: sqlite3.Connection) -> None:
     """Migration 3: drop stories.expires_at now that stories share RETAIN_DAYS with posts."""
     cols = {r["name"] for r in con.execute("PRAGMA table_info(stories)")}
     if "expires_at" in cols:
@@ -325,7 +352,14 @@ def _migrate_story_retention(con):
 MIGRATIONS = (_migrate_dedupe, _migrate_accounts, _migrate_story_retention)
 
 
-def find_duplicate(con, username, posted_at, posted_at_prec, caption, exclude_id=None):
+def find_duplicate(
+    con: sqlite3.Connection,
+    username: str,
+    posted_at: datetime | None,
+    posted_at_prec: int | None,
+    caption: str,
+    exclude_id: str | None = None,
+) -> sqlite3.Row | None:
     """Look up a stored row that parsing.same_post() considers the same post as this freshly-parsed
     card, within a coarse SQL time window (same_post itself applies the exact tolerance)."""
     if posted_at is None:
@@ -353,7 +387,7 @@ def find_duplicate(con, username, posted_at, posted_at_prec, caption, exclude_id
     return None
 
 
-def merged_fields(existing, new: PostRow, now: datetime) -> tuple[PostRow, str | None]:
+def merged_fields(existing: sqlite3.Row, new: PostRow, now: datetime) -> tuple[PostRow, str | None]:
     """The row that should replace `existing` (a stored posts row) once `new` turns out to be the
     same post: keep a permalink id/url over a hash id, a real caption over a weak placeholder, the
     first-seen scraped_at and ig_version, and whichever media crop already exists. Returns (row,
@@ -384,14 +418,14 @@ def merged_fields(existing, new: PostRow, now: datetime) -> tuple[PostRow, str |
     return row, media_to_drop
 
 
-def write_merged(con, old_id: str, row: PostRow):
+def write_merged(con: sqlite3.Connection, old_id: str, row: PostRow) -> None:
     """Apply a merged_fields() result: replace `old_id`'s row with `row` (whose id may differ)."""
     if row["id"] != old_id:
         con.execute("DELETE FROM posts WHERE id=?", (old_id,))
     insert_row(con, "posts", row, replace=True)
 
 
-def insert_row(con, table: str, row: Mapping[str, object], replace: bool = False):
+def insert_row(con: sqlite3.Connection, table: str, row: Mapping[str, object], replace: bool = False) -> None:
     """INSERT one {column: value} row. Table and column names come from code, never from input."""
     verb = "INSERT OR REPLACE" if replace else "INSERT"
     con.execute(

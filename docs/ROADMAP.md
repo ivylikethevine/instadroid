@@ -8,27 +8,9 @@ Ordered by scope, smallest first.
 
 ### Small
 
-A config flag, one function, a CI tweak, or docs.
-
-- **Credentials from a file**: `IG_PASSWORD_FILE` / Docker secrets instead of a plain environment
-  variable.
-- **Link hashtags and mentions in captions**: now that full captions are stored (see README.md's
-  "How a scrape works"), hashtags and @mentions in them could be turned into links in the feed HTML.
-- **Optional feed auth**: a token or basic auth, needed before `FEED_HOST=0.0.0.0` is safe —
-  otherwise media from private accounts you follow is served to anyone on the LAN.
-- **Document compatible Android image / Instagram version pairs**: partially done already —
-  `CLAUDE.md`'s "What's validated" section already tracks which `erstt/redroid` tags work
-  (`13.0.0_ndk_ChromeOS`) versus don't (`15.0.0_ndk_AVD`: binder ABI mismatch;
-  `aureliolo/redroid:14.0.0_amd64_with_gapps`: no ARM translation at all; `abing7k`'s Android 11:
-  Instagram crashes at native startup). What's still missing is a structured table cross-referencing
-  specific Instagram APK versions against each image, kept current as Instagram updates — right now
-  that history is narrative, not a lookup. The raw data now accumulates on its own: every run
-  records the Instagram `versionName` and redroid image (`runs.ig_version` / `runs.redroid_image`).
-- **OpenAPI spec, kept current automatically**: `app/app.py` is FastAPI, so the spec already exists
-  at runtime (`app.openapi()`, served at `/openapi.json`). Commit it as `docs/openapi.json` via a tiny
-  export script, and have CI regenerate it and fail on drift (or commit the regenerated file back),
-  so the committed spec can't fall behind the routes. Worth adding `response_model`s / summaries to the
-  JSON endpoints (`/health`, `/users`) so the spec says more than "returns something".
+A config flag, one function, a CI tweak, or docs. Nothing open right now: credentials from a file,
+caption hashtag/mention links, optional feed auth, the compatibility table
+([`COMPATIBILITY.md`](COMPATIBILITY.html)) and the committed OpenAPI spec are done.
 
 ### Medium
 
@@ -66,17 +48,10 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   of 440, 441, 442, 443 and 444 gets its own `app/igprofiles/v44N/` directory: confirm APKPure still
   serves a build (`scraper.py install <version>`), start from the 445 selectors, take a short
   `IG_PROFILE=v44N` baseline run, and override only what differs, with fixtures from that version's
-  dumps. `docs/NEXT.md` has the step-by-step. Going back in versions on one device means `-r -d`
+  dumps. `scripts/new_profile.py` automates all of that except choosing the overrides; `docs/NEXT.md`
+  has the step-by-step. Going back in versions on one device means `-r -d`
   downgrades, which an older Instagram may reject with data a newer build wrote, so expect a fresh
   login.
-- **Semi-automate new profile development**: Instagram ships a major version roughly weekly, so
-  `docs/NEXT.md`'s "Adding a version" steps will recur. Script the mechanical parts into one
-  command (e.g. `scraper.py new-profile <version>`): scaffold `app/igprofiles/vXYZ/` subclassing the
-  current default, install that build, take a short capped baseline run (only with memory headroom),
-  and run each screen's dump through `scripts/promote_dump.py` under the parent profile — which
-  already reports what parses and saves scrubbed fixtures — plus a report of which selector keys
-  matched nothing. The human step that stays is deciding
-  what the new selectors or `@versioned` overrides should be, then marking the profile validated.
 
 ### Large
 
@@ -111,7 +86,3 @@ Open investigations, new capture mechanisms, or changes to the container/process
   code natively — no NDK translation, sidestepping the whole "Which Android?" compatibility matrix
   (README.md). Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in
   the kernel).
-- **Investigate a Rust rewrite**: evaluated on 2026-09-14 and decided against for now — about 3-5
-  weeks including a hand-written uiautomator2 client, for little gain (the app container is ~4% of
-  memory, and run time is device waits). Revisit if profile work stays selector-only for a while, or
-  a low-RAM/arm64 host or single-binary distribution becomes a real need.

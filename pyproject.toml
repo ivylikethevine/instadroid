@@ -5,12 +5,14 @@ extend-exclude = ["local"]
 cache-dir = "local/.ruff_cache"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM"]
-ignore = ["E501"]
+# ANN: every function is annotated, tests included. ANN401 allows an explicit Any where a value is
+# genuinely dynamic (the @versioned dispatch, uiautomator2 objects without stubs).
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ANN"]
+ignore = ["E501", "ANN401"]
 
 [tool.pytest.ini_options]
 testpaths = ["app/tests"]
-pythonpath = ["app"]
+pythonpath = ["app", "scripts"]
 cache_dir = "local/.pytest_cache"
 
 [tool.coverage.run]

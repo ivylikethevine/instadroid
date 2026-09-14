@@ -13,6 +13,8 @@ site holds the project's longer-lived reference docs:
 
 - [Roadmap](ROADMAP.html) — planned work, ordered by scope.
 - [Version profiles](NEXT.html) — how per-Instagram-version selector profiles work and how to add one.
+- [Compatibility](COMPATIBILITY.html) — which redroid image runs which Instagram build.
+- [OpenAPI spec](openapi.json) — the feed server's routes.
 - [Security policy](SECURITY.html) — supported versions and how to report a vulnerability.
 - [Contributing](CONTRIBUTING.html) — how to send a bug report or pull request.
 - [Code of Conduct](CODE_OF_CONDUCT.html)

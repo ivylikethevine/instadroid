@@ -1,12 +1,13 @@
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from instadroid import config, db, device, diagnostics, retention
 
 
 @pytest.fixture
-def con_and_media(tmp_path, monkeypatch):
+def con_and_media(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[sqlite3.Connection, Path]:
     db_file = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
     media.mkdir()
@@ -16,7 +17,9 @@ def con_and_media(tmp_path, monkeypatch):
     return con, media
 
 
-def _insert(con, media_dir, post_id, days_old, media_file=None):
+def _insert(
+    con: sqlite3.Connection, media_dir: Path, post_id: str, days_old: float, media_file: str | None = None
+) -> None:
     ts = (datetime.now(UTC) - timedelta(days=days_old)).isoformat()
     if media_file:
         (media_dir / media_file).write_bytes(b"x")
@@ -28,7 +31,9 @@ def _insert(con, media_dir, post_id, days_old, media_file=None):
     con.commit()
 
 
-def test_prune_old_posts_deletes_rows_and_media_past_retain_days(con_and_media, monkeypatch):
+def test_prune_old_posts_deletes_rows_and_media_past_retain_days(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, media = con_and_media
     monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     _insert(con, media, "old", days_old=45, media_file="old.jpg")
@@ -42,7 +47,9 @@ def test_prune_old_posts_deletes_rows_and_media_past_retain_days(con_and_media, 
     assert (media / "new.jpg").exists()
 
 
-def test_prune_old_posts_disabled_when_retain_days_is_zero(con_and_media, monkeypatch):
+def test_prune_old_posts_disabled_when_retain_days_is_zero(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, media = con_and_media
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     _insert(con, media, "ancient", days_old=9999, media_file="ancient.jpg")
@@ -53,7 +60,9 @@ def test_prune_old_posts_disabled_when_retain_days_is_zero(con_and_media, monkey
     assert (media / "ancient.jpg").exists()
 
 
-def test_prune_old_posts_removes_orphaned_media_regardless_of_retain_days(con_and_media, monkeypatch):
+def test_prune_old_posts_removes_orphaned_media_regardless_of_retain_days(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, media = con_and_media
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     _insert(con, media, "kept", days_old=1, media_file="kept.jpg")
@@ -64,7 +73,9 @@ def test_prune_old_posts_removes_orphaned_media_regardless_of_retain_days(con_an
     assert {f.name for f in media.iterdir()} == {"kept.jpg"}
 
 
-def test_orphan_sweep_covers_both_media_formats(con_and_media, monkeypatch):
+def test_orphan_sweep_covers_both_media_formats(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, media = con_and_media
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     _insert(con, media, "old", days_old=1, media_file="old.jpg")
@@ -78,7 +89,9 @@ def test_orphan_sweep_covers_both_media_formats(con_and_media, monkeypatch):
     assert {f.name for f in media.iterdir()} == {"old.jpg", "new.webp", "notes.txt"}
 
 
-def test_merge_bumps_updated_at_without_touching_scraped_at(con_and_media):
+def test_merge_bumps_updated_at_without_touching_scraped_at(
+    con_and_media: tuple[sqlite3.Connection, Path],
+) -> None:
     # The feed's ETag keys off updated_at precisely so a merge like this is visible even though
     # scraped_at (when the post was first seen) never changes.
     con, media = con_and_media
@@ -105,7 +118,7 @@ def test_merge_bumps_updated_at_without_touching_scraped_at(con_and_media):
     assert media_to_drop is None
 
 
-def _candidate(**fields) -> db.PostRow:
+def _candidate(**fields: object) -> db.PostRow:
     """A freshly captured post with a hash id and no permalink, as scrape._store_post() builds it."""
     now = datetime.now(UTC).isoformat()
     row: db.PostRow = {
@@ -116,7 +129,9 @@ def _candidate(**fields) -> db.PostRow:
     return {**row, **fields}  # type: ignore[return-value]
 
 
-def test_merge_keeps_the_first_seen_instagram_version(con_and_media):
+def test_merge_keeps_the_first_seen_instagram_version(
+    con_and_media: tuple[sqlite3.Connection, Path],
+) -> None:
     con, _ = con_and_media
     ts = datetime.now(UTC).isoformat()
     con.execute(
@@ -133,7 +148,9 @@ def test_merge_keeps_the_first_seen_instagram_version(con_and_media):
     )
 
 
-def test_db_init_backfills_updated_at_for_rows_from_before_the_column_existed(tmp_path, monkeypatch):
+def test_db_init_backfills_updated_at_for_rows_from_before_the_column_existed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_file = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
     media.mkdir()
@@ -163,7 +180,9 @@ def test_db_init_backfills_updated_at_for_rows_from_before_the_column_existed(tm
     assert row["updated_at"] == scraped_at
 
 
-def test_db_init_migration_merges_legacy_duplicate_rows(tmp_path, monkeypatch):
+def test_db_init_migration_merges_legacy_duplicate_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_file = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
     media.mkdir()
@@ -204,7 +223,9 @@ def test_db_init_migration_merges_legacy_duplicate_rows(tmp_path, monkeypatch):
     assert posts[0]["media_file"] == "weakhash.jpg"  # the only crop that exists is kept
 
 
-def test_dump_debug_does_not_raise_on_a_write_failure(tmp_path, monkeypatch):
+def test_dump_debug_does_not_raise_on_a_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # e.g. a stale file left owned by a different uid from a `docker exec -u root` session, or
     # here: DEBUG_DIR itself can't be created because something else already occupies that path.
     blocked = tmp_path / "debug"
@@ -212,13 +233,13 @@ def test_dump_debug_does_not_raise_on_a_write_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DEBUG_DIR", blocked)
 
     class FakeDevice:
-        def dump_hierarchy(self):
+        def dump_hierarchy(self) -> str:
             return "<hierarchy/>"
 
     diagnostics.dump_debug(FakeDevice(), "whatever")  # must not raise
 
 
-def test_record_run_writes_a_row(con_and_media):
+def test_record_run_writes_a_row(con_and_media: tuple[sqlite3.Connection, Path]) -> None:
     con, _ = con_and_media
     started = datetime.now(UTC).isoformat()
     finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
@@ -233,7 +254,7 @@ def test_record_run_writes_a_row(con_and_media):
     assert row["link_sheet_failures"] == 0  # default when the caller doesn't pass any
 
 
-def test_record_run_stores_link_failure_counts(con_and_media):
+def test_record_run_stores_link_failure_counts(con_and_media: tuple[sqlite3.Connection, Path]) -> None:
     con, _ = con_and_media
     started = datetime.now(UTC).isoformat()
     finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
@@ -245,7 +266,7 @@ def test_record_run_stores_link_failure_counts(con_and_media):
     assert row["link_clipboard_failures"] == 1
 
 
-def test_record_run_stores_new_stories_count(con_and_media):
+def test_record_run_stores_new_stories_count(con_and_media: tuple[sqlite3.Connection, Path]) -> None:
     con, _ = con_and_media
     started = datetime.now(UTC).isoformat()
     finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
@@ -255,7 +276,7 @@ def test_record_run_stores_new_stories_count(con_and_media):
     assert con.execute("SELECT new_stories FROM runs").fetchone()[0] == 3
 
 
-def test_record_run_stores_selector_drift_stats(con_and_media):
+def test_record_run_stores_selector_drift_stats(con_and_media: tuple[sqlite3.Connection, Path]) -> None:
     con, _ = con_and_media
     started = datetime.now(UTC).isoformat()
     finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
@@ -270,12 +291,14 @@ def test_record_run_stores_selector_drift_stats(con_and_media):
     assert row["share_complete"] == 0.9
 
 
-def _insert_run(con, **stats):
+def _insert_run(con: sqlite3.Connection, **stats: object) -> None:
     started = datetime.now(UTC).isoformat()
     db.record_run(con, started, started, 0, stats.pop("error", None), {}, **stats)
 
 
-def test_selector_drift_flags_a_drop_below_the_baseline(con_and_media, monkeypatch):
+def test_selector_drift_flags_a_drop_below_the_baseline(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, _ = con_and_media
     monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     for _ in range(5):
@@ -288,7 +311,9 @@ def test_selector_drift_flags_a_drop_below_the_baseline(con_and_media, monkeypat
     assert "1.00 vs 4.00 baseline (5 runs)" in warning
 
 
-def test_selector_drift_silent_when_in_line_with_baseline(con_and_media, monkeypatch):
+def test_selector_drift_silent_when_in_line_with_baseline(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, _ = con_and_media
     monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     for _ in range(5):
@@ -299,7 +324,9 @@ def test_selector_drift_silent_when_in_line_with_baseline(con_and_media, monkeyp
     assert warning is None
 
 
-def test_selector_drift_silent_with_too_few_baseline_runs(con_and_media, monkeypatch):
+def test_selector_drift_silent_with_too_few_baseline_runs(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, _ = con_and_media
     monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
@@ -311,7 +338,9 @@ def test_selector_drift_silent_with_too_few_baseline_runs(con_and_media, monkeyp
     assert warning is None
 
 
-def test_selector_drift_ignores_failed_runs_in_the_baseline(con_and_media, monkeypatch):
+def test_selector_drift_ignores_failed_runs_in_the_baseline(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, _ = con_and_media
     monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     for _ in range(4):
@@ -325,7 +354,9 @@ def test_selector_drift_ignores_failed_runs_in_the_baseline(con_and_media, monke
     assert warning is None
 
 
-def test_selector_drift_disabled_when_baseline_runs_is_zero(con_and_media, monkeypatch):
+def test_selector_drift_disabled_when_baseline_runs_is_zero(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, _ = con_and_media
     monkeypatch.setattr(config, "SELECTOR_DRIFT_BASELINE_RUNS", 0)
     for _ in range(5):
@@ -336,13 +367,20 @@ def test_selector_drift_disabled_when_baseline_runs_is_zero(con_and_media, monke
     assert warning is None
 
 
-def test_db_init_creates_an_empty_stories_table(con_and_media):
+def test_db_init_creates_an_empty_stories_table(con_and_media: tuple[sqlite3.Connection, Path]) -> None:
     con, _ = con_and_media
     assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 0
     db.db_init()  # re-run must be a no-op, not a crash
 
 
-def _insert_story(con, media_dir, story_id, days_old, username="u", media_file=None):
+def _insert_story(
+    con: sqlite3.Connection,
+    media_dir: Path,
+    story_id: str,
+    days_old: float,
+    username: str = "u",
+    media_file: str | None = None,
+) -> None:
     scraped_at = (datetime.now(UTC) - timedelta(days=days_old)).isoformat()
     if media_file:
         (media_dir / "stories").mkdir(parents=True, exist_ok=True)
@@ -354,7 +392,9 @@ def _insert_story(con, media_dir, story_id, days_old, username="u", media_file=N
     con.commit()
 
 
-def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(con_and_media, monkeypatch):
+def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, media = con_and_media
     monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     _insert_story(con, media, "old", days_old=45, media_file="stories/old.jpg")
@@ -368,7 +408,9 @@ def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(con_and_m
     assert (media / "stories" / "fresh.jpg").exists()
 
 
-def test_prune_expired_stories_noop_when_none_past_retain_days(con_and_media, monkeypatch):
+def test_prune_expired_stories_noop_when_none_past_retain_days(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, media = con_and_media
     monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     _insert_story(con, media, "fresh", days_old=1, media_file="stories/fresh.jpg")
@@ -378,7 +420,9 @@ def test_prune_expired_stories_noop_when_none_past_retain_days(con_and_media, mo
     assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 1
 
 
-def test_prune_expired_stories_disabled_when_retain_days_is_zero(con_and_media, monkeypatch):
+def test_prune_expired_stories_disabled_when_retain_days_is_zero(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, media = con_and_media
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     _insert_story(con, media, "ancient", days_old=9999, media_file="ancient.jpg")
@@ -389,17 +433,17 @@ def test_prune_expired_stories_disabled_when_retain_days_is_zero(con_and_media, 
     assert (media / "ancient.jpg").exists()
 
 
-def test_launch_app_falls_back_to_monkey_launch_without_recursing_forever():
+def test_launch_app_falls_back_to_monkey_launch_without_recursing_forever() -> None:
     # resolve-activity failing used to recurse into _launch_app itself instead of falling back,
     # which is unbounded recursion, not a fallback.
     class FakeDevice:
-        def __init__(self):
-            self.app_start_calls = []
+        def __init__(self) -> None:
+            self.app_start_calls: list[tuple[str, str | None, bool | None]] = []
 
-        def shell(self, args):
+        def shell(self, args: list[str]) -> None:
             raise RuntimeError("resolve-activity unavailable")
 
-        def app_start(self, pkg, activity=None, stop=None):
+        def app_start(self, pkg: str, activity: str | None = None, stop: bool | None = None) -> None:
             self.app_start_calls.append((pkg, activity, stop))
 
     d = FakeDevice()
@@ -407,9 +451,9 @@ def test_launch_app_falls_back_to_monkey_launch_without_recursing_forever():
     assert d.app_start_calls == [(config.IG_PKG, None, False)]
 
 
-def test_device_snapshot_tolerates_shell_failures():
+def test_device_snapshot_tolerates_shell_failures() -> None:
     class BrokenDevice:
-        def shell(self, cmd):
+        def shell(self, cmd: list[str] | str) -> None:
             raise RuntimeError("adb not connected")
 
     snapshot = device.device_snapshot(BrokenDevice())
@@ -422,7 +466,9 @@ def test_device_snapshot_tolerates_shell_failures():
     }
 
 
-def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(tmp_path, monkeypatch):
+def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_file = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
     media.mkdir()
@@ -460,7 +506,9 @@ def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(tmp_path, mon
     db.db_init()
 
 
-def test_migration_backfills_an_accounts_row_for_every_existing_username(tmp_path, monkeypatch):
+def test_migration_backfills_an_accounts_row_for_every_existing_username(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_file = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
     media.mkdir()
@@ -495,7 +543,9 @@ def test_migration_backfills_an_accounts_row_for_every_existing_username(tmp_pat
     db.db_init()  # re-run must be a no-op
 
 
-def test_prune_old_posts_also_removes_extra_carousel_media(con_and_media, monkeypatch):
+def test_prune_old_posts_also_removes_extra_carousel_media(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, media = con_and_media
     monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     _insert(con, media, "old", days_old=45, media_file="old.jpg")
@@ -511,7 +561,9 @@ def test_prune_old_posts_also_removes_extra_carousel_media(con_and_media, monkey
     assert not (media / "old_1.jpg").exists()
 
 
-def test_prune_old_posts_leaves_avatars_alone(con_and_media, monkeypatch):
+def test_prune_old_posts_leaves_avatars_alone(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     # The orphan sweep globs MEDIA_DIR non-recursively; avatars/ must be structurally immune.
     con, media = con_and_media
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
@@ -524,7 +576,9 @@ def test_prune_old_posts_leaves_avatars_alone(con_and_media, monkeypatch):
     assert (avatars / "someone.jpg").exists()
 
 
-def test_size_cap_disabled_when_media_max_mb_is_zero(con_and_media, monkeypatch):
+def test_size_cap_disabled_when_media_max_mb_is_zero(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, media = con_and_media
     monkeypatch.setattr(config, "MEDIA_MAX_MB", 0)
     _insert(con, media, "a", days_old=1, media_file="a.jpg")
@@ -535,7 +589,9 @@ def test_size_cap_disabled_when_media_max_mb_is_zero(con_and_media, monkeypatch)
     assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 1
 
 
-def test_size_cap_removes_oldest_posts_first_when_over_budget(con_and_media, monkeypatch):
+def test_size_cap_removes_oldest_posts_first_when_over_budget(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, media = con_and_media
     _insert(con, media, "older", days_old=5, media_file="older.jpg")
     _insert(con, media, "newer", days_old=1, media_file="newer.jpg")
@@ -553,7 +609,9 @@ def test_size_cap_removes_oldest_posts_first_when_over_budget(con_and_media, mon
     assert (media / "newer.jpg").exists()
 
 
-def test_size_cap_stops_when_no_posts_remain(con_and_media, monkeypatch):
+def test_size_cap_stops_when_no_posts_remain(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, media = con_and_media
     monkeypatch.setattr(config, "MEDIA_MAX_MB", 0.0000001)  # unreachable even with zero posts
     _insert(con, media, "only", days_old=1, media_file="only.jpg")
@@ -563,7 +621,9 @@ def test_size_cap_stops_when_no_posts_remain(con_and_media, monkeypatch):
     assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 0
 
 
-def test_merge_accounts_repoints_posts_and_drops_old_account_row(con_and_media):
+def test_merge_accounts_repoints_posts_and_drops_old_account_row(
+    con_and_media: tuple[sqlite3.Connection, Path],
+) -> None:
     con, media = con_and_media
     _insert(con, media, "p1", days_old=1)
     con.execute("UPDATE posts SET username='old_handle' WHERE id='p1'")
@@ -579,12 +639,16 @@ def test_merge_accounts_repoints_posts_and_drops_old_account_row(con_and_media):
     assert new_account["account_id"] == "acct123"  # carried over from the old handle
 
 
-def test_merge_accounts_is_a_noop_for_the_same_username(con_and_media):
+def test_merge_accounts_is_a_noop_for_the_same_username(
+    con_and_media: tuple[sqlite3.Connection, Path],
+) -> None:
     con, _ = con_and_media
     assert db.rename_account(con, "same", "same") == 0
 
 
-def test_rename_account_keeps_a_followed_allowlist_entry_in_sync(con_and_media):
+def test_rename_account_keeps_a_followed_allowlist_entry_in_sync(
+    con_and_media: tuple[sqlite3.Connection, Path],
+) -> None:
     con, _ = con_and_media
     con.execute("INSERT INTO following (username, updated_at) VALUES ('old_handle', '2020-01-01')")
     con.commit()
@@ -594,7 +658,9 @@ def test_rename_account_keeps_a_followed_allowlist_entry_in_sync(con_and_media):
     assert {r[0] for r in con.execute("SELECT username FROM following")} == {"new_handle"}
 
 
-def test_rename_account_leaves_the_allowlist_alone_when_the_old_name_wasnt_on_it(con_and_media):
+def test_rename_account_leaves_the_allowlist_alone_when_the_old_name_wasnt_on_it(
+    con_and_media: tuple[sqlite3.Connection, Path],
+) -> None:
     con, _ = con_and_media
     con.execute("INSERT INTO following (username, updated_at) VALUES ('someone_else', '2020-01-01')")
     con.commit()
@@ -604,14 +670,18 @@ def test_rename_account_leaves_the_allowlist_alone_when_the_old_name_wasnt_on_it
     assert {r[0] for r in con.execute("SELECT username FROM following")} == {"someone_else"}
 
 
-def test_needs_avatar_refresh_true_when_never_captured(con_and_media):
+def test_needs_avatar_refresh_true_when_never_captured(
+    con_and_media: tuple[sqlite3.Connection, Path],
+) -> None:
     con, _ = con_and_media
     con.execute("INSERT INTO accounts (username) VALUES ('u')")
     con.commit()
     assert db.needs_avatar_refresh(con, "u") is True
 
 
-def test_needs_avatar_refresh_false_when_recently_captured(con_and_media, monkeypatch):
+def test_needs_avatar_refresh_false_when_recently_captured(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, _ = con_and_media
     monkeypatch.setattr(config, "AVATAR_REFRESH_DAYS", 14)
     now = datetime.now(UTC).isoformat()
@@ -623,7 +693,9 @@ def test_needs_avatar_refresh_false_when_recently_captured(con_and_media, monkey
     assert db.needs_avatar_refresh(con, "u") is False
 
 
-def test_needs_avatar_refresh_true_when_stale(con_and_media, monkeypatch):
+def test_needs_avatar_refresh_true_when_stale(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, _ = con_and_media
     monkeypatch.setattr(config, "AVATAR_REFRESH_DAYS", 14)
     old = (datetime.now(UTC) - timedelta(days=30)).isoformat()
@@ -635,12 +707,16 @@ def test_needs_avatar_refresh_true_when_stale(con_and_media, monkeypatch):
     assert db.needs_avatar_refresh(con, "u") is True
 
 
-def test_needs_following_refresh_true_when_never_captured(con_and_media):
+def test_needs_following_refresh_true_when_never_captured(
+    con_and_media: tuple[sqlite3.Connection, Path],
+) -> None:
     con, _ = con_and_media
     assert db.needs_following_refresh(con) is True
 
 
-def test_needs_following_refresh_false_when_recently_captured(con_and_media, monkeypatch):
+def test_needs_following_refresh_false_when_recently_captured(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, _ = con_and_media
     monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 7)
     now = datetime.now(UTC).isoformat()
@@ -649,7 +725,9 @@ def test_needs_following_refresh_false_when_recently_captured(con_and_media, mon
     assert db.needs_following_refresh(con) is False
 
 
-def test_needs_following_refresh_true_when_stale(con_and_media, monkeypatch):
+def test_needs_following_refresh_true_when_stale(
+    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     con, _ = con_and_media
     monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 7)
     old = (datetime.now(UTC) - timedelta(days=30)).isoformat()
