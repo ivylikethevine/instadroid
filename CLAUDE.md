@@ -107,6 +107,12 @@ manual steps), so this was much lower-cost than it looked going in. Instagram it
 reinstalling (`local/xapk/*.apk` was still on disk from the original setup, no network fetch
 needed) since wiping the package database orphaned its `/data/app` registration.
 
+**Update (2026-09-14):** this reinstall step is now automatic — `ensure_logged_in()` in
+`scraper.py` detects a missing `com.instagram.android` and fetches/installs it itself (via
+`apkeep`, cached under `local/data/apk`), so a package-database reset like this one no longer
+needs a manual `adb install` afterward. See README.md's "First-time setup" for the new flow and
+`IG_AUTO_INSTALL` to opt back out.
+
 **Takeaway: when redroid boot is slow, adb is stuck `offline`, or automation is flaky, read
 `adb -s 127.0.0.1:5555 logcat -d` (grep for `WATCHDOG KILLING`, `FATAL EXCEPTION`, `Version
 mismatch`, `Can't downgrade database`) before restarting the container again.** Each blind restart
