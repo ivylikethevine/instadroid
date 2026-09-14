@@ -190,6 +190,12 @@ class FakeDevice:
     def app_list(self):
         return list(self.installed)
 
+    def install(self, pkg=IG_PKG):
+        """Not part of the real uiautomator2 API; a test hook so a fake `adb install` (mocked at
+        the subprocess level in scraper tests) can flip app_list() from absent to present."""
+        if pkg not in self.installed:
+            self.installed.append(pkg)
+
     def app_current(self):
         return {"package": LAUNCHER_PKG if self.screen in self.foreign else IG_PKG}
 

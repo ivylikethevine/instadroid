@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -213,6 +214,7 @@ def fast_offline(tmp_path, monkeypatch):
     monkeypatch.setattr(scraper, "DB_PATH", str(tmp_path / "posts.sqlite"))
     monkeypatch.setattr(scraper, "MEDIA_DIR", tmp_path / "media")
     monkeypatch.setattr(scraper, "DEBUG_DIR", tmp_path / "debug")
+    monkeypatch.setattr(scraper, "APK_CACHE_DIR", tmp_path / "apk")
     monkeypatch.setattr(scraper, "human_pause", lambda *a, **k: None)
     monkeypatch.setattr(scraper.time, "sleep", lambda s: None)
     monkeypatch.setattr(scraper, "IG_USERNAME", "me")
@@ -289,9 +291,75 @@ def test_login_without_credentials_raises(monkeypatch):
         scraper.ensure_logged_in(FakeDevice({"login": login_screen()}, "login"))
 
 
-def test_login_raises_when_instagram_is_not_installed():
+def test_login_raises_when_instagram_is_not_installed_and_auto_install_is_off(monkeypatch):
+    monkeypatch.setattr(scraper, "IG_AUTO_INSTALL", False)
     with pytest.raises(RuntimeError, match="not installed"):
         scraper.ensure_logged_in(FakeDevice({}, "launcher", installed=()))
+
+
+def _apk_run(monkeypatch, d, calls, *, fail_on=None):
+    """Patch scraper.subprocess.run to fake apkeep + adb install without touching the network or a
+    real device, recording every invocation into `calls`. `fail_on` (argv[0], "apkeep" or "adb")
+    makes that step raise CalledProcessError. A successful "adb install"/"install-multiple" flips
+    `d`'s installed set, same as a real adb install would."""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if fail_on and cmd[0] == fail_on:
+            raise subprocess.CalledProcessError(1, cmd, output="", stderr="boom")
+        if cmd[0] == "apkeep":
+            out_dir = Path(cmd[cmd.index("-d") + 2])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            xapk = out_dir / f"{scraper.IG_PKG}@1.0.0.xapk"
+            with zipfile.ZipFile(xapk, "w") as zf:
+                zf.writestr(f"{scraper.IG_PKG}.apk", b"base")
+                zf.writestr("config.arm64_v8a.apk", b"split")
+                zf.writestr("manifest.json", b"{}")
+        elif cmd[0] == "adb":
+            d.install()
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(scraper.subprocess, "run", fake_run)
+
+
+def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch):
+    d = FakeDevice({"home": home_screen()}, "launcher", installed=())
+    calls = []
+    _apk_run(monkeypatch, d, calls)
+    assert scraper.ensure_logged_in(d) is True
+    apkeep_call = next(c for c in calls if c[0] == "apkeep")
+    assert apkeep_call[:3] == ["apkeep", "-a", scraper.IG_PKG]
+    install_call = next(c for c in calls if c[0] == "adb")
+    assert install_call[3] == "install-multiple"
+    assert install_call[4].endswith(f"{scraper.IG_PKG}.apk")
+    assert install_call[5].endswith("config.arm64_v8a.apk")
+
+
+def test_ensure_logged_in_reuses_a_cached_apk(monkeypatch):
+    xapk_dir = scraper.APK_CACHE_DIR / "xapk"
+    xapk_dir.mkdir(parents=True)
+    (xapk_dir / f"{scraper.IG_PKG}.apk").write_bytes(b"base")
+    d = FakeDevice({"home": home_screen()}, "launcher", installed=())
+    calls = []
+    _apk_run(monkeypatch, d, calls)
+    assert scraper.ensure_logged_in(d) is True
+    assert not any(c[0] == "apkeep" for c in calls)
+    install_call = next(c for c in calls if c[0] == "adb")
+    assert install_call[3] == "install"  # single apk: no -multiple
+
+
+def test_ensure_logged_in_raises_transiently_when_apkeep_fails(monkeypatch):
+    d = FakeDevice({}, "launcher", installed=())
+    _apk_run(monkeypatch, d, [], fail_on="apkeep")
+    with pytest.raises(scraper.DeviceNotReady):
+        scraper.ensure_logged_in(d)
+
+
+def test_ensure_logged_in_raises_transiently_when_install_fails(monkeypatch):
+    d = FakeDevice({}, "launcher", installed=())
+    _apk_run(monkeypatch, d, [], fail_on="adb")
+    with pytest.raises(scraper.DeviceNotReady):
+        scraper.ensure_logged_in(d)
 
 
 def test_app_that_never_foregrounds_is_a_transient_device_failure():

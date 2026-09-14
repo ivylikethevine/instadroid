@@ -92,10 +92,15 @@ services:
       RETRY_DELAYS_MINUTES: ${RETRY_DELAYS_MINUTES-2,5,15} # early retries after a transient device failure; empty disables
       DEBUG_RETAIN_DAYS: ${DEBUG_RETAIN_DAYS:-7}   # delete debug .xml/.jpg/.png older than this; 0 disables
       REDROID_IMAGE: *redroid_image                # recorded with each run
+      IG_AUTO_INSTALL: ${IG_AUTO_INSTALL:-1}       # fetch+install Instagram via apkeep if missing on the device
+      IG_APK_VERSION: ${IG_APK_VERSION:-}          # pin a version for apkeep; empty = latest on APKPure
+      APK_CACHE_DIR: ${APK_CACHE_DIR:-/apk}         # cached xapk/apk, reused across installs
+      APK_FETCH_TIMEOUT: ${APK_FETCH_TIMEOUT:-300}  # seconds allowed for apkeep's download / adb install
     volumes:
       - ./local/data/db:/db
       - ./local/data/media:/media
       - ./local/data/debug:/debug
+      - ./local/data/apk:/apk
     # Measured peak while actively scraping: ~97-125MiB (idle is ~67-97MiB).
     mem_limit: 256m
     cpus: 1.5
