@@ -173,6 +173,85 @@
         }
       }
     },
+    "/control": {
+      "get": {
+        "summary": "Manual control state",
+        "description": "Whether the manual lock holds scheduled runs, and whether a scrape-now request is pending.",
+        "operationId": "control_state_control_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlState"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/control/lock": {
+      "post": {
+        "summary": "Hold scheduled runs",
+        "description": "Stop the scraper starting runs while the device is driven by hand. A run already going finishes.\nThe lock is ignored once it's LOCK_MAX_HOURS old.",
+        "operationId": "lock_control_lock_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlState"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Release the lock",
+        "operationId": "unlock_control_lock_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlState"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/control/scrape-now": {
+      "post": {
+        "summary": "Ask for a run now",
+        "description": "Ask the poll loop to start a run within about 30 seconds instead of waiting out its sleep.\nRefused while locked, and within RUN_NOW_MIN_MINUTES of the last run finishing.",
+        "operationId": "scrape_now_control_scrape_now_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlState"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The manual lock is in place."
+          },
+          "429": {
+            "description": "Too soon."
+          }
+        }
+      }
+    },
     "/status": {
       "get": {
         "summary": "Status page",
@@ -195,6 +274,24 @@
   },
   "components": {
     "schemas": {
+      "ControlState": {
+        "properties": {
+          "locked": {
+            "type": "boolean",
+            "title": "Locked"
+          },
+          "scrape_now": {
+            "type": "boolean",
+            "title": "Scrape Now"
+          }
+        },
+        "type": "object",
+        "required": [
+          "locked",
+          "scrape_now"
+        ],
+        "title": "ControlState"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {

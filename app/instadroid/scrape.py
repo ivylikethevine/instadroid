@@ -1,20 +1,21 @@
 """One scrape run (scrape_once) and the long-running poll loop (main)."""
 
 import sqlite3
-import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
-from urllib.parse import urlsplit
 
 import uiautomator2 as u2
 
 from . import (
+    alerts,
+    backup,
     capture,
     common,
     config,
+    control,
     db,
     device,
     diagnostics,
@@ -82,11 +83,7 @@ class RunStats(TypedDict):
     oom_kills: NotRequired[int | None]
 
 
-def _redact_url(url: str) -> str:
-    """scheme://host/path only, no query string — FRESHRSS_REFRESH_URL carries an auth token and
-    must never land in the shared container log."""
-    parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}{parts.path}"
+_redact_url = common.redact_url  # FRESHRSS_REFRESH_URL carries an auth token
 
 
 def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
@@ -356,6 +353,11 @@ def _scrape_feed(d: u2.Device, con: sqlite3.Connection, guard: device.MemoryGuar
     retention.prune_old_posts(con)
     retention.prune_expired_stories(con)
     diagnostics.prune_debug_dumps()  # age-based pruning shouldn't depend on a new dump happening to be taken
+    try:
+        backup.backup_database(con)
+    except (OSError, sqlite3.Error) as e:  # a full or read-only backup disk mustn't fail the scrape
+        log("WARN: database backup failed:", repr(e))
+        warnings.append(f"database backup failed: {e}")
     # Leave the app in a natural state (scrape_once() force-stops it right after)
     d.press("home")
     if push_error := _ping_freshrss(new, new_stories):
@@ -405,6 +407,10 @@ def run_recorded(con: sqlite3.Connection) -> tuple[dict[str, Any], Exception | N
     db.record_run(
         con, started_at, datetime.now(UTC).isoformat(), stats.get("new", 0), error, snapshot, **recorded
     )
+    try:
+        alerts.update(con)
+    except (OSError, sqlite3.Error) as e:  # alerting must never take the loop down with it
+        log("WARN: could not update alerts:", repr(e))
     return stats, exc
 
 
@@ -415,8 +421,9 @@ def main() -> None:
         log(
             f"last run was recent; waiting {wait / 60:.1f}m before the first scrape (SCRAPE_ON_STARTUP=1 skips)"
         )
-        time.sleep(wait)
+        control.wait(con, wait)
     while True:
+        control.wait_while_locked()
         _, exc = run_recorded(con)
         seconds, attempt = next_sleep_seconds(exc, attempt)
         if attempt:
@@ -425,4 +432,4 @@ def main() -> None:
             )
         else:
             log(f"sleeping {seconds / 3600:.2f}h")
-        time.sleep(seconds)
+        control.wait(con, seconds)

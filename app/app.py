@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from base64 import b64decode
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import closing, suppress
@@ -28,7 +29,7 @@ from typing import Any
 from urllib.parse import quote, urlencode
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from feedgen.feed import FeedGenerator
@@ -46,6 +47,10 @@ FEED_HOST = os.environ.get("FEED_HOST", "127.0.0.1")
 # carrying it, so a reader's image loads work without exposing the token itself. Empty = no auth.
 FEED_TOKEN = env_secret("FEED_TOKEN")
 MAX_LIMIT = 500
+# The scraper's manual-control files (instadroid/control.py), read from the same environment.
+CONTROL_DIR = Path(os.environ.get("CONTROL_DIR", "") or Path(DB_PATH).parent)
+LOCK_MAX_HOURS = float(os.environ.get("LOCK_MAX_HOURS", "6"))
+RUN_NOW_MIN_MINUTES = float(os.environ.get("RUN_NOW_MIN_MINUTES", "30"))
 _OPEN_PATHS = ("/health",)  # the compose healthcheck calls it without credentials
 
 
@@ -122,8 +127,21 @@ def _authorized(request: Request) -> bool:
     return any(p and hmac.compare_digest(p.encode(), FEED_TOKEN.encode()) for p in presented)
 
 
+def _cross_site(request: Request) -> bool:
+    """A state-changing request a browser sent on another site's behalf: it carries an Origin that isn't
+    this server's. Browsers always send Origin on cross-site POST/DELETE; curl and scripts send none. So a
+    web page can't lock the scraper or trigger runs through a loopback server with no token."""
+    origin = request.headers.get("origin")
+    if request.method in ("GET", "HEAD", "OPTIONS") or not origin:
+        return False
+    own = {PUBLIC_URL, f"{request.url.scheme}://{request.url.netloc}"}
+    return origin.rstrip("/") not in own
+
+
 @app.middleware("http")
 async def _require_token(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    if _cross_site(request):
+        return Response("cross-site request refused\n", status_code=403, media_type="text/plain")
     if _authorized(request):
         return await call_next(request)
     return Response(
@@ -300,7 +318,18 @@ def _feed_signal(user: str | None) -> tuple[object, ...]:
     )
     media = _query("SELECT COUNT(*) FROM media", one=True)
     avatar = _query(f"SELECT COALESCE(MAX(avatar_updated_at), '') FROM accounts{where}", args, one=True)
-    return (*(tuple(posts) if posts else (0, "")), media[0] if media else 0, avatar[0] if avatar else "")
+    alerts = tuple(tuple(a) for a in _open_alerts()) if not user else ()
+    return (
+        *(tuple(posts) if posts else (0, "")),
+        media[0] if media else 0,
+        avatar[0] if avatar else "",
+        *alerts,
+    )
+
+
+def _open_alerts() -> list[sqlite3.Row]:
+    """The scraper's open failure alerts (instadroid/alerts.py), oldest first; none before that table exists."""
+    return _query("SELECT kind, message, raised_at FROM alerts ORDER BY raised_at", default=[])
 
 
 def _post_count() -> int:
@@ -335,6 +364,22 @@ def feed(request: Request, user: str | None = None, limit: int = 200) -> Respons
     entries = rows(user, limit)
     extra_slides = _media_rows([r["id"] for r in entries])
     avatars = _avatar_files()
+
+    # Open failure alerts go first in the aggregate feed, where a reader is already looking. Each gets
+    # a new id per raise, so a reader shows it again if it's resolved and raised later.
+    for alert in [] if user else _open_alerts():
+        fe = fg.add_entry(order="append")
+        fe.id(f"{PUBLIC_URL}/alert/{alert['kind']}/{alert['raised_at']}")
+        fe.title(f"⚠ instadroid needs attention: {alert['message'][:90]}")
+        fe.link(href=f"{PUBLIC_URL}/status")
+        raised = _dt(alert["raised_at"]) or datetime.now(UTC)
+        fe.updated(raised)
+        fe.published(raised)
+        fe.content(
+            f"<p>{escape(alert['message'])}</p><p><small>since {_utc(raised)} · "
+            f'<a href="{PUBLIC_URL}/status">status page</a></small></p>',
+            type="html",
+        )
 
     for r in entries:
         fe = fg.add_entry(order="append")
@@ -584,6 +629,66 @@ def _run_result(run: sqlite3.Row) -> tuple[str, str]:
     return "", "ok"
 
 
+class ControlState(BaseModel):
+    locked: bool  # scheduled runs are held
+    scrape_now: bool  # a scrape-now request is waiting for the poll loop
+
+
+def _control_state() -> ControlState:
+    lock = CONTROL_DIR / "manual.lock"
+    try:
+        age = time.time() - lock.stat().st_mtime
+        locked = LOCK_MAX_HOURS <= 0 or age < LOCK_MAX_HOURS * 3600
+    except OSError:
+        locked = False
+    return ControlState(locked=locked, scrape_now=(CONTROL_DIR / "scrape-now").exists())
+
+
+@app.get("/control", summary="Manual control state")
+def control_state() -> ControlState:
+    """Whether the manual lock holds scheduled runs, and whether a scrape-now request is pending."""
+    return _control_state()
+
+
+@app.post("/control/lock", summary="Hold scheduled runs")
+def lock() -> ControlState:
+    """Stop the scraper starting runs while the device is driven by hand. A run already going finishes.
+    The lock is ignored once it's LOCK_MAX_HOURS old."""
+    CONTROL_DIR.mkdir(parents=True, exist_ok=True)
+    (CONTROL_DIR / "manual.lock").touch()
+    return _control_state()
+
+
+@app.delete("/control/lock", summary="Release the lock")
+def unlock() -> ControlState:
+    (CONTROL_DIR / "manual.lock").unlink(missing_ok=True)
+    return _control_state()
+
+
+@app.post(
+    "/control/scrape-now",
+    status_code=202,
+    summary="Ask for a run now",
+    responses={409: {"description": "The manual lock is in place."}, 429: {"description": "Too soon."}},
+)
+def scrape_now() -> ControlState:
+    """Ask the poll loop to start a run within about 30 seconds instead of waiting out its sleep.
+    Refused while locked, and within RUN_NOW_MIN_MINUTES of the last run finishing."""
+    if _control_state().locked:
+        raise HTTPException(409, "the manual lock is in place; release it first")
+    row = _query("SELECT MAX(finished_at) FROM runs", one=True)
+    if row and (finished := _dt(row[0])):
+        since = (datetime.now(UTC) - finished).total_seconds() / 60
+        if since < RUN_NOW_MIN_MINUTES:
+            raise HTTPException(
+                429,
+                f"the last run finished {since:.0f} min ago; try again in {RUN_NOW_MIN_MINUTES - since:.0f} min",
+            )
+    CONTROL_DIR.mkdir(parents=True, exist_ok=True)
+    (CONTROL_DIR / "scrape-now").touch()
+    return _control_state()
+
+
 @app.get("/status", response_class=HTMLResponse, summary="Status page")
 def status_page() -> HTMLResponse:
     """A plain-HTML page of recent runs, the device, and per-account totals."""
@@ -627,6 +732,15 @@ def status_page() -> HTMLResponse:
         {f'<p class="err">{escape(health_reason)}</p>' if health_reason else ""}
         {f'<p class="warn">{escape(warning)}</p>' if warning and not latest["error"] else ""}
         """
+    latest_html += "".join(
+        f'<p class="err">Alert since {escape(a["raised_at"][:16])}: {escape(a["message"])}</p>'
+        for a in _open_alerts()
+    )
+    control = _control_state()
+    if control.locked:
+        latest_html += '<p class="warn">Manual lock in place: scheduled runs are held.</p>'
+    if control.scrape_now:
+        latest_html += "<p>A scrape-now request is waiting for the poll loop.</p>"
 
     def _result_cell(r: sqlite3.Row) -> str:
         css, text = _run_result(r)

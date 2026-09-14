@@ -5,7 +5,7 @@ import igprofiles
 import pytest
 from instadroid import capture, common, config, device, parsing, stories, versioning
 
-FIXTURE = igprofiles.fixture("v445", "feed.xml").read_text()
+FIXTURE = igprofiles.fixture("v440", "feed_445.xml").read_text()
 
 
 def test_parse_hierarchy_finds_both_cards_and_skips_sponsored() -> None:
@@ -27,7 +27,7 @@ def test_headless_top_card_is_identified_from_caption_and_media() -> None:
 def test_full_card_fields() -> None:
     card = parsing.parse_hierarchy(FIXTURE)[1]
     assert card["kind"] == "carousel"
-    assert card["place"] == "San Diego, California"
+    assert card["place"] == "Anytown, Somewhere"
     assert card["posted_date"] == "21 hours ago"
     assert card["bounds"] == "[0,1287][1080,2000]"
     assert card["alt"].startswith("Photo 1 of 7")
@@ -72,10 +72,10 @@ REEL_COLLAB_FIXTURE = """<hierarchy><node><node resource-id="android:id/list">
           bounds="[0,210][1080,2093]" />
   </node>
   <node resource-id="com.instagram.android:id/row_feed_profile_header"
-        content-desc="thewhorrorshowlive posted a video in Precinct DTLA 57 minutes ago"
+        content-desc="showcase.live posted a video in The Venue Downtown 57 minutes ago"
         bounds="[0,210][1080,347]" />
   <node resource-id="com.instagram.android:id/row_feed_photo_profile_name"
-        text="thewhorrorshowlive and 3 others" />
+        text="showcase.live and 3 others" />
   <node resource-id="com.instagram.android:id/row_feed_button_share" bounds="[420,2093][483,2214]" />
   <node resource-id="com.instagram.android:id/row_feed_button_like" />
 </node></node></hierarchy>"""
@@ -85,9 +85,9 @@ def test_reel_with_media_before_header_is_identified_not_split_in_two() -> None:
     posts = parsing.parse_hierarchy(REEL_COLLAB_FIXTURE)
     assert len(posts) == 1  # not two dead-end entries that both fail the final filter
     p = posts[0]
-    assert p["username"] == "thewhorrorshowlive"
+    assert p["username"] == "showcase.live"
     assert p["kind"] == "video"
-    assert p["place"] == "Precinct DTLA"
+    assert p["place"] == "The Venue Downtown"
     assert p["posted_date"] == "57 minutes ago"
     assert p["alt"].startswith("Reel by")
     assert p["headless"] is False
@@ -131,13 +131,13 @@ def test_post_id_ignores_counts_dates_and_kind() -> None:
     ("desc", "expected"),
     [
         (
-            "nykky posted a video in Tiger's Pictionary at #1 Fifth Ave August 29",
-            ("nykky", "video", "Tiger's Pictionary at #1 Fifth Ave", "August 29"),
+            "artist posted a video in Pat's Gallery at #1 Main St August 29",
+            ("artist", "video", "Pat's Gallery at #1 Main St", "August 29"),
         ),
         ("some.one posted a photo 6 days ago", ("some.one", "photo", None, "6 days ago")),
         (
-            "club posted a carousel in San Diego, California 3 days ago",
-            ("club", "carousel", "San Diego, California", "3 days ago"),
+            "club posted a carousel in Anytown, Somewhere 3 days ago",
+            ("club", "carousel", "Anytown, Somewhere", "3 days ago"),
         ),
         ("Sponsored", None),
     ],
@@ -161,8 +161,8 @@ def test_clean_caption_strips_nbsp() -> None:
 
 def test_permalink_regex_accepts_reel_and_p_with_tracking_params() -> None:
     rx = versioning.SELECTORS["permalink"]
-    assert rx.match("https://www.instagram.com/reel/DdCSb4WsvUs/?stkn=abc").group("code") == "DdCSb4WsvUs"
-    assert rx.match("https://www.instagram.com/p/Dc9fdRTSKE5/").group("type") == "p"
+    assert rx.match("https://www.instagram.com/reel/AbCdEf12345/?stkn=abc").group("code") == "AbCdEf12345"
+    assert rx.match("https://www.instagram.com/p/ZyXwVu98765/").group("type") == "p"
     assert rx.match("https://www.instagram.com/someone/") is None
 
 
@@ -281,17 +281,17 @@ FOLLOWING_LIST_FIXTURE = """<hierarchy><node><node resource-id="com.instagram.an
   </node>
   <node resource-id="com.instagram.android:id/sorting_entry_row_option" text="Sorted by Default" />
   <node resource-id="com.instagram.android:id/follow_list_container">
-    <node resource-id="com.instagram.android:id/follow_list_username" text="nykkyhex" />
-    <node resource-id="com.instagram.android:id/follow_list_subtitle" text="Nykky Hex" />
+    <node resource-id="com.instagram.android:id/follow_list_username" text="some.artist" />
+    <node resource-id="com.instagram.android:id/follow_list_subtitle" text="Some Artist" />
   </node>
   <node resource-id="com.instagram.android:id/follow_list_container">
-    <node resource-id="com.instagram.android:id/follow_list_username" text="lunavonnoir_" />
+    <node resource-id="com.instagram.android:id/follow_list_username" text="night_owl_" />
   </node>
 </node></hierarchy>"""
 
 
 def test_parse_following_list_finds_rows_and_skips_categories_and_sort_header() -> None:
-    assert parsing.parse_following_list(FOLLOWING_LIST_FIXTURE) == ["nykkyhex", "lunavonnoir_"]
+    assert parsing.parse_following_list(FOLLOWING_LIST_FIXTURE) == ["some.artist", "night_owl_"]
 
 
 def test_parse_following_list_returns_empty_for_a_screen_with_no_rows() -> None:

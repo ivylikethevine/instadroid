@@ -2,10 +2,13 @@
 
     once                     one scrape run (recorded in the runs table like a scheduled one)
     login                    log in (or confirm the session is live), then stop Instagram
-    profiles                 list the Instagram version profiles
-    install [VERSION|latest] install an Instagram build (default: the active profile's)
+    profiles                 list the Instagram version profiles, what each covers and has validated
+    install [VERSION|latest] install an Instagram build (default: the newest validated build)
     dump                     save the current screen's hierarchy + screenshot to DEBUG_DIR
     compat                   redroid image / Instagram build pairs this database has run
+    backup                   copy the database to BACKUP_DIR now
+    lock / unlock            hold scheduled runs while driving the device by hand, then release
+    scrape-now               ask the poll loop to run now (rate-limited, see instadroid/control.py)
     rename OLD NEW           move an account's history to its new username
 
 The scraper itself lives in the instadroid/ package.
@@ -14,8 +17,20 @@ The scraper itself lives in the instadroid/ package.
 import sys
 
 from igprofiles import available as available_profiles
-from igprofiles import select as select_profile
-from instadroid import config, db, device, diagnostics, install, navigation, scrape, versioning
+from igprofiles import load as load_profile
+from igprofiles import newest_build, version_key
+from instadroid import (
+    backup,
+    config,
+    control,
+    db,
+    device,
+    diagnostics,
+    install,
+    navigation,
+    scrape,
+    versioning,
+)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "once":
@@ -30,14 +45,17 @@ if __name__ == "__main__":
         finally:
             device.force_stop(d, config.IG_PKG)  # don't leave ~800MiB resident for whatever runs next
     elif len(sys.argv) > 1 and sys.argv[1] == "profiles":
-        for name in available_profiles():
-            p = select_profile(name)[0]
+        names = available_profiles()
+        for name, following in zip(names, [*names[1:], None], strict=True):
+            p = load_profile(name)
+            covers = f"{p.major}-{int(following[1:]) - 1}" if following else f"{p.major} and newer"
             active = " (active)" if p.name == versioning.PROFILE.name else ""
-            status = "validated" if p.validated else "NOT validated"
-            print(f"{p.name}{active}  installs {p.apk_version}  {status}  {p.notes}")
+            validated = ", ".join(sorted(p.own_validated, key=version_key)) or "none yet"
+            print(f"{p.name}{active}  covers Instagram {covers}  {p.notes}\n  validated: {validated}")
+        print("default install:", newest_build() or "latest")
     elif len(sys.argv) > 1 and sys.argv[1] == "install":
         if len(sys.argv) > 3:
-            print("usage: scraper.py install [VERSION|latest]   (default: the active profile's apk_version)")
+            print("usage: scraper.py install [VERSION|latest]   (default: the newest validated build)")
             sys.exit(1)
         d = device.connect_device()
         print("installed:", install.install_instagram_version(d, sys.argv[2] if len(sys.argv) == 3 else None))
@@ -55,6 +73,16 @@ if __name__ == "__main__":
             )
         if not pairs:
             print("(no runs that reached the device yet)")
+    elif len(sys.argv) > 1 and sys.argv[1] in ("lock", "unlock"):
+        control.set_lock(sys.argv[1] == "lock")
+        print(f"{sys.argv[1]}ed:", control.locked())
+    elif len(sys.argv) > 1 and sys.argv[1] == "scrape-now":
+        control.request_run_now()
+        print(
+            "requested; the poll loop starts a run within", int(config.CONTROL_POLL_SECONDS), "seconds if due"
+        )
+    elif len(sys.argv) > 1 and sys.argv[1] == "backup":
+        print("wrote", backup.backup_database(db.db_init(), force=True))
     elif len(sys.argv) > 1 and sys.argv[1] == "rename":
         if len(sys.argv) != 4:
             print("usage: scraper.py rename <old_username> <new_username>")

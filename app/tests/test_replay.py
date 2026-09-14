@@ -31,11 +31,12 @@ def test_fixture_parses_as_recorded(monkeypatch: pytest.MonkeyPatch, profile: st
 def test_fixture_named_after_a_screen_has_that_screens_required_selectors(
     profile: str, expected: Path
 ) -> None:
-    """A fixture named after a screen (feed.xml, home_feed.xml, ...) also pins the selector keys the
+    """A fixture named after a screen (feed_445.xml, home_feed_444.xml, ...) also pins the selector keys the
     scraper needs on it, beyond what the parsers read: see igprofiles/screens.py."""
-    screen = expected.name.removesuffix(".expected.json")
+    name = expected.name.removesuffix(".expected.json")
+    screen = screens.screen_of_fixture(name)
     if screen not in screens.SCREENS:
         pytest.skip(f"{screen} is not a screen name")
-    xml = expected.with_name(f"{screen}.xml").read_text()
+    xml = expected.with_name(f"{name}.xml").read_text()
     result = screens.check_screen(xml, screen, igprofiles.load(profile).selectors)
     assert not result.missing_required

@@ -16,7 +16,7 @@ import adbutils
 import igprofiles
 import pytest
 import uiautomator2 as u2
-from igprofiles.v445.selectors import SELECTORS as SELECTORS_445
+from igprofiles.v440.selectors import SELECTORS as SELECTORS_445
 from instadroid import (
     capture,
     config,
@@ -102,7 +102,7 @@ def feed_cards(slide: int = 1, top_share: str = "share_top", other_share: str = 
         node(cls="android.widget.TextView", text="3 days ago", bounds=(32, 1100, 300, 1140)),
         node(
             "row_feed_profile_header",
-            desc="other_user posted a carousel in San Diego, California 21 hours ago",
+            desc="other_user posted a carousel in Anytown, Somewhere 21 hours ago",
             bounds=(0, 1150, 1080, 1287),
         ),
         node(
@@ -369,18 +369,18 @@ def test_installing_instagram_reactivates_the_profile(monkeypatch: pytest.Monkey
     _apk_run(monkeypatch, d, [])
     monkeypatch.setattr(versioning, "PROFILE_WARNING", "stale warning from before the install")
     assert navigation.ensure_logged_in(d) is True
-    assert versioning.PROFILE.name == "v445" and versioning.PROFILE_WARNING is None  # installed 445.0.0.45.83
+    assert versioning.PROFILE.name == "v440" and versioning.PROFILE_WARNING is None  # installed 445.0.0.45.83
 
 
-def test_auto_install_fetches_the_profiles_own_apk_version(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auto_install_fetches_the_newest_validated_build(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "IG_APK_VERSION", "")
-    monkeypatch.setattr(versioning, "PROFILE", igprofiles.load("v446"))
+    monkeypatch.setattr(config, "IG_PROFILE", "")
     d = FakeDevice({"home": home_screen()}, "launcher", installed=(), ig_version="446.0.0.49.77")
     calls = []
     _apk_run(monkeypatch, d, calls)
-    monkeypatch.setattr(config, "IG_PROFILE", "v446")
     assert navigation.ensure_logged_in(d) is True
-    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{config.IG_PKG}@446.0.0.49.77"
+    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{config.IG_PKG}@{igprofiles.newest_build()}"
+    assert versioning.PROFILE.name == "v440" and versioning.PROFILE_WARNING is None
 
 
 def test_a_pinned_apk_version_gets_its_own_cache_folder(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -464,6 +464,22 @@ def test_app_that_never_foregrounds_is_a_transient_device_failure() -> None:
         navigation.ensure_logged_in(d)
     assert device.is_transient(exc.value)
     assert len(d.launches) == 4  # the first launch plus three retries
+
+
+def test_an_app_that_dies_right_after_launch_is_not_logged_in() -> None:
+    class CrashingDevice(FakeDevice):
+        """Instagram comes to the front, then crashes back to the launcher a moment later."""
+
+        checks = 0
+
+        def app_current(self) -> dict[str, str]:
+            self.checks += 1
+            return {"package": config.IG_PKG if self.checks == 1 else "com.android.launcher3"}
+
+    d = CrashingDevice({"home": home_screen()}, "launcher")
+    with pytest.raises(device.DeviceNotReady, match="left the foreground right after launch") as exc:
+        navigation.ensure_logged_in(d)
+    assert device.is_transient(exc.value)  # retried, with a logcat saved, like any device failure
 
 
 # --- feed navigation --------------------------------------------------------------------------
@@ -667,7 +683,7 @@ def test_scrape_once_end_to_end(fast_offline: Path, monkeypatch: pytest.MonkeyPa
     assert set(posts) == {"TOP123", "OTHER1", "OLD1"}
     assert posts["TOP123"]["username"] == "someone_nice" and posts["TOP123"]["kind"] == "video"
     assert posts["TOP123"]["url"] == "https://www.instagram.com/reel/TOP123/"
-    assert posts["OTHER1"]["place"] == "San Diego, California"
+    assert posts["OTHER1"]["place"] == "Anytown, Somewhere"
     assert posts["OTHER1"]["caption"] == "Second caption"
     assert posts["TOP123"]["ig_version"] == posts["OTHER1"]["ig_version"] == "445.0.0.45.83"
     assert posts["OLD1"]["ig_version"] is None  # seeded before this run; never back-filled
@@ -956,22 +972,22 @@ def test_connect_device(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(u2, "connect", lambda addr: dev)
     assert device.connect_device() is dev
     assert (
-        versioning.PROFILE.name == "v445" and versioning.PROFILE_WARNING is None
+        versioning.PROFILE.name == "v440" and versioning.PROFILE_WARNING is None
     )  # device reports 445.0.0.45.83
 
 
-def test_connect_device_warns_when_the_installed_version_differs_from_the_profile(
+def test_connect_device_warns_about_an_installed_version_nobody_has_validated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dev = feed_device()
-    dev.ig_version = "446.0.0.49.77"
+    dev.ig_version = "999.0.0.1.1"
+    monkeypatch.setattr(config, "IG_PROFILE", "")
     monkeypatch.setattr(adbutils.adb, "connect", lambda addr, timeout=None: None)
     monkeypatch.setattr(u2, "connect", lambda addr: dev)
     device.connect_device()
-    assert versioning.PROFILE.name == "v445"  # the configured profile wins; nothing switches on its own
-    assert versioning.PROFILE_WARNING == (
-        "Instagram 446.0.0.49.77 is installed but profile v445 targets 445.x;"
-        " run `scraper.py install` to get 445.0.0.45.83, or set IG_PROFILE=v446"
+    assert versioning.PROFILE.name == igprofiles.available()[-1]  # the newest profile covers it
+    assert (versioning.PROFILE_WARNING or "").startswith(
+        f"Instagram 999.0.0.1.1 hasn't been validated with profile {versioning.PROFILE.name}"
     )
 
 
@@ -979,10 +995,10 @@ def test_scrape_once_reports_the_profile_warning(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
     monkeypatch.setattr(
-        versioning, "PROFILE_WARNING", "Instagram 446.0.0.49.77 is installed but profile v445"
+        versioning, "PROFILE_WARNING", "Instagram 999.0.0.1.1 hasn't been validated with profile v440"
     )
     stats = scrape.scrape_once(feed_device(), db.db_init())
-    assert "Instagram 446.0.0.49.77 is installed but profile v445" in stats["warning"]
+    assert "Instagram 999.0.0.1.1 hasn't been validated with profile v440" in stats["warning"]
 
 
 def _stop_after_first_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
@@ -994,6 +1010,7 @@ def _stop_after_first_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
     monkeypatch.setattr(time, "sleep", sleep)
     monkeypatch.setattr(config, "TIME_DISTRIBUTION", "uniform")
+    monkeypatch.setattr(config, "CONTROL_POLL_SECONDS", 10**9)  # one sleep call per wait, not 30s steps
     return sleeps
 
 
@@ -1038,7 +1055,7 @@ def test_main_records_a_successful_run_with_device_versions(
     run = con.execute("SELECT * FROM runs").fetchone()
     assert (run["new_posts"], run["new_stories"], run["warning"], run["error"]) == (2, 1, "w", None)
     assert (run["android_release"], run["ig_version"]) == ("13", "445.0.0.45.83")
-    assert run["selector_profile"] == "v445"
+    assert run["selector_profile"] == "v440"
     assert config.POLL_MIN_H * 3600 <= sleeps[0] <= config.POLL_MAX_H * 3600
 
 

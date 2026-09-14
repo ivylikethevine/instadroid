@@ -21,7 +21,7 @@ def make_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     # would get the order backwards; posted_at DESC must recover the true chronological order.
     con.execute(
         "INSERT INTO posts VALUES ('ABC', 'someone', 'photo', '2 days ago', 'Hi <there>', 'ABC.jpg',"
-        " '2026-09-08T08:00:00+00:00', 'h1', 'https://www.instagram.com/p/ABC/', 'San Diego',"
+        " '2026-09-08T08:00:00+00:00', 'h1', 'https://www.instagram.com/p/ABC/', 'Anytown',"
         " '2026-09-08T09:00:00+00:00')"
     )
     con.execute(
@@ -49,7 +49,7 @@ def test_feed_lists_posts_with_permalinks_and_escaping(
     assert 'href="https://www.instagram.com/other/"' in body  # fallback when no permalink
     assert "http://feed.test/media/ABC.jpg" in body
     assert "&lt;there&gt;" in body and "<there>" not in body
-    assert "San Diego" in body
+    assert "Anytown" in body
     assert body.index("someone") < body.index("other")  # posted_at order, not scrape order
 
 

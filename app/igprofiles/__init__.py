@@ -1,14 +1,14 @@
-"""Instagram version profiles: one self-contained package per Instagram major version (see
-docs/NEXT.md and igprofiles/base.py).
+"""Instagram version profiles: one package per point where Instagram's UI changed (see docs/NEXT.md
+and igprofiles/base.py).
 
     igprofiles/
       base.py            BaseProfile, the contract every profile follows
-      v445/              __init__.py (Profile), selectors.py, fixtures/
-      v446/              ...
+      screens.py         which selector keys each screen needs (profile development and tests)
+      v440/              __init__.py (Profile), selectors.py, fixtures/
 
-IG_PROFILE picks one by directory name ("v445", or just "445"). Nothing switches automatically on the
-installed Instagram version: the chosen profile is the source of truth, and a mismatch with what's
-installed is reported as a warning.
+A profile vXYZ covers Instagram XYZ.x up to the next profile, and the scraper picks the highest one at
+or below the installed version (covering()). There is no profile for a version that changes nothing.
+IG_PROFILE ("v440", or just "440") overrides the automatic choice.
 """
 
 import importlib
@@ -17,8 +17,7 @@ from pathlib import Path
 
 from .base import BaseProfile
 
-DEFAULT_PROFILE = "v446"  # moves forward as newer versions are validated
-MIN_MAJOR = 440  # oldest Instagram version this project will support
+MIN_MAJOR = 440  # oldest Instagram version this project supports: the lowest profile's major
 _NAME = re.compile(r"^v(\d{3})$")
 _ROOT = Path(__file__).parent
 
@@ -27,6 +26,11 @@ def major_of(version: str | None) -> int | None:
     """446 for "446.0.0.49.77"; None when there's no version (not installed) or it's unparseable."""
     m = re.match(r"(\d+)\.", version or "")
     return int(m.group(1)) if m else None
+
+
+def version_key(build: str) -> tuple[int, ...]:
+    """A build as a sortable tuple: "446.0.0.49.77" -> (446, 0, 0, 49, 77)."""
+    return tuple(int(part) for part in re.findall(r"\d+", build))
 
 
 def normalize(name: str) -> str:
@@ -51,7 +55,7 @@ def load(name: str) -> BaseProfile:
     name = normalize(name)
     m = _NAME.match(name)
     if not m:
-        raise ValueError(f"{name!r} is not a profile name (expected vXYZ, e.g. {DEFAULT_PROFILE})")
+        raise ValueError(f"{name!r} is not a profile name (expected vXYZ, e.g. v{MIN_MAJOR})")
     if int(m.group(1)) < MIN_MAJOR:
         raise ValueError(f"{name} is below the supported floor (v{MIN_MAJOR})")
     if name not in available():
@@ -60,27 +64,55 @@ def load(name: str) -> BaseProfile:
     if not (isinstance(profile_cls, type) and issubclass(profile_cls, BaseProfile)):
         raise ValueError(f"igprofiles/{name}/__init__.py must define Profile(BaseProfile)")
     profile = profile_cls()
-    missing = [a for a in ("major", "apk_version", "selectors") if not hasattr(profile, a)]
+    missing = [a for a in ("major", "selectors") if not hasattr(profile, a)]
     if missing:
         raise ValueError(f"{name} Profile is missing {', '.join(missing)}")
     if profile.name != name:
         raise ValueError(f"igprofiles/{name}/ defines major={profile.major}, expected {int(m.group(1))}")
-    if major_of(profile.apk_version) != profile.major:
-        raise ValueError(f"{name} apk_version {profile.apk_version!r} is not a {profile.major}.x build")
+    if below := [b for b in profile.own_validated if (major_of(b) or 0) < profile.major]:
+        raise ValueError(f"{name} lists validated builds below {profile.major}: {', '.join(below)}")
     return profile
 
 
-def select(requested: str = "") -> tuple[BaseProfile, str | None]:
-    """The profile IG_PROFILE asks for (DEFAULT_PROFILE when empty). A request that can't be loaded
-    falls back to DEFAULT_PROFILE with a warning rather than stopping the scraper."""
-    if not requested.strip():
-        return load(DEFAULT_PROFILE), None
-    try:
-        return load(requested), None
-    except ValueError as e:
-        return load(DEFAULT_PROFILE), f"IG_PROFILE={requested!r}: {e}; using {DEFAULT_PROFILE}"
+def covering(major: int | None) -> str | None:
+    """The profile that handles Instagram `major`: the highest one at or below it. None when `major`
+    is None or below every profile."""
+    if major is None:
+        return None
+    return next((n for n in reversed(available()) if int(n[1:]) <= major), None)
+
+
+def newest_build(profile: str | None = None) -> str | None:
+    """The newest validated build of `profile`, or across every profile: what gets installed when
+    nothing more specific is asked for. None if nothing is validated."""
+    names = [normalize(profile)] if profile else available()
+    builds = [b for n in names for b in load(n).own_validated]
+    return max(builds, key=version_key) if builds else None
+
+
+def select(requested: str = "", installed: str | None = None) -> tuple[BaseProfile, str | None]:
+    """(profile, warning). IG_PROFILE (`requested`) when it names a loadable profile; otherwise the
+    profile covering the `installed` version, or the newest profile when nothing is installed (or its
+    version is unknown). A bad IG_PROFILE, or an installed version below every profile, still returns
+    a profile, with a warning, rather than stopping the scraper."""
+    warning = None
+    if requested.strip():
+        try:
+            return load(requested), None
+        except ValueError as e:
+            warning = f"IG_PROFILE={requested!r}: {e}; choosing by installed version instead"
+    names = available()
+    name = covering(major_of(installed))
+    if name is None:
+        if major_of(installed) is not None:
+            below = f"Instagram {installed} is older than the oldest profile ({names[0]}); using it anyway"
+            warning = f"{warning}; {below}" if warning else below
+            name = names[0]
+        else:
+            name = names[-1]
+    return load(name), warning
 
 
 def fixture(name: str, filename: str) -> Path:
-    """Path to a test fixture shipped with a profile, e.g. fixture("v445", "feed.xml")."""
+    """Path to a test fixture shipped with a profile, e.g. fixture("v440", "feed_445.xml")."""
     return _ROOT / normalize(name) / "fixtures" / filename
