@@ -90,7 +90,10 @@ APK_CACHE_DIR = Path(os.environ.get("APK_CACHE_DIR", "/apk"))
 APK_FETCH_TIMEOUT = float(os.environ.get("APK_FETCH_TIMEOUT", "300"))  # apkeep's own download
 DEBUG_KEEP = 12  # debug dump pairs to retain; older ones are pruned on every new dump
 DEBUG_RETAIN_DAYS = float(os.environ.get("DEBUG_RETAIN_DAYS", "7"))  # 0 disables age-based pruning
-_DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png")
+_DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png", ".txt")
+# How much of a filtered logcat to keep per device failure (see _save_failure_logcat()).
+LOGCAT_TAIL_LINES = int(os.environ.get("LOGCAT_TAIL_LINES", "2000"))
+LOGCAT_TIMEOUT = 30.0  # seconds for `adb logcat -d`
 PERMALINK_RETRIES = int(os.environ.get("PERMALINK_RETRIES", "2"))  # extra share-sheet passes after the first
 SHARE_TAP_TRIES = int(os.environ.get("SHARE_TAP_TRIES", "2"))  # taps on the share button before giving up
 CAPTION_EXPAND_TRIES = int(
@@ -133,6 +136,10 @@ FOLLOWING_LIST_EMPTY_LIMIT = int(os.environ.get("FOLLOWING_LIST_EMPTY_LIMIT", "3
 RETRY_DELAYS_MINUTES = [
     float(x) for x in os.environ.get("RETRY_DELAYS_MINUTES", "2,5,15").split(",") if x.strip()
 ]
+# 0 (default): on startup, wait out whatever's left of the poll interval since the last recorded run
+# before scraping, so a `docker compose up`, recreate or crash-restart isn't an extra off-schedule
+# scrape (see _startup_wait_seconds()). 1: scrape immediately on every start, the old behavior.
+SCRAPE_ON_STARTUP = os.environ.get("SCRAPE_ON_STARTUP", "0").strip().lower() in ("1", "true", "yes")
 # FreshRSS's own "online cron" actualize URL (https://.../i/?c=feed&a=actualize&user=...&token=...),
 # GETed after a run stores something new so it fetches now instead of waiting out its own poll
 # interval or per-feed TTL. Empty disables. Any reader with an equivalent plain-GET refresh webhook
@@ -202,6 +209,54 @@ def is_transient(e: BaseException) -> bool:
     challenges and parsing/logic errors are deliberately not transient: retrying those early either
     can't help or, for a challenge, looks worse to Instagram."""
     return isinstance(e, (DeviceNotReady, adbutils.AdbError, adbutils.AdbTimeout, U2DeviceError))
+
+
+def _transient_error_names() -> set[str]:
+    """Class names is_transient() accepts, subclasses included, for matching a stored runs.error
+    (which is repr(exception), so it starts with the class name)."""
+
+    def walk(cls):
+        yield cls
+        for sub in cls.__subclasses__():
+            yield from walk(sub)
+
+    return {
+        c.__name__
+        for base in (DeviceNotReady, adbutils.AdbError, adbutils.AdbTimeout, U2DeviceError)
+        for c in walk(base)
+    }
+
+
+def _startup_wait_seconds(con, now: datetime | None = None) -> float:
+    """Seconds to wait before the first scrape after the process starts: whatever's left of the
+    interval since the last recorded run finished. That interval is the first RETRY_DELAYS_MINUTES
+    entry if the last run failed transiently (the retry it would have had), otherwise a normally
+    sampled poll interval. 0 with no recorded run, SCRAPE_ON_STARTUP set, or an unreadable row.
+
+    Without this, every `docker compose up`, recreate or crash-restart scraped immediately: three runs
+    landed within 40 minutes on 2026-09-11, and with `restart: unless-stopped` a restart loop would
+    become a scrape loop."""
+    if SCRAPE_ON_STARTUP:
+        return 0.0
+    try:
+        row = con.execute("SELECT finished_at, error FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return 0.0
+    if not row:
+        return 0.0
+    try:
+        finished = datetime.fromisoformat(row[0])
+    except TypeError, ValueError:
+        return 0.0
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=UTC)
+    error = row[1] or ""
+    if error and RETRY_DELAYS_MINUTES and error.split("(", 1)[0] in _transient_error_names():
+        interval = RETRY_DELAYS_MINUTES[0] * 60
+    else:
+        interval = sample_duration(POLL_MIN_H, POLL_MAX_H) * 3600
+    elapsed = ((now or datetime.now(UTC)) - finished).total_seconds()
+    return max(0.0, interval - elapsed)
 
 
 def next_sleep_seconds(error: BaseException | None, attempt: int) -> tuple[float, int]:
@@ -1085,8 +1140,8 @@ def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
 
 
 def _prune_debug_dumps():
-    """Keep only the newest DEBUG_KEEP hierarchy+screenshot pairs, and delete any debug artifact
-    (.xml/.jpg/.png, top level only) older than DEBUG_RETAIN_DAYS — manual dumps and one-off
+    """Keep only the newest DEBUG_KEEP hierarchy+screenshot pairs and DEBUG_KEEP failure logcats, and
+    delete any debug artifact (.xml/.jpg/.png/.txt, top level only) older than DEBUG_RETAIN_DAYS — manual dumps and one-off
     screenshots don't belong to a pair and otherwise never age out. Anything else in DEBUG_DIR
     (e.g. a scratch test*.sqlite a DB_PATH may still point at) is left alone. Best-effort: a file
     that can't be removed is logged and skipped, never raised."""
@@ -1096,6 +1151,7 @@ def _prune_debug_dumps():
         for old in hierarchies[:-DEBUG_KEEP]:
             stem = old.name.removesuffix("_hierarchy.xml")
             doomed += [old, DEBUG_DIR / f"{stem}_screen.jpg", DEBUG_DIR / f"{stem}_screen.png"]
+        doomed += sorted(DEBUG_DIR.glob("logcat_*.txt"), key=lambda p: p.stat().st_mtime)[:-DEBUG_KEEP]
         if DEBUG_RETAIN_DAYS > 0:
             cutoff = time.time() - DEBUG_RETAIN_DAYS * 86400
             doomed += [
@@ -1111,6 +1167,62 @@ def _prune_debug_dumps():
             f.unlink(missing_ok=True)
         except OSError as e:
             log(f"WARN: could not prune debug file {f.name!r}:", repr(e))
+
+
+# What a failure logcat keeps besides error/fatal lines: the crash-loop signatures this project has
+# actually hit (CLAUDE.md; scripts/diagnose.sh greps for the same ones), plus kills and ANRs.
+_LOGCAT_SIGNATURES = re.compile(
+    r"WATCHDOG KILLING|FATAL EXCEPTION|ANR in |Version mismatch in Idmap|Can't downgrade database|"
+    r"Bad operation #|There must be exactly one installer|lowmemorykiller|am_kill|am_crash|am_anr"
+)
+_LOGCAT_PRIORITY = re.compile(r"^\S+\s+\S+\s+\d+\s+\d+\s+([VDIWEF])\s")  # `-v threadtime` lines
+
+
+def _filter_logcat(text: str) -> list[str]:
+    """Error/fatal lines and known crash signatures from `logcat -v threadtime` output, last
+    LOGCAT_TAIL_LINES of them."""
+    kept = []
+    for line in text.splitlines():
+        m = _LOGCAT_PRIORITY.match(line)
+        if (m and m.group(1) in "EF") or _LOGCAT_SIGNATURES.search(line):
+            kept.append(line)
+    return kept[-LOGCAT_TAIL_LINES:] if LOGCAT_TAIL_LINES > 0 else kept
+
+
+def _save_failure_logcat(error: str) -> Path | None:
+    """After a device failure, save a filtered `adb logcat -d` to DEBUG_DIR/logcat_<utc>.txt, so the
+    evidence CLAUDE.md says to read before restarting anything is already on disk. Uses the adb CLI
+    rather than the uiautomator2 connection, which is often exactly what failed. Best-effort: a device
+    too far gone for adb just gets a log line."""
+    try:
+        out = subprocess.run(
+            ["adb", "-s", ADB_ADDR, "logcat", "-d", "-v", "threadtime"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=LOGCAT_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log("WARN: could not read logcat after the failure:", repr(e))
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        log("WARN: could not read logcat after the failure:", (out.stderr or "no output").strip()[:200])
+        return None
+    lines = _filter_logcat(out.stdout)
+    path = DEBUG_DIR / f"logcat_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.txt"
+    header = [
+        f"# run failed: {error.splitlines()[0][:500] if error else '?'}",
+        f"# adb logcat -d: error/fatal lines and known crash signatures, last {len(lines)} kept",
+    ]
+    try:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(header + lines) + "\n")
+    except OSError as e:
+        log("WARN: could not write the failure logcat:", repr(e))
+        return None
+    _prune_debug_dumps()
+    log(f"saved filtered logcat ({len(lines)} lines) to {path}")
+    return path
 
 
 def _dump_debug(d, name, xml=None):
@@ -2485,6 +2597,11 @@ def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
 def main():
     con = db_init()
     attempt = 0  # consecutive transient-failure retries so far
+    if wait := _startup_wait_seconds(con):
+        log(
+            f"last run was recent; waiting {wait / 60:.1f}m before the first scrape (SCRAPE_ON_STARTUP=1 skips)"
+        )
+        time.sleep(wait)
     while True:
         started_at = datetime.now(UTC).isoformat()
         snapshot, stats, error, exc = {}, {}, None, None
@@ -2496,6 +2613,8 @@ def main():
         except Exception as e:  # keep the loop alive; log for debugging
             exc, error = e, repr(e)
             log("ERROR:", error)
+            if is_transient(e):
+                _save_failure_logcat(error)
         if snapshot:  # connected, so a profile was activated (possibly re-activated by an install)
             snapshot["selector_profile"] = PROFILE.name
         record_run(

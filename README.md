@@ -3,6 +3,7 @@
 > EXPERIMENTAL UNTIL v1.0.0
 
 [![instadroid image](https://img.shields.io/github/v/release/ivylikethevine/instadroid?logo=docker&logoColor=white&label=ghcr.io%2Finstadroid)](https://github.com/ivylikethevine/instadroid/pkgs/container/instadroid)
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ivylikethevine/instadroid/badges/coverage.json)](https://github.com/ivylikethevine/instadroid/actions/workflows/ci.yml)
 
 A real, logged-in Instagram Android app running in redroid (a containerised Android device),
 driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom for FreshRSS.
@@ -250,7 +251,9 @@ does. No real account data is used in any fixture.
 
 CI (`.github/workflows/ci.yml`) runs ruff, the test suite, `pip-audit` on the requirements file
 (also weekly), shellcheck on the scripts, hadolint plus a build and smoke test of the image,
-`docker compose config`, and gitleaks. Dependabot watches pip, Docker base images and GitHub
+`docker compose config`, and gitleaks. Tests run with coverage; on each push to `main` the total is
+written to a one-file `badges` branch (a single commit, force-pushed) that the README's coverage
+badge reads through shields.io, so no external coverage service or token is involved. Dependabot watches pip, Docker base images and GitHub
 Actions.
 
 ### Releases
@@ -322,7 +325,15 @@ unhealthy until its first run finishes.
 A run that fails for a device reason — adb offline, redroid still booting so the uiautomator server
 can't start, Instagram refusing to come to the foreground — is retried after `RETRY_DELAYS_MINUTES`
 (default 2, 5, then 15 minutes, with jitter) instead of waiting out a full poll interval. Login
-challenges and every other error never retry early.
+challenges and every other error never retry early. After a device failure, the scraper also saves
+a filtered `adb logcat -d` (error and fatal lines plus the known crash-loop signatures from CLAUDE.md,
+last `LOGCAT_TAIL_LINES`) to `local/data/debug/logcat_<time>.txt`, so the log is already on disk
+before anyone restarts anything.
+
+Restarting the container doesn't trigger an extra scrape. On startup the scraper looks at the last
+recorded run and waits out whatever's left of a poll interval since it finished (or of the first
+retry delay, if that run failed for a device reason) before its first scrape. With no recorded run
+it starts right away. `SCRAPE_ON_STARTUP=1` restores scraping immediately on every start.
 
 Each run also records the installed Instagram `versionName` and the redroid image (`runs.ig_version`
 / `runs.redroid_image`, both on `/status`), so when the selectors break it's a lookup whether an
@@ -386,7 +397,8 @@ subdirectory, one file per account, untouched by this cleanup. If `MEDIA_MAX_MB`
 posts are removed after that (even if still within `RETAIN_DAYS`) until total size is back under the
 cap — worth setting once carousels are captured in full, since a single heavily-posting account can
 otherwise grow disk use with no bound but time. Debug dumps in `local/data/debug` are saved as JPEG
-and only the newest 12 hierarchy/screenshot pairs are kept; any `.xml`/`.jpg`/`.png` there older
+and only the newest 12 hierarchy/screenshot pairs (and 12 failure logcats) are kept; any
+`.xml`/`.jpg`/`.png`/`.txt` there older
 than `DEBUG_RETAIN_DAYS` (default 7) is deleted at the end of every run. Other files in that
 directory (e.g. scratch `test*.sqlite` databases) are never touched.
 
@@ -432,23 +444,8 @@ Ordered by scope, smallest first.
 
 A config flag, one function, a CI tweak, or docs.
 
-- **Test coverage badge**: `pyproject.toml` already configures `[tool.coverage.run]` and
-  "Development" above already documents the `--cov` invocation, but `ci.yml`'s `test` job doesn't run
-  with coverage, so there's no number to publish yet. Either a third-party service
-  (Codecov/Coveralls — needs an account and a token, and adds an external CI dependency) or a
-  self-contained shields.io endpoint backed by a gist would work. One honest caveat either way: the
-  device-driving code is exercised through `app/tests/fakedevice.py`, so a headline percentage will
-  read higher than real-device confidence warrants.
 - **Credentials from a file**: `IG_PASSWORD_FILE` / Docker secrets instead of a plain environment
   variable.
-- **Have the scraper itself save a filtered `logcat -d` into `DEBUG_DIR` on device failures**, not
-  just on-demand — `scripts/diagnose.sh` already does the on-demand triage.
-- **Don't scrape on every container start**: the scraper starts a run the moment its container
-  starts, so every `docker compose up`, recreate, or crash-restart is an extra, off-schedule scrape
-  — three runs landed between 05:45 and 06:24 UTC on 2026-09-11, at least two of them from container
-  recreates, all well inside `POLL_MIN_HOURS`. With `restart: unless-stopped`, a restart loop would
-  become a scrape loop. On startup, wait out whatever's left of the poll interval since the last
-  recorded run instead.
 - **Link hashtags and mentions in captions**: now that full captions are stored (see "How a scrape
   works" above), hashtags and @mentions in them could be turned into links in the feed HTML.
 - **Optional feed auth**: a token or basic auth, needed before `FEED_HOST=0.0.0.0` is safe —

@@ -31,6 +31,8 @@ jobs:
     if: github.event.pull_request.draft != true
     name: Unit tests
     runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.coverage.outputs.percent }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -40,9 +42,48 @@ jobs:
           python-version: "3.14"
           cache: pip
       - run: pip install -r app/requirements.txt -r scripts/requirements-dev.txt
-      - run: python -m pytest app/tests -q
+      # pyproject.toml keeps coverage's data file in local/, which isn't in the checkout.
+      - run: mkdir -p local
+      - run: python -m pytest app/tests -q --cov=app --cov-report=term
         env:
           PYTHONPATH: app
+      - name: Total coverage
+        id: coverage
+        run: echo "percent=$(python -m coverage report --format=total)" >> "$GITHUB_OUTPUT"
+
+  coverage-badge:
+    name: Publish coverage badge
+    needs: test
+    # Only main's number is published; pull requests just run with coverage above.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # force-pushes the one-file `badges` branch the README badge reads
+    steps:
+      - name: Push coverage.json to the badges branch
+        env:
+          PERCENT: ${{ needs.test.outputs.coverage }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          case "$PERCENT" in
+            ''|*[!0-9]*) echo "unexpected coverage value: '$PERCENT'" >&2; exit 1 ;;
+          esac
+          if [ "$PERCENT" -ge 90 ]; then color=brightgreen
+          elif [ "$PERCENT" -ge 75 ]; then color=green
+          elif [ "$PERCENT" -ge 60 ]; then color=yellow
+          else color=red
+          fi
+          # A single orphan commit, force-pushed each time, so the branch never accumulates history.
+          mkdir badges && cd badges
+          git init -q -b badges
+          printf '{"schemaVersion": 1, "label": "coverage", "message": "%s%%", "color": "%s"}\n' \
+            "$PERCENT" "$color" > coverage.json
+          git add coverage.json
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "coverage ${PERCENT}%"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" badges
 
   audit:
     if: github.event.pull_request.draft != true

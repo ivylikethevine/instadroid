@@ -14,3 +14,13 @@ def profile_v445(monkeypatch):
     monkeypatch.setattr(scraper, "PROFILE_WARNING", None)
     monkeypatch.setattr(scraper, "IG_PROFILE", "")
     monkeypatch.setattr(scraper, "IG_APK_VERSION", "")
+
+
+@pytest.fixture(autouse=True)
+def no_real_logcat(monkeypatch):
+    """main() saves a logcat after a device failure by running the real `adb` binary, which on a
+    developer host could reach a live redroid. Record the calls instead; the logcat tests call the
+    original through test_device_flows.SAVE_FAILURE_LOGCAT."""
+    calls = []
+    monkeypatch.setattr(scraper, "_save_failure_logcat", lambda error: calls.append(error))
+    return calls

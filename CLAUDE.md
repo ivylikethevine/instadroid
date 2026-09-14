@@ -117,6 +117,8 @@ needs a manual `adb install` afterward. See README.md's "First-time setup" for t
 `adb -s 127.0.0.1:5555 logcat -d` (grep for `WATCHDOG KILLING`, `FATAL EXCEPTION`, `Version
 mismatch`, `Can't downgrade database`) before restarting the container again.** Each blind restart
 costs 1-9+ minutes; the log almost always names the actual blocked call directly.
+The running scraper also saves a filtered copy automatically after any device failure
+(`local/data/debug/logcat_<time>.txt`), so check there first.
 `scripts/diagnose.sh` runs this triage (plus a host `dmesg` check, for failures early enough that
 adb isn't even up yet — see below) and prints the matching fix in one command.
 
