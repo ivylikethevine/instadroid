@@ -18,6 +18,7 @@ import argparse
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +92,52 @@ def shape(found: parsing.ScreenParse) -> list[Any]:
     ]
 
 
+@dataclass
+class Promoted:
+    xml_path: Path
+    result: dict[str, Any]
+    leftovers: list[str]
+
+
+def promote(dump: Path, profile_name: str, name: str) -> Promoted:
+    """Scrub `dump` into igprofiles/<profile>/fixtures/<name>.xml and record what the parsers find in
+    it under that profile. Raises ValueError, writing nothing, if scrubbing changed what parses."""
+    versioning.PROFILE = igprofiles.load(profile_name)
+    raw = dump.read_text()
+    clean = pseudonymize(raw)
+    if shape(parsing.parse_screen(clean)) != shape(parsing.parse_screen(raw)):
+        raise ValueError(f"pseudonymizing {dump.name} changed what the parsers find; not writing a fixture")
+    xml_path = igprofiles.fixture(profile_name, f"{name}.xml")
+    xml_path.parent.mkdir(exist_ok=True)
+    xml_path.write_text("<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n" + clean + "\n")
+    result = expected(clean)
+    xml_path.with_suffix(".expected.json").write_text(json.dumps(result, indent=1, ensure_ascii=False) + "\n")
+    return Promoted(xml_path, result, leftover_text(clean))
+
+
+def rerecord(profile_name: str) -> list[Path]:
+    """Re-record every fixture's .expected.json under `profile_name`'s current selectors."""
+    versioning.PROFILE = igprofiles.load(profile_name)
+    written = []
+    for xml_path in sorted(igprofiles.fixture(profile_name, "").glob("*.xml")):
+        out = xml_path.with_suffix(".expected.json")
+        out.write_text(json.dumps(expected(xml_path.read_text()), indent=1, ensure_ascii=False) + "\n")
+        written.append(out)
+    return written
+
+
+def print_promoted(promoted: Promoted) -> None:
+    result = promoted.result
+    print(f"wrote {promoted.xml_path.relative_to(ROOT)} (+ .expected.json):")
+    print(
+        f"  {len(result['posts'])} post(s), {sum(bool(p['caption']) for p in result['posts'])} with captions;"
+        f" {len(result['story_tray'])} story tray item(s); {len(result['following_list'])} following row(s)"
+    )
+    print("\nReview before committing — text still in the fixture:")
+    for value in promoted.leftovers:
+        print("  ", value)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--update", action="store_true", help="re-record expectations for existing fixtures")
@@ -98,32 +145,14 @@ def main() -> None:
     opts = ap.parse_args()
     if opts.update:
         (profile_name,) = opts.args
-        versioning.PROFILE = igprofiles.load(profile_name)
-        fixtures = igprofiles.fixture(profile_name, "")
-        for xml_path in sorted(fixtures.glob("*.xml")):
-            out = xml_path.with_suffix(".expected.json")
-            out.write_text(json.dumps(expected(xml_path.read_text()), indent=1, ensure_ascii=False) + "\n")
+        for out in rerecord(profile_name):
             print("wrote", out.relative_to(ROOT))
         return
     dump, profile_name, name = opts.args
-    versioning.PROFILE = igprofiles.load(profile_name)
-    raw = Path(dump).read_text()
-    clean = pseudonymize(raw)
-    if shape(parsing.parse_screen(clean)) != shape(parsing.parse_screen(raw)):
-        sys.exit("pseudonymizing changed what the parsers find; not writing a fixture")
-    xml_path = igprofiles.fixture(profile_name, f"{name}.xml")
-    xml_path.parent.mkdir(exist_ok=True)
-    xml_path.write_text("<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n" + clean + "\n")
-    result = expected(clean)
-    xml_path.with_suffix(".expected.json").write_text(json.dumps(result, indent=1, ensure_ascii=False) + "\n")
-    print(f"wrote {xml_path.relative_to(ROOT)} (+ .expected.json):")
-    print(
-        f"  {len(result['posts'])} post(s), {sum(bool(p['caption']) for p in result['posts'])} with captions;"
-        f" {len(result['story_tray'])} story tray item(s); {len(result['following_list'])} following row(s)"
-    )
-    print("\nReview before committing — text still in the fixture:")
-    for value in leftover_text(clean):
-        print("  ", value)
+    try:
+        print_promoted(promote(Path(dump), profile_name, name))
+    except ValueError as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":

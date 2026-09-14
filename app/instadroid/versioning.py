@@ -73,6 +73,8 @@ def activate_profile(installed: str | None) -> None:
         warnings.append(
             f"Instagram {installed} is installed but profile {PROFILE.name} targets {PROFILE.major}.x; {hint}"
         )
+    if not PROFILE.validated:
+        warnings.append(f"profile {PROFILE.name} is not validated yet (see docs/NEXT.md)")
     if unknown := _unknown_hooks(PROFILE):
         warnings.append(
             f"profile {PROFILE.name} defines {', '.join(unknown)}, which match no @versioned function"

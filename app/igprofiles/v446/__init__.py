@@ -9,4 +9,5 @@ class Profile(Profile445):
     major = 446
     apk_version = "446.0.0.49.77"
     selectors = SELECTORS
+    validated = True
     notes = "validated: login, stories, photos, carousels, Reels, permalinks (445 selectors unchanged)"

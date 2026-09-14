@@ -77,6 +77,7 @@ def capture_story(d: u2.Device, item: parsing.StoryItem) -> CapturedStory | None
         d.press("back")
         device.human_pause(1, 1.5)
         return None
+    diagnostics.capture_screen(d, "story_viewer", xml)
     img = d.screenshot()
     d.press("back")  # off the device from here on; cropping/saving below never risks the timer
     device.human_pause(1, 1.5)
@@ -112,8 +113,11 @@ def scrape_stories(d: u2.Device, con: sqlite3.Connection) -> int:
         device.human_pause(1, 1.5)
     else:
         log("WARN: could not reach the Home feed for stories; skipping this run")
+        diagnostics.capture_screen(d, "home_feed", failure=True)
         return 0
-    items = [i for i in parsing.parse_story_tray(d.dump_hierarchy()) if not i["seen"]]
+    tray_xml = d.dump_hierarchy()
+    diagnostics.capture_screen(d, "home_feed", tray_xml)
+    items = [i for i in parsing.parse_story_tray(tray_xml) if not i["seen"]]
     new = 0
     for item in items[: config.MAX_STORIES_PER_RUN]:
         if not navigation.on_home_feed(d):

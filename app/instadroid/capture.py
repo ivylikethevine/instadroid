@@ -97,6 +97,7 @@ def fetch_permalink(d: u2.Device, post_hash: str) -> tuple[str | None, str | Non
         navigation.close_sheets(d)
         navigation.back_to_feed(d)
         return None, "sheet"
+    diagnostics.capture_screen(d, "share_sheet")
     # Note: clearing the clipboard first (d.set_clipboard) makes the next read come back empty.
     # Staleness is caught below by comparing with the last link we handed out.
     device.human_pause(0.8, 1.2)  # let the sheet finish animating

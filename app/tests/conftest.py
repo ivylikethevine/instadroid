@@ -25,3 +25,10 @@ def no_real_logcat(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     monkeypatch.setattr(diagnostics, "save_failure_logcat", lambda error: calls.append(error))
     return calls
+
+
+@pytest.fixture(autouse=True)
+def no_profile_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Capture mode stays off (whatever the environment says), with a fresh per-screen count."""
+    monkeypatch.setattr(config, "PROFILE_CAPTURE_DIR", "")
+    monkeypatch.setattr(diagnostics, "_captured", {})

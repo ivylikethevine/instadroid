@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import cast
 
 import uiautomator2 as u2
+from igprofiles.screens import screen_of_dump
 from PIL import Image
 
 from . import config
 from .common import log
+
+_captured: dict[str, int] = {}  # screen -> pairs saved to PROFILE_CAPTURE_DIR by this process
 
 
 def prune_debug_dumps() -> None:
@@ -104,20 +107,43 @@ def save_failure_logcat(error: str) -> Path | None:
     return path
 
 
+def _write_pair(directory: Path, stem: str, d: u2.Device, xml: str) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{stem}_hierarchy.xml").write_text(xml)
+    cast(Image.Image, d.screenshot()).convert("RGB").save(directory / f"{stem}_screen.jpg", quality=70)
+
+
 def dump_debug(d: u2.Device, name: str, xml: str | None = None) -> None:
     """Save a hierarchy + screenshot pair for later inspection. Pass `xml` when the caller
     already has a fresh dump, to avoid a redundant device round-trip. Best-effort: a debug dump is
     a diagnostic aid, not part of the scrape itself, so a write failure here (e.g. a stale file
     left owned by a different uid from a `docker exec -u root` session) must not crash the whole
-    run — it just means this one dump is missing from $DEBUG_DIR."""
+    run — it just means this one dump is missing from $DEBUG_DIR. In profile capture mode the pair
+    is also kept in PROFILE_CAPTURE_DIR, since these are exactly the screens a new profile breaks on."""
     try:
-        config.DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-        (config.DEBUG_DIR / f"{name}_hierarchy.xml").write_text(
-            xml if xml is not None else d.dump_hierarchy()
-        )
-        cast(Image.Image, d.screenshot()).convert("RGB").save(
-            config.DEBUG_DIR / f"{name}_screen.jpg", quality=70
-        )
+        xml = xml if xml is not None else d.dump_hierarchy()
+        _write_pair(config.DEBUG_DIR, name, d, xml)
         prune_debug_dumps()
     except OSError as e:
         log(f"WARN: could not write debug dump {name!r}:", repr(e))
+        return
+    capture_screen(d, screen_of_dump(name) or name, xml, failure=True)
+
+
+def capture_screen(d: u2.Device, screen: str, xml: str | None = None, failure: bool = False) -> None:
+    """Profile capture mode (PROFILE_CAPTURE_DIR set, see scripts/new_profile.py): save this screen
+    as `<seq>-<screen>[-fail]_hierarchy.xml` + `_screen.jpg`, up to CAPTURE_PER_SCREEN per screen
+    (failure dumps always), so a baseline run under a new profile leaves one reviewable dump of
+    every screen it reached. A no-op otherwise, and never raises: capturing must not change a run."""
+    if not config.PROFILE_CAPTURE_DIR:
+        return
+    count = _captured.get(screen, 0)
+    if not failure and count >= config.CAPTURE_PER_SCREEN:
+        return
+    _captured[screen] = count + 1
+    seq = sum(_captured.values())
+    stem = f"{seq:03d}-{screen}" + ("-fail" if failure else "")
+    try:
+        _write_pair(Path(config.PROFILE_CAPTURE_DIR), stem, d, xml if xml is not None else d.dump_hierarchy())
+    except Exception as e:  # a device hiccup or a full disk; the run itself goes on
+        log(f"WARN: could not capture screen {stem!r}:", repr(e))

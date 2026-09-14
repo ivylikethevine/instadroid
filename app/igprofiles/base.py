@@ -29,6 +29,9 @@ class BaseProfile:
     apk_version: str
     selectors: dict[str, Any]
     notes: str = ""  # free text shown by `scraper.py profiles`
+    # False until a live baseline run and replay fixtures show the profile works (scripts/new_profile.py
+    # validate). Running an unvalidated profile works, with a warning; DEFAULT_PROFILE must be validated.
+    validated: bool = False
 
     @property
     def name(self) -> str:
