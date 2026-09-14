@@ -626,6 +626,8 @@ def test_scrape_once_end_to_end(fast_offline, monkeypatch):
         "link_clipboard_failures": 0,
         "warning": None,
         "filtered_posts": 0,
+        "mem_peak_mb": None,  # the fake device has no cgroup files: the memory guard is off
+        "oom_kills": None,
     }
     posts = {r["id"]: r for r in con.execute("SELECT * FROM posts")}
     assert set(posts) == {"TOP123", "OTHER1", "OLD1"}
@@ -973,3 +975,118 @@ def test_main_records_a_successful_run_with_device_versions(fast_offline, monkey
     assert (run["android_release"], run["ig_version"]) == ("13", "445.0.0.45.83")
     assert run["selector_profile"] == "445"
     assert scraper.POLL_MIN_H * 3600 <= sleeps[0] <= scraper.POLL_MAX_H * 3600
+
+
+# --- memory guard ---------------------------------------------------------------------------------
+
+MIB = 1024 * 1024
+
+
+def cgroup_output(current_mib, max_mib=3072, oom_kill=0):
+    limit = "max" if max_mib is None else str(max_mib * MIB)
+    return f"{current_mib * MIB}\n{limit}\nlow 0\nhigh 0\nmax 12\noom 3\noom_kill {oom_kill}\n"
+
+
+def with_cgroup(d, readings):
+    """Make FakeDevice `d` answer the memory guard's cgroup read with successive `readings`
+    (cgroup_output() strings); the last one repeats."""
+    shell = d.shell
+    readings = list(readings)
+
+    def fake_shell(cmd):
+        joined = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if joined.startswith("cat /sys/fs/cgroup/memory.current"):
+            d.shell_calls.append(joined)
+            return type("Out", (), {"output": readings.pop(0) if len(readings) > 1 else readings[0]})()
+        return shell(cmd)
+
+    d.shell = fake_shell
+    return d
+
+
+def test_redroid_memory_parses_the_cgroup_files():
+    d = with_cgroup(feed_device(), [cgroup_output(1843, 3072, oom_kill=7)])
+    assert scraper._redroid_memory(d) == {"current": 1843 * MIB, "max": 3072 * MIB, "oom_kill": 7}
+    unlimited = with_cgroup(feed_device(), [cgroup_output(500, None)])
+    assert scraper._redroid_memory(unlimited)["max"] is None
+    assert scraper._redroid_memory(feed_device()) is None  # no cgroup files: guard off
+
+
+def test_scrape_once_starts_and_ends_with_instagram_stopped(monkeypatch):
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    d = feed_device()
+    scraper.scrape_once(d, scraper.db_init())
+    stops = [i for i, c in enumerate(d.shell_calls) if c == f"am force-stop {scraper.IG_PKG}"]
+    assert len(stops) == 2
+    assert stops[0] == 0 or all(
+        c.startswith("am force-stop") for c in d.shell_calls[: stops[0]]
+    )  # first thing
+    assert stops[1] > d.shell_calls.index("dumpsys package com.instagram.android")  # after the run
+
+
+def test_scrape_once_still_stops_instagram_when_the_run_raises(monkeypatch):
+    def boom(d):
+        raise scraper.DeviceNotReady("feed never opened")
+
+    monkeypatch.setattr(scraper, "open_target_feed", boom)
+    d = feed_device()
+    with pytest.raises(scraper.DeviceNotReady):
+        scraper.scrape_once(d, scraper.db_init())
+    assert d.shell_calls.count(f"am force-stop {scraper.IG_PKG}") == 2
+    for pkg in scraper.CACHED_APP_SWEEP:
+        assert d.shell_calls.count(f"am force-stop {pkg}") == 2
+
+
+def test_memory_guard_stops_the_run_before_the_limit(monkeypatch):
+    monkeypatch.setattr(scraper, "MEMORY_GUARD_PERCENT", 85)
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    # start, before stories, first screen: fine; second screen check: 2700 of 3072 MiB is 88%.
+    d = with_cgroup(
+        feed_device(), [cgroup_output(900), cgroup_output(1200), cgroup_output(1500), cgroup_output(2700)]
+    )
+    stats = scraper.scrape_once(d, scraper.db_init())
+    assert "stopped early: redroid memory at 2700 of 3072 MiB (MEMORY_GUARD_PERCENT=85)" in stats["warning"]
+    assert stats["mem_peak_mb"] == 2700
+    assert stats["oom_kills"] == 0
+
+
+def test_memory_guard_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(scraper, "MEMORY_GUARD_PERCENT", 0)
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    stats = scraper.scrape_once(with_cgroup(feed_device(), [cgroup_output(3000)]), scraper.db_init())
+    assert not (stats["warning"] or "").startswith("stopped early")
+    assert stats["mem_peak_mb"] == 3000  # still measured
+
+
+def test_memory_guard_skips_stories_when_already_over(monkeypatch):
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    d = with_cgroup(feed_device(), [cgroup_output(2900)])
+    stats = scraper.scrape_once(d, scraper.db_init())
+    assert stats["new_stories"] == 0
+    assert "skipped stories: redroid memory at 2900 of 3072 MiB" in stats["warning"]
+
+
+def test_oom_kills_during_a_run_are_reported(monkeypatch):
+    monkeypatch.setattr(scraper, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(scraper, "MAX_SCROLLS", 1)
+    d = with_cgroup(feed_device(), [cgroup_output(900, oom_kill=7), cgroup_output(1000, oom_kill=9)])
+    stats = scraper.scrape_once(d, scraper.db_init())
+    assert stats["oom_kills"] == 2
+    assert "redroid OOM-killed 2 Android process(es)" in stats["warning"]
+
+
+def test_main_records_memory_stats(fast_offline, monkeypatch):
+    _stop_after_first_sleep(monkeypatch)
+    monkeypatch.setattr(scraper, "connect_device", feed_device)
+    stats = {"new": 0, "new_stories": 0, "warning": None, "mem_peak_mb": 1843, "oom_kills": 1}
+    monkeypatch.setattr(scraper, "scrape_once", lambda d, con: stats)
+    with pytest.raises(StopLoop):
+        scraper.main()
+    row = (
+        sqlite3.connect(fast_offline / "posts.sqlite")
+        .execute("SELECT mem_peak_mb, oom_kills FROM runs")
+        .fetchone()
+    )
+    assert row == (1843, 1)

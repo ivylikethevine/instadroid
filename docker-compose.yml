@@ -27,12 +27,20 @@ services:
     privileged: true
     # Comes back after a host reboot or crash; `docker compose stop`/`down` keeps it down.
     restart: unless-stopped
-    # Measured peak while Instagram is actually open and scrolling: ~1.1-1.26GiB (idle boot is
-    # ~500-525MiB). 2g leaves ~60% headroom over the observed peak; shm_size is left at a more
-    # conservative 2x that guidance (1g) rather than cut aggressively, since under-provisioning it
-    # risks screenshot/graphics-buffer failures that are much harder to diagnose than an OOM.
-    mem_limit: 2g
+    # Memory: a live scrape measured 1.98GiB (2026-09-11), and on 2026-09-14 a scrape sat at
+    # 1.7-1.99GiB of the old 2g for its whole run, the kernel OOM-killed 7 Android processes inside
+    # the container, and the host desktop froze until the run was stopped (see CLAUDE.md). 3g gives
+    # real headroom over that peak. memswap_limit equal to mem_limit means no swap: a container
+    # thrashing swap is exactly the kind of pressure that stalls the whole host. The scraper also
+    # stops a run itself before this ceiling (MEMORY_GUARD_PERCENT in app/scraper.py).
+    # shm_size stays generous: under-provisioning it risks screenshot/graphics-buffer failures that
+    # are much harder to diagnose than an OOM.
+    mem_limit: ${REDROID_MEM_LIMIT:-3g}
+    memswap_limit: ${REDROID_MEM_LIMIT:-3g}
     shm_size: 1g
+    # CPU: ARM translation, JIT and dex2oat can saturate every core; a cap keeps the host usable.
+    # 4 is half of this host's 8 cores.
+    cpus: ${REDROID_CPUS:-4}
     volumes:
       - ./local/data/android:/data
     ports:
@@ -47,6 +55,27 @@ services:
       - androidboot.redroid_fps=30
       - androidboot.use_memfd=true
 
+  # One-shot: creates the app's bind-mount directories owned by the app user (uid 1000) before app
+  # starts. Without it, Docker creates a missing bind-mount source as root, and the app (USER 1000)
+  # then fails with "sqlite3.OperationalError: unable to open database file". Only a directory still
+  # owned by root is chowned, and never recursively. local/data/android is left alone: redroid runs
+  # as root and Android manages its own permissions inside it. Same image as app, so there's nothing
+  # extra to pull. Note `docker compose run --no-deps app` skips this.
+  init-dirs:
+    build: ./app
+    user: "0:0"
+    restart: "no"
+    logging: *logging
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        for d in db media debug apk; do
+        mkdir -p "/data/$$d";
+        [ "$$(stat -c %u "/data/$$d")" = 0 ] && chown 1000:1000 "/data/$$d";
+        done; true
+    volumes:
+      - ./local/data:/data
+
   # Single image: the scraper loop and the feed server run as two processes in one container
   # (see app/entrypoint.sh), so this is the only thing to build/publish alongside redroid.
   app:
@@ -55,7 +84,11 @@ services:
     # entrypoint.sh exits if either process dies, so this restarts a clean scraper+feed pair.
     restart: unless-stopped
     logging: *logging
-    depends_on: [redroid]
+    depends_on:
+      redroid:
+        condition: service_started
+      init-dirs:
+        condition: service_completed_successfully
     network_mode: host         # so it can reach redroid's ADB port on the host loopback
     env_file: .env             # IG_USERNAME / IG_PASSWORD for automated login
     environment:
@@ -97,13 +130,16 @@ services:
       IG_SELECTOR_PROFILE: ${IG_SELECTOR_PROFILE:-}  # force a selector profile (e.g. 445); empty = match installed Instagram
       APK_CACHE_DIR: ${APK_CACHE_DIR:-/apk}         # cached xapk/apk, reused across installs
       APK_FETCH_TIMEOUT: ${APK_FETCH_TIMEOUT:-300}  # seconds allowed for apkeep's download / adb install
+      MEMORY_GUARD_PERCENT: ${MEMORY_GUARD_PERCENT:-85}  # stop a run once redroid uses this % of its mem_limit; 0 disables
     volumes:
       - ./local/data/db:/db
       - ./local/data/media:/media
       - ./local/data/debug:/debug
       - ./local/data/apk:/apk
-    # Measured peak while actively scraping: ~97-125MiB (idle is ~67-97MiB).
+    # Measured peak while actively scraping: ~97-125MiB (idle is ~67-97MiB). No swap, same reason
+    # as redroid above.
     mem_limit: 256m
+    memswap_limit: 256m
     cpus: 1.5
     # /health returns 503 once scraping looks stuck or keeps failing (see _scraper_health() in
     # app.py), so `docker ps` shows "unhealthy". Docker itself doesn't restart unhealthy containers.

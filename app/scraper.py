@@ -128,6 +128,11 @@ RETRY_DELAYS_MINUTES = [
 # interval or per-feed TTL. Empty disables. Any reader with an equivalent plain-GET refresh webhook
 # works here too, not just FreshRSS.
 FRESHRSS_REFRESH_URL = os.environ.get("FRESHRSS_REFRESH_URL", "")
+# Stop a run early once redroid's container memory reaches this percent of its mem_limit, read from
+# the device's own cgroup (see _redroid_memory()). Android's lmkd never reclaims here (it judges
+# against the host's RAM, see CLAUDE.md), so the scraper has to back off itself: on 2026-09-14 a run
+# at the old 2g limit OOM-killed Android processes and froze the host. 0 disables.
+MEMORY_GUARD_PERCENT = float(os.environ.get("MEMORY_GUARD_PERCENT", "85"))
 FRESHRSS_REFRESH_TIMEOUT = float(os.environ.get("FRESHRSS_REFRESH_TIMEOUT", "10.0"))
 
 # --- Selectors (the fragile part) ---------------------------------------------------
@@ -318,7 +323,14 @@ def db_init():
         )"""
     )
     run_cols = {r["name"] for r in con.execute("PRAGMA table_info(runs)")}
-    for col in ("link_sheet_failures", "link_clipboard_failures", "new_stories", "filtered_posts"):
+    for col in (
+        "link_sheet_failures",
+        "link_clipboard_failures",
+        "new_stories",
+        "filtered_posts",
+        "mem_peak_mb",
+        "oom_kills",
+    ):
         if col not in run_cols:
             con.execute(f"ALTER TABLE runs ADD COLUMN {col} INTEGER")
     for col in ("warning", "ig_version", "redroid_image", "selector_profile"):
@@ -382,11 +394,14 @@ def record_run(
     new_stories=0,
     warning=None,
     filtered_posts=0,
+    mem_peak_mb=None,
+    oom_kills=None,
 ):
     con.execute(
         "INSERT INTO runs (started_at, finished_at, new_posts, error, android_release, android_sdk,"
         " device_product, link_sheet_failures, link_clipboard_failures, new_stories, warning, ig_version,"
-        " redroid_image, filtered_posts, selector_profile) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " redroid_image, filtered_posts, selector_profile, mem_peak_mb, oom_kills)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             started_at,
             finished_at,
@@ -403,6 +418,8 @@ def record_run(
             snapshot.get("redroid_image"),
             filtered_posts,
             snapshot.get("selector_profile"),
+            mem_peak_mb,
+            oom_kills,
         ),
     )
     con.commit()
@@ -797,6 +814,81 @@ def _stop_instagram(d):
         d.shell(["am", "force-stop", IG_PKG])
     except Exception as e:
         log(f"WARN: could not force-stop {IG_PKG}:", repr(e))
+
+
+def _redroid_memory(d) -> dict | None:
+    """redroid's own container memory, read through adb from the cgroup v2 files the container sees
+    as /sys/fs/cgroup (readable by the adb shell user): {"current": bytes, "max": bytes or None when
+    unlimited, "oom_kill": kernel OOM kills in this container since it started}. None when the files
+    aren't there (e.g. a cgroup v1 host) or adb fails, which turns the memory guard off."""
+    try:
+        out = d.shell(
+            [
+                "cat",
+                "/sys/fs/cgroup/memory.current",
+                "/sys/fs/cgroup/memory.max",
+                "/sys/fs/cgroup/memory.events",
+            ]
+        ).output
+        lines = (out or "").split()
+        current, limit = int(lines[0]), lines[1]
+        events = dict(zip(lines[2::2], lines[3::2], strict=False))
+        return {
+            "current": current,
+            "max": None if limit == "max" else int(limit),
+            "oom_kill": int(events.get("oom_kill", 0)),
+        }
+    except Exception:
+        return None
+
+
+class MemoryGuard:
+    """Tracks redroid's memory across one run: the peak seen, OOM kills since the run started, and
+    whether usage has crossed MEMORY_GUARD_PERCENT of the container's limit. Every method is a no-op
+    when _redroid_memory() can't read the cgroup."""
+
+    def __init__(self, d):
+        self.d = d
+        self.peak: int | None = None
+        first = self._read()
+        self.oom_kill_start = first["oom_kill"] if first else None
+        self.last = first
+
+    def _read(self):
+        m = _redroid_memory(self.d)
+        if m:
+            self.peak = max(self.peak or 0, m["current"])
+        self.last = m
+        return m
+
+    def exceeded(self) -> str | None:
+        """A reason string when usage is at or over the guard threshold, else None."""
+        m = self._read()
+        if not (MEMORY_GUARD_PERCENT and m and m["max"]):
+            return None
+        if m["current"] < m["max"] * MEMORY_GUARD_PERCENT / 100:
+            return None
+        mib = 1024 * 1024
+        return (
+            f"redroid memory at {m['current'] // mib} of {m['max'] // mib} MiB"
+            f" (MEMORY_GUARD_PERCENT={MEMORY_GUARD_PERCENT:g})"
+        )
+
+    def peak_mb(self) -> int | None:
+        return self.peak // (1024 * 1024) if self.peak is not None else None
+
+    def oom_kills(self) -> int | None:
+        m = self._read()
+        if not m or self.oom_kill_start is None:
+            return None
+        return max(0, m["oom_kill"] - self.oom_kill_start)
+
+
+def _free_device_memory(d):
+    """Force-stop Instagram and the cached system apps. Run both before a run (so it never starts on
+    top of a still-resident Instagram, e.g. left open by `scraper.py login`) and after it."""
+    _sweep_cached_apps(d)
+    _stop_instagram(d)
 
 
 def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
@@ -2016,6 +2108,27 @@ def _prune_old_posts(con):
 
 
 def scrape_once(d, con) -> dict:
+    """One scrape run. Starts and ends with Instagram and the cached system apps force-stopped
+    (_free_device_memory), the end in a `finally` so a run that raises halfway doesn't leave
+    Instagram's ~800MiB resident until the next poll. Adds the run's redroid memory peak and OOM
+    kill count (MemoryGuard) to the stats."""
+    _free_device_memory(d)
+    guard = MemoryGuard(d)
+    try:
+        stats = _scrape_feed(d, con, guard)
+    finally:
+        _free_device_memory(d)
+    stats["mem_peak_mb"] = guard.peak_mb()
+    stats["oom_kills"] = guard.oom_kills()
+    if stats["oom_kills"]:
+        warnings = [
+            w for w in (stats["warning"], f"redroid OOM-killed {stats['oom_kills']} Android process(es)") if w
+        ]
+        stats["warning"] = "; ".join(warnings)
+    return stats
+
+
+def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     global _last_url
     try:
@@ -2037,12 +2150,17 @@ def scrape_once(d, con) -> dict:
         rows = con.execute("SELECT username FROM following").fetchall()
         if rows:  # empty/never-refreshed means "not initialized yet" -> filter nothing
             followed = {r[0] for r in rows}
-    try:
-        new_stories = scrape_stories(d, con)
-    except Exception as e:  # a stories-viewer surprise must not sink the whole run
-        log("WARN: story capture failed, continuing with posts:", repr(e))
-        new_stories = 0
-        open_target_feed(d)  # best-effort recovery back onto the screen the post loop expects
+    warnings: list[str] = []
+    new_stories = 0
+    if reason := guard.exceeded():
+        log(f"WARN: {reason}; skipping stories")
+        warnings.append(f"skipped stories: {reason}")
+    else:
+        try:
+            new_stories = scrape_stories(d, con)
+        except Exception as e:  # a stories-viewer surprise must not sink the whole run
+            log("WARN: story capture failed, continuing with posts:", repr(e))
+            open_target_feed(d)  # best-effort recovery back onto the screen the post loop expects
     if new_stories:
         log(f"stories: {new_stories} new")
     new, seen_streak, this_run = 0, 0, set()
@@ -2050,11 +2168,14 @@ def scrape_once(d, con) -> dict:
     link_sheet_failures = link_clipboard_failures = 0
     accounts_seen: set[str] = set()  # usernames already upserted this run
     avatars_checked: set[str] = set()  # usernames whose avatar has been considered this run
-    warnings: list[str] = []
     filtered_posts = 0  # dropped by the followed-accounts allowlist, if enabled
     screens = empty_streak = 0
     feed_reopened = False
     while screens < MAX_SCROLLS:
+        if reason := guard.exceeded():
+            log(f"WARN: {reason}; stopping the run early")
+            warnings.append(f"stopped early: {reason}")
+            break
         xml = d.dump_hierarchy()
         raw_posts = parse_hierarchy(xml)
         posts = raw_posts
@@ -2229,10 +2350,8 @@ def scrape_once(d, con) -> dict:
     _prune_old_posts(con)
     _prune_expired_stories(con)
     _prune_debug_dumps()  # age-based pruning shouldn't depend on a new dump happening to be taken
-    # Leave the app in a natural state
+    # Leave the app in a natural state (scrape_once() force-stops it right after)
     d.press("home")
-    _sweep_cached_apps(d)
-    _stop_instagram(d)
     if push_error := _ping_freshrss(new, new_stories):
         warnings.append(push_error)
     if PROFILE_WARNING:  # read at the end: an auto-install mid-run re-resolves the profile
@@ -2275,6 +2394,8 @@ def main():
             stats.get("new_stories", 0),
             stats.get("warning"),
             stats.get("filtered_posts", 0),
+            stats.get("mem_peak_mb"),
+            stats.get("oom_kills"),
         )
         seconds, attempt = next_sleep_seconds(exc, attempt)
         if attempt:
@@ -2292,7 +2413,11 @@ if __name__ == "__main__":
         stats = scrape_once(connect_device(), con)
         print(stats["new"], "new posts,", stats["new_stories"], "new stories")
     elif len(sys.argv) > 1 and sys.argv[1] == "login":
-        print("logged in:", ensure_logged_in(connect_device()))
+        d = connect_device()
+        try:
+            print("logged in:", ensure_logged_in(d))
+        finally:
+            _stop_instagram(d)  # don't leave ~800MiB resident for whatever runs next
     elif len(sys.argv) > 1 and sys.argv[1] == "install":
         if len(sys.argv) > 3:
             print("usage: scraper.py install [VERSION]   (default IG_APK_VERSION; '' = latest)")

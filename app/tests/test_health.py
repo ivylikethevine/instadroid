@@ -111,3 +111,20 @@ def test_status_page_shows_the_health_reason(tmp_path, monkeypatch):
     _add_runs(tmp_path / "posts.sqlite", [(6, None, None)])
     body = client.get("/status").text
     assert "OVERDUE" in body and "no scrape run has finished" in body
+
+
+def test_status_page_shows_peak_memory_and_oom_kills(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)
+    db = tmp_path / "posts.sqlite"
+    _add_runs(db, [(0.2, None, None), (0.1, None, None)])
+    con = sqlite3.connect(db)
+    con.execute("ALTER TABLE runs ADD COLUMN mem_peak_mb INTEGER")
+    con.execute("ALTER TABLE runs ADD COLUMN oom_kills INTEGER")
+    con.execute("UPDATE runs SET mem_peak_mb=1843, oom_kills=0 WHERE id=1")
+    con.execute("UPDATE runs SET mem_peak_mb=2012, oom_kills=7 WHERE id=2")
+    con.commit()
+    con.close()
+    body = client.get("/status").text
+    assert "<th>Peak mem</th>" in body
+    assert "<td>1843 MiB</td>" in body
+    assert "<td>2012 MiB, 7 OOM kill(s)</td>" in body
