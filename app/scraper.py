@@ -14,10 +14,12 @@ import os
 import random
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -57,6 +59,15 @@ MEDIA_QUALITY = int(os.environ.get("MEDIA_QUALITY", "95"))  # JPEG quality for s
 IG_USERNAME = os.environ.get("IG_USERNAME", "")
 IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
 IG_PKG = "com.instagram.android"
+# If the device has no Instagram installed, ensure_logged_in() fetches it with apkeep (built into
+# the image, see Dockerfile) and adb-installs it, instead of just raising — this is what lets the
+# service recover on its own from a fresh /data volume or the /data/system-reset scenario in
+# CLAUDE.md, where Instagram's package registration was orphaned but the app itself wasn't touched.
+# 0/false/empty falls back to the original behavior: raise and require a manual `adb install`.
+IG_AUTO_INSTALL = os.environ.get("IG_AUTO_INSTALL", "1").strip().lower() not in ("0", "false", "")
+IG_APK_VERSION = os.environ.get("IG_APK_VERSION", "")  # empty = whatever apkeep resolves as latest
+APK_CACHE_DIR = Path(os.environ.get("APK_CACHE_DIR", "/apk"))
+APK_FETCH_TIMEOUT = float(os.environ.get("APK_FETCH_TIMEOUT", "300"))  # apkeep's own download
 DEBUG_KEEP = 12  # debug dump pairs to retain; older ones are pruned on every new dump
 DEBUG_RETAIN_DAYS = float(os.environ.get("DEBUG_RETAIN_DAYS", "7"))  # 0 disables age-based pruning
 _DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png")
@@ -843,6 +854,73 @@ def _stop_instagram(d):
         log(f"WARN: could not force-stop {IG_PKG}:", repr(e))
 
 
+def _fetch_instagram_apk() -> list[Path]:
+    """Return the APK(s) to install: the base APK first, then any config.*.apk split. Reuses a
+    bundle already sitting in APK_CACHE_DIR (from a previous fetch, or dropped there by hand) so a
+    reinstall after e.g. a /data/system reset (see CLAUDE.md) costs nothing over the network; only
+    runs apkeep when the cache is empty.
+    """
+    APK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # xapk_dir holds nothing but one unpacked Instagram bundle, so every *.apk in it belongs to
+    # this install (unlike APK_CACHE_DIR itself, which also holds the .xapk apkeep downloaded).
+    xapk_dir = APK_CACHE_DIR / "xapk"
+    cached = sorted(xapk_dir.glob("*.apk")) if xapk_dir.is_dir() else []
+    if not cached:
+        cached = sorted(APK_CACHE_DIR.glob(f"{IG_PKG}*.apk"))
+    if not cached:
+        xapks = sorted(APK_CACHE_DIR.glob(f"{IG_PKG}*.xapk"))
+        if not xapks:
+            spec = f"{IG_PKG}@{IG_APK_VERSION}" if IG_APK_VERSION else IG_PKG
+            log(f"fetching {spec} via apkeep (apk-pure)")
+            try:
+                subprocess.run(
+                    ["apkeep", "-a", spec, "-d", "apk-pure", str(APK_CACHE_DIR)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=APK_FETCH_TIMEOUT,
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                stderr = getattr(e, "stderr", "") or ""
+                raise DeviceNotReady(f"apkeep failed to fetch {IG_PKG}: {e!r}: {stderr[-2000:]}") from e
+            xapks = sorted(APK_CACHE_DIR.glob(f"{IG_PKG}*.xapk"))
+        if xapks:
+            # apkeep hands back a bundle (base + per-density/abi/language splits); unpack it once
+            # and cache the extracted APKs so a later reinstall skips both the download and this.
+            with zipfile.ZipFile(xapks[-1]) as zf:
+                zf.extractall(xapk_dir)
+            cached = sorted(xapk_dir.glob("*.apk"))
+        else:
+            cached = sorted(APK_CACHE_DIR.glob(f"{IG_PKG}*.apk"))
+    if not cached:
+        raise DeviceNotReady(f"apkeep reported success but no {IG_PKG} apk was found in {APK_CACHE_DIR}")
+    # The base APK (no "config." prefix) has to be install-multiple's first argument; order among
+    # the config.*.apk splits themselves doesn't matter to adb.
+    base = [p for p in cached if not p.name.startswith("config.")]
+    splits = [p for p in cached if p.name.startswith("config.")]
+    if not base:
+        raise DeviceNotReady(f"no base apk (only config.* splits) found in {xapk_dir or APK_CACHE_DIR}")
+    return base + splits
+
+
+def _install_instagram(d) -> None:
+    """Fetch (or reuse a cached) Instagram bundle and adb-install it, same as the manual
+    `apkeep` + `install-multiple` steps in README.md's First-time setup. Raises DeviceNotReady on
+    any failure so the caller's retry ladder (is_transient()) handles it rather than aborting the
+    whole run.
+    """
+    apks = _fetch_instagram_apk()
+    cmd = ["adb", "-s", ADB_ADDR, "install-multiple" if len(apks) > 1 else "install", *map(str, apks)]
+    log(f"installing {IG_PKG} ({len(apks)} apk(s))")
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=APK_FETCH_TIMEOUT)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        stderr = getattr(e, "stderr", "") or ""
+        raise DeviceNotReady(f"adb install of {IG_PKG} failed: {e!r}: {stderr[-2000:]}") from e
+    m = re.search(r"versionName=(\S+)", d.shell(["dumpsys", "package", IG_PKG]).output or "")
+    log(f"installed {IG_PKG}", m.group(1) if m else "(version unknown)")
+
+
 def _redact_url(url: str) -> str:
     """scheme://host/path only, no query string — FRESHRSS_REFRESH_URL carries an auth token and
     must never land in the shared container log."""
@@ -945,7 +1023,12 @@ def ensure_logged_in(d):
     screen so the caller can abort and a human can finish it.
     """
     if IG_PKG not in d.app_list():
-        raise RuntimeError(f"{IG_PKG} is not installed on the device; adb install it first")
+        if not IG_AUTO_INSTALL:
+            raise RuntimeError(f"{IG_PKG} is not installed on the device; adb install it first")
+        log(f"{IG_PKG} not installed; fetching and installing")
+        _install_instagram(d)
+        if IG_PKG not in d.app_list():
+            raise DeviceNotReady(f"{IG_PKG} still not present after install")
     _launch_app(d)
     human_pause(4, 6)
     for attempt in range(3):
