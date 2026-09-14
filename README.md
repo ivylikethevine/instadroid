@@ -61,8 +61,6 @@ tested it on).
 - Docker + compose, privileged containers allowed, for redroid and the `app` container. `app` uses
   host networking to reach redroid's ADB port.
 - `adb` on the host. `scrcpy` is optional; `adb exec-out screencap -p > shot.png` is enough for checks.
-- [`apkeep`](https://github.com/EFForg/apkeep) to fetch the Instagram APK from APKPure (apkmirror
-  blocks scripted downloads).
 
 ## First-time setup
 
@@ -76,14 +74,27 @@ adb -s 127.0.0.1:5555 wait-for-device shell 'while ! pm list packages >/dev/null
                                               # apps disabled (cuts idle memory), + DEVICE_TIMEZONE
                                               # from .env if set (see "Staying under the radar")
 
-apkeep -a com.instagram.android -d apk-pure local
-unzip -o local/com.instagram.android.xapk -d local/xapk
-adb -s 127.0.0.1:5555 install-multiple local/xapk/com.instagram.android.apk local/xapk/config.*.apk
-
 docker compose up -d --build
 docker compose exec app python scraper.py login      # types the .env credentials into the login form
 docker compose exec app python scraper.py once        # first scrape, watch the output
 ```
+
+The `app` container installs Instagram on the device itself the first time it finds it missing:
+`ensure_logged_in()` fetches it with `apkeep` (built into the image, from APKPure) and
+`adb install-multiple`s it, caching the downloaded bundle in `local/data/apk` so a later reinstall
+(e.g. after a `/data/system` reset — see CLAUDE.md) doesn't re-download it. Set `IG_AUTO_INSTALL=0`
+in `.env` to disable this and fall back to a manual install instead:
+
+```bash
+apkeep -a com.instagram.android -d apk-pure local
+unzip -o local/com.instagram.android.xapk -d local/xapk
+adb -s 127.0.0.1:5555 install-multiple local/xapk/com.instagram.android.apk local/xapk/config.*.apk
+```
+
+(needs [`apkeep`](https://github.com/EFForg/apkeep) on the host; apkmirror blocks scripted
+downloads, hence APKPure). `IG_APK_VERSION` pins a specific version instead of latest, and
+`APK_CACHE_DIR`/`APK_FETCH_TIMEOUT` tune the cache location and download/install timeout — see
+`.env.example`.
 
 `tune-android.sh` disables a curated list of unused system apps to cut idle memory (see CLAUDE.md's
 "Reducing idle memory" for the measurement). One package must never be added to that list:
@@ -387,9 +398,11 @@ Grouped by how much of the current architecture each would touch, roughly smalle
   idmap and telephony.db corruption in `CLAUDE.md` all came from exactly that.
 - **Backups**: `sqlite3 .backup` of the posts database, plus a snapshot of redroid's `/data` before
   image or APK upgrades — the saved login session is the expensive thing to lose.
-- **Instagram update path**: detect the forced "update Instagram" screen (as a challenge-style
-  stop) and add a `scripts/update-instagram.sh` (apkeep → `install-multiple` → a `scraper.py dump`
-  smoke check), keeping the previous xapk for rollback.
+- **Instagram update path**: install-on-missing is automatic (see "First-time setup"), but an
+  *outdated* install isn't handled yet — detect the forced "update Instagram" screen (as a
+  challenge-style stop) and reuse `_fetch_instagram_apk()`/`_install_instagram()` (`scraper.py`)
+  with `IG_APK_VERSION` bumped, plus a `scraper.py dump` smoke check, keeping the previous xapk in
+  `APK_CACHE_DIR` for rollback.
 - **Manual-use lock and run-now**: a lock (file or endpoint) that keeps the scraper from starting
   while you're driving the device in scrcpy, and a rate-limited "scrape now" trigger.
 - **Credentials from a file**: `IG_PASSWORD_FILE` / Docker secrets instead of a plain environment
