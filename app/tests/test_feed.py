@@ -83,6 +83,22 @@ def test_conditional_get_returns_304_when_unchanged(tmp_path, monkeypatch):
     assert second.status_code == 304
 
 
+def test_per_user_etag_ignores_other_accounts_new_posts(tmp_path, monkeypatch):
+    client = make_app(tmp_path, monkeypatch)
+    con = sqlite3.connect(tmp_path / "posts.sqlite")
+    con.execute("ALTER TABLE posts ADD COLUMN updated_at TEXT")
+    con.commit()
+    etag = client.get("/instagram.xml", params={"user": "someone"}).headers["etag"]
+    con.execute(
+        "INSERT INTO posts (id, username, scraped_at) VALUES ('NEW', 'other', '2026-09-09T00:00:00+00:00')"
+    )
+    con.commit()
+    con.close()
+    cached = client.get("/instagram.xml", params={"user": "someone"}, headers={"if-none-match": etag})
+    assert cached.status_code == 304
+    assert client.get("/instagram.xml", headers={"if-none-match": etag}).status_code == 200
+
+
 def test_missing_posts_table_returns_empty_instead_of_500(tmp_path, monkeypatch):
     # e.g. feed starts before the driver's first db_init() has created the table.
     db = tmp_path / "posts.sqlite"

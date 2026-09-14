@@ -33,7 +33,7 @@ from igprofiles import BaseProfile, major_of
 from igprofiles import available as available_profiles
 from igprofiles import select as select_profile
 from lxml import etree
-from PIL import Image
+from PIL import Image, ImageStat
 from uiautomator2.exceptions import DeviceError as U2DeviceError
 
 ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5555")  # redroid's forwarded ADB port
@@ -206,6 +206,33 @@ def log(*a):
     print(datetime.now().strftime("%H:%M:%S"), *a, flush=True)
 
 
+def _parse_iso(value) -> datetime | None:
+    """A stored ISO timestamp as an aware datetime (naive = UTC), or None if missing/malformed."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except TypeError, ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _older_than(value, days: float) -> bool:
+    """True if the stored timestamp is missing, malformed, or more than `days` old."""
+    parsed = _parse_iso(value)
+    return parsed is None or datetime.now(UTC) - parsed > timedelta(days=days)
+
+
+_BOUNDS = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+
+
+def parse_bounds(bounds: str | None) -> tuple[int, int, int, int] | None:
+    """(x1, y1, x2, y2) from a uiautomator bounds string "[x1,y1][x2,y2]", or None."""
+    m = _BOUNDS.match(bounds or "")
+    if not m:
+        return None
+    x1, y1, x2, y2 = map(int, m.groups())
+    return x1, y1, x2, y2
+
+
 class DeviceNotReady(RuntimeError):
     """The device or app isn't in a state to be driven yet (e.g. Instagram won't come to the
     foreground). Unlike a login challenge, a retry a few minutes later usually just works."""
@@ -217,7 +244,10 @@ def is_transient(e: BaseException) -> bool:
     yet (seen live as LaunchUiAutomationError 'server quit unexpectly', five runs in a row). Login
     challenges and parsing/logic errors are deliberately not transient: retrying those early either
     can't help or, for a challenge, looks worse to Instagram."""
-    return isinstance(e, (DeviceNotReady, adbutils.AdbError, adbutils.AdbTimeout, U2DeviceError))
+    return isinstance(e, _TRANSIENT)
+
+
+_TRANSIENT = (DeviceNotReady, adbutils.AdbError, adbutils.AdbTimeout, U2DeviceError)
 
 
 def _transient_error_names() -> set[str]:
@@ -229,11 +259,7 @@ def _transient_error_names() -> set[str]:
         for sub in cls.__subclasses__():
             yield from walk(sub)
 
-    return {
-        c.__name__
-        for base in (DeviceNotReady, adbutils.AdbError, adbutils.AdbTimeout, U2DeviceError)
-        for c in walk(base)
-    }
+    return {c.__name__ for base in _TRANSIENT for c in walk(base)}
 
 
 def _startup_wait_seconds(con, now: datetime | None = None) -> float:
@@ -253,12 +279,9 @@ def _startup_wait_seconds(con, now: datetime | None = None) -> float:
         return 0.0
     if not row:
         return 0.0
-    try:
-        finished = datetime.fromisoformat(row[0])
-    except TypeError, ValueError:
+    finished = _parse_iso(row[0])
+    if finished is None:
         return 0.0
-    if finished.tzinfo is None:
-        finished = finished.replace(tzinfo=UTC)
     error = row[1] or ""
     if error and RETRY_DELAYS_MINUTES and error.split("(", 1)[0] in _transient_error_names():
         interval = RETRY_DELAYS_MINUTES[0] * 60
@@ -350,12 +373,11 @@ def db_init():
             scraped_at TEXT NOT NULL
         )"""
     )
-    cols = {r["name"] for r in con.execute("PRAGMA table_info(posts)")}
     # ig_version: the Instagram versionName that scraped the post, so a parsing quirk can be traced
     # to the app build that produced it. NULL for posts stored before this column existed.
-    for col in ("hash", "url", "place", "posted_at", "updated_at", "ig_version"):
-        if col not in cols:
-            con.execute(f"ALTER TABLE posts ADD COLUMN {col} TEXT")
+    _add_columns(
+        con, "posts", dict.fromkeys(("hash", "url", "place", "posted_at", "updated_at", "ig_version"), "TEXT")
+    )
     # Backfill for rows written before updated_at existed, and a no-op once that's done.
     con.execute("UPDATE posts SET updated_at = scraped_at WHERE updated_at IS NULL")
     con.execute("CREATE INDEX IF NOT EXISTS posts_hash ON posts(hash)")
@@ -392,6 +414,8 @@ def db_init():
             scraped_at TEXT NOT NULL
         )"""
     )
+    # phash: _dhash() of the crop, for catching a re-capture of a story already stored.
+    _add_columns(con, "stories", {"phash": "TEXT"})
     con.execute("CREATE INDEX IF NOT EXISTS stories_username ON stories(username)")
     con.execute("CREATE INDEX IF NOT EXISTS stories_scraped_at ON stories(scraped_at)")
     con.execute(
@@ -416,28 +440,38 @@ def db_init():
             device_product TEXT
         )"""
     )
-    run_cols = {r["name"] for r in con.execute("PRAGMA table_info(runs)")}
-    for col in (
-        "link_sheet_failures",
-        "link_clipboard_failures",
-        "new_stories",
-        "filtered_posts",
-        "mem_peak_mb",
-        "oom_kills",
-    ):
-        if col not in run_cols:
-            con.execute(f"ALTER TABLE runs ADD COLUMN {col} INTEGER")
-    for col in ("warning", "ig_version", "redroid_image", "selector_profile"):
-        if col not in run_cols:
-            con.execute(f"ALTER TABLE runs ADD COLUMN {col} TEXT")
-    for col in ("cards_per_screen", "share_captioned", "share_complete"):
-        if col not in run_cols:
-            con.execute(f"ALTER TABLE runs ADD COLUMN {col} REAL")
+    _add_columns(
+        con,
+        "runs",
+        {
+            **dict.fromkeys(
+                (
+                    "link_sheet_failures",
+                    "link_clipboard_failures",
+                    "new_stories",
+                    "filtered_posts",
+                    "mem_peak_mb",
+                    "oom_kills",
+                ),
+                "INTEGER",
+            ),
+            **dict.fromkeys(("warning", "ig_version", "redroid_image", "selector_profile"), "TEXT"),
+            **dict.fromkeys(("cards_per_screen", "share_captioned", "share_complete"), "REAL"),
+        },
+    )
     con.commit()
     _migrate_dedupe(con)
     _migrate_accounts(con)
     _migrate_story_retention(con)
     return con
+
+
+def _add_columns(con, table: str, columns: dict[str, str]):
+    """ALTER TABLE ADD COLUMN for each {name: type} the table doesn't have yet."""
+    existing = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+    for col, kind in columns.items():
+        if col not in existing:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
 
 
 def _instagram_version(d) -> str | None:
@@ -506,52 +540,23 @@ def _device_snapshot(d) -> dict:
     }
 
 
-def record_run(
-    con,
-    started_at,
-    finished_at,
-    new_posts,
-    error,
-    snapshot,
-    link_sheet_failures=0,
-    link_clipboard_failures=0,
-    new_stories=0,
-    warning=None,
-    filtered_posts=0,
-    mem_peak_mb=None,
-    oom_kills=None,
-    cards_per_screen=None,
-    share_captioned=None,
-    share_complete=None,
-):
+def record_run(con, started_at, finished_at, new_posts, error, snapshot: dict, **stats):
+    """Insert one runs row. `snapshot` (see _device_snapshot()) and `stats` are keyed by runs column
+    name, so a new metric only needs its column in db_init() and a key in _scrape_feed()'s result."""
+    row = {
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "new_posts": new_posts,
+        "error": error,
+        "link_sheet_failures": 0,
+        "link_clipboard_failures": 0,
+        "new_stories": 0,
+        "filtered_posts": 0,
+        **snapshot,
+        **stats,
+    }
     con.execute(
-        "INSERT INTO runs (started_at, finished_at, new_posts, error, android_release, android_sdk,"
-        " device_product, link_sheet_failures, link_clipboard_failures, new_stories, warning, ig_version,"
-        " redroid_image, filtered_posts, selector_profile, mem_peak_mb, oom_kills, cards_per_screen,"
-        " share_captioned, share_complete)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            started_at,
-            finished_at,
-            new_posts,
-            error,
-            snapshot.get("android_release"),
-            snapshot.get("android_sdk"),
-            snapshot.get("device_product"),
-            link_sheet_failures,
-            link_clipboard_failures,
-            new_stories,
-            warning,
-            snapshot.get("ig_version"),
-            snapshot.get("redroid_image"),
-            filtered_posts,
-            snapshot.get("selector_profile"),
-            mem_peak_mb,
-            oom_kills,
-            cards_per_screen,
-            share_captioned,
-            share_complete,
-        ),
+        f"INSERT INTO runs ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", tuple(row.values())
     )
     con.commit()
 
@@ -599,27 +604,16 @@ def _upsert_account(con, username: str, avatar_file: str | None = None):
 
 def _needs_avatar_refresh(con, username: str) -> bool:
     row = con.execute("SELECT avatar_updated_at FROM accounts WHERE username=?", (username,)).fetchone()
-    if not row or not row["avatar_updated_at"]:
-        return True
-    try:
-        updated = datetime.fromisoformat(row["avatar_updated_at"])
-    except ValueError:
-        return True
-    return datetime.now(UTC) - updated > timedelta(days=AVATAR_REFRESH_DAYS)
+    return _older_than(row and row["avatar_updated_at"], AVATAR_REFRESH_DAYS)
 
 
 def _needs_following_refresh(con) -> bool:
     """Unlike _needs_avatar_refresh, this is a single global check, not per-account: the whole
     Following list is captured (and replaced) in one pass, so there's one "when was this last
     done" timestamp, not one per row. No rows at all means never successfully refreshed."""
-    row = con.execute("SELECT MAX(updated_at) FROM following").fetchone()
-    if not row or not row[0]:
-        return True
-    try:
-        updated = datetime.fromisoformat(row[0])
-    except ValueError:
-        return True
-    return datetime.now(UTC) - updated > timedelta(days=FOLLOWING_REFRESH_DAYS)
+    return _older_than(
+        con.execute("SELECT MAX(updated_at) FROM following").fetchone()[0], FOLLOWING_REFRESH_DAYS
+    )
 
 
 def rename_account(con, old: str, new: str) -> int:
@@ -661,11 +655,8 @@ def rename_account(con, old: str, new: str) -> int:
 def _safe_parse_posted_at(posted_date, scraped_at_iso):
     """parse_posted_at(), tolerant of a malformed/legacy scraped_at that fromisoformat rejects.
     Returns (None, None) instead of raising, so one corrupt row can't abort the whole migration."""
-    try:
-        now = datetime.fromisoformat(scraped_at_iso)
-    except TypeError, ValueError:
-        return None, None
-    return parse_posted_at(posted_date, now) or (None, None)
+    now = _parse_iso(scraped_at_iso)
+    return (now and parse_posted_at(posted_date, now)) or (None, None)
 
 
 def _migrate_dedupe(con):
@@ -707,8 +698,7 @@ def _migrate_dedupe(con):
                 datetime.now(UTC),
                 r["ig_version"],
             )
-            if media_to_drop:
-                (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
+            _discard_media(media_to_drop)
             if final_id != r["id"]:
                 con.execute("DELETE FROM posts WHERE id=?", (r["id"],))
             _write_merged(con, dup["id"], final_id, fields)
@@ -749,7 +739,6 @@ def _migrate_story_retention(con):
         con.execute("ALTER TABLE stories DROP COLUMN expires_at")
     con.execute("PRAGMA user_version = 3")
     con.commit()
-    log("accounts backfill complete")
 
 
 def _find_duplicate(con, username, posted_at, posted_at_prec, caption, exclude_id=None):
@@ -858,6 +847,23 @@ def _launch_app(d):
         d.app_start(IG_PKG, stop=False)
 
 
+def _ensure_foreground(d) -> bool:
+    """Relaunch Instagram if something else is in front. True if it had to."""
+    if d.app_current().get("package") == IG_PKG:
+        return False
+    _launch_app(d)
+    human_pause(3, 5)
+    return True
+
+
+def _prepare_app(d):
+    """The common start of every navigation: logged in, in front, prompts dismissed, no sheet open."""
+    ensure_logged_in(d)
+    _ensure_foreground(d)
+    _dismiss_interstitials(d)  # notification / location / "set up on new device" prompts
+    close_sheets(d)
+
+
 def _in_quiet_hours(now: datetime) -> bool:
     """True during the configured local quiet window (only consulted by the "daynight"
     distribution below). Uses DEVICE_TIMEZONE so "local" reflects the account's apparent timezone,
@@ -900,30 +906,26 @@ def human_pause(lo=1.0, hi=3.0):
     time.sleep(sample_duration(lo, hi))
 
 
-def human_scroll(d):
-    """Scroll up by a random amount at a random speed, like a thumb would."""
+def _swipe_duration() -> float:
+    # Slow enough not to fling: a fling scrolls several screens and skips whole posts.
+    return sample_duration(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX)
+
+
+def human_scroll(d, start=(0.65, 0.8), distance=(0.3, 0.45)):
+    """Scroll up by a random amount at a random speed, like a thumb would. `start` and `distance`
+    are fractions of screen height; the defaults are tuned for feed cards."""
     w, h = d.window_size()
     x = random.randint(int(w * 0.3), int(w * 0.7))
-    y1 = random.randint(int(h * 0.65), int(h * 0.8))
-    y2 = y1 - random.randint(int(h * 0.3), int(h * 0.45))
-    # Slow enough not to fling: a fling scrolls several screens and skips whole posts.
-    d.swipe(x, y1, x, y2, duration=sample_duration(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX))
+    y1 = random.randint(int(h * start[0]), int(h * start[1]))
+    y2 = y1 - random.randint(int(h * distance[0]), int(h * distance[1]))
+    d.swipe(x, y1, x, y2, duration=_swipe_duration())
 
 
 def _human_scroll_list(d):
-    """Scroll the Following list by a smaller amount than human_scroll() — its rows (~190px each,
-    a dozen fit on one screen) are much shorter than a feed card (a full screen or more), so
-    human_scroll()'s feed-tuned distance (30-45% of screen height) can advance past more than a
-    screen's worth of rows between two dumps and silently skip whichever never actually rendered
-    on screen. Confirmed live (2026-09-11): human_scroll() here measurably missed ~3 of 30 followed
-    accounts on one refresh and a different ~3 on the next — a shorter swipe keeps consecutive
-    screens overlapping, so nothing passes by unseen. A followed-accounts allowlist self-heals on
-    the next scheduled refresh regardless, but this makes a single pass more likely to be complete."""
-    w, h = d.window_size()
-    x = random.randint(int(w * 0.3), int(w * 0.7))
-    y1 = random.randint(int(h * 0.55), int(h * 0.65))
-    y2 = y1 - random.randint(int(h * 0.15), int(h * 0.25))
-    d.swipe(x, y1, x, y2, duration=sample_duration(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX))
+    """A shorter human_scroll() for the Following list: its ~190px rows are much shorter than a feed
+    card, and the feed distance was seen live (2026-09-11) to skip ~3 of 30 accounts per refresh.
+    Overlapping screens keep every row on screen for at least one dump."""
+    human_scroll(d, start=(0.55, 0.65), distance=(0.15, 0.25))
 
 
 def _first(d, **kinds):
@@ -960,29 +962,13 @@ CACHED_APP_SWEEP = (
 )
 
 
-def _sweep_cached_apps(d):
-    """Force-stop CACHED_APP_SWEEP's processes at the end of a run. Best-effort per package: one
-    failure (e.g. the app wasn't running) must not skip the rest."""
-    for pkg in CACHED_APP_SWEEP:
-        try:
-            d.shell(["am", "force-stop", pkg])
-        except Exception as e:
-            log(f"WARN: could not force-stop {pkg}:", repr(e))
-
-
-def _stop_instagram(d):
-    """Force-stop IG_PKG itself at the end of a run. Once opened, Instagram (plus its :fbns push
-    process) measured ~820MiB resident — dwarfing everything in CACHED_APP_SWEEP combined — and
-    the same non-functional lmkd means it never gets reclaimed between polls either, so it would
-    otherwise just sit there for the ~2.5-4.5h until the next run. Safe to kill here: the next
-    run's connect_device()/ensure_logged_in() already does a full launch-from-scratch every time
-    regardless of whether Instagram happened to still be running, and the saved login session
-    lives in /data, not the process — confirmed with a real cold-start-after-force-stop scrape
-    before this was added. Best-effort, like _sweep_cached_apps."""
+def _force_stop(d, *pkgs):
+    """Force-stop packages in one adb round trip; `;` keeps going past one that fails. Best-effort:
+    an adb failure is logged, never raised."""
     try:
-        d.shell(["am", "force-stop", IG_PKG])
+        d.shell("; ".join(f"am force-stop {pkg}" for pkg in pkgs))
     except Exception as e:
-        log(f"WARN: could not force-stop {IG_PKG}:", repr(e))
+        log(f"WARN: could not force-stop {', '.join(pkgs)}:", repr(e))
 
 
 def _redroid_memory(d) -> dict | None:
@@ -1060,10 +1046,11 @@ class MemoryGuard:
 
 
 def _free_device_memory(d):
-    """Force-stop Instagram and the cached system apps. Run both before a run (so it never starts on
-    top of a still-resident Instagram, e.g. left open by `scraper.py login`) and after it."""
-    _sweep_cached_apps(d)
-    _stop_instagram(d)
+    """Force-stop the cached system apps and Instagram itself, before a run (so it never starts on
+    top of a still-resident Instagram, e.g. left open by `scraper.py login`) and after it. Instagram
+    plus its :fbns process measured ~820MiB resident and lmkd never reclaims it here; the next run
+    cold-launches it anyway, and the login session lives in /data (see CLAUDE.md)."""
+    _force_stop(d, *CACHED_APP_SWEEP, IG_PKG)
 
 
 def _apk_version(version: str | None = None) -> str:
@@ -1073,6 +1060,16 @@ def _apk_version(version: str | None = None) -> str:
         version = IG_APK_VERSION or PROFILE.apk_version
     version = version.strip()
     return "" if version.lower() == "latest" else version
+
+
+def _run_checked(cmd: list[str], what: str) -> None:
+    """Run a host command for an install step; any failure or timeout becomes DeviceNotReady (so the
+    retry ladder handles it) carrying the tail of its stderr."""
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=APK_FETCH_TIMEOUT)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        stderr = getattr(e, "stderr", "") or ""
+        raise DeviceNotReady(f"{what} failed: {e!r}: {stderr[-2000:]}") from e
 
 
 def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
@@ -1099,17 +1096,9 @@ def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
         if not xapks:
             spec = f"{IG_PKG}@{version}" if version else IG_PKG
             log(f"fetching {spec} via apkeep (apk-pure)")
-            try:
-                subprocess.run(
-                    ["apkeep", "-a", spec, "-d", "apk-pure", str(cache_dir)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=APK_FETCH_TIMEOUT,
-                )
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-                stderr = getattr(e, "stderr", "") or ""
-                raise DeviceNotReady(f"apkeep failed to fetch {IG_PKG}: {e!r}: {stderr[-2000:]}") from e
+            _run_checked(
+                ["apkeep", "-a", spec, "-d", "apk-pure", str(cache_dir)], f"apkeep fetch of {IG_PKG}"
+            )
             xapks = sorted(cache_dir.glob(f"{IG_PKG}*.xapk"))
         if xapks:
             # apkeep hands back a bundle (base + per-density/abi/language splits); unpack it once
@@ -1141,11 +1130,7 @@ def _install_instagram(d, version: str | None = None, downgrade: bool = False) -
     flags = ["-r", "-d"] if downgrade else []
     cmd = ["adb", "-s", ADB_ADDR, "install-multiple" if len(apks) > 1 else "install", *flags, *map(str, apks)]
     log(f"installing {IG_PKG} ({len(apks)} apk(s))")
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=APK_FETCH_TIMEOUT)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        stderr = getattr(e, "stderr", "") or ""
-        raise DeviceNotReady(f"adb install of {IG_PKG} failed: {e!r}: {stderr[-2000:]}") from e
+    _run_checked(cmd, f"adb install of {IG_PKG}")
     installed = _instagram_version(d)
     log(f"installed {IG_PKG}", installed or "(version unknown)")
     activate_profile(installed)  # connect_device() activated before this version existed
@@ -1182,7 +1167,7 @@ def _redact_url(url: str) -> str:
 def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
     """GET FRESHRSS_REFRESH_URL after a run that stored something new, so FreshRSS (or any reader
     with an equivalent refresh webhook) fetches immediately instead of waiting out its own poll
-    interval. No-op when disabled or nothing new was stored. Best-effort like _sweep_cached_apps:
+    interval. No-op when disabled or nothing new was stored. Best-effort like _force_stop():
     returns a short error string rather than raising — a reader being unreachable must not fail a
     scrape that already succeeded. Returns None on a no-op or success."""
     if not FRESHRSS_REFRESH_URL or (new_posts + new_stories) == 0:
@@ -1417,12 +1402,7 @@ def _on_following_feed(d):
 
 @versioned
 def open_following_feed(d):
-    ensure_logged_in(d)
-    if d.app_current().get("package") != IG_PKG:
-        _launch_app(d)
-        human_pause(3, 5)
-    _dismiss_interstitials(d)  # notification / location / "set up on new device" prompts
-    close_sheets(d)
+    _prepare_app(d)
     w, h = d.window_size()
     sw = d(description=SELECTORS["feed_switcher_desc"])
     for attempt in range(4):
@@ -1478,12 +1458,7 @@ def open_home_feed(d):
     confirmed live (2026-09-11): Home is the root of the app's back stack, so pressing back from
     it doesn't refresh anything, it triggers Android's "tap again to exit" and risks actually
     exiting the app on a second back press soon after. Already being on Home just means done."""
-    ensure_logged_in(d)
-    if d.app_current().get("package") != IG_PKG:
-        _launch_app(d)
-        human_pause(3, 5)
-    _dismiss_interstitials(d)
-    close_sheets(d)
+    _prepare_app(d)
     tab = d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}$")
     for attempt in range(4):
         if _on_home_feed(d):
@@ -1543,12 +1518,7 @@ def open_own_following_list(d):
     fresh scroll's 27+. So being on the screen already is never treated as done: leave (two backs,
     same as open_following_feed()'s own "leave and re-enter so the feed is fresh") and navigate
     back in via the normal tab -> link path, which always starts the list at row 0."""
-    ensure_logged_in(d)
-    if d.app_current().get("package") != IG_PKG:
-        _launch_app(d)
-        human_pause(3, 5)
-    _dismiss_interstitials(d)
-    close_sheets(d)
+    _prepare_app(d)
     tab = d(resourceIdMatches=f".*:id/{SELECTORS['profile_tab_id']}$")
     for attempt in range(4):
         if _on_following_list(d):
@@ -1685,9 +1655,8 @@ def parse_hierarchy(xml: str):
     clip_top = 0
     for n in root.iter("node"):
         if (n.get("resource-id") or "").endswith(SELECTORS["action_bar_id"]):
-            m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", n.get("bounds") or "")
-            if m:
-                clip_top = int(m.group(4))
+            if b := parse_bounds(n.get("bounds")):
+                clip_top = b[3]
             break
     in_list = False
     for n in root.iter("node"):
@@ -1800,20 +1769,18 @@ def clean_caption(text: str, user: str) -> str:
 
 
 def bounds_center(bounds: str):
-    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
-    if not m:
+    if not (b := parse_bounds(bounds)):
         return None
-    x1, y1, x2, y2 = map(int, m.groups())
+    x1, y1, x2, y2 = b
     return (x1 + x2) // 2, (y1 + y2) // 2
 
 
 def _bounds_bottom_right(bounds: str, inset: int = 10):
     """Point near a node's bottom-right corner: where a truncated, left-aligned caption's
     trailing "... more" span sits, on its last (and typically fullest) line."""
-    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
-    if not m:
+    if not (b := parse_bounds(bounds)):
         return None
-    x1, y1, x2, y2 = map(int, m.groups())
+    x1, y1, x2, y2 = b
     return max(x1, x2 - inset), max(y1, y2 - inset)
 
 
@@ -1907,10 +1874,8 @@ def close_sheets(d, max_back=2):
             break  # feed rows visible: the marker is a false positive, another Back would exit
         d.press("back")
         human_pause(1.5, 2)
-    if d.app_current().get("package") != IG_PKG:
-        log("WARN: left Instagram while closing a sheet; relaunching")
-        _launch_app(d)
-        human_pause(3, 5)
+    if _ensure_foreground(d):
+        log("WARN: left Instagram while closing a sheet; relaunched")
     return not _sheet_open(d)
 
 
@@ -1934,9 +1899,7 @@ def _back_to_feed(d, tries=2):
     """If a tap opened a profile/hashtag/etc., back out until a feed is showing again. Never
     backs out of the app: if we somehow left it, relaunch instead."""
     for _ in range(tries):
-        if d.app_current().get("package") != IG_PKG:
-            _launch_app(d)
-            human_pause(3, 5)
+        if _ensure_foreground(d):
             return _on_feed(d)
         if _on_feed(d) and not _sheet_open(d):
             return True
@@ -2004,13 +1967,8 @@ def fetch_permalink(d, post_hash: str) -> tuple[str | None, str | None]:
             log("WARN: clipboard read failed:", repr(e))
             continue
         if candidate and candidate != _last_url and SELECTORS["permalink"].match(candidate):
-            url = candidate
+            url = _last_url = candidate
             break
-    if url and url == _last_url:
-        log("WARN: clipboard still holds the previous post's link; copy failed")
-        url = ""
-    elif url:
-        _last_url = url
     close_sheets(d)  # sheet usually closes itself after Copy link; make sure
     _back_to_feed(d)
     m = SELECTORS["permalink"].match(url)
@@ -2029,8 +1987,8 @@ def _post_key(p) -> str:
     return f"{p['username']}|{key}"
 
 
-def _digest(key: str) -> str:
-    return hashlib.sha256(key.encode()).hexdigest()[:16]
+def _digest(data: str | bytes) -> str:
+    return hashlib.sha256(data.encode() if isinstance(data, str) else data).hexdigest()[:16]
 
 
 def post_id(p):
@@ -2058,10 +2016,9 @@ def crop_media(d, bounds: str, pid: str, clip_top: int = 0, settle: float = 0):
     Returns filename or None.
     `settle` delays the shot (e.g. for a video/Reel, so autoplay has started and the initial
     audio-label overlay has faded) before it's taken — still one image, just a better-timed one."""
-    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
-    if not m:
+    if not (b := parse_bounds(bounds)):
         return None
-    x1, y1, x2, y2 = map(int, m.groups())
+    x1, y1, x2, y2 = b
     w, h = d.window_size()
     full = y2 - y1
     y1, y2 = max(y1, clip_top), min(y2, h)  # trim the floating action bar / screen edge
@@ -2093,16 +2050,16 @@ def capture_carousel(d, p: dict, pid: str) -> list[str]:
     read as a vertical scroll instead, or Instagram simply has nothing further) rather than risk
     storing the same slide twice. Returns the extra slides' filenames, in order."""
     total = min(carousel_count(p["alt"]), MAX_CAROUSEL_SLIDES)
-    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", p["bounds"] or "")
-    if total < 2 or not m:
+    b = parse_bounds(p["bounds"])
+    if total < 2 or not b:
         return []
-    x1, y1, x2, y2 = map(int, m.groups())
+    x1, y1, x2, y2 = b
     cy = (y1 + y2) // 2
     inset = max(int((x2 - x1) * 0.1), 1)
     key = post_id(p)
     files = []
     for slide in range(2, total + 1):
-        d.swipe(x2 - inset, cy, x1 + inset, cy, duration=random.uniform(SCROLL_SWIPE_MIN, SCROLL_SWIPE_MAX))
+        d.swipe(x2 - inset, cy, x1 + inset, cy, duration=_swipe_duration())
         human_pause(0.8, 1.6)
         fresh = next((c for c in parse_hierarchy(d.dump_hierarchy()) if post_id(c) == key), None)
         sm = SELECTORS["slide_index"].match(fresh["alt"]) if fresh else None
@@ -2133,10 +2090,9 @@ def _avatar_bounds(header_bounds: str):
     ImageView has no addressable node (row_feed_profile_header is a collapsed leaf in the
     accessibility tree), so this crops positionally rather than by resource-id. Needs a live check
     against a real device to confirm the inset actually lands on the avatar."""
-    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", header_bounds or "")
-    if not m:
+    if not (b := parse_bounds(header_bounds)):
         return None
-    x1, y1, x2, y2 = map(int, m.groups())
+    x1, y1, x2, y2 = b
     size = y2 - y1
     pad = max(size // 8, 1)
     return x1 + pad, y1 + pad, x1 + pad + (size - 2 * pad), y2 - pad
@@ -2174,8 +2130,14 @@ def _delete_post(con, post_id: str):
     con.execute("DELETE FROM posts WHERE id=?", (post_id,))
     con.execute("DELETE FROM media WHERE post_id=?", (post_id,))
     con.commit()
+    _discard_media(*files)
+
+
+def _discard_media(*files: str | None):
+    """Unlink media files (relative to MEDIA_DIR), skipping None/empty names and missing files."""
     for fn in files:
-        (MEDIA_DIR / fn).unlink(missing_ok=True)
+        if fn:
+            (MEDIA_DIR / fn).unlink(missing_ok=True)
 
 
 def _media_and_db_size_mb() -> float:
@@ -2224,10 +2186,9 @@ def capture_story_media(img: Image.Image, media_bounds: str, clip_top: int, tmp_
     here — into MEDIA_DIR/stories. clip_top skips the username/timestamp header overlay so the
     saved image doesn't bake in text that changes hour to hour (that text would otherwise make the
     same still-active story hash differently across runs — see scrape_stories())."""
-    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", media_bounds or "")
-    if not m:
+    if not (b := parse_bounds(media_bounds)):
         return None
-    x1, y1, x2, y2 = map(int, m.groups())
+    x1, y1, x2, y2 = b
     y1 = max(y1, clip_top)
     if (y2 - y1) < 200:
         return None
@@ -2283,9 +2244,8 @@ def capture_story(d, item: dict) -> dict | None:
         if rid == SELECTORS["story_media_id"] and media_bounds is None:
             media_bounds = n.get("bounds")
         elif rid == SELECTORS["story_shadow_id"] and clip_top is None:
-            m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", n.get("bounds") or "")
-            if m:
-                clip_top = int(m.group(4))
+            if b := parse_bounds(n.get("bounds")):
+                clip_top = b[3]
         elif rid == SELECTORS["story_timestamp_id"] and not posted_date:
             posted_date = n.get("text") or ""
     path = capture_story_media(
@@ -2298,8 +2258,9 @@ def capture_story(d, item: dict) -> dict | None:
 def scrape_stories(d, con) -> int:
     """Visit each not-yet-seen account's story from the Home feed's tray, capture its current
     frame, and return to the Following feed afterward. Stories have no stable public id the way
-    posts do (no permalink/shortcode), so identity is a content hash of the captured crop, checked
-    against the DB only after capture — a duplicate is simply discarded, not prevented up front."""
+    posts do (no permalink/shortcode), so a capture is checked against the DB only afterwards: a
+    blank frame, or one that looks like a story the account posted in the last day
+    (_find_story_duplicate()), is discarded."""
     for _ in range(3):
         if _on_home_feed(d):
             break
@@ -2327,29 +2288,70 @@ def scrape_stories(d, con) -> int:
         captured = capture_story(d, item)
         if not captured:
             continue
-        digest = hashlib.sha256(captured["path"].read_bytes()).hexdigest()[:16]
-        now = datetime.now(UTC)
+        path, username = captured["path"], captured["username"]
+        with Image.open(path) as img:
+            blank = _is_blank_frame(img)
+            phash = _dhash(img)
+        if blank or _find_story_duplicate(con, username, phash):
+            log(f"story for {username}: {'blank frame' if blank else 'already stored'}; discarding")
+            path.unlink(missing_ok=True)
+            continue
+        digest = _digest(path.read_bytes())
         cur = con.execute(
-            "INSERT OR IGNORE INTO stories (id, username, media_file, kind, posted_date, scraped_at)"
-            " VALUES (?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO stories (id, username, media_file, kind, posted_date, scraped_at, phash)"
+            " VALUES (?,?,?,?,?,?,?)",
             (
                 digest,
-                captured["username"],
-                f"stories/{digest}{captured['path'].suffix}",
+                username,
+                f"stories/{digest}{path.suffix}",
                 "story",
                 captured["posted_date"],
-                now.isoformat(),
+                datetime.now(UTC).isoformat(),
+                phash,
             ),
         )
         con.commit()
         if cur.rowcount:
-            captured["path"].rename(MEDIA_DIR / "stories" / f"{digest}{captured['path'].suffix}")
+            path.rename(MEDIA_DIR / "stories" / f"{digest}{path.suffix}")
             new += 1
-            log(f"new story: {captured['username']}")
+            log(f"new story: {username}")
         else:
-            captured["path"].unlink(missing_ok=True)  # byte-identical to one already stored
+            path.unlink(missing_ok=True)  # byte-identical to one already stored
     open_target_feed(d)
     return new
+
+
+# Max differing bits (of 64) for two story crops to count as the same frame. Re-captures of one
+# frame differ only by screenshot noise and overlays; distinct stories stored on 2026-09-14 were
+# 16-45 bits apart.
+STORY_PHASH_DISTANCE = 10
+
+
+def _dhash(img: Image.Image) -> str:
+    """64-bit difference hash: survives re-encoding and small overlays, unlike a byte hash."""
+    px = img.convert("L").resize((9, 8)).tobytes()
+    bits = 0
+    for i in range(72):
+        if i % 9 != 8:
+            bits = bits << 1 | (px[i] > px[i + 1])
+    return f"{bits:016x}"
+
+
+def _is_blank_frame(img: Image.Image) -> bool:
+    """A near-black crop: the viewer's loading/transition frame, not the story itself."""
+    stat = ImageStat.Stat(img.convert("L"))
+    return stat.mean[0] < 8 and stat.stddev[0] < 4
+
+
+def _find_story_duplicate(con, username: str, phash: str) -> bool:
+    """True if this account has a story stored in the last day (a story's lifetime) that looks the
+    same. The byte hash alone missed these: every capture re-encodes a fresh screenshot."""
+    cutoff = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    rows = con.execute(
+        "SELECT phash FROM stories WHERE username=? AND scraped_at > ? AND phash IS NOT NULL",
+        (username, cutoff),
+    )
+    return any((int(r[0], 16) ^ int(phash, 16)).bit_count() <= STORY_PHASH_DISTANCE for r in rows)
 
 
 def _prune_expired_stories(con):
@@ -2361,9 +2363,7 @@ def _prune_expired_stories(con):
     gone = con.execute("SELECT media_file FROM stories WHERE scraped_at < ?", (cutoff,)).fetchall()
     cur = con.execute("DELETE FROM stories WHERE scraped_at < ?", (cutoff,))
     con.commit()
-    for (fn,) in gone:
-        if fn:
-            (MEDIA_DIR / fn).unlink(missing_ok=True)
+    _discard_media(*(fn for (fn,) in gone))
     if cur.rowcount:
         log(f"retention: removed {cur.rowcount} expired stor{'y' if cur.rowcount == 1 else 'ies'}")
 
@@ -2541,10 +2541,7 @@ def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
             if not url and link_failures.get(h, 0) < PERMALINK_RETRIES:
                 # The sheet sometimes fails to open; try again on a later screen.
                 link_failures[h] = link_failures.get(h, 0) + 1
-                if media:
-                    (MEDIA_DIR / media).unlink(missing_ok=True)
-                for fn in extra_media:
-                    (MEDIA_DIR / fn).unlink(missing_ok=True)
+                _discard_media(media, *extra_media)
                 break
             this_run.add(h)
             if not _on_target_feed(d):
@@ -2562,10 +2559,7 @@ def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
                 seen_streak += 1  # same post, caption edited since we stored it
                 con.execute("UPDATE posts SET hash=? WHERE id=?", (h, pid))
                 con.commit()
-                if media:
-                    (MEDIA_DIR / media).unlink(missing_ok=True)
-                for fn in extra_media:
-                    (MEDIA_DIR / fn).unlink(missing_ok=True)
+                _discard_media(media, *extra_media)
                 break
             seen_streak = 0
             if p["caption_truncated"]:
@@ -2589,12 +2583,10 @@ def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
                     datetime.now(UTC),
                     ig_version,
                 )
-                if media_to_drop:
-                    (MEDIA_DIR / media_to_drop).unlink(missing_ok=True)
                 _write_merged(con, dup["id"], final_id, fields)
                 con.commit()
-                for fn in extra_media:  # the existing row's cover wins; extra slides are redundant
-                    (MEDIA_DIR / fn).unlink(missing_ok=True)
+                # The existing row's cover wins, so extra slides are redundant too.
+                _discard_media(media_to_drop, *extra_media)
                 seen_streak += 1
                 log(f"merged duplicate: {p['username']} -> {final_id}")
                 break
@@ -2696,24 +2688,8 @@ def main():
                 _save_failure_logcat(error)
         if snapshot:  # connected, so a profile was activated (possibly re-activated by an install)
             snapshot["selector_profile"] = PROFILE.name
-        record_run(
-            con,
-            started_at,
-            datetime.now(UTC).isoformat(),
-            stats.get("new", 0),
-            error,
-            snapshot,
-            stats.get("link_sheet_failures", 0),
-            stats.get("link_clipboard_failures", 0),
-            stats.get("new_stories", 0),
-            stats.get("warning"),
-            stats.get("filtered_posts", 0),
-            stats.get("mem_peak_mb"),
-            stats.get("oom_kills"),
-            stats.get("cards_per_screen"),
-            stats.get("share_captioned"),
-            stats.get("share_complete"),
-        )
+        new_posts = stats.pop("new", 0)
+        record_run(con, started_at, datetime.now(UTC).isoformat(), new_posts, error, snapshot, **stats)
         seconds, attempt = next_sleep_seconds(exc, attempt)
         if attempt:
             log(
@@ -2734,7 +2710,7 @@ if __name__ == "__main__":
         try:
             print("logged in:", ensure_logged_in(d))
         finally:
-            _stop_instagram(d)  # don't leave ~800MiB resident for whatever runs next
+            _force_stop(d, IG_PKG)  # don't leave ~800MiB resident for whatever runs next
     elif len(sys.argv) > 1 and sys.argv[1] == "profiles":
         for name in available_profiles():
             p = select_profile(name)[0]

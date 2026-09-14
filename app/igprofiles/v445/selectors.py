@@ -26,7 +26,6 @@ SELECTORS = {
     ),
     # Content-desc on the media itself ("Reel by Some Artist, Liked by ..., August 29" / "Photo 1 of 7 by ...").
     "media_alt": re.compile(r"^(Photo|Video|Reel|Image|Carousel)\b", re.I),
-    "username_id": "row_feed_photo_profile_name",
     # Caption widget ("<user> text… more"), share button, and the share sheet's Copy link entry.
     "caption_class": "com.instagram.ui.widget.textview.IgTextLayoutView",
     "timestamp": re.compile(
@@ -78,15 +77,13 @@ SELECTORS = {
     "following_link_id": "profile_header_following_stacked_familiar",
     "following_list_screen_id": "unified_follow_list_view_pager",
     "follow_list_username_id": "follow_list_username",
-    # Login screen. Instagram renames these occasionally; several candidates each.
-    "login_username_ids": ["login_username", "username"],
+    # Login screen (Jetpack Compose, no ids): matched by hint text. Several candidates each.
     "login_username_hints": [
         "Mobile number or email",
         "Username, email or mobile number",
         "Phone number, username or email",
         "Username, email address or mobile number",
     ],
-    "login_password_ids": ["password"],
     "login_password_hints": ["Password"],
     "login_button_texts": ["Log in", "Log In"],
     "login_page_markers": ["Log in", "Log In", "Forgot password?"],
