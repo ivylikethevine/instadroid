@@ -1,3 +1,7 @@
+---
+title: Contributing
+---
+
 # Contributing
 
 Thanks for looking at instadroid. It's experimental until v1.0.0, so expect things to move. Bug

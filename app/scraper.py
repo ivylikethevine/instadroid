@@ -105,7 +105,6 @@ VIDEO_SETTLE_SECONDS = float(os.environ.get("VIDEO_SETTLE_SECONDS", "1.5"))  # l
 AVATAR_REFRESH_DAYS = int(os.environ.get("AVATAR_REFRESH_DAYS", "14"))
 MEDIA_MAX_MB = float(os.environ.get("MEDIA_MAX_MB", "0"))  # 0 disables the size-based retention cap
 MAX_STORIES_PER_RUN = int(os.environ.get("MAX_STORIES_PER_RUN", "10"))
-STORY_RETAIN_HOURS = int(os.environ.get("STORY_RETAIN_HOURS", "24"))  # matches Instagram's own expiry
 TIME_DISTRIBUTION = os.environ.get("TIME_DISTRIBUTION", "uniform")  # uniform | lognormal | daynight
 # "Local" time for the daynight distribution below — deliberately not applied anywhere by default
 # (empty = leave the device's own clock/timezone alone). Set this to match wherever the account's
@@ -145,6 +144,16 @@ SCRAPE_ON_STARTUP = os.environ.get("SCRAPE_ON_STARTUP", "0").strip().lower() in 
 # interval or per-feed TTL. Empty disables. Any reader with an equivalent plain-GET refresh webhook
 # works here too, not just FreshRSS.
 FRESHRSS_REFRESH_URL = os.environ.get("FRESHRSS_REFRESH_URL", "")
+# Selector-drift canary: every run records cards/screen, the share of cards with a real (non-weak)
+# caption, and the share flagged "complete" (see _is_weak_caption(), post["complete"]). If a run's
+# numbers fall below SELECTOR_DRIFT_THRESHOLD of the rolling average over the last
+# SELECTOR_DRIFT_BASELINE_RUNS successful runs, a run warning is raised — catching an Instagram UI
+# change (a moved resource-id, a changed card layout) well before parsing goes fully blank. Needs at
+# least SELECTOR_DRIFT_MIN_RUNS prior successful runs with a nonzero baseline before it judges
+# anything, so a fresh DB or a quiet account doesn't false-positive on its first few runs. 0 disables.
+SELECTOR_DRIFT_BASELINE_RUNS = int(os.environ.get("SELECTOR_DRIFT_BASELINE_RUNS", "10"))
+SELECTOR_DRIFT_MIN_RUNS = int(os.environ.get("SELECTOR_DRIFT_MIN_RUNS", "3"))
+SELECTOR_DRIFT_THRESHOLD = float(os.environ.get("SELECTOR_DRIFT_THRESHOLD", "0.5"))
 # Stop a run early once redroid's container memory reaches this percent of its mem_limit, read from
 # the device's own cgroup (see _redroid_memory()). Android's lmkd never reclaims here (it judges
 # against the host's RAM, see CLAUDE.md), so the scraper has to back off itself: on 2026-09-14 a run
@@ -380,12 +389,11 @@ def db_init():
             media_file TEXT,
             kind TEXT,
             posted_date TEXT,
-            scraped_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL
+            scraped_at TEXT NOT NULL
         )"""
     )
     con.execute("CREATE INDEX IF NOT EXISTS stories_username ON stories(username)")
-    con.execute("CREATE INDEX IF NOT EXISTS stories_expires_at ON stories(expires_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS stories_scraped_at ON stories(scraped_at)")
     con.execute(
         # The whole table is replaced atomically on every successful refresh (see
         # refresh_following_list()) rather than upserted row by row, so an unfollow is reflected
@@ -422,9 +430,13 @@ def db_init():
     for col in ("warning", "ig_version", "redroid_image", "selector_profile"):
         if col not in run_cols:
             con.execute(f"ALTER TABLE runs ADD COLUMN {col} TEXT")
+    for col in ("cards_per_screen", "share_captioned", "share_complete"):
+        if col not in run_cols:
+            con.execute(f"ALTER TABLE runs ADD COLUMN {col} REAL")
     con.commit()
     _migrate_dedupe(con)
     _migrate_accounts(con)
+    _migrate_story_retention(con)
     return con
 
 
@@ -508,12 +520,16 @@ def record_run(
     filtered_posts=0,
     mem_peak_mb=None,
     oom_kills=None,
+    cards_per_screen=None,
+    share_captioned=None,
+    share_complete=None,
 ):
     con.execute(
         "INSERT INTO runs (started_at, finished_at, new_posts, error, android_release, android_sdk,"
         " device_product, link_sheet_failures, link_clipboard_failures, new_stories, warning, ig_version,"
-        " redroid_image, filtered_posts, selector_profile, mem_peak_mb, oom_kills)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " redroid_image, filtered_posts, selector_profile, mem_peak_mb, oom_kills, cards_per_screen,"
+        " share_captioned, share_complete)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             started_at,
             finished_at,
@@ -532,9 +548,40 @@ def record_run(
             snapshot.get("selector_profile"),
             mem_peak_mb,
             oom_kills,
+            cards_per_screen,
+            share_captioned,
+            share_complete,
         ),
     )
     con.commit()
+
+
+def _check_selector_drift(con, cards_per_screen, share_captioned, share_complete):
+    """Compare this run's parse yield against the rolling average of the last
+    SELECTOR_DRIFT_BASELINE_RUNS successful runs; returns a warning string if any metric falls
+    below SELECTOR_DRIFT_THRESHOLD of its baseline, else None. Requires at least
+    SELECTOR_DRIFT_MIN_RUNS prior runs with a nonzero baseline for a given metric before judging
+    it, so a fresh DB or a quiet account can't false-positive on its first few runs."""
+    if not SELECTOR_DRIFT_BASELINE_RUNS:
+        return None
+    rows = con.execute(
+        "SELECT cards_per_screen, share_captioned, share_complete FROM runs"
+        " WHERE error IS NULL AND cards_per_screen IS NOT NULL ORDER BY id DESC LIMIT ?",
+        (SELECTOR_DRIFT_BASELINE_RUNS,),
+    ).fetchall()
+    dropped = []
+    for label, current, key in (
+        ("cards/screen", cards_per_screen, "cards_per_screen"),
+        ("captioned", share_captioned, "share_captioned"),
+        ("complete", share_complete, "share_complete"),
+    ):
+        baseline_vals = [r[key] for r in rows if r[key] is not None]
+        if len(baseline_vals) < SELECTOR_DRIFT_MIN_RUNS:
+            continue
+        baseline = sum(baseline_vals) / len(baseline_vals)
+        if baseline > 0 and current < baseline * SELECTOR_DRIFT_THRESHOLD:
+            dropped.append(f"{label} {current:.2f} vs {baseline:.2f} baseline ({len(baseline_vals)} runs)")
+    return "selector drift? " + "; ".join(dropped) if dropped else None
 
 
 def _upsert_account(con, username: str, avatar_file: str | None = None):
@@ -686,6 +733,21 @@ def _migrate_accounts(con):
         except Exception as e:  # a single bad username must not block every future start
             log(f"WARN: accounts backfill skipped {username!r}:", repr(e))
     con.execute("PRAGMA user_version = 2")
+    con.commit()
+
+
+def _migrate_story_retention(con):
+    """One-time schema cleanup, guarded like _migrate_dedupe(): drop stories.expires_at now that
+    stories share RETAIN_DAYS with posts instead of their own STORY_RETAIN_HOURS window (see
+    _prune_expired_stories())."""
+    if con.execute("PRAGMA user_version").fetchone()[0] >= 3:
+        return
+    cols = {r["name"] for r in con.execute("PRAGMA table_info(stories)")}
+    if "expires_at" in cols:
+        log("running one-time story-retention migration")
+        con.execute("DROP INDEX IF EXISTS stories_expires_at")
+        con.execute("ALTER TABLE stories DROP COLUMN expires_at")
+    con.execute("PRAGMA user_version = 3")
     con.commit()
     log("accounts backfill complete")
 
@@ -2267,10 +2329,9 @@ def scrape_stories(d, con) -> int:
             continue
         digest = hashlib.sha256(captured["path"].read_bytes()).hexdigest()[:16]
         now = datetime.now(UTC)
-        expires = (now + timedelta(hours=STORY_RETAIN_HOURS)).isoformat()
         cur = con.execute(
-            "INSERT OR IGNORE INTO stories (id, username, media_file, kind, posted_date, scraped_at,"
-            " expires_at) VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO stories (id, username, media_file, kind, posted_date, scraped_at)"
+            " VALUES (?,?,?,?,?,?)",
             (
                 digest,
                 captured["username"],
@@ -2278,7 +2339,6 @@ def scrape_stories(d, con) -> int:
                 "story",
                 captured["posted_date"],
                 now.isoformat(),
-                expires,
             ),
         )
         con.commit()
@@ -2293,11 +2353,13 @@ def scrape_stories(d, con) -> int:
 
 
 def _prune_expired_stories(con):
-    """Stories always expire STORY_RETAIN_HOURS after capture, regardless of RETAIN_DAYS — they
-    model Instagram's own ~24h ephemerality, not the post-retention policy."""
-    now = datetime.now(UTC).isoformat()
-    gone = con.execute("SELECT media_file FROM stories WHERE expires_at < ?", (now,)).fetchall()
-    cur = con.execute("DELETE FROM stories WHERE expires_at < ?", (now,))
+    """Stories share RETAIN_DAYS with posts (0 disables deletion) rather than expiring on their own
+    schedule — once captured, a story is kept exactly as long as everything else."""
+    if RETAIN_DAYS <= 0:
+        return
+    cutoff = (datetime.now(UTC) - timedelta(days=RETAIN_DAYS)).isoformat()
+    gone = con.execute("SELECT media_file FROM stories WHERE scraped_at < ?", (cutoff,)).fetchall()
+    cur = con.execute("DELETE FROM stories WHERE scraped_at < ?", (cutoff,))
     con.commit()
     for (fn,) in gone:
         if fn:
@@ -2398,6 +2460,10 @@ def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
     filtered_posts = 0  # dropped by the followed-accounts allowlist, if enabled
     screens = empty_streak = 0
     feed_reopened = False
+    # Selector-drift canary inputs (see _check_selector_drift()): every hierarchy dump counts
+    # toward cards/screen, and every parsed card toward the captioned/complete shares, regardless
+    # of the followed-accounts filter — this measures parse yield, not post-filter output.
+    stat_dumps = stat_cards = stat_captioned = stat_complete = 0
     while screens < MAX_SCROLLS:
         if reason := guard.exceeded():
             log(f"WARN: {reason}; stopping the run early")
@@ -2405,6 +2471,10 @@ def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
             break
         xml = d.dump_hierarchy()
         raw_posts = parse_hierarchy(xml)
+        stat_dumps += 1
+        stat_cards += len(raw_posts)
+        stat_captioned += sum(1 for p in raw_posts if not _is_weak_caption(p["caption"] or p["alt"]))
+        stat_complete += sum(1 for p in raw_posts if p["complete"])
         posts = raw_posts
         if followed is not None:
             posts = [p for p in raw_posts if not p["username"] or p["username"] in followed]
@@ -2584,6 +2654,12 @@ def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
         warnings.append(push_error)
     if PROFILE_WARNING:  # read at the end: an auto-install mid-run re-resolves the profile
         warnings.append(PROFILE_WARNING)
+    cards_per_screen = stat_cards / stat_dumps if stat_dumps else 0.0
+    share_captioned = stat_captioned / stat_cards if stat_cards else 0.0
+    share_complete = stat_complete / stat_cards if stat_cards else 0.0
+    if drift_warning := _check_selector_drift(con, cards_per_screen, share_captioned, share_complete):
+        log(f"WARN: {drift_warning}")
+        warnings.append(drift_warning)
     return {
         "new": new,
         "new_stories": new_stories,
@@ -2591,6 +2667,9 @@ def _scrape_feed(d, con, guard: MemoryGuard) -> dict:
         "link_clipboard_failures": link_clipboard_failures,
         "warning": "; ".join(warnings) or None,
         "filtered_posts": filtered_posts,
+        "cards_per_screen": cards_per_screen,
+        "share_captioned": share_captioned,
+        "share_complete": share_complete,
     }
 
 
@@ -2631,6 +2710,9 @@ def main():
             stats.get("filtered_posts", 0),
             stats.get("mem_peak_mb"),
             stats.get("oom_kills"),
+            stats.get("cards_per_screen"),
+            stats.get("share_captioned"),
+            stats.get("share_complete"),
         )
         seconds, attempt = next_sleep_seconds(exc, attempt)
         if attempt:

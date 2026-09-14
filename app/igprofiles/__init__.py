@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .base import BaseProfile
 
-DEFAULT_PROFILE = "v445"  # moves forward as newer versions are validated
+DEFAULT_PROFILE = "v446"  # moves forward as newer versions are validated
 MIN_MAJOR = 440  # oldest Instagram version this project will support
 _NAME = re.compile(r"^v(\d{3})$")
 _ROOT = Path(__file__).parent

@@ -1,0 +1,23 @@
+# Built by .github/workflows/pages.yml on every push to main; served from `docs/`.
+title: instadroid
+description: A real, logged-in Instagram Android app running in redroid, publishing the
+  chronological Following feed as Atom for FreshRSS.
+url: https://ivylikethevine.github.io
+baseurl: /instadroid
+remote_theme: pages-themes/minimal@v0.2.0
+plugins:
+  - jekyll-remote-theme
+show_downloads: false
+
+# The theme's layouts are opt-in per page, not automatic — this cascade applies its `default`
+# layout (header/nav/footer chrome) to every page under docs/ without needing `layout:` repeated
+# in each file's front matter.
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
+# Everything under docs/ is a candidate page; nothing here needs excluding beyond Jekyll's own
+# defaults (this file, node_modules, vendor/, etc.).
+markdown: kramdown

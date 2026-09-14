@@ -387,7 +387,7 @@ def _make_stories_db(tmp_path, monkeypatch):
     con = sqlite3.connect(db)
     con.execute(
         "CREATE TABLE stories (id TEXT PRIMARY KEY, username TEXT, media_file TEXT, kind TEXT,"
-        " posted_date TEXT, scraped_at TEXT, expires_at TEXT)"
+        " posted_date TEXT, scraped_at TEXT)"
     )
     con.commit()
     con.close()
@@ -399,17 +399,17 @@ def _make_stories_db(tmp_path, monkeypatch):
     return db, TestClient(app.app)
 
 
-def test_stories_feed_lists_only_unexpired_stories(tmp_path, monkeypatch):
+def test_stories_feed_lists_stored_stories(tmp_path, monkeypatch):
     db, client = _make_stories_db(tmp_path, monkeypatch)
     now = datetime.now(UTC)
     con = sqlite3.connect(db)
     con.execute(
-        "INSERT INTO stories VALUES ('s1','alice','stories/s1.jpg','story','1h',?,?)",
-        ((now - timedelta(hours=1)).isoformat(), (now + timedelta(hours=20)).isoformat()),
+        "INSERT INTO stories VALUES ('s1','alice','stories/s1.jpg','story','1h',?)",
+        ((now - timedelta(hours=1)).isoformat(),),
     )
     con.execute(
-        "INSERT INTO stories VALUES ('s2','bob','stories/s2.jpg','story','30h',?,?)",
-        ((now - timedelta(hours=30)).isoformat(), (now - timedelta(hours=6)).isoformat()),
+        "INSERT INTO stories VALUES ('s2','bob','stories/s2.jpg','story','30h',?)",
+        ((now - timedelta(hours=30)).isoformat(),),
     )
     con.commit()
     con.close()
@@ -417,7 +417,7 @@ def test_stories_feed_lists_only_unexpired_stories(tmp_path, monkeypatch):
     body = client.get("/stories.xml").text
     assert "alice" in body
     assert "http://feed.test/media/stories/s1.jpg" in body
-    assert "bob" not in body  # expired
+    assert "bob" in body  # stories no longer expire on their own schedule (see RETAIN_DAYS)
 
 
 def test_stories_feed_empty_when_table_missing(tmp_path, monkeypatch):
@@ -435,13 +435,13 @@ def test_stories_feed_conditional_get_returns_304(tmp_path, monkeypatch):
     assert second.status_code == 304
 
 
-def test_stories_feed_etag_changes_when_a_story_expires(tmp_path, monkeypatch):
+def test_stories_feed_etag_changes_when_a_story_is_removed(tmp_path, monkeypatch):
     db, client = _make_stories_db(tmp_path, monkeypatch)
     now = datetime.now(UTC)
     con = sqlite3.connect(db)
     con.execute(
-        "INSERT INTO stories VALUES ('s1','alice','stories/s1.jpg','story','1h',?,?)",
-        ((now - timedelta(hours=1)).isoformat(), (now + timedelta(hours=1)).isoformat()),
+        "INSERT INTO stories VALUES ('s1','alice','stories/s1.jpg','story','1h',?)",
+        ((now - timedelta(hours=1)).isoformat(),),
     )
     con.commit()
     con.close()
@@ -450,11 +450,9 @@ def test_stories_feed_etag_changes_when_a_story_expires(tmp_path, monkeypatch):
     assert "alice" in first.text
     etag = first.headers["etag"]
 
-    # Simulate the story expiring between requests (as it eventually does on its own).
+    # Simulate the retention sweep removing the story (as _prune_expired_stories() eventually does).
     con = sqlite3.connect(db)
-    con.execute(
-        "UPDATE stories SET expires_at = ? WHERE id = 's1'", ((now - timedelta(hours=1)).isoformat(),)
-    )
+    con.execute("DELETE FROM stories WHERE id = 's1'")
     con.commit()
     con.close()
 
@@ -482,17 +480,17 @@ def test_status_page_shows_new_stories_column(tmp_path, monkeypatch):
     )
     con.execute(
         "CREATE TABLE stories (id TEXT PRIMARY KEY, username TEXT, media_file TEXT, kind TEXT,"
-        " posted_date TEXT, scraped_at TEXT, expires_at TEXT)"
+        " posted_date TEXT, scraped_at TEXT)"
     )
     con.execute(
-        "INSERT INTO stories VALUES ('s1','alice','stories/s1.jpg','story','1h',?,?)",
-        (now.isoformat(), (now + timedelta(hours=20)).isoformat()),
+        "INSERT INTO stories VALUES ('s1','alice','stories/s1.jpg','story','1h',?)",
+        (now.isoformat(),),
     )
     con.commit()
     con.close()
 
     body = client.get("/status").text
-    assert "1 active story" in body
+    assert "1 story stored" in body
     # the runs table row's own new_stories value, distinct from the currently-active count above
     assert "<td>4</td>" in body
 
@@ -621,8 +619,8 @@ def test_stories_feed_images_carry_dimensions_and_a_thumbnail(tmp_path, monkeypa
     _write_image(tmp_path / "media" / "stories" / "s1.webp", (1080, 1900))
     con = sqlite3.connect(db)
     con.execute(
-        "INSERT INTO stories VALUES ('s1','alice','stories/s1.webp','story','1h',?,?)",
-        ((now - timedelta(hours=1)).isoformat(), (now + timedelta(hours=20)).isoformat()),
+        "INSERT INTO stories VALUES ('s1','alice','stories/s1.webp','story','1h',?)",
+        ((now - timedelta(hours=1)).isoformat(),),
     )
     con.commit()
     con.close()
