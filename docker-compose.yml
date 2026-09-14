@@ -32,7 +32,7 @@ services:
     # the container, and the host desktop froze until the run was stopped (see CLAUDE.md). 3g gives
     # real headroom over that peak. memswap_limit equal to mem_limit means no swap: a container
     # thrashing swap is exactly the kind of pressure that stalls the whole host. The scraper also
-    # stops a run itself before this ceiling (MEMORY_GUARD_PERCENT in app/scraper.py).
+    # stops a run itself before this ceiling (MEMORY_GUARD_PERCENT in app/instadroid/config.py).
     # shm_size stays generous: under-provisioning it risks screenshot/graphics-buffer failures that
     # are much harder to diagnose than an OOM.
     mem_limit: ${REDROID_MEM_LIMIT:-3g}
@@ -90,7 +90,7 @@ services:
       init-dirs:
         condition: service_completed_successfully
     network_mode: host         # so it can reach redroid's ADB port on the host loopback
-    # Every setting (credentials, POLL_*, MAX_SCROLLS, ...) comes from .env; scraper.py owns the
+    # Every setting (credentials, POLL_*, MAX_SCROLLS, ...) comes from .env; app/instadroid/config.py owns the
     # defaults and .env.example documents them. DB_PATH, MEDIA_DIR, DEBUG_DIR, APK_CACHE_DIR and
     # ADB_ADDR already default to the mounts and port below.
     env_file: .env
@@ -120,7 +120,7 @@ services:
   # instance and a user with an API token) is two one-time commands, see README's FreshRSS section:
   #   docker compose exec freshrss ./cli/do-install.php --default_user <name> --auth_type form --db-type sqlite
   #   docker compose exec freshrss ./cli/create-user.php --user <name> --password <pw> --token <token> --no-default-feeds
-  # That token is what FRESHRSS_REFRESH_URL (app service env, read by scraper.py) is built from.
+  # That token is what FRESHRSS_REFRESH_URL (app service env, read by the scraper) is built from.
   freshrss:
     image: freshrss/freshrss:1.30.0-alpine
     container_name: ig-freshrss

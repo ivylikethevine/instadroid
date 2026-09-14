@@ -2,17 +2,17 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
-import scraper
+from instadroid import config, db, device, diagnostics, retention
 
 
 @pytest.fixture
 def con_and_media(tmp_path, monkeypatch):
-    db = tmp_path / "posts.sqlite"
+    db_file = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
     media.mkdir()
-    monkeypatch.setattr(scraper, "DB_PATH", str(db))
-    monkeypatch.setattr(scraper, "MEDIA_DIR", media)
-    con = scraper.db_init()
+    monkeypatch.setattr(config, "DB_PATH", str(db_file))
+    monkeypatch.setattr(config, "MEDIA_DIR", media)
+    con = db.db_init()
     return con, media
 
 
@@ -30,11 +30,11 @@ def _insert(con, media_dir, post_id, days_old, media_file=None):
 
 def test_prune_old_posts_deletes_rows_and_media_past_retain_days(con_and_media, monkeypatch):
     con, media = con_and_media
-    monkeypatch.setattr(scraper, "RETAIN_DAYS", 30)
+    monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     _insert(con, media, "old", days_old=45, media_file="old.jpg")
     _insert(con, media, "new", days_old=1, media_file="new.jpg")
 
-    scraper._prune_old_posts(con)
+    retention.prune_old_posts(con)
 
     ids = {r[0] for r in con.execute("SELECT id FROM posts")}
     assert ids == {"new"}
@@ -44,10 +44,10 @@ def test_prune_old_posts_deletes_rows_and_media_past_retain_days(con_and_media, 
 
 def test_prune_old_posts_disabled_when_retain_days_is_zero(con_and_media, monkeypatch):
     con, media = con_and_media
-    monkeypatch.setattr(scraper, "RETAIN_DAYS", 0)
+    monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     _insert(con, media, "ancient", days_old=9999, media_file="ancient.jpg")
 
-    scraper._prune_old_posts(con)
+    retention.prune_old_posts(con)
 
     assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 1
     assert (media / "ancient.jpg").exists()
@@ -55,25 +55,25 @@ def test_prune_old_posts_disabled_when_retain_days_is_zero(con_and_media, monkey
 
 def test_prune_old_posts_removes_orphaned_media_regardless_of_retain_days(con_and_media, monkeypatch):
     con, media = con_and_media
-    monkeypatch.setattr(scraper, "RETAIN_DAYS", 0)
+    monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     _insert(con, media, "kept", days_old=1, media_file="kept.jpg")
     (media / "orphan.jpg").write_bytes(b"x")  # e.g. left behind by an interrupted run
 
-    scraper._prune_old_posts(con)
+    retention.prune_old_posts(con)
 
     assert {f.name for f in media.iterdir()} == {"kept.jpg"}
 
 
 def test_orphan_sweep_covers_both_media_formats(con_and_media, monkeypatch):
     con, media = con_and_media
-    monkeypatch.setattr(scraper, "RETAIN_DAYS", 0)
+    monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     _insert(con, media, "old", days_old=1, media_file="old.jpg")
     _insert(con, media, "new", days_old=1, media_file="new.webp")
     (media / "orphan.jpg").write_bytes(b"x")
     (media / "orphan.webp").write_bytes(b"x")
     (media / "notes.txt").write_bytes(b"x")  # not media: never touched
 
-    scraper._prune_old_posts(con)
+    retention.prune_old_posts(con)
 
     assert {f.name for f in media.iterdir()} == {"old.jpg", "new.webp", "notes.txt"}
 
@@ -94,17 +94,26 @@ def test_merge_bumps_updated_at_without_touching_scraped_at(con_and_media):
 
     existing = con.execute("SELECT * FROM posts WHERE id='h1'").fetchone()
     now = datetime.now(UTC)
-    final_id, fields, media_to_drop = scraper._merged_fields(
-        existing, "h1", None, "h2", "carousel", "3 days ago", None, "The real caption", None, None, now
-    )
-    scraper._write_merged(con, existing["id"], final_id, fields)
+    merged, media_to_drop = db.merged_fields(existing, _candidate(caption="The real caption"), now)
+    db.write_merged(con, existing["id"], merged)
     con.commit()
 
-    row = con.execute("SELECT * FROM posts WHERE id=?", (final_id,)).fetchone()
+    row = con.execute("SELECT * FROM posts WHERE id=?", (merged["id"],)).fetchone()
     assert row["caption"] == "The real caption"
     assert row["scraped_at"] == scraped_at  # unchanged: still when it was first seen
     assert row["updated_at"] == now.isoformat()  # changed: this is when the content changed
     assert media_to_drop is None
+
+
+def _candidate(**fields) -> db.PostRow:
+    """A freshly captured post with a hash id and no permalink, as scrape._store_post() builds it."""
+    now = datetime.now(UTC).isoformat()
+    row: db.PostRow = {
+        "id": "h2", "username": "u", "kind": "carousel", "posted_date": "3 days ago", "caption": "Real caption",
+        "media_file": None, "scraped_at": now, "hash": "h2", "url": None, "place": "", "posted_at": None,
+        "updated_at": now, "ig_version": None,
+    }  # fmt: skip
+    return {**row, **fields}  # type: ignore[return-value]
 
 
 def test_merge_keeps_the_first_seen_instagram_version(con_and_media):
@@ -116,22 +125,22 @@ def test_merge_keeps_the_first_seen_instagram_version(con_and_media):
         (ts, ts),
     )
     existing = con.execute("SELECT * FROM posts WHERE id='h1'").fetchone()
-    final_id, fields, _ = scraper._merged_fields(
-        existing, "h1", None, "h2", "video", "1 day ago", None, "Real caption", None, None,
-        datetime.now(UTC), "445.0.0.45.83",
-    )  # fmt: skip
-    scraper._write_merged(con, existing["id"], final_id, fields)
-    assert con.execute("SELECT ig_version FROM posts WHERE id=?", (final_id,)).fetchone()[0] == "400.0.0.1.1"
+    candidate = _candidate(kind="video", posted_date="1 day ago", ig_version="445.0.0.45.83")
+    merged, _ = db.merged_fields(existing, candidate, datetime.now(UTC))
+    db.write_merged(con, existing["id"], merged)
+    assert (
+        con.execute("SELECT ig_version FROM posts WHERE id=?", (merged["id"],)).fetchone()[0] == "400.0.0.1.1"
+    )
 
 
 def test_db_init_backfills_updated_at_for_rows_from_before_the_column_existed(tmp_path, monkeypatch):
-    db = tmp_path / "posts.sqlite"
+    db_file = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
     media.mkdir()
-    monkeypatch.setattr(scraper, "DB_PATH", str(db))
-    monkeypatch.setattr(scraper, "MEDIA_DIR", media)
+    monkeypatch.setattr(config, "DB_PATH", str(db_file))
+    monkeypatch.setattr(config, "MEDIA_DIR", media)
 
-    con = sqlite3.connect(db)
+    con = sqlite3.connect(db_file)
     con.execute(
         """CREATE TABLE posts (
             id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
@@ -148,23 +157,23 @@ def test_db_init_backfills_updated_at_for_rows_from_before_the_column_existed(tm
     con.commit()
     con.close()
 
-    con = scraper.db_init()
+    con = db.db_init()
 
     row = con.execute("SELECT updated_at FROM posts WHERE id='h1'").fetchone()
     assert row["updated_at"] == scraped_at
 
 
 def test_db_init_migration_merges_legacy_duplicate_rows(tmp_path, monkeypatch):
-    db = tmp_path / "posts.sqlite"
+    db_file = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
     media.mkdir()
-    monkeypatch.setattr(scraper, "DB_PATH", str(db))
-    monkeypatch.setattr(scraper, "MEDIA_DIR", media)
+    monkeypatch.setattr(config, "DB_PATH", str(db_file))
+    monkeypatch.setattr(config, "MEDIA_DIR", media)
 
     # Simulate a pre-migration DB (no posted_at column) with the exact bug pattern seen in
     # production: the same post stored twice because one pass identified it from a weak
     # media-description caption before the real caption had rendered.
-    con = sqlite3.connect(db)
+    con = sqlite3.connect(db_file)
     con.execute(
         """CREATE TABLE posts (
             id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
@@ -187,7 +196,7 @@ def test_db_init_migration_merges_legacy_duplicate_rows(tmp_path, monkeypatch):
     con.commit()
     con.close()
 
-    con = scraper.db_init()  # runs the one-time dedupe migration
+    con = db.db_init()  # runs the one-time dedupe migration
 
     posts = con.execute("SELECT id, caption, media_file FROM posts").fetchall()
     assert len(posts) == 1
@@ -200,13 +209,13 @@ def test_dump_debug_does_not_raise_on_a_write_failure(tmp_path, monkeypatch):
     # here: DEBUG_DIR itself can't be created because something else already occupies that path.
     blocked = tmp_path / "debug"
     blocked.write_text("not a directory")
-    monkeypatch.setattr(scraper, "DEBUG_DIR", blocked)
+    monkeypatch.setattr(config, "DEBUG_DIR", blocked)
 
     class FakeDevice:
         def dump_hierarchy(self):
             return "<hierarchy/>"
 
-    scraper._dump_debug(FakeDevice(), "whatever")  # must not raise
+    diagnostics.dump_debug(FakeDevice(), "whatever")  # must not raise
 
 
 def test_record_run_writes_a_row(con_and_media):
@@ -214,7 +223,7 @@ def test_record_run_writes_a_row(con_and_media):
     started = datetime.now(UTC).isoformat()
     finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
 
-    scraper.record_run(con, started, finished, 3, None, {"android_release": "13", "android_sdk": "33"})
+    db.record_run(con, started, finished, 3, None, {"android_release": "13", "android_sdk": "33"})
 
     row = con.execute("SELECT * FROM runs").fetchone()
     assert row["new_posts"] == 3
@@ -229,7 +238,7 @@ def test_record_run_stores_link_failure_counts(con_and_media):
     started = datetime.now(UTC).isoformat()
     finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
 
-    scraper.record_run(con, started, finished, 1, None, {}, link_sheet_failures=2, link_clipboard_failures=1)
+    db.record_run(con, started, finished, 1, None, {}, link_sheet_failures=2, link_clipboard_failures=1)
 
     row = con.execute("SELECT * FROM runs").fetchone()
     assert row["link_sheet_failures"] == 2
@@ -241,7 +250,7 @@ def test_record_run_stores_new_stories_count(con_and_media):
     started = datetime.now(UTC).isoformat()
     finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
 
-    scraper.record_run(con, started, finished, 0, None, {}, new_stories=3)
+    db.record_run(con, started, finished, 0, None, {}, new_stories=3)
 
     assert con.execute("SELECT new_stories FROM runs").fetchone()[0] == 3
 
@@ -251,7 +260,7 @@ def test_record_run_stores_selector_drift_stats(con_and_media):
     started = datetime.now(UTC).isoformat()
     finished = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
 
-    scraper.record_run(
+    db.record_run(
         con, started, finished, 0, None, {}, cards_per_screen=4.5, share_captioned=0.8, share_complete=0.9
     )
 
@@ -263,18 +272,16 @@ def test_record_run_stores_selector_drift_stats(con_and_media):
 
 def _insert_run(con, **stats):
     started = datetime.now(UTC).isoformat()
-    scraper.record_run(con, started, started, 0, stats.pop("error", None), {}, **stats)
+    db.record_run(con, started, started, 0, stats.pop("error", None), {}, **stats)
 
 
 def test_selector_drift_flags_a_drop_below_the_baseline(con_and_media, monkeypatch):
     con, _ = con_and_media
-    monkeypatch.setattr(scraper, "SELECTOR_DRIFT_MIN_RUNS", 3)
+    monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     for _ in range(5):
         _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
 
-    warning = scraper._check_selector_drift(
-        con, cards_per_screen=1.0, share_captioned=0.8, share_complete=0.9
-    )
+    warning = db.check_selector_drift(con, cards_per_screen=1.0, share_captioned=0.8, share_complete=0.9)
 
     assert warning is not None
     assert "cards/screen" in warning
@@ -283,56 +290,48 @@ def test_selector_drift_flags_a_drop_below_the_baseline(con_and_media, monkeypat
 
 def test_selector_drift_silent_when_in_line_with_baseline(con_and_media, monkeypatch):
     con, _ = con_and_media
-    monkeypatch.setattr(scraper, "SELECTOR_DRIFT_MIN_RUNS", 3)
+    monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     for _ in range(5):
         _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
 
-    warning = scraper._check_selector_drift(
-        con, cards_per_screen=3.6, share_captioned=0.75, share_complete=0.85
-    )
+    warning = db.check_selector_drift(con, cards_per_screen=3.6, share_captioned=0.75, share_complete=0.85)
 
     assert warning is None
 
 
 def test_selector_drift_silent_with_too_few_baseline_runs(con_and_media, monkeypatch):
     con, _ = con_and_media
-    monkeypatch.setattr(scraper, "SELECTOR_DRIFT_MIN_RUNS", 3)
+    monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
     _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
 
     # Only 2 prior runs, below SELECTOR_DRIFT_MIN_RUNS — nothing to judge against yet.
-    warning = scraper._check_selector_drift(
-        con, cards_per_screen=0.0, share_captioned=0.0, share_complete=0.0
-    )
+    warning = db.check_selector_drift(con, cards_per_screen=0.0, share_captioned=0.0, share_complete=0.0)
 
     assert warning is None
 
 
 def test_selector_drift_ignores_failed_runs_in_the_baseline(con_and_media, monkeypatch):
     con, _ = con_and_media
-    monkeypatch.setattr(scraper, "SELECTOR_DRIFT_MIN_RUNS", 3)
+    monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     for _ in range(4):
         _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
     # A failed run with no parse stats at all (error set, cards_per_screen NULL) must not count
     # toward, or break, the baseline query.
     _insert_run(con, error="DeviceNotReady")
 
-    warning = scraper._check_selector_drift(
-        con, cards_per_screen=3.6, share_captioned=0.75, share_complete=0.85
-    )
+    warning = db.check_selector_drift(con, cards_per_screen=3.6, share_captioned=0.75, share_complete=0.85)
 
     assert warning is None
 
 
 def test_selector_drift_disabled_when_baseline_runs_is_zero(con_and_media, monkeypatch):
     con, _ = con_and_media
-    monkeypatch.setattr(scraper, "SELECTOR_DRIFT_BASELINE_RUNS", 0)
+    monkeypatch.setattr(config, "SELECTOR_DRIFT_BASELINE_RUNS", 0)
     for _ in range(5):
         _insert_run(con, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
 
-    warning = scraper._check_selector_drift(
-        con, cards_per_screen=0.0, share_captioned=0.0, share_complete=0.0
-    )
+    warning = db.check_selector_drift(con, cards_per_screen=0.0, share_captioned=0.0, share_complete=0.0)
 
     assert warning is None
 
@@ -340,7 +339,7 @@ def test_selector_drift_disabled_when_baseline_runs_is_zero(con_and_media, monke
 def test_db_init_creates_an_empty_stories_table(con_and_media):
     con, _ = con_and_media
     assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 0
-    scraper.db_init()  # re-run must be a no-op, not a crash
+    db.db_init()  # re-run must be a no-op, not a crash
 
 
 def _insert_story(con, media_dir, story_id, days_old, username="u", media_file=None):
@@ -357,11 +356,11 @@ def _insert_story(con, media_dir, story_id, days_old, username="u", media_file=N
 
 def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(con_and_media, monkeypatch):
     con, media = con_and_media
-    monkeypatch.setattr(scraper, "RETAIN_DAYS", 30)
+    monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     _insert_story(con, media, "old", days_old=45, media_file="stories/old.jpg")
     _insert_story(con, media, "fresh", days_old=1, media_file="stories/fresh.jpg")
 
-    scraper._prune_expired_stories(con)
+    retention.prune_expired_stories(con)
 
     ids = {r[0] for r in con.execute("SELECT id FROM stories")}
     assert ids == {"fresh"}
@@ -371,20 +370,20 @@ def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(con_and_m
 
 def test_prune_expired_stories_noop_when_none_past_retain_days(con_and_media, monkeypatch):
     con, media = con_and_media
-    monkeypatch.setattr(scraper, "RETAIN_DAYS", 30)
+    monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     _insert_story(con, media, "fresh", days_old=1, media_file="stories/fresh.jpg")
 
-    scraper._prune_expired_stories(con)
+    retention.prune_expired_stories(con)
 
     assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 1
 
 
 def test_prune_expired_stories_disabled_when_retain_days_is_zero(con_and_media, monkeypatch):
     con, media = con_and_media
-    monkeypatch.setattr(scraper, "RETAIN_DAYS", 0)
+    monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     _insert_story(con, media, "ancient", days_old=9999, media_file="ancient.jpg")
 
-    scraper._prune_expired_stories(con)
+    retention.prune_expired_stories(con)
 
     assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 1
     assert (media / "ancient.jpg").exists()
@@ -404,8 +403,8 @@ def test_launch_app_falls_back_to_monkey_launch_without_recursing_forever():
             self.app_start_calls.append((pkg, activity, stop))
 
     d = FakeDevice()
-    scraper._launch_app(d)  # must not raise RecursionError
-    assert d.app_start_calls == [(scraper.IG_PKG, None, False)]
+    device.launch_app(d)  # must not raise RecursionError
+    assert d.app_start_calls == [(config.IG_PKG, None, False)]
 
 
 def test_device_snapshot_tolerates_shell_failures():
@@ -413,7 +412,7 @@ def test_device_snapshot_tolerates_shell_failures():
         def shell(self, cmd):
             raise RuntimeError("adb not connected")
 
-    snapshot = scraper._device_snapshot(BrokenDevice())
+    snapshot = device.device_snapshot(BrokenDevice())
     assert snapshot == {
         "android_release": None,
         "android_sdk": None,
@@ -424,13 +423,13 @@ def test_device_snapshot_tolerates_shell_failures():
 
 
 def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(tmp_path, monkeypatch):
-    db = tmp_path / "posts.sqlite"
+    db_file = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
     media.mkdir()
-    monkeypatch.setattr(scraper, "DB_PATH", str(db))
-    monkeypatch.setattr(scraper, "MEDIA_DIR", media)
+    monkeypatch.setattr(config, "DB_PATH", str(db_file))
+    monkeypatch.setattr(config, "MEDIA_DIR", media)
 
-    con = sqlite3.connect(db)
+    con = sqlite3.connect(db_file)
     con.execute(
         """CREATE TABLE posts (
             id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
@@ -450,7 +449,7 @@ def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(tmp_path, mon
     con.commit()
     con.close()
 
-    con = scraper.db_init()  # must not raise, and must not loop forever on the corrupt row
+    con = db.db_init()  # must not raise, and must not loop forever on the corrupt row
 
     # dedupe (v1), accounts backfill (v2), story-retention cleanup (v3)
     assert con.execute("PRAGMA user_version").fetchone()[0] == 3
@@ -458,17 +457,17 @@ def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(tmp_path, mon
     assert ids == {"bad", "good"}  # the corrupt row is left alone, not dropped or crashed on
 
     # Re-running db_init() (as a real restart would) must be a no-op, not a repeat crash.
-    scraper.db_init()
+    db.db_init()
 
 
 def test_migration_backfills_an_accounts_row_for_every_existing_username(tmp_path, monkeypatch):
-    db = tmp_path / "posts.sqlite"
+    db_file = tmp_path / "posts.sqlite"
     media = tmp_path / "media"
     media.mkdir()
-    monkeypatch.setattr(scraper, "DB_PATH", str(db))
-    monkeypatch.setattr(scraper, "MEDIA_DIR", media)
+    monkeypatch.setattr(config, "DB_PATH", str(db_file))
+    monkeypatch.setattr(config, "MEDIA_DIR", media)
 
-    con = sqlite3.connect(db)
+    con = sqlite3.connect(db_file)
     con.execute(
         """CREATE TABLE posts (
             id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
@@ -485,7 +484,7 @@ def test_migration_backfills_an_accounts_row_for_every_existing_username(tmp_pat
     con.commit()
     con.close()
 
-    con = scraper.db_init()
+    con = db.db_init()
 
     assert con.execute("PRAGMA user_version").fetchone()[0] == 3  # accounts backfill (v2) + v3
     assert con.execute("SELECT username FROM accounts WHERE username='club'").fetchone() is not None
@@ -493,18 +492,18 @@ def test_migration_backfills_an_accounts_row_for_every_existing_username(tmp_pat
     assert con.execute("SELECT media_file FROM posts WHERE id='h1'").fetchone()[0] == "h1.jpg"
     assert con.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 0
 
-    scraper.db_init()  # re-run must be a no-op
+    db.db_init()  # re-run must be a no-op
 
 
 def test_prune_old_posts_also_removes_extra_carousel_media(con_and_media, monkeypatch):
     con, media = con_and_media
-    monkeypatch.setattr(scraper, "RETAIN_DAYS", 30)
+    monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     _insert(con, media, "old", days_old=45, media_file="old.jpg")
     (media / "old_1.jpg").write_bytes(b"x")
     con.execute("INSERT INTO media (post_id, idx, file) VALUES ('old', 1, 'old_1.jpg')")
     con.commit()
 
-    scraper._prune_old_posts(con)
+    retention.prune_old_posts(con)
 
     assert con.execute("SELECT COUNT(*) FROM posts WHERE id='old'").fetchone()[0] == 0
     assert con.execute("SELECT COUNT(*) FROM media WHERE post_id='old'").fetchone()[0] == 0
@@ -515,23 +514,23 @@ def test_prune_old_posts_also_removes_extra_carousel_media(con_and_media, monkey
 def test_prune_old_posts_leaves_avatars_alone(con_and_media, monkeypatch):
     # The orphan sweep globs MEDIA_DIR non-recursively; avatars/ must be structurally immune.
     con, media = con_and_media
-    monkeypatch.setattr(scraper, "RETAIN_DAYS", 0)
+    monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     avatars = media / "avatars"
     avatars.mkdir()
     (avatars / "someone.jpg").write_bytes(b"x")
 
-    scraper._prune_old_posts(con)
+    retention.prune_old_posts(con)
 
     assert (avatars / "someone.jpg").exists()
 
 
 def test_size_cap_disabled_when_media_max_mb_is_zero(con_and_media, monkeypatch):
     con, media = con_and_media
-    monkeypatch.setattr(scraper, "MEDIA_MAX_MB", 0)
+    monkeypatch.setattr(config, "MEDIA_MAX_MB", 0)
     _insert(con, media, "a", days_old=1, media_file="a.jpg")
     (media / "a.jpg").write_bytes(b"x" * 500_000)
 
-    scraper._prune_old_posts(con)
+    retention.prune_old_posts(con)
 
     assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 1
 
@@ -543,10 +542,10 @@ def test_size_cap_removes_oldest_posts_first_when_over_budget(con_and_media, mon
     (media / "older.jpg").write_bytes(b"x" * 500_000)
     (media / "newer.jpg").write_bytes(b"x" * 10_000)
 
-    baseline = scraper._media_and_db_size_mb()
-    monkeypatch.setattr(scraper, "MEDIA_MAX_MB", baseline - 0.3)  # reachable only by dropping "older"
+    baseline = retention._media_and_db_size_mb()
+    monkeypatch.setattr(config, "MEDIA_MAX_MB", baseline - 0.3)  # reachable only by dropping "older"
 
-    scraper._prune_old_posts(con)
+    retention.prune_old_posts(con)
 
     ids = {r[0] for r in con.execute("SELECT id FROM posts")}
     assert ids == {"newer"}
@@ -556,10 +555,10 @@ def test_size_cap_removes_oldest_posts_first_when_over_budget(con_and_media, mon
 
 def test_size_cap_stops_when_no_posts_remain(con_and_media, monkeypatch):
     con, media = con_and_media
-    monkeypatch.setattr(scraper, "MEDIA_MAX_MB", 0.0000001)  # unreachable even with zero posts
+    monkeypatch.setattr(config, "MEDIA_MAX_MB", 0.0000001)  # unreachable even with zero posts
     _insert(con, media, "only", days_old=1, media_file="only.jpg")
 
-    scraper._prune_old_posts(con)  # must terminate rather than spin
+    retention.prune_old_posts(con)  # must terminate rather than spin
 
     assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 0
 
@@ -571,7 +570,7 @@ def test_merge_accounts_repoints_posts_and_drops_old_account_row(con_and_media):
     con.execute("INSERT INTO accounts (username, account_id) VALUES ('old_handle', 'acct123')")
     con.commit()
 
-    moved = scraper.rename_account(con, "old_handle", "new_handle")
+    moved = db.rename_account(con, "old_handle", "new_handle")
 
     assert moved == 1
     assert con.execute("SELECT username FROM posts WHERE id='p1'").fetchone()[0] == "new_handle"
@@ -582,7 +581,7 @@ def test_merge_accounts_repoints_posts_and_drops_old_account_row(con_and_media):
 
 def test_merge_accounts_is_a_noop_for_the_same_username(con_and_media):
     con, _ = con_and_media
-    assert scraper.rename_account(con, "same", "same") == 0
+    assert db.rename_account(con, "same", "same") == 0
 
 
 def test_rename_account_keeps_a_followed_allowlist_entry_in_sync(con_and_media):
@@ -590,7 +589,7 @@ def test_rename_account_keeps_a_followed_allowlist_entry_in_sync(con_and_media):
     con.execute("INSERT INTO following (username, updated_at) VALUES ('old_handle', '2020-01-01')")
     con.commit()
 
-    scraper.rename_account(con, "old_handle", "new_handle")
+    db.rename_account(con, "old_handle", "new_handle")
 
     assert {r[0] for r in con.execute("SELECT username FROM following")} == {"new_handle"}
 
@@ -600,7 +599,7 @@ def test_rename_account_leaves_the_allowlist_alone_when_the_old_name_wasnt_on_it
     con.execute("INSERT INTO following (username, updated_at) VALUES ('someone_else', '2020-01-01')")
     con.commit()
 
-    scraper.rename_account(con, "old_handle", "new_handle")
+    db.rename_account(con, "old_handle", "new_handle")
 
     assert {r[0] for r in con.execute("SELECT username FROM following")} == {"someone_else"}
 
@@ -609,51 +608,51 @@ def test_needs_avatar_refresh_true_when_never_captured(con_and_media):
     con, _ = con_and_media
     con.execute("INSERT INTO accounts (username) VALUES ('u')")
     con.commit()
-    assert scraper._needs_avatar_refresh(con, "u") is True
+    assert db.needs_avatar_refresh(con, "u") is True
 
 
 def test_needs_avatar_refresh_false_when_recently_captured(con_and_media, monkeypatch):
     con, _ = con_and_media
-    monkeypatch.setattr(scraper, "AVATAR_REFRESH_DAYS", 14)
+    monkeypatch.setattr(config, "AVATAR_REFRESH_DAYS", 14)
     now = datetime.now(UTC).isoformat()
     con.execute(
         "INSERT INTO accounts (username, avatar_file, avatar_updated_at) VALUES ('u', 'avatars/u.jpg', ?)",
         (now,),
     )
     con.commit()
-    assert scraper._needs_avatar_refresh(con, "u") is False
+    assert db.needs_avatar_refresh(con, "u") is False
 
 
 def test_needs_avatar_refresh_true_when_stale(con_and_media, monkeypatch):
     con, _ = con_and_media
-    monkeypatch.setattr(scraper, "AVATAR_REFRESH_DAYS", 14)
+    monkeypatch.setattr(config, "AVATAR_REFRESH_DAYS", 14)
     old = (datetime.now(UTC) - timedelta(days=30)).isoformat()
     con.execute(
         "INSERT INTO accounts (username, avatar_file, avatar_updated_at) VALUES ('u', 'avatars/u.jpg', ?)",
         (old,),
     )
     con.commit()
-    assert scraper._needs_avatar_refresh(con, "u") is True
+    assert db.needs_avatar_refresh(con, "u") is True
 
 
 def test_needs_following_refresh_true_when_never_captured(con_and_media):
     con, _ = con_and_media
-    assert scraper._needs_following_refresh(con) is True
+    assert db.needs_following_refresh(con) is True
 
 
 def test_needs_following_refresh_false_when_recently_captured(con_and_media, monkeypatch):
     con, _ = con_and_media
-    monkeypatch.setattr(scraper, "FOLLOWING_REFRESH_DAYS", 7)
+    monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 7)
     now = datetime.now(UTC).isoformat()
     con.execute("INSERT INTO following (username, updated_at) VALUES ('u', ?)", (now,))
     con.commit()
-    assert scraper._needs_following_refresh(con) is False
+    assert db.needs_following_refresh(con) is False
 
 
 def test_needs_following_refresh_true_when_stale(con_and_media, monkeypatch):
     con, _ = con_and_media
-    monkeypatch.setattr(scraper, "FOLLOWING_REFRESH_DAYS", 7)
+    monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 7)
     old = (datetime.now(UTC) - timedelta(days=30)).isoformat()
     con.execute("INSERT INTO following (username, updated_at) VALUES ('u', ?)", (old,))
     con.commit()
-    assert scraper._needs_following_refresh(con) is True
+    assert db.needs_following_refresh(con) is True

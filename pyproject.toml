@@ -16,3 +16,11 @@ cache_dir = "local/.pytest_cache"
 [tool.coverage.run]
 data_file = "local/.coverage"
 omit = ["app/tests/*"]
+
+[tool.pyright]
+include = ["app", "scripts"]
+# Tests run under pytest instead; their assertions on Optional values would need narrowing noise.
+exclude = ["app/tests"]
+extraPaths = ["app"]
+pythonVersion = "3.14"
+typeCheckingMode = "standard"
