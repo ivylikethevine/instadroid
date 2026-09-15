@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CI smoke test for a built app image (ci.yml and publish.yml): the scraper imports, and the feed
-# server starts and answers /health. Usage: scripts/ci/smoke-test.sh <image>
+# server starts and answers /health. Usage: .github/scripts/smoke-test.sh <image>
 set -euo pipefail
 
 image="${1:?usage: $0 <image>}"

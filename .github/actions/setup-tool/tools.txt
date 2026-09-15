@@ -1,0 +1,63 @@
+# The pinned CI tools, one row per tool - installed by ./install.sh (through
+# ./action.yml or ../setup-tools) and drift-checked by
+# ../../scripts/check_tool_versions.sh. Both read it through ./lib.sh, so a
+# tool pinned here cannot go unchecked.
+#
+#   name|pin|kind|url|verify|check|tag-prefix|sha256
+#
+# name        the tool's executable name, and what `tool:`/`tools:` inputs
+#             name. install.sh finds it inside an archive by this name.
+# pin         the version WITHOUT a leading "v"; the url carries a literal
+#             "v" where upstream's tag or asset needs one.
+# kind        raw      a bare executable (or script)
+#             tar.gz   an archive searched for <name>; when it holds one build
+#             tar.xz   per arch side by side, this machine's arch dir is kept
+#             zip      an archive searched for <name>, the same way (needs unzip)
+#             cmake    a source tarball built with cmake
+#             make     a source tarball built with ./configure && make
+#             Source kinds may append apt build deps: `cmake:libfoo-dev,libbar-dev`
+#             (cmake always adds build-essential and cmake itself).
+# url         %v is the pin. %a is this platform's asset slug, taken from the
+#             sha256 column below - use it only with a per-platform sha256.
+# verify      flags install.sh runs the installed tool with as a smoke test.
+# check       where the drift check looks for newer releases:
+#             github:<owner>/<repo>      releases API
+#             gitlab:[<host>/]<project>  tags API; <project> url-encoded
+#                                        (group%2Fname), host defaults to gitlab.com
+#             npm:<package>              registry versions
+#             -                          not drift-checked (say why above the row)
+# tag-prefix  optional; what to strip off an upstream tag to get a pin. Blank
+#             means an optional leading "v" (v1.2.3 and 1.2.3 both work); set
+#             it when tags look like "<tool>-v1.2.3".
+# sha256      required. The sha256 of the downloaded file (the raw binary, or
+#             the archive before extraction) at this exact pin, one of:
+#               <64 hex>
+#                   one asset for every platform (a script, a source tarball,
+#                   or a roster that only runs on one platform); url has no %a
+#               <platform>[:<slug>]=<64 hex>,<platform>[:<slug>]=<64 hex>,...
+#                   one asset per platform; <platform> is linux-x86_64,
+#                   linux-aarch64, darwin-x86_64 or darwin-aarch64, and %a in
+#                   the url becomes <slug> (default: the platform itself). A
+#                   runner whose platform is not listed fails to install.
+#             Example: `x86_64-unknown-linux-gnu` assets become
+#               ...-%a.tar.gz|...|linux-x86_64:x86_64-unknown-linux-gnu=<hex>,linux-aarch64:aarch64-unknown-linux-gnu=<hex>
+#             Compute each with `curl -sSfL <url> | sha256sum` (real %v/%a
+#             substituted). It changes only in the commit that bumps `pin`; a
+#             bumped pin with an unchanged sha256 is a red flag.
+#
+# Bumping a pin is a hand edit to one row: pin and sha256 together.
+#
+# Floating by design - tools this repo deliberately does not pin, and why.
+# Each is still named here so "is this pinned?" has one place to look:
+#
+#   none. Tools pinned elsewhere, not floating: the Python tools (ruff,
+#   basedpyright, zizmor, typos, pip-audit, shfmt-py) in the hashed
+#   requirements-dev.txt, and markdownlint-cli2 and prettier in
+#   ../../package-lock.json. Dependabot moves both.
+
+# A fork of actionlint that accepts `uses: $/.github/actions/...` local refs, which upstream rejects.
+actionlint|1.17.0|tar.gz|https://github.com/kjanat/actionlint/releases/download/v%v/actionlint_%v_linux_amd64.tar.gz|--version|github:kjanat/actionlint||620abd485a12b6ab1125b844a876414e1d5bd2af8a3125b27f82b01d0d9d6e5a
+shellcheck|0.11.0|tar.xz|https://github.com/koalaman/shellcheck/releases/download/v%v/shellcheck-v%v.linux.x86_64.tar.xz|--version|github:koalaman/shellcheck||8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+hadolint|2.15.1|raw|https://github.com/hadolint/hadolint/releases/download/v%v/hadolint-linux-x86_64|--version|github:hadolint/hadolint||c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
+trivy|0.74.0|tar.gz|https://github.com/aquasecurity/trivy/releases/download/v%v/trivy_%v_Linux-64bit.tar.gz|--version|github:aquasecurity/trivy||2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+lychee|0.24.2|tar.gz|https://github.com/lycheeverse/lychee/releases/download/lychee-v%v/lychee-x86_64-unknown-linux-gnu.tar.gz|--version|github:lycheeverse/lychee|lychee-v|1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a

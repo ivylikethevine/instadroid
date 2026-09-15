@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/ivylikethevine/instadroid/security/advisories/new
+    about: >-
+      Anything exploitable goes here privately, never in a public issue.
+  - name: Security policy
+    url: https://github.com/ivylikethevine/instadroid/blob/main/docs/SECURITY.md
+    about: >-
+      What's in scope, the known risks and design limits, and the hardening checklist for
+      operators.

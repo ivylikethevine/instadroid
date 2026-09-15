@@ -3,12 +3,15 @@
 
 # oxide resolves `[text](path)` against the vault root and keeps punctuation in
 # heading slugs (neither is configurable). GitHub and MD051 resolve relative to
-# the file and strip punctuation, so every `../README.md` and GLOSSARY anchor
-# is "unresolved" to oxide while correct everywhere else. Noise, so off.
+# the file and strip punctuation, so every link between pages in docs/ (e.g.
+# `PROFILES.md`) and every anchor on a heading with punctuation is "unresolved"
+# to oxide while correct everywhere else. Noise, so off.
 unresolved_diagnostics = false
 
-# dist/ holds the packaging stage, a second copy of README.md and settings/.
-excluded_folders = ["dist"]
+# Matched against directory names, not paths. local/ holds runtime data and
+# the dev venv; _site/ is a local Jekyll build of the site. Dot-directories
+# (.jekyll-cache, .venv) are skipped by oxide already.
+excluded_folders = ["local", "_site"]
 
 # Write links the way the docs spell them: .md extension, headings as slugs.
 include_md_extension_md_link = true

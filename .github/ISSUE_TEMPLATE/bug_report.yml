@@ -1,0 +1,98 @@
+name: Bug report
+description: Something the scraper or the feed server did that it shouldn't have, or didn't do that it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Nothing exploitable here, please: [docs/SECURITY.md](https://github.com/ivylikethevine/instadroid/blob/main/docs/SECURITY.md#reporting-a-vulnerability)
+        has the private reporting channel for that.
+
+        Debug dumps, screenshots and logs can hold real usernames, captions and photos from
+        your feed. Scrub them before pasting, and never paste `.env`, `FRESHRSS_REFRESH_URL`
+        (it carries a token), or anything from `local/data/android`.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The commands you ran, and anything about your setup that matters.
+      placeholder: |
+        docker compose up -d --build
+        docker compose exec app python scraper.py once
+        # the run stops with "no posts parsed on first screen"
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: instadroid version
+      description: >-
+        The release image tag (`ghcr.io/ivylikethevine/instadroid:vX.Y.Z`), or the commit
+        if you built the image yourself.
+      placeholder: v0.0.5, or commit abc1234
+    validations:
+      required: true
+
+  - type: input
+    id: instagram
+    attributes:
+      label: Instagram build and profile
+      description: >-
+        The installed Instagram version and the active profile, both shown on `/status`
+        (and `IG_PROFILE` if you set it). `docker compose exec app python scraper.py compat`
+        lists every redroid image and Instagram build pair your database has run.
+      placeholder: 445.0.0.45.83, profile v424, erstt/redroid:13.0.0_ndk_ChromeOS
+    validations:
+      required: true
+
+  - type: input
+    id: host
+    attributes:
+      label: Host OS and kernel
+      description: The distribution and `uname -r`. redroid depends on the host kernel's binder driver.
+      placeholder: Debian 13, 6.12.0-1-amd64
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: "`scripts/diagnose.sh` output"
+      description: >-
+        Run `./scripts/diagnose.sh` from the repository root on the host, and paste what it prints.
+        It checks host `dmesg` and the device's logcat for the known crash patterns.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: "`docker compose logs app`"
+      description: The relevant lines around the failure, scrubbed of account content.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before you send it
+      options:
+        - label: I searched the existing issues for this problem.
+          required: true
+        - label: >-
+            I read docs/COMPATIBILITY.md, and my redroid image and Instagram build aren't a pair
+            already recorded as not working.
+          required: true

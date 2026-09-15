@@ -1,0 +1,12 @@
+# The allowlist for typos (crate-ci/typos), run by CI over everything git tracks. Each entry says
+# what it is, so a real typo can't hide behind a stale exception.
+[default]
+extend-ignore-re = [
+  # A deliberate misspelling on one line takes a trailing `spellchecker: disable-line` comment
+  # rather than a project-wide allowance.
+  "(?Rm)^.*(#|//)\\s*spellchecker:\\s*disable-line$",
+]
+
+[default.extend-words]
+unparseable = "unparseable" # a common spelling, not a typo
+unexpectly = "unexpectly"   # uiautomator2's own error text ("server quit unexpectly"), matched verbatim

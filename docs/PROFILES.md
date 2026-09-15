@@ -1,10 +1,14 @@
----
-title: Version profiles
----
-
 # Instagram version profiles
 
 The dated device runs behind the decisions here are in the [run log](RUNLOG.md).
+
+## Contents
+
+- [Why](#why)
+- [Design: profiles at change points](#design-profiles-at-change-points)
+- [Adding a version](#adding-a-version)
+- [Status](#status)
+- [Leak scan (2026-09-14)](#leak-scan-2026-09-14)
 
 ## Why
 
@@ -118,7 +122,7 @@ what a changed selector or override should be.
 1. **Find the exact build** on APKPure: `apkeep -l -a com.instagram.android -d apk-pure` (inside the
    app image) lists them. The major version alone isn't enough.
 2. **Baseline**: `new-profile baseline 447.0.0.x.y`. This is a device-driving run, so read
-   [CLAUDE.md](../CLAUDE.md)'s device-run rules and the host freeze in [INCIDENTS.md](INCIDENTS.md) first. Before asking for confirmation it refuses to start if:
+   the [device-run rules](CONTRIBUTING.md#running-against-a-real-device) and the host freeze in [INCIDENTS.md](INCIDENTS.md) first. Before asking for confirmation it refuses to start if:
    - the `app` service is running (its scraper loop drives the same device; `docker compose stop app`),
    - redroid is already over 60% of its memory limit,
    - or the host has less than 2GiB available.

@@ -1,0 +1,62 @@
+# Jekyll config for the GitHub Pages site (.github/workflows/pages.yml). Nothing
+# else reads it, and no Ruby is a dependency here: actions/jekyll-build-pages
+# supplies the github-pages gem, the theme, and every plugin below.
+
+title: instadroid
+description: >-
+  A real, logged-in Instagram Android app running in redroid, publishing the
+  chronological Following feed as Atom for FreshRSS.
+remote_theme: just-the-docs/just-the-docs@v0.12.0
+
+# jekyll-remote-theme: fetches remote_theme above; the github-pages gem has no
+#   just-the-docs of its own.
+# jekyll-readme-index: README.md is the site index; there is no index.md and
+#   there should not be.
+# jekyll-relative-links: rewrites in-repo links like docs/PROFILES.md to the
+#   pages they render as; without it every cross-link 404s on the site.
+# jekyll-optional-front-matter: no file here carries front matter, and none
+#   must - they are read in the repo first and on the site second.
+# jekyll-titles-from-headings: each page's <title> is its own H1.
+plugins:
+  - jekyll-remote-theme
+  - jekyll-readme-index
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+  - jekyll-titles-from-headings
+
+# Without a layout, front-matter-less pages render with no theme chrome.
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
+relative_links:
+  enabled: true
+  collections: true
+
+readme_index:
+  with_frontmatter: true
+
+# The site is the prose: code, tooling, runtime data and agent notes stay off
+# it. Jekyll already skips dot-files and dot-directories; the ones listed here
+# are named anyway so the list reads as complete. docs/openapi.json stays on the
+# site on purpose (README and CONTRIBUTING link it). One bare `- path` per line,
+# comments on their own lines.
+exclude:
+  - app/
+  - scripts/
+  - tests/
+  - typings/
+  - local/
+  - .github/
+  - .claude/
+  - .vscode/
+  - .zed/
+  - pyproject.toml
+  - requirements-dev.txt
+  - requirements-dev.in
+  - docker-compose.yml
+  - .env.example
+  - CLAUDE.md
+  - CLAUDE.local.md

@@ -1,0 +1,100 @@
+name: Link check
+
+# External links in the docs. Advisory: a rotted URL is worth fixing but has never broken the app, so this
+# never fails on one and is never a required check; what it finds goes to one tracking issue. Runs after
+# every green CI run on a push to main (a doc change checks its new links when it lands) and weekly, since
+# links rot with no push here. Pull requests only check relative links and fragments, offline (ci.yml's
+# docs job). workflow_run is safe here: the job runs only after a green push to main, never PR code.
+on: # zizmor: ignore[dangerous-triggers]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "23 8 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Queue rather than cancel: a run cancelled mid-upsert can leave the tracking issue half-written or open a
+# duplicate.
+concurrency:
+  group: link-check
+  cancel-in-progress: false
+
+jobs:
+  lychee:
+    name: External links (lychee, advisory)
+    # Only a green push to main; the schedule and a manual dispatch pass the first clause.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write # open, refresh or close the tracking issue
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: $/.github/actions/setup-tool
+        with:
+          tool: lychee
+
+      # lychee exits 2 for broken links, which is the finding, not a failure; any other non-zero exit (bad
+      # input, a crash) still fails the job. Accepted codes (429 is a site rate-limiting the check, not a dead
+      # link), excluded paths and retries are lychee.toml's, shared with the offline check in ci.yml.
+      - id: check
+        name: Check external links
+        env:
+          # authenticated github.com requests, so those links aren't rate-limited
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          mapfile -d '' files < <(git ls-files -z '*.md')
+          rc=0
+          lychee --config lychee.toml --include-fragments --no-progress \
+            --format markdown --output "$RUNNER_TEMP/lychee.md" "${files[@]}" || rc=$?
+          case "$rc" in
+            0) echo "found=0" >>"$GITHUB_OUTPUT" ;;
+            2) echo "found=1" >>"$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+
+      - name: Compose the report
+        if: steps.check.outputs.found == '1'
+        run: |
+          set -euo pipefail
+          {
+            echo "lychee found broken links in the docs. Reproduce from a checkout with"
+            echo "\`git ls-files -z '*.md' | xargs -0 lychee --config lychee.toml --include-fragments\`."
+            echo
+            cat "$RUNNER_TEMP/lychee.md"
+          } >"$RUNNER_TEMP/report.md"
+
+      - if: steps.check.outputs.found == '1'
+        uses: $/.github/actions/advisory-note
+        with:
+          title: lychee
+          warning-body: Broken links in the docs - advisory, not blocking; see the link-check issue
+          heading: lychee found broken links
+          body: Advisory only, never blocks a merge. The report is below and in the link-check tracking issue.
+          report-file: ${{ runner.temp }}/lychee.md
+
+      - uses: $/.github/actions/upsert-tracking-issue
+        with:
+          label: link-check
+          label-color: FBCA04
+          label-description: A link in the docs is broken
+          title: Broken links in the docs
+          resolved: ${{ steps.check.outputs.found != '1' }}
+          close-comment: Every link resolves again.
+          resolved-when: every link resolves
+          body-file: ${{ runner.temp }}/report.md

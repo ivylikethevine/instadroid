@@ -2,17 +2,66 @@
 
 > EXPERIMENTAL UNTIL v1.0.0
 
-[![instadroid image](https://img.shields.io/github/v/release/ivylikethevine/instadroid?logo=docker&logoColor=white&label=ghcr.io%2Finstadroid)](https://github.com/ivylikethevine/instadroid/pkgs/container/instadroid)
-[![coverage](https://img.shields.io/endpoint?url=https://ivylikethevine.github.io/instadroid/coverage.json)](https://github.com/ivylikethevine/instadroid/actions/workflows/pages.yml)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ivylikethevine/instadroid/badge)](https://scorecard.dev/viewer/?uri=github.com/ivylikethevine/instadroid)
-
 A real, logged-in Instagram Android app running in redroid (a containerised Android device),
 driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom for FreshRSS.
+
+<!-- Where each badge's data comes from:
+     - Release, ghcr.io image: the newest GitHub Release, which .github/workflows/publish.yml creates
+       from a vX.Y.Z tag.
+     - Tests: shields.io check-runs on main, filtered to ci.yml's `test` job by its name ("Unit
+       tests"). A rename of that job must be mirrored in nameFilter, or the badge reads "no check
+       runs". The site also serves a tests-passed endpoint at badges/tests.json, an alternative
+       (https://ivylikethevine.github.io/instadroid/badges/tests.json).
+     - Coverage: a shields.io endpoint JSON at badges/coverage.json on the Pages site. The figures are
+       measured by .github/workflows/coverage.yml (.github/scripts/coverage_badges.sh writes both
+       files) and served by .github/workflows/pages.yml.
+     - OpenSSF Scorecard: api.scorecard.dev, fed by .github/workflows/scorecard.yml.
+     - OpenSSF Best Practices: the project's bestpractices.dev entry. Not registered yet; uncomment
+       the line below with the real project id once it is.
+     - License: GitHub's detection of LICENSE.md.
+     - Python: static, mirrors pyproject.toml's requires-python. -->
+
+[![Release](https://img.shields.io/github/v/release/ivylikethevine/instadroid?logo=github&label=release)](https://github.com/ivylikethevine/instadroid/releases/latest)
+[![instadroid image](https://img.shields.io/github/v/release/ivylikethevine/instadroid?logo=docker&logoColor=white&label=ghcr.io%2Finstadroid)](https://github.com/ivylikethevine/instadroid/pkgs/container/instadroid)
+[![Tests](https://img.shields.io/github/check-runs/ivylikethevine/instadroid/main?nameFilter=Unit%20tests&label=tests)](https://github.com/ivylikethevine/instadroid/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fivylikethevine.github.io%2Finstadroid%2Fbadges%2Fcoverage.json)](https://github.com/ivylikethevine/instadroid/actions/workflows/coverage.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ivylikethevine/instadroid/badge)](https://scorecard.dev/viewer/?uri=github.com/ivylikethevine/instadroid)
+
+<!-- [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/PROJECT_ID/badge)](https://www.bestpractices.dev/projects/PROJECT_ID) -->
+
+[![License: MIT](https://img.shields.io/github/license/ivylikethevine/instadroid)](LICENSE.md)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue?logo=python&logoColor=white)](https://github.com/ivylikethevine/instadroid/blob/main/pyproject.toml)
+
+> These docs are also a [website](https://ivylikethevine.github.io/instadroid/).
+> [docs/README.md](docs/README.md) indexes the rest.
+
+## Contents
+
+- [What it does](#what-it-does)
+  - [Which Android?](#which-android)
+- [Host requirements](#host-requirements)
+- [First-time setup](#first-time-setup)
+- [How a scrape works](#how-a-scrape-works)
+  - [Stories](#stories)
+  - [Followed-accounts allowlist](#followed-accounts-allowlist)
+  - [Known limitations of v1](#known-limitations-of-v1)
+- [Configuration highlights](#configuration-highlights)
+  - [FreshRSS](#freshrss)
+  - [Health and restarts](#health-and-restarts)
+  - [Staying under the radar](#staying-under-the-radar)
+  - [Storage and retention](#storage-and-retention)
+- [Building and testing](#building-and-testing)
+- [Getting help and contributing](#getting-help-and-contributing)
+- [AI usage](#ai-usage)
+- [Roadmap](#roadmap)
+- [License](#license)
+
+## What it does
 
 The non-Android half ships as one image (`app/`): a scraper process and a feed server running
 side by side in the same container (see `app/entrypoint.sh`).
 
-```bash
+```text
 redroid (Instagram APK)  <--ADB-->  app: scraper (uiautomator2, every 2.5-4.5h)
                                             |
                                         SQLite + cropped images
@@ -20,55 +69,28 @@ redroid (Instagram APK)  <--ADB-->  app: scraper (uiautomator2, every 2.5-4.5h)
                                      app: feed (FastAPI -> /instagram.xml)  <-- FreshRSS
 ```
 
-## Which Android?
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the component map, the trust boundaries and where
+state lives.
+
+### Which Android?
 
 Instagram ships arm64 native code only, so an x86_64 host needs a redroid image with working ARM
-translation. `abing7k/redroid:a11_ndk_amd` (Android 11) **crashed Instagram at native startup**
-across 3 tested APK versions. `erstt/redroid:13.0.0_ndk_ChromeOS` (Android 13, Google's NDK
-translation as shipped in ChromeOS's ARC++) **works**: Instagram installs, logs in, and scrapes
-successfully — tested end-to-end (login, a full scrape run, permalink capture, cropped media) with
-zero issues. This is the image in `docker-compose.yml`.
+translation. `erstt/redroid:13.0.0_ndk_ChromeOS` (Android 13) works and is the image in
+`docker-compose.yml`; the Android 11, 14 and 15 images tried don't, each for a different reason. One
+known quirk: under the default `androidboot.redroid_gpu_mode=guest` the Following-feed switcher
+doesn't always open, so the scraper falls back to the Home feed (see
+[Followed-accounts allowlist](#followed-accounts-allowlist)).
 
-One known rendering quirk: the Following-feed switcher's bottom sheet doesn't open under this
-image's default `androidboot.redroid_gpu_mode=guest`, so the scraper falls back to scraping the
-Home feed. `androidboot.redroid_gpu_mode=host` was tried (with `/dev/dri` passed through) and does
-engage the real host GLES renderer, but boot became much slower and the user decided against
-pursuing it further — other clients of this GPU mode may not support it. `guest` remains the mode
-in `docker-compose.yml`; see [`docs/INCIDENTS.md`](docs/INCIDENTS.md) for the full writeup.
+Compose refuses to start redroid on a `local/data/android` volume last used by a different Android
+major version, since mixing them corrupted system state repeatedly; give another version its own
+volume. [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) has the full history, every tested image and
+Instagram build pair, and what was weighed and not shipped (host GPU mode among them), and
+`docker compose exec app python scraper.py compat` lists every pair your own database has run.
 
-Also tried, and **not** working: `erstt/redroid:15.0.0_ndk_AVD` (Android 15, a different NDK
-translation build — the `AVD` in that tag is upstream's own naming, unrelated to this project).
-`hwservicemanager` and `servicemanager` — Android's core binder-registration daemons — crashed
-fatally within ~3 seconds of boot, identically across two attempts, the second with
-`mem_limit`/`shm_size` raised well past redroid's usual recommendations — ruling out memory as the
-cause. This is a binder ABI mismatch between this specific image and this host, not an Instagram
-compatibility issue or a resource one; the container exiting cleanly caused no host impact either
-time. No Android 14 NDK build exists upstream (`erstt/redroid` only publishes 11/12/13/15).
-
-Also tried: `aureliolo/redroid:14.0.0_amd64_with_gapps` (Android 14, the only Android-14 redroid
-image found). It boots cleanly and Instagram installs, but the image ships **no ARM translation at
-all** — `ro.product.cpu.abilist` claims `arm64-v8a` support but no `libndk_translation.so`,
-`libhoudini.so`, or native-bridge property exists on the device. Confirmed empirically: launching
-Instagram crashes the dynamic linker outright — `dlopen failed: "libsuperpack-jni.so" is for
-EM_AARCH64 (183) instead of EM_X86_64 (62)` — a clean, host-safe app crash, not something a
-config change fixes. `erstt/redroid` is the only source found with confirmed, working ARM
-translation, and it doesn't publish an Android 14 build. Android 13/ChromeOS remains the image in
-`docker-compose.yml`.
-
-[`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) has the same history as a lookup table of image and
-Instagram build pairs, and `docker compose exec app python scraper.py compat` lists every pair your own
-database has run, from what each run records.
-
-That same first attempt at running redroid **also caused a full kernel panic** on this specific
-host, unrelated to Instagram compatibility — see [`docs/INCIDENTS.md`](docs/INCIDENTS.md) for the
-root cause, and `CLAUDE.md` for the now-validated safe procedure before running redroid here (or on
-any host you haven't personally tested it on).
-
-Switching `docker-compose.yml` to a different Android major version against the same
-`local/data/android` volume is what corrupted system state repeatedly here, so compose now refuses:
-the one-shot `init` service runs before redroid, records the image in
-`local/data/android.image`, and fails with instructions when the configured image's Android version
-differs. Give another Android version its own volume instead.
+The first attempt at running redroid on the maintainer's host also caused a kernel panic, unrelated
+to Instagram: two binder drivers on one kernel. [docs/INCIDENTS.md](docs/INCIDENTS.md) has the root
+cause, and [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#running-against-a-real-device) the rules to
+follow before running redroid on a host you haven't personally tested it on.
 
 ## Host requirements
 
@@ -76,9 +98,9 @@ differs. Give another Android version its own volume instead.
   host networking to reach redroid's ADB port.
 - `adb` on the host. `scrcpy` is optional; `adb exec-out screencap -p > shot.png` is enough for checks.
 - About 3.5GB of free RAM and a few spare cores. redroid is capped at 3g of memory with no swap
-  (`REDROID_MEM_LIMIT`) and 4 CPUs (`REDROID_CPUS`); the app container at 256m and 1.5 CPUs. A live
-  scrape has measured close to 2GiB, and at the old 2g limit a run OOM-killed Android processes
-  and froze the host (see [`docs/INCIDENTS.md`](docs/INCIDENTS.md)).
+  (`REDROID_MEM_LIMIT`) and 4 CPUs (`REDROID_CPUS`); the app container at 256m and 1.5 CPUs. Scrapes
+  have peaked at up to 2.4GiB ([docs/RUNLOG.md](docs/RUNLOG.md)), and at the old 2g limit a run
+  OOM-killed Android processes and froze the host (see [docs/INCIDENTS.md](docs/INCIDENTS.md)).
 
 ## First-time setup
 
@@ -105,8 +127,8 @@ way. Setting both forms of one, or a file the app can't read, stops the process 
 The `app` container installs Instagram on the device itself the first time it finds it missing:
 `ensure_logged_in()` fetches it with `apkeep` (built into the image, from APKPure) and
 `adb install-multiple`s it, caching the downloaded bundle in `local/data/apk` so a later reinstall
-(e.g. after a `/data/system` reset — see `docs/INCIDENTS.md`) doesn't re-download it. Set `IG_AUTO_INSTALL=0`
-in `.env` to disable this and fall back to a manual install instead:
+(e.g. after a `/data/system` reset — see [docs/INCIDENTS.md](docs/INCIDENTS.md)) doesn't re-download
+it. Set `IG_AUTO_INSTALL=0` in `.env` to disable this and fall back to a manual install instead:
 
 ```bash
 apkeep -a com.instagram.android -d apk-pure local
@@ -134,13 +156,10 @@ docker compose exec app python scraper.py install 444.0.0.46.85
 The saved login lives in `/data` and survives the replace, but an older Instagram may not accept
 data written by a newer one, so a downgrade can still need a fresh login.
 
-`tune-android.sh` disables a curated list of unused system apps to cut idle memory (see `docs/INCIDENTS.md`'s
-"Reducing idle memory" for the measurement). One package must never be added to that list:
-`com.android.packageinstaller`. Disabling it crashes `system_server` on every subsequent cold boot
-(`RuntimeException: There must be exactly one installer; found []` in `PackageManagerService`) —
-Android requires exactly one enabled package-installer app system-wide. Recovery, if this ever
-happens again: `adb root`, then move `/data/system/users/0/package-restrictions.xml` aside and
-restart the container — same pattern as the `/data` corruption incidents in `docs/INCIDENTS.md`.
+`tune-android.sh` disables a curated list of unused system apps to cut idle memory. One package must
+never be added to that list: `com.android.packageinstaller`. Disabling it crash-loops
+`system_server` on every later cold boot; [docs/INCIDENTS.md](docs/INCIDENTS.md) has the measurement,
+the log line, and the recovery.
 
 The scraper runs the login step at the start of every scrape, so once the session is saved on the
 device it is a no-op. If Instagram asks for a code or "confirm it's you", the run aborts with a
@@ -151,10 +170,11 @@ checked to work, test fixtures) lives in a version profile under `app/igprofiles
 only where Instagram changed something: today that's just `v424`, covering 424 (the oldest supported)
 onward. The scraper runs the highest profile at or below the installed version; `IG_PROFILE` forces
 one. The active profile is shown on `/status` and recorded in `runs.selector_profile`.
-`new-profile` (`app/devtools/new_profile.py`, installed with the dev tools; see "Development")
-handles the mechanical work of supporting a new build: a capped capture-mode baseline run, a
-per-screen selector check, fixtures, validation, and a new profile only when something drifted. See
-[`docs/PROFILES.md`](docs/PROFILES.md) for the design and the steps.
+`new-profile` (`app/devtools/new_profile.py`, installed with the dev tools; see
+[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#development-setup)) handles the mechanical work of
+supporting a new build: a capped capture-mode baseline run, a per-screen selector check, fixtures,
+validation, and a new profile only when something drifted. See [docs/PROFILES.md](docs/PROFILES.md)
+for the design and the steps.
 
 If a run reports `no posts parsed on first screen`, look at `local/data/debug/last_hierarchy.xml`
 and `last_screen.jpg`, then fix it in that Instagram version's own profile directory rather than in
@@ -190,11 +210,11 @@ an older one or in shared code.
    saved and the feed is reopened once; if it happens again the run stops early (`empty_feed1`)
    and `/status` shows it as a warning, rather than swiping through the rest of `MAX_SCROLLS` blind.
 6. Force-stop Instagram and a short list of cached system apps (Settings, permission controller,
-   etc.). This container's Android never reclaims memory on its own between runs (see `docs/INCIDENTS.md`),
-   and Instagram alone measured ~820MiB resident once opened — without this, that memory just sits
-   there for the full `POLL_MIN_HOURS`-`POLL_MAX_HOURS` gap until the next run. The saved login
-   session lives on disk, not in the running process, so the next run's normal login-check handles
-   the resulting cold start the same way it always does.
+   etc.). This container's Android never reclaims memory on its own between runs, and Instagram
+   alone measured ~820MiB resident once opened ([docs/INCIDENTS.md](docs/INCIDENTS.md)) —
+   without this, that memory just sits there for the full `POLL_MIN_HOURS`-`POLL_MAX_HOURS` gap
+   until the next run. The saved login session lives on disk, not in the running process, so the
+   next run's normal login-check handles the resulting cold start the same way it always does.
 
 Taps are always made from a hierarchy dump taken immediately beforehand, and nothing is ever tapped
 inside an open sheet except "Copy link" (a stray tap there could message a contact).
@@ -204,7 +224,7 @@ If a followed account renames itself, `docker compose exec app python scraper.py
 numeric user id never appears in the feed's accessibility tree). It doesn't fix an existing
 `?user=<old>` FreshRSS subscription; re-subscribe under the new username after renaming.
 
-## Stories
+### Stories
 
 Opening a story is a real, visible view — the scraping account shows up in that account's story
 viewer list, same as a human opening it would. That's accepted as the cost of this feature, not a
@@ -213,10 +233,10 @@ concern for a given account.
 
 Only the story's current frame is captured — never actually tapped, since only the initial open tap
 is made and every visit exits via Back. Advancing a story via tap was tried during development and,
-on this host, reliably ejects Instagram to the OS launcher once a single-frame story's queue is
-exhausted (Back, by contrast, always returns cleanly to the tray). Given that, multi-frame stories
-only ever contribute their currently-shown frame, not the whole reel — a deliberate scope decision,
-not a "not yet implemented" gap. Stories have no permalink/shortcode the way posts do, so a
+on the maintainer's host, reliably ejects Instagram to the OS launcher once a single-frame story's
+queue is exhausted (Back, by contrast, always returns cleanly to the tray). Given that, multi-frame
+stories only ever contribute their currently-shown frame, not the whole reel — a deliberate scope
+decision, not a "not yet implemented" gap. Stories have no permalink/shortcode the way posts do, so a
 capture is matched by how it looks: a crop within 10 bits (of 64) of a perceptual hash of a story
 the same account had stored in the last day is a re-capture and is discarded, and so is a
 near-black viewer transition frame. (An exact byte hash missed these, since every capture
@@ -225,12 +245,12 @@ ticking over between runs doesn't change it.
 Captured stories are served at `/stories.xml` and share `RETAIN_DAYS` with posts — no separate
 story-retention window.
 
-## Followed-accounts allowlist
+### Followed-accounts allowlist
 
 Under `androidboot.redroid_gpu_mode=guest` the Following-feed switcher's bottom sheet doesn't
-always open (see "Which Android?" above); when it fails, `scrape_once()` falls back to whatever's
-on screen — Home, algorithmic, with suggested posts from accounts you don't follow mixed in.
-`FEED_MODE=home` (see "How a scrape works" above) hits the same problem on purpose, every run, by
+always open (see [Which Android?](#which-android)); when it fails, `scrape_once()` falls back to
+whatever's on screen — Home, algorithmic, with suggested posts from accounts you don't follow mixed
+in. `FEED_MODE=home` (see "How a scrape works" above) hits the same problem on purpose, every run, by
 design — it skips the switcher outright. Either way, set `FOLLOWING_REFRESH_DAYS` above its
 default of `0` to filter that out: periodically (every `FOLLOWING_REFRESH_DAYS`) the scraper
 navigates to the account's own profile → Following list and scrolls it (`MAX_FOLLOWING_SCROLLS`
@@ -259,102 +279,37 @@ leaves whatever list is already stored alone rather than replacing it with nothi
 on the next run. `scraper.py rename` keeps a renamed account's allowlist entry in sync along with
 everything else it reconciles. Each run's `/status` page shows how many posts a run filtered.
 
-## Development
+### Known limitations of v1
 
-> **Rule: all Python code must be 100% type annotated and at least 90% covered by tests.** That means
-> app code, scripts and tests alike, with no `Any`, `cast()` or type-checker suppressions. CI enforces
-> both: basedpyright strict (with `reportAny`) and ruff's annotation rules for the first, and
-> coverage's `fail_under = 90` over `app/` (pyproject.toml) for the second. A change that lowers either doesn't merge.
+- When "Copy link" fails on every retry (`PERMALINK_RETRIES`) for a post, its id is a hash of
+  author + caption (or media description) instead of the permalink shortcode.
+- Avatar and video-still crops are positional, not selector-based — Instagram's accessibility tree
+  has no addressable node for either (the header is a collapsed leaf; the video frame is whatever's
+  on screen after `VIDEO_SETTLE_SECONDS`) — so their exact framing hasn't been verified against a
+  live device yet.
+- Videos/Reels get a still only, never the actual video.
 
-```bash
-python -m venv local/.venv && . local/.venv/bin/activate
-pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt   # the hashed locks
-pip install --no-deps -e .             # app/ on the path, and the dev commands
-ruff check . && ruff format --check . && basedpyright
-pytest -q                              # parser, feed, and device-flow tests; temp SQLite db
-pytest -q --cov --cov-report=term-missing   # with coverage (fails under 90%)
-export-openapi                         # after changing a route in app/feedserver/
-```
+## Configuration highlights
 
-The Python code is laid out as:
+Every setting is in `.env.example`, commented, with its default. `docker-compose.yml`'s header
+explains the two kinds: settings the app reads itself, and settings compose uses to size the
+containers and the device. The ones worth knowing about first:
 
-```text
-app/                 the app image's build context
-  scraper.py         the scraper's command line (scraper.py once, login, install, ...)
-  instadroid/        the scraper (the package docstring lists its modules)
-  igprofiles/        per-Instagram-version profiles (docs/PROFILES.md)
-  feedserver/        the feed server, served as uvicorn feedserver:app
-  shared/            the leaf both sides import: fileenv (secrets from files), sqlrows (typed SQLite rows)
-  devtools/          dev commands, not in the image: new-profile, promote-dump, check-new-builds, export-openapi
-tests/               the test suite
-scripts/             host and device shell scripts (tune-android.sh, diagnose.sh, ...); scripts/ci/ for CI
-typings/             stubs for untyped libraries
-```
-
-The feed server imports nothing from the scraper and the profiles nothing from `instadroid`;
-import-linter enforces those boundaries (`[tool.importlinter]` in `pyproject.toml`).
-
-All Python code, tests included, is fully typed with no `Any`:
-
-- ruff's `ANN` rules require an annotation on every function and ban an explicit `Any`;
-- basedpyright checks `app/` and `tests/` in strict mode with `reportAny`, so no
-  value typed `Any` gets through, not even one returned by the standard library;
-- libraries that ship no type information (uiautomator2, adbutils, feedgen) get local stubs in
-  `typings/`.
-
-The feed server's OpenAPI spec is committed as [`docs/openapi.json`](docs/openapi.json) and published
-with the project site. `export-openapi --check` (run by `tests/test_scripts_cli.py`) compares it with the routes, so CI fails until the spec
-is regenerated after a route change.
-
-The device-driving code (login, feed navigation, share sheet, carousels, stories, the scrape loop)
-is tested against `tests/fakedevice.py`: a scripted stand-in for a uiautomator2 device whose
-screens are synthetic hierarchy XML, with `goto`/`clip` attributes on nodes scripting what a tap
-does. No real account data is used in any fixture.
-
-CI (`.github/workflows/ci.yml`) runs:
-
-- ruff, basedpyright and import-linter (`lint-imports`), and the test suite with coverage;
-- `pip-audit` on the hashed dependency locks (also weekly), and GitHub's dependency review on pull requests;
-- shellcheck and shfmt on the shell scripts;
-- markdownlint, prettier and a relative-link check (lychee) on the docs, and typos over everything
-  (external links are checked weekly by `.github/workflows/links.yml`);
-- hadolint, a build and smoke test of the image, a Trivy scan of it (report-only, to the Security
-  tab), and `docker compose config`;
-- gitleaks, actionlint and zizmor.
-
-Dependabot watches pip, Docker base images and GitHub Actions.
-
-`.github/workflows/pages.yml` builds and deploys the [project site](https://ivylikethevine.github.io/instadroid/)
-(see "Roadmap" above) on every push to `main`: it re-runs the test suite with coverage, builds the
-Jekyll site from `docs/`, and writes the total as `coverage.json` (a shields.io endpoint payload)
-into the built site alongside it — the README's coverage badge reads that URL, so no external
-coverage service, token, or dedicated git branch is involved.
-
-### Releases
-
-Pushing a `vX.Y.Z` tag runs `.github/workflows/publish.yml`: it builds and smoke-tests the app
-image first, with no approval needed, so a broken build just fails. Only once that build succeeds
-does the `publish` job wait for approval against the `publish` GitHub Environment — approving it
-tags and pushes the already-built image (no rebuild) and attests its provenance. A final job then
-creates a GitHub Release with the image digest, pull command, a compose snippet, and the
-attestation-verify command. A tag like `v1.0.0-rc1` is treated as a prerelease and never moves
-`:latest`.
-
-## FreshRSS
+### FreshRSS
 
 Subscribe to `http://<host>:8000/instagram.xml` (per account: `?user=somebody`; stories:
 `/stories.xml`), or import `/opml` to subscribe to everything at once. Set `FEED_TOKEN` before exposing
-the feed beyond loopback. [`docs/FRESHRSS.md`](docs/FRESHRSS.md) covers feed auth, OPML, push refresh
+the feed beyond loopback. [docs/FRESHRSS.md](docs/FRESHRSS.md) covers feed auth, OPML, push refresh
 and running FreshRSS on the same host.
 
-## Health and restarts
+### Health and restarts
 
 Both services restart on their own, `/health` turns the container `unhealthy` when scraping looks
 stuck or keeps failing, and `scraper.py lock`/`unlock`/`scrape-now` hold or trigger runs while you
-drive the device yourself. [`docs/OPERATIONS.md`](docs/OPERATIONS.md) covers that plus failure alerts,
+drive the device yourself. [docs/OPERATIONS.md](docs/OPERATIONS.md) covers that plus failure alerts,
 device-failure retries, the selector-drift canary and memory management.
 
-## Staying under the radar
+### Staying under the radar
 
 - Keep `POLL_MIN_HOURS` ≥ 2. Instagram tolerates a phone that checks in a few times a day; it does not
   tolerate one that scrolls every 15 minutes with metronome timing.
@@ -378,23 +333,31 @@ device-failure retries, the selector-drift canary and memory management.
 - Occasionally open `scrcpy` and poke around yourself; it helps, and you'll need it anyway for
   the "confirm it's you" challenges that appear a few times a year.
 
-## Storage and retention
+### Storage and retention
 
 Posts, stories and media older than `RETAIN_DAYS` (default 60) are pruned after every run, the
-database is backed up daily, and images are stored as WebP by default. [`docs/OPERATIONS.md`](docs/OPERATIONS.md)
+database is backed up daily, and images are stored as WebP by default. [docs/OPERATIONS.md](docs/OPERATIONS.md)
 covers duplicate merging, `MEDIA_MAX_MB`, debug-dump retention, and snapshotting redroid's `/data`.
 
-## Known limitations of v1
+## Building and testing
 
-- When "Copy link" fails on every retry (`PERMALINK_RETRIES`) for a post, its id is a hash of
-  author + caption (or media description) instead of the permalink shortcode.
-- Avatar and video-still crops are positional, not selector-based — Instagram's accessibility tree
-  has no addressable node for either (the header is a collapsed leaf; the video frame is whatever's
-  on screen after `VIDEO_SETTLE_SECONDS`) — so their exact framing hasn't been verified against a
-  live device yet.
-- Videos/Reels get a still only, never the actual video.
+All Python code is 100% type annotated and at least 90% covered by tests, and CI enforces both.
+[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) has the development setup, the checks to run before a
+pull request (`scripts/check.sh`, the same commands CI runs) and what CI runs; [docs/TESTING.md](docs/TESTING.md) has the test tiers, fixtures and
+coverage. The device-driving code is tested against a scripted fake device, so the suite needs no
+emulator and no Instagram account.
 
-## AI Usage
+Releases are cut by pushing a signed `vX.Y.Z` tag, which publishes the image unattended once CI has
+passed on that commit and the image scan is clean: see [docs/RELEASING.md](docs/RELEASING.md).
+
+## Getting help and contributing
+
+[docs/SUPPORT.md](docs/SUPPORT.md) says where to ask and what to include (the output of
+`scripts/diagnose.sh`, for anything that goes wrong on the device). A security problem goes through
+[docs/SECURITY.md](docs/SECURITY.md), never a public issue. Bug reports, selector fixes for a new
+Instagram version and focused pull requests are welcome: [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
+
+## AI usage
 
 Heavily inspired by
 [Dictionarry/Profilarr's AI Transparency Statement](https://v2.dictionarry.dev/ai-transparency).
@@ -408,6 +371,8 @@ myself.
 
 ## Roadmap
 
-Moved to [`docs/ROADMAP.md`](docs/ROADMAP.md), ordered by scope (small/medium/large). Also
-published as part of the [project site](https://ivylikethevine.github.io/instadroid/) built from
-`docs/` (see `.github/workflows/pages.yml`).
+[docs/ROADMAP.md](docs/ROADMAP.md), ordered by scope (small/medium/large).
+
+## License
+
+MIT; see [LICENSE.md](LICENSE.md).

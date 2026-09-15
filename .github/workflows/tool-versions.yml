@@ -1,0 +1,87 @@
+name: Tool versions
+
+# Drift check over the pins Dependabot can't see: the CI tools in .github/actions/setup-tool/tools.txt
+# and the inline pins in .github/scripts/check_tool_versions.local.sh (apkeep, the Pages theme), plus
+# that script's Python-version agreement check. It also re-checks the action SHAs and image digests
+# Dependabot does move, so an unmerged bump shows as drift. The signal is one tracking issue, kept
+# current: opened when something is behind, rewritten on every later run, closed when all is current.
+# Runs after every green CI run on a push to main and weekly (Monday, after Dependabot's run, with the
+# same 7-day cooldown). workflow_run is safe here: the job runs only after a green push to main.
+on: # zizmor: ignore[dangerous-triggers]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Queue rather than cancel: a run cancelled mid-upsert can leave the tracking issue half-written or open a
+# duplicate.
+concurrency:
+  group: tool-versions
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Pinned tools vs upstream
+    # Only a green push to main; the schedule and a manual dispatch pass the first clause.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, refresh or close the tracking issue
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The script exits with the number of problems, captured as an output rather than failing the step,
+      # so the issue closes on zero and opens on the rest. An unreadable upstream counts as current.
+      - id: check
+        name: Compare pins to upstream releases
+        env:
+          # raises the GitHub API rate limit (60/hour unauthenticated) above the roster size
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          rc=0
+          .github/scripts/check_tool_versions.sh | tee "$RUNNER_TEMP/tool-versions.txt" || rc=$?
+          echo "problems=$rc" >>"$GITHUB_OUTPUT"
+
+      - name: Compose the report
+        if: steps.check.outputs.problems != '0'
+        env:
+          PROBLEMS: ${{ steps.check.outputs.problems }}
+        run: |
+          set -euo pipefail
+          {
+            echo "$PROBLEMS pin(s) are behind upstream or out of step."
+            echo "Fix each OUTDATED, MISMATCH or ERROR row where it names: tools.txt (pin and sha256 together),"
+            echo "or the file an inline or local row points at."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/tool-versions.txt"
+            echo '```'
+          } >"$RUNNER_TEMP/report.md"
+
+      - uses: $/.github/actions/upsert-tracking-issue
+        with:
+          label: tool-versions
+          label-color: 0E8A16
+          label-description: A pinned tool, action or image is behind upstream
+          title: Pinned tools are behind their upstream releases
+          resolved: ${{ steps.check.outputs.problems == '0' }}
+          close-comment: Every pin is current again.
+          resolved-when: every pin is current
+          body-file: ${{ runner.temp }}/report.md
