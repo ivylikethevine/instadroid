@@ -1,11 +1,7 @@
----
-title: Operations
----
-
 # Operations
 
 Running the stack day to day: health, restarts, manual control, alerts, memory, and what's stored
-and for how long. Setup is in the [README](https://github.com/ivylikethevine/instadroid#readme); the
+and for how long. Setup is in the [README](../README.md#first-time-setup); the
 redroid incidents referred to below are written up in [INCIDENTS.md](INCIDENTS.md).
 
 ## Health and restarts

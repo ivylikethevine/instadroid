@@ -1,7 +1,8 @@
 #!/bin/sh
 # Refuse to start redroid on a /data volume written by a different Android major version. Mixing
 # them corrupted appops.xml, the idmap cache and telephony.db, and deadlocked system_server
-# (CLAUDE.md). Run by scripts/init-data.sh (the one-shot `init` compose service) before redroid starts.
+# (docs/INCIDENTS.md). Run by scripts/init-data.sh (the one-shot `init` compose service) before
+# redroid starts.
 #
 #   guard-android-data.sh <redroid image> <marker file>
 #

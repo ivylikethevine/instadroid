@@ -1,2 +1,3 @@
-ignored:
-  - DL3008 # apt package pinning is impractical for android-tools-adb on debian slim
+# Nothing ignored: app/Dockerfile installs no apt packages (only `apt-get upgrade`; adb comes from the
+# adbutils wheel), so DL3008's version-pinning rule has nothing to flag. Give any future ignore a reason.
+ignored: []

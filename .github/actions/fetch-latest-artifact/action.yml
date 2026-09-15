@@ -1,0 +1,124 @@
+name: Fetch latest artifact
+# Find the newest successful run of a workflow that still holds the artifact
+# and download one or more artifacts from it - badge figures for a Pages deploy, a release's figures
+# for its exact commit. Two artifacts from the same run go in one call
+# ("{a,b}"), paying for the run lookup once; each then lands under its own
+# name inside dest-subdir, as actions/download-artifact's `pattern` does for
+# more than one match.
+description: Find the newest successful run of a workflow and download one or more artifacts from it
+
+inputs:
+  workflow:
+    description: workflow filename to query, e.g. coverage.yml
+    required: true
+  artifact-name:
+    description: name of the artifact to download, or a brace pattern naming several from the same run (e.g. "{a,b}")
+    required: true
+  dest-subdir:
+    description: destination directory under runner.temp
+    required: true
+  found-message:
+    description: logged as "<found-message> <run_id>" when a run is found
+    required: true
+  missing-message:
+    description: logged when no successful run exists
+    required: true
+  warn-on-missing:
+    description: "'true' to log the missing case as a ::warning instead of a plain echo"
+    required: false
+    default: "false"
+  head-sha:
+    description: "a commit sha: the newest successful run of that commit, not of `branch` (a release reading its own commit's figures)"
+    required: false
+    default: ""
+  branch:
+    description: "branch to scope the search to; empty means any ref (a producer run on a tag, whose head_branch is the tag)"
+    required: false
+    default: "main"
+  # A branch name alone is no trust boundary: a pull request from a fork's own `main` has head_branch
+  # main too. Scoping by the producer run's event keeps such a run's artifacts out.
+  event:
+    description: "the producer run's triggering event (push, workflow_run, schedule, ...); empty means any event"
+    required: false
+    default: "push"
+
+outputs:
+  run_id:
+    description: the id of the run found, empty when none was
+    value: ${{ steps.find.outputs.run_id }}
+
+runs:
+  using: composite
+  steps:
+    # By query rather than off a workflow_run payload, so one code path
+    # serves every trigger: when a workflow_run started this, the newest
+    # green run *is* the triggering one. A run whose producing job was
+    # skipped (a workflow_run of a failed or scheduled upstream) still counts
+    # as successful but holds no artifact, so the newest of the last 20 green
+    # runs with a matching, unexpired artifact is taken, not simply the newest.
+    - id: find
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        WORKFLOW: ${{ inputs.workflow }}
+        ARTIFACT: ${{ inputs.artifact-name }}
+        FOUND_MESSAGE: ${{ inputs.found-message }}
+        MISSING_MESSAGE: ${{ inputs.missing-message }}
+        WARN_ON_MISSING: ${{ inputs.warn-on-missing }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BRANCH: ${{ inputs.branch }}
+        EVENT: ${{ inputs.event }}
+      run: |
+        set -euo pipefail
+        if [ -n "$HEAD_SHA" ]; then
+          scope="head_sha=$HEAD_SHA"
+        elif [ -n "$BRANCH" ]; then
+          scope="branch=$BRANCH"
+        else
+          scope=""
+        fi
+        [ -z "$EVENT" ] || scope="${scope:+$scope&}event=$EVENT"
+        runs="$(gh api \
+          "repos/$REPO/actions/workflows/$WORKFLOW/runs?${scope:+$scope&}status=success&per_page=20" \
+          --jq '.workflow_runs[].id')"
+        # the artifact-name pattern as a bash extglob: "{a,b}" becomes "@(a|b)"
+        shopt -s extglob
+        open='@(' close=')'
+        glob="${ARTIFACT//\{/$open}"
+        glob="${glob//\}/$close}"
+        glob="${glob//,/|}"
+        run_id=""
+        for id in $runs; do
+          while IFS= read -r name; do
+            # shellcheck disable=SC2053 # a glob match on purpose
+            if [[ "$name" == $glob ]]; then
+              run_id="$id"
+              break 2
+            fi
+          done < <(gh api "repos/$REPO/actions/runs/$id/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired | not) | .name')
+        done
+        echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
+        if [ -n "$run_id" ]; then
+          echo "$FOUND_MESSAGE $run_id"
+        elif [ "$WARN_ON_MISSING" = true ]; then
+          # escaped so a message with a newline stays one annotation
+          msg="${MISSING_MESSAGE//"%"/%25}"
+          msg="${msg//$'\r'/%0D}"
+          echo "::warning::${msg//$'\n'/%0A}"
+        else
+          echo "$MISSING_MESSAGE"
+        fi
+
+    # continue-on-error, not a gate: an expired or missing artifact is a grey
+    # badge, not a failed deploy. `pattern`, not `name`: a bare name is still
+    # an exact match that lands flat in dest-subdir, and "{a,b}" also works.
+    - if: steps.find.outputs.run_id != ''
+      continue-on-error: true
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        pattern: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/${{ inputs.dest-subdir }}
+        run-id: ${{ steps.find.outputs.run_id }}
+        github-token: ${{ github.token }}

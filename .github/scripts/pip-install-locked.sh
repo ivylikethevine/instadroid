@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs a few packages from a hashed pip-compile lock without the rest of it, for CI jobs that need
 # one standalone tool (typos, shfmt-py, zizmor). Only for packages with no dependencies of their own:
-# it installs with --no-deps. Usage: scripts/ci/pip-install-locked.sh <lock> <package>...
+# it installs with --no-deps. Usage: .github/scripts/pip-install-locked.sh <lock> <package>...
 set -euo pipefail
 
 lock="${1:?usage: $0 <lock> <package>...}"

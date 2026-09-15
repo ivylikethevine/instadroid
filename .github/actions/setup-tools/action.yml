@@ -1,0 +1,38 @@
+name: Setup tools
+# The batched form of ../setup-tool for a job that needs several pinned tools:
+# one actions/cache round trip covers every tool named. The trade is that
+# editing one tool's row redownloads the others in the same call - rows move
+# rarely and the downloads are small. Use ../setup-tool for one tool or for a
+# `version:` override; this action has neither.
+description: Install several pinned CI tools from ../setup-tool/tools.txt with one shared cache round trip
+
+inputs:
+  tools:
+    description: space-separated tool names - each the first column of a ../setup-tool/tools.txt row
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # one row lookup per tool (no network), so the key hashes every row
+    # together; an unknown tool or an unsupported platform fails here
+    - name: Resolve every pin in ${{ inputs.tools }}
+      id: resolve
+      shell: bash
+      env:
+        CI_TOOLS: ${{ inputs.tools }}
+      run: '"$GITHUB_ACTION_PATH/resolve.sh"'
+
+    - name: Cache ${{ inputs.tools }}
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.resolve.outputs.paths }}
+        key: setup-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.key }}
+
+    - name: Install whatever missed the cache
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        CI_TOOLS: ${{ inputs.tools }}
+      run: '"$GITHUB_ACTION_PATH/install-missing.sh"'
