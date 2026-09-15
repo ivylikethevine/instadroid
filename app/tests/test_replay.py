@@ -10,6 +10,8 @@ import pytest
 from igprofiles import screens
 from instadroid import parsing, versioning
 
+from tests.test_feed import parse_json
+
 CASES = sorted(
     (path.parent.parent.name, path)
     for path in Path(igprofiles.__file__).parent.glob("v*/fixtures/*.expected.json")
@@ -24,7 +26,7 @@ def test_there_is_at_least_one_replay_fixture() -> None:
 def test_fixture_parses_as_recorded(monkeypatch: pytest.MonkeyPatch, profile: str, expected: Path) -> None:
     monkeypatch.setattr(versioning, "PROFILE", igprofiles.load(profile))
     xml = expected.with_name(expected.name.removesuffix(".expected.json") + ".xml").read_text()
-    assert json.loads(json.dumps(parsing.parse_screen(xml))) == json.loads(expected.read_text())
+    assert parse_json(json.dumps(parsing.parse_screen(xml))) == parse_json(expected.read_text())
 
 
 @pytest.mark.parametrize(("profile", "expected"), CASES, ids=[f"{p}/{e.name}" for p, e in CASES])

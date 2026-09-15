@@ -8,18 +8,29 @@ Ordered by scope, smallest first.
 
 ### Small
 
-A config flag, one function, a CI tweak, or docs. Nothing open right now: credentials from a file,
-caption hashtag/mention links, optional feed auth, the compatibility table
-([`COMPATIBILITY.md`](COMPATIBILITY.html)) and the committed OpenAPI spec are done.
+A config flag, one function, a CI tweak, or docs.
+
+- **Markdown lint and format check**: `.markdownlint.yaml` and `.prettierrc.yaml` are configured, but CI
+  runs neither. Add `markdownlint-cli2` and `prettier --check '**/*.md'` so the docs stay as consistent
+  as the code.
+- **Link check**: `lychee` over README.md and `docs/`, which cross-link heavily (and have moved files
+  around more than once). Probably scheduled weekly for external links, so a flaky site doesn't fail
+  pull requests.
+- **Spell check**: `crate-ci/typos` over code and docs. Fast, low false-positive rate, and this repo is
+  prose-heavy (docstrings, NEXT.md, CLAUDE.md).
+
+Done: container image scanning (Trivy, report-only), dependency review on pull requests, shell
+formatting (shfmt) and import boundaries (import-linter). Earlier: credentials from a file, caption hashtag/mention links, optional feed auth, the
+compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.html)) and the committed OpenAPI spec.
 
 ### Medium
 
 A feature across several parts of the scraper, compose or CI, or repeated real-device work.
 
-- **Backfill missing permalinks**: 17 of 35 stored posts have no permalink (16 of them from before
-  `PERMALINK_RETRIES` existed). When an already-stored hash-id post is back on screen, try Copy
-  link once and fill in its `url` — keeping its existing `id`, since the Atom entry id is derived
-  from it and changing it would make FreshRSS show the post twice.
+- **Locked dependencies**: `app/requirements.txt` uses `>=` ranges, so image builds aren't reproducible and
+  `pip-audit` checks whatever resolves on the day. Lock with hashes (`uv lock`/`uv export`, or
+  `pip-compile --generate-hashes`), install from the lock in the Dockerfile and CI, and let Dependabot
+  update the lock. Also improves Scorecard's Pinned-Dependencies check.
 - **Instagram update path**: install-on-missing is automatic (see README.md's "First-time setup"),
   but an _outdated_ install isn't handled yet — detect the forced "update Instagram" screen (as a
   challenge-style stop) and reuse `install.install_instagram()` (`app/instadroid/install.py`)

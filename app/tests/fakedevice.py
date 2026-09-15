@@ -67,7 +67,7 @@ def hierarchy(*children: Node) -> str:
 
 class Out:
     def __init__(self, output: str) -> None:
-        self.output = output
+        self.output: str = output
 
 
 def _bounds(n: etree._Element) -> tuple[int, int, int, int]:
@@ -83,7 +83,9 @@ def _area(n: etree._Element) -> int:
     return (x2 - x1) * (y2 - y1)
 
 
-def _matches(n: etree._Element, key: str, value: str) -> bool:
+def _matches(n: etree._Element, key: str, value: str | list[str]) -> bool:
+    if not isinstance(value, str):
+        raise NotImplementedError(f"selector {key!r} with a list value")
     if key == "text":
         return (n.get("text") or "") == value
     if key == "textContains":
@@ -98,7 +100,7 @@ def _matches(n: etree._Element, key: str, value: str) -> bool:
 
 
 class FakeSelector:
-    def __init__(self, dev: FakeDevice, kw: dict[str, str], index: int | None = None) -> None:
+    def __init__(self, dev: FakeDevice, kw: dict[str, str | list[str]], index: int | None = None) -> None:
         self._dev, self._kw, self._index = dev, kw, index
 
     def _all(self) -> list[etree._Element]:
@@ -115,16 +117,16 @@ class FakeSelector:
     def count(self) -> int:
         return len(self._all())
 
-    def __getitem__(self, i: int) -> FakeSelector:
-        return FakeSelector(self._dev, self._kw, i)
+    def __getitem__(self, instance: int) -> FakeSelector:
+        return FakeSelector(self._dev, self._kw, instance)
 
-    def click(self) -> None:
+    def click(self, timeout: float | None = None) -> None:
         found = self._nodes()
         if not found:
             raise LookupError(f"no node matches {self._kw}")
         self._dev.tap(found[0])
 
-    def set_text(self, text: str) -> None:
+    def set_text(self, text: str, timeout: float | None = None) -> None:
         self._dev.typed.append((self._index, text))
 
     @property
@@ -137,7 +139,9 @@ class FakeSelector:
 
 
 class FakeDevice:
-    info = {"productName": "redroid_x86_64"}
+    @property
+    def info(self) -> dict[str, str | int | bool | None]:
+        return {"productName": "redroid_x86_64"}
 
     def __init__(
         self,
@@ -164,7 +168,7 @@ class FakeDevice:
             "ro.build.version.sdk": "33",
             "ro.product.name": "redroid",
         }
-        self.clipboard = ""
+        self.clipboard: str | None = ""
         self.history = [start]
         self.taps: list[tuple[int, int]] = []
         self.presses: list[str] = []
@@ -188,8 +192,8 @@ class FakeDevice:
         self._go(n.get("goto") or None)
 
     # --- uiautomator2 API ---------------------------------------------------------------------
-    def __call__(self, **kw: str) -> FakeSelector:
-        return FakeSelector(self, kw)
+    def __call__(self, **kwargs: str | list[str]) -> FakeSelector:
+        return FakeSelector(self, kwargs)
 
     def dump_hierarchy(self) -> str:
         return self.screens[self.screen]
@@ -202,8 +206,8 @@ class FakeDevice:
     def window_size(self) -> tuple[int, int]:
         return WIDTH, HEIGHT
 
-    def implicitly_wait(self, seconds: float) -> None:
-        pass
+    def implicitly_wait(self, seconds: float | None = None) -> float:
+        return 0.0 if seconds is None else seconds
 
     def app_list(self) -> list[str]:
         return list(self.installed)
@@ -217,13 +221,13 @@ class FakeDevice:
     def app_current(self) -> dict[str, str]:
         return {"package": LAUNCHER_PKG if self.screen in self.foreign else IG_PKG}
 
-    def app_start(self, pkg: str, activity: str | None = None, stop: bool = False) -> None:
+    def app_start(self, package_name: str, activity: str | None = None, stop: bool = False) -> None:
         self.launches.append(activity)
-        if pkg == IG_PKG and self.screen in self.foreign and not self.launch_blocked:
+        if package_name == IG_PKG and self.screen in self.foreign and not self.launch_blocked:
             self._go(self.launch_screen)
 
-    def shell(self, cmd: str | list[str]) -> Out:
-        joined = " ".join(cmd) if isinstance(cmd, list) else cmd
+    def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
+        joined = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
         self.shell_calls.extend(joined.split("; "))  # one entry per command, as the device's sh runs them
         if "resolve-activity" in joined:
             return Out(f"priority=0 preferredOrder=0\n{IG_PKG}/com.instagram.mainactivity.LauncherActivity")
@@ -240,11 +244,11 @@ class FakeDevice:
         elif key == "back":
             self._go(self.back.get(self.screen))
 
-    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration: float | None = None) -> None:
-        self.swipes.append((x1, y1, x2, y2))
-        if abs(x2 - x1) > abs(y2 - y1):
+    def swipe(self, fx: int, fy: int, tx: int, ty: int, duration: float | None = None) -> None:
+        self.swipes.append((fx, fy, tx, ty))
+        if abs(tx - fx) > abs(ty - fy):
             self._go(self.hswipe.get(self.screen))
-        elif y2 < y1:
+        elif ty < fy:
             self._go(self.scroll.get(self.screen))
         else:
             self._go(self.pull.get(self.screen))

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_feed import make_app
+from tests.test_feed import json_body, json_object, make_app
 
 
 def _add_runs(db: Path, runs: list[tuple[float, str | None, str | None]]) -> None:
@@ -31,7 +31,7 @@ def _add_runs(db: Path, runs: list[tuple[float, str | None, str | None]]) -> Non
 def test_health_ok_with_no_runs_yet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = make_app(tmp_path, monkeypatch)
     r = client.get("/health")
-    assert r.status_code == 200 and r.json() == {"ok": True, "posts": 2}
+    assert r.status_code == 200 and json_body(r) == {"ok": True, "posts": 2}
 
 
 def test_health_ok_after_a_recent_successful_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -48,7 +48,9 @@ def test_health_503_when_no_run_has_finished_for_too_long(
     _add_runs(tmp_path / "posts.sqlite", [(6, None, None)])  # past 4.5h + 30min
     r = client.get("/health")
     assert r.status_code == 503
-    assert r.json()["ok"] is False and "no scrape run has finished" in r.json()["reason"]
+    body = json_object(r)
+    reason = body["reason"]
+    assert body["ok"] is False and isinstance(reason, str) and "no scrape run has finished" in reason
 
 
 def test_health_503_when_runs_keep_failing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -60,7 +62,8 @@ def test_health_503_when_runs_keep_failing(tmp_path: Path, monkeypatch: pytest.M
         [(11, None, None), (7, "RuntimeError('challenge')", None), (2, "RuntimeError('challenge')", None)],
     )
     r = client.get("/health")
-    assert r.status_code == 503 and "no successful scrape run" in r.json()["reason"]
+    reason = json_object(r)["reason"]
+    assert r.status_code == 503 and isinstance(reason, str) and "no successful scrape run" in reason
 
 
 def test_health_ok_while_the_first_runs_are_still_failing_briefly(

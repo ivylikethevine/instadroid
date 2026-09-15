@@ -127,8 +127,8 @@ when no build of that major version has been validated. To switch, including a d
 
 ```bash
 docker compose exec app python scraper.py profiles           # what's available, and what each installs
-docker compose exec app python scraper.py install            # the active profile's build
-docker compose exec app python scraper.py install 446.0.0.49.77
+docker compose exec app python scraper.py install            # the default build (445.0.0.45.83)
+docker compose exec app python scraper.py install 444.0.0.46.85
 ```
 
 The saved login lives in `/data` and survives the replace, but an older Instagram may not accept
@@ -148,7 +148,7 @@ device it is a no-op. If Instagram asks for a code or "confirm it's you", the ru
 First-run interstitials (notifications, location, "set up on new device") are dismissed automatically.
 What's specific to a range of Instagram versions (selectors, any behavior that differs, the builds
 checked to work, test fixtures) lives in a version profile under `app/igprofiles/`. A profile exists
-only where Instagram changed something: today that's just `v440`, covering 440 (the oldest supported)
+only where Instagram changed something: today that's just `v424`, covering 424 (the oldest supported)
 onward. The scraper runs the highest profile at or below the installed version; `IG_PROFILE` forces
 one. The active profile is shown on `/status` and recorded in `runs.selector_profile`.
 `scripts/new_profile.py` handles the mechanical work of supporting a new build: a capped
@@ -179,7 +179,9 @@ an older one or in shared code.
    capturing up to `MAX_CAROUSEL_SLIDES`), then tap Share → "Copy link" and read the clipboard. The
    shortcode becomes the post id and the feed links straight to the post. If the sheet fails to open
    or the clipboard never updates, it's retried on a later screen (`PERMALINK_RETRIES`), then the
-   post falls back to a content hash. If the caption was truncated at "… more", its "more" span is
+   post falls back to a content hash. When a post stored that way is back on screen in a later run,
+   Copy link is tried again and the link filled in, keeping the post's id so readers don't show it
+   twice (`PERMALINK_BACKFILL_PER_RUN`, `PERMALINK_BACKFILL_TRIES`). If the caption was truncated at "… more", its "more" span is
    tapped (expanding it in place, no navigation) and the fully-rendered caption is stored instead
    (`CAPTION_EXPAND_TRIES` taps before giving up and keeping the truncated text).
 5. Stop after `STOP_AFTER_SEEN` consecutive already-stored posts or `MAX_SCROLLS` screens. If
@@ -258,17 +260,27 @@ everything else it reconciles. Each run's `/status` page shows how many posts a 
 
 ## Development
 
+> **Rule: all Python code must be 100% type annotated and at least 90% covered by tests.** That means
+> app code, scripts and tests alike, with no `Any`, `cast()` or type-checker suppressions. CI enforces
+> both: basedpyright strict (with `reportAny`) and ruff's annotation rules for the first, and
+> `--cov-fail-under=90` over `app/` and `scripts/` for the second. A change that lowers either doesn't
+> merge.
+
 ```bash
 python -m venv local/.venv && . local/.venv/bin/activate
 pip install -r scripts/requirements-dev.txt -r app/requirements.txt
-ruff check . && ruff format --check . && pyright
+ruff check . && ruff format --check . && basedpyright
 pytest -q                              # parser, feed, and device-flow tests; temp SQLite db
-pytest -q --cov=app --cov-report=term-missing   # with coverage
+pytest -q --cov=app --cov=scripts --cov-report=term-missing   # with coverage (fails under 90%)
 python scripts/export_openapi.py       # after changing a route in app/app.py
 ```
 
-All Python code, tests included, is fully type-annotated: ruff's `ANN` rules enforce annotations on
-every function, and pyright type-checks `app/` (tests excluded) and `scripts/`.
+All Python code, tests included, is fully typed with no `Any`:
+- ruff's `ANN` rules require an annotation on every function and ban an explicit `Any`;
+- basedpyright checks `app/` (tests included) and `scripts/` in strict mode with `reportAny`, so no
+  value typed `Any` gets through, not even one returned by the standard library;
+- libraries that ship no type information (uiautomator2, adbutils, feedgen) get local stubs in
+  `typings/`.
 
 The feed server's OpenAPI spec is committed as [`docs/openapi.json`](docs/openapi.json) and published
 with the project site. `tests/test_openapi.py` compares it with the routes, so CI fails until the spec
@@ -279,13 +291,15 @@ is tested against `app/tests/fakedevice.py`: a scripted stand-in for a uiautomat
 screens are synthetic hierarchy XML, with `goto`/`clip` attributes on nodes scripting what a tap
 does. No real account data is used in any fixture.
 
-CI (`.github/workflows/ci.yml`) runs ruff, the test suite, `pip-audit` on the requirements file
-(also weekly), shellcheck on the scripts, hadolint plus a build and smoke test of the image,
-`docker compose config`, and gitleaks. `.github/workflows/scorecard.yml` publishes the OpenSSF Scorecard
-result weekly and on every push to `main` (the badge above).
-`.github/workflows/new-builds.yml` checks APKPure weekly and opens an issue when an Instagram build newer
-than every validated one appears. Tests run with coverage there too, for visibility in the
-run's own log. Dependabot watches pip, Docker base images and GitHub Actions.
+CI (`.github/workflows/ci.yml`) runs:
+- ruff, basedpyright and import-linter (`lint-imports`), and the test suite with coverage;
+- `pip-audit` on the requirements (also weekly), and GitHub's dependency review on pull requests;
+- shellcheck and shfmt on the shell scripts;
+- hadolint, a build and smoke test of the image, a Trivy scan of it (report-only, to the Security
+  tab), and `docker compose config`;
+- gitleaks, actionlint and zizmor.
+
+Dependabot watches pip, Docker base images and GitHub Actions.
 
 `.github/workflows/pages.yml` builds and deploys the [project site](https://ivylikethevine.github.io/instadroid/)
 (see "Roadmap" above) on every push to `main`: it re-runs the test suite with coverage, builds the

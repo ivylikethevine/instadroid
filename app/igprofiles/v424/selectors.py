@@ -1,4 +1,4 @@
-"""Selectors for Instagram 440 onward (the root profile).
+"""Selectors for Instagram 424 onward (the root profile).
 
 Moved verbatim from scraper.py's original SELECTORS dict (written against 445.0.0.45.83), plus the few
 UI strings that used to be hardcoded inline in scraper.py. When a later Instagram changes one, don't
@@ -7,7 +7,9 @@ edit it here: fork a profile for that version (scripts/new_profile.py fork) and 
 
 import re
 
-SELECTORS = {
+from igprofiles.base import Selectors
+
+SELECTORS: Selectors = {
     # Every feed card has a header ViewGroup whose content-desc reads e.g.
     #   "some.artist posted a video in Rich's Diner 21 hours ago"
     #   "some_club posted a carousel in Anytown, Somewhere 3 days ago"

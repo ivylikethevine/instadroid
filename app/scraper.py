@@ -3,7 +3,7 @@
     once                     one scrape run (recorded in the runs table like a scheduled one)
     login                    log in (or confirm the session is live), then stop Instagram
     profiles                 list the Instagram version profiles, what each covers and has validated
-    install [VERSION|latest] install an Instagram build (default: the newest validated build)
+    install [VERSION|latest] install an Instagram build (default: igprofiles.DEFAULT_BUILD)
     dump                     save the current screen's hierarchy + screenshot to DEBUG_DIR
     compat                   redroid image / Instagram build pairs this database has run
     backup                   copy the database to BACKUP_DIR now
@@ -17,8 +17,8 @@ The scraper itself lives in the instadroid/ package.
 import sys
 
 from igprofiles import available as available_profiles
+from igprofiles import default_build, version_key
 from igprofiles import load as load_profile
-from igprofiles import newest_build, version_key
 from instadroid import (
     backup,
     config,
@@ -35,7 +35,7 @@ from instadroid import (
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "once":
         stats, exc = scrape.run_recorded(db.db_init())  # recorded in runs, like a scheduled run
-        if exc:
+        if exc or stats is None:
             sys.exit(f"run failed: {exc!r}")
         print(stats["new"], "new posts,", stats["new_stories"], "new stories")
     elif len(sys.argv) > 1 and sys.argv[1] == "login":
@@ -52,10 +52,10 @@ if __name__ == "__main__":
             active = " (active)" if p.name == versioning.PROFILE.name else ""
             validated = ", ".join(sorted(p.own_validated, key=version_key)) or "none yet"
             print(f"{p.name}{active}  covers Instagram {covers}  {p.notes}\n  validated: {validated}")
-        print("default install:", newest_build() or "latest")
+        print("default install:", default_build() or "latest")
     elif len(sys.argv) > 1 and sys.argv[1] == "install":
         if len(sys.argv) > 3:
-            print("usage: scraper.py install [VERSION|latest]   (default: the newest validated build)")
+            print("usage: scraper.py install [VERSION|latest]   (default: igprofiles.DEFAULT_BUILD)")
             sys.exit(1)
         d = device.connect_device()
         print("installed:", install.install_instagram_version(d, sys.argv[2] if len(sys.argv) == 3 else None))

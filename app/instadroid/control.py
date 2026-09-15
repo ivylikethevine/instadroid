@@ -61,7 +61,7 @@ def request_run_now() -> None:
 
 
 def minutes_since_last_run(con: sqlite3.Connection, now: datetime | None = None) -> float | None:
-    finished = common.parse_iso(con.execute("SELECT MAX(finished_at) FROM runs").fetchone()[0])
+    finished = common.parse_iso(common.scalar(con.execute("SELECT MAX(finished_at) FROM runs")))
     if finished is None:
         return None
     return ((now or datetime.now(UTC)) - finished).total_seconds() / 60

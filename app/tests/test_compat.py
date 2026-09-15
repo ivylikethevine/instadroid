@@ -1,21 +1,25 @@
 import sqlite3
 from pathlib import Path
+from typing import Unpack
 
 import pytest
-from instadroid import config, db
+from instadroid import config, db, device
 
 IMAGE = "erstt/redroid:13.0.0_ndk_ChromeOS"
 
 
 def _run(
-    con: sqlite3.Connection, started: str, ig: str | None, error: str | None = None, **stats: object
+    con: sqlite3.Connection,
+    started: str,
+    ig: str | None,
+    error: str | None = None,
+    new_posts: int = 0,
+    **stats: Unpack[db.RunMetrics],
 ) -> None:
-    snapshot = {
-        "ig_version": ig,
-        "redroid_image": IMAGE if ig else None,
-        "selector_profile": "v446" if ig else None,
-    }
-    db.record_run(con, started, started, stats.pop("new_posts", 0), error, snapshot, **stats)
+    snapshot: device.DeviceSnapshot = (
+        {"ig_version": ig, "redroid_image": IMAGE, "selector_profile": "v446"} if ig else {}
+    )
+    db.record_run(con, started, started, new_posts, error, snapshot, **stats)
 
 
 def test_version_pairs_summarizes_runs_per_image_and_build(

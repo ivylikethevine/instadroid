@@ -16,29 +16,31 @@ Most versions change nothing the scraper uses: 441-446 all ran on the 445 select
 profile exists **only where Instagram changed something**, and a build that changed nothing is just
 recorded as validated with the profile that already covers it.
 
-- **Floor:** 440 (`igprofiles.MIN_MAJOR`), the root profile.
-- **Default install:** the newest build validated with any profile (`igprofiles.newest_build()`).
+- **Floor:** 424 (`igprofiles.MIN_MAJOR`), the root profile `v424`, the oldest Instagram that runs on
+  this image (run log). Named `v440` until 2026-09-15; run log entries before then use the old name.
+- **Default install:** `igprofiles.DEFAULT_BUILD`, pinned to 445.0.0.45.83 while 446 crashes on launch
+  (`igprofiles.default_build()`; `None` would mean the newest validated build).
 
 ## Design: profiles at change points
 
 ```
 app/igprofiles/
-  __init__.py      available(), load(), covering(), select(), newest_build(), fixture(); MIN_MAJOR
+  __init__.py      available(), load(), covering(), select(), default_build(), fixture(); MIN_MAJOR, DEFAULT_BUILD
   base.py          BaseProfile, the contract every profile follows
   screens.py       which selector keys each screen needs (profile development, replay tests)
-  v440/
+  v424/
     __init__.py    class Profile(BaseProfile): major, selectors, validated builds, notes, overrides
     selectors.py   the full selector dict
     fixtures/      scrubbed screen dumps + .expected.json replay records, one set per validated
                    version (feed_445.xml, home_feed_444.xml, ...), kept out of the image
   v4NN/            (only when Instagram NN changes something)
-    __init__.py    class Profile(v440.Profile): only what differs
-    selectors.py   {**v440 selectors, <changed keys>}
+    __init__.py    class Profile(v424.Profile): only what differs
+    selectors.py   {**v424 selectors, <changed keys>}
 ```
 
 A profile vN covers every Instagram build from major N up to the next profile. The scraper runs
 **the highest profile at or below the installed version** (`igprofiles.covering()`), so with only
-`v440` today, every supported build runs under it. What lives in a profile:
+`v424` today, every supported build runs under it. What lives in a profile:
 
 | What | Where |
 |---|---|
@@ -61,14 +63,15 @@ log and show on `/status` as a run warning:
   anything checked so far): it runs anyway;
 - an installed version below every profile: the lowest profile runs.
 
-`IG_PROFILE` (`v440`, or just `440`) forces one profile instead, with a warning when it isn't the one
+`IG_PROFILE` (`v424`, or just `424`) forces one profile instead, with a warning when it isn't the one
 covering the installed version. A bad `IG_PROFILE` falls back to automatic selection with a warning.
 
-`IG_APK_VERSION` overrides the build to install (`latest` = newest on APKPure). By default it's the
-newest validated build, of `IG_PROFILE`'s profile when that's set. `python scraper.py profiles` lists
+`IG_APK_VERSION` overrides the build to install (`latest` = newest on APKPure). By default it's
+`igprofiles.DEFAULT_BUILD` (445.0.0.45.83 today), or `IG_PROFILE`'s newest validated build when that
+profile hasn't validated the default. `python scraper.py profiles` lists
 each profile, the versions it covers, its validated builds and the default install.
 
-Each run records the active profile in `runs.selector_profile` (e.g. `v440`), next to `ig_version`.
+Each run records the active profile in `runs.selector_profile` (e.g. `v424`), next to `ig_version`.
 
 ### Swapping behavior, not just data
 
@@ -79,7 +82,7 @@ sheets, permalinks, carousels, avatars and stories. A profile replaces one by de
 the same name, which receives the base implementation first:
 
 ```python
-class Profile(Profile440):
+class Profile(Profile424):
     major = 447
     ...
 
@@ -149,20 +152,23 @@ what a changed selector or override should be.
    Then it adds the build to the covering profile's `validated` tuple and prints a
    `docs/COMPATIBILITY.md` row. Add a run log entry below.
 7. **Restore** the device before restarting the app service:
-   `python scripts/new_profile.py restore` installs the newest validated build again.
+   `python scripts/new_profile.py restore` installs the default build again.
 
 `scraper.py once` records its run in the `runs` table like a scheduled run, which is what `check` and
 `validate` read from the baseline's scratch database.
 
 ## Status
 
-- [x] Profile system: directory profiles, loader with the 440 floor, `IG_PROFILE`, `@versioned`
+- [x] Profile system: directory profiles, loader with the 424 floor (440 until 2026-09-15), `IG_PROFILE`, `@versioned`
   behavior overrides, contract tests, `scraper.py profiles`.
 - [x] Tooling for adding versions: `scripts/new_profile.py`, capture mode, `igprofiles/screens.py`.
-- [x] Profiles only where something changes (2026-09-14): one root profile, `v440`; the covering
+- [x] Profiles only where something changes (2026-09-14): one root profile, `v424`; the covering
   profile is chosen automatically; `validated` lists builds; fixtures per version.
-- [x] Validated with `v440`: 440.1.0.46.86, 441.0.0.43.81, 442.0.0.46.79, 443.0.0.48.82, 444.0.0.46.85,
-  445.0.0.45.83, 446.0.0.49.77 (see the run log). Replay fixtures for 440-445 (none recorded for 446).
+- [x] Validated with `v424`: 424.0.0.49.64, 440.1.0.46.86, 441.0.0.43.81, 442.0.0.46.79, 443.0.0.48.82,
+  444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77 (see the run log). Replay fixtures for 424 and 440-445
+  (none recorded for 446). 425-439 run with the "hasn't been validated" warning until each gets a baseline.
+- [x] Floor moved to 424 and the default install pinned to 445 (2026-09-15).
+- [ ] Retry 446; if it still crashes, drop it from `v424.validated`.
 - [x] Old-build probe, `400.0.0.49.68`: installs, but crashes at native startup on every launch (run log).
 - [x] Leak scan of fixtures, tests, docs and git history (below); working tree cleaned, history not rewritten.
 
@@ -179,7 +185,7 @@ covered:
 It also checked for committed images, databases, APKs or raw dumps: none, ever.
 
 **Found and replaced in the working tree:**
-- account names and places from real posts in `v440/selectors.py` comments and in `test_parser.py`
+- account names and places from real posts in `v440/selectors.py` (now `v424/`) comments and in `test_parser.py`
   (four usernames, a display name, a venue, two permalink shortcodes);
 - a real city and state in the 445 feed fixture and two tests;
 - an account name in this file's run log.
@@ -275,6 +281,51 @@ finding: `scraper.py login` printed "logged in: True" against the crashing build
 was briefly in the foreground before dying; `ensure_logged_in()`'s foreground check doesn't confirm
 the app stays up (fixed the same day: it now checks Instagram is still in front before calling the
 session live, and raises a retryable DeviceNotReady otherwise). The device was then restored to 446.0.0.49.77.
+
+**Old-build bisect, 2026-09-14 16:25-16:40 PDT** (install and launch only, no scrape; builds pre-downloaded
+into `APK_CACHE_DIR` in parallel with the tests). 420.0.0.55.74 crashes at native startup exactly like
+400 (`could not hook fn signal: mprotect: errno: 13` in `libstartup.so`). 430.0.0.36.80 and 425.0.0.47.61
+both stay open, keep the login across the downgrades and reach the Home feed, with `on_feed()` and
+`on_home_feed()` (the root profile's selectors) both matching. Continuing the bisect the same evening: 423.0.0.47.66 crashes the same way and
+424.0.0.49.64 launches like 425, so **424 is the oldest Instagram that runs on this image** (the newest
+build of each major was used). So the native-startup crash ends at 424, and 424+ is at least launchable; whether the 440 floor could move
+down to 425 would take a capture-mode baseline of those builds.
+
+**424 under the root profile, 2026-09-15 00:09-00:14 PDT.** A capped capture-mode baseline of
+424.0.0.49.64 (`new_profile.py baseline --below-floor`, from a frozen copy of `app/` while the typing
+pass was editing the working tree) ran under `v440` unchanged: 2 stories, 2 posts (a carousel and a
+Reel) with permalinks and captions, every required selector key on every captured screen, peak
+1963 MiB. So the 440 selectors work at least as far back as 424; moving the floor (`MIN_MAJOR`, the
+root profile's name) down to 424 is a decision still to make. 425-439 would then run with the
+"hasn't been validated" warning until each gets a baseline.
+
+Restoring 446 afterwards (a 424 → 446 jump) wasn't smooth: the first launches landed back on the
+launcher and Android logged an ANR for Instagram at over 200% CPU, apparently first-launch work on
+data from 22 versions back under ARM translation. What followed, 00:15-00:42 PDT:
+- **446 now crashes on launch.** Every launch reaches `MainTabActivity`, then dies within about 5 seconds:
+  a native `SIGSEGV` in `RenderThread`, with an empty backtrace (translated ARM code), sometimes preceded
+  by an ANR. A redroid restart didn't change it.
+- **Moving the app's regenerable data aside didn't help either:** `cache`, `code_cache`, `lib-compressed`,
+  `modules` and `app_overtheair` went to `/data/local/tmp/ig-424-leftovers` (still there), leaving login
+  state alone.
+- **The installed splits were consistent** (446's own base and `config.xxxhdpi`).
+- **445.0.0.45.83 installed over the same data works**: logged in and on the Home feed within 20-30
+  seconds, and again after a fresh boot.
+- **446 installed over 445 still crashes**, so it's not simply data carried over from 424.
+
+446 had run fine on this device earlier the same day, so the trigger is unknown: possibly server-side
+(a feed item or experiment 446 can't render under guest GPU mode), possibly something the 424 run
+left behind outside the moved directories. **The device was left on 445.0.0.45.83**, redroid stopped.
+
+To do: retry 446 later. If it still crashes, drop it from `v424.validated`. The default install no
+longer depends on it: `igprofiles.DEFAULT_BUILD` pins auto-install and `restore` to 445.0.0.45.83.
+
+**Floor moved to 424, 2026-09-15.** The root profile `v440` became `v424` (`MIN_MAJOR = 424`) with
+its selectors unchanged, and the 424 baseline above was promoted (`feed_424`, `home_feed_424`) and
+validated. Promoting it turned up one scrubbing miss, a display name in a Reel's media description
+on a card no parser returned ("Reel by <name>, 82 likes, ..."); `promote_dump.pseudonymize()` now
+catches those, and no committed fixture had one. `DEFAULT_BUILD = "445.0.0.45.83"` replaced the
+newest validated build as the default install.
 
 Done at the time: `DEFAULT_PROFILE` became `v446` (since replaced by automatic selection; a fresh install fetches 446, and a
 device still on 445 gets a mismatch warning until `scraper.py install`).

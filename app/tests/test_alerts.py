@@ -5,12 +5,11 @@ import sqlite3
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import pytest
 from instadroid import alerts, config, db
 
-from tests.test_feed import make_app
+from tests.test_feed import SqlValue, make_app, sql_column
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
 CHALLENGE = "RuntimeError(\"Instagram wants a human: 'Confirm it's you' screen; see /debug\")"
@@ -22,6 +21,10 @@ def con(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
     monkeypatch.setattr(config, "ALERT_FAILED_RUNS", 3)
     monkeypatch.setattr(config, "ALERT_NO_POSTS_HOURS", 0)
     return db.db_init()
+
+
+def kinds(con: sqlite3.Connection) -> list[SqlValue]:
+    return sql_column(con.execute("SELECT kind FROM alerts"))
 
 
 def _run(con: sqlite3.Connection, hours_ago: float, error: str | None = None) -> None:
@@ -95,8 +98,9 @@ def test_an_alert_is_announced_once_and_again_when_resolved(
     assert alerts.update(con, NOW) == []  # still open: no second notification
     assert [r.get_header("Title") for r in sent] == ["instadroid: Instagram wants a human"]
     assert sent[0].get_header("Priority") == "high" and sent[0].get_method() == "POST"
-    assert b"Confirm it's you" in (sent[0].data or b"")
-    assert [r[0] for r in con.execute("SELECT kind FROM alerts")] == ["login"]
+    data = sent[0].data
+    assert isinstance(data, bytes) and b"Confirm it's you" in data
+    assert kinds(con) == ["login"]
 
     _run(con, 1)
     alerts.update(con, NOW)
@@ -109,7 +113,7 @@ def test_a_failed_delivery_is_reported_without_the_token(
 ) -> None:
     monkeypatch.setattr(config, "ALERT_URL", "https://user:pw@ntfy.example/topic?auth=secret")
 
-    def urlopen(request: Any, timeout: float) -> None:
+    def urlopen(request: urllib.request.Request, timeout: float) -> None:
         raise OSError("connection refused")
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
@@ -118,7 +122,7 @@ def test_a_failed_delivery_is_reported_without_the_token(
     assert errors and "https://ntfy.example/topic" in errors[0]
     output = capsys.readouterr().out + errors[0]
     assert "secret" not in output and "pw" not in output
-    assert [r[0] for r in con.execute("SELECT kind FROM alerts")] == ["login"]  # still recorded
+    assert kinds(con) == ["login"]  # still recorded
 
 
 def test_open_alerts_lead_the_feed_and_show_on_status(

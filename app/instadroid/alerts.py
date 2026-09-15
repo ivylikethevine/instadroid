@@ -36,18 +36,21 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
     now = now or datetime.now(UTC)
     found: dict[str, str] = {}
     window = max(config.ALERT_FAILED_RUNS, 1)
-    runs = con.execute("SELECT error FROM runs ORDER BY id DESC LIMIT ?", (window,)).fetchall()
-    latest_error = runs[0][0] if runs else None
+    runs = [
+        common.cell_str(r, 0)
+        for r in common.fetch_all(con.execute("SELECT error FROM runs ORDER BY id DESC LIMIT ?", (window,)))
+    ]
+    latest_error = runs[0] if runs else None
     if latest_error and any(marker in latest_error for marker in _NEEDS_HUMAN):
         found[LOGIN] = f"finish it in scrcpy: {latest_error.splitlines()[0][:300]}"
-    if config.ALERT_FAILED_RUNS > 0 and len(runs) >= config.ALERT_FAILED_RUNS and all(r[0] for r in runs):
+    if config.ALERT_FAILED_RUNS > 0 and len(runs) >= config.ALERT_FAILED_RUNS and all(runs):
         found[FAILING] = (
             f"the last {config.ALERT_FAILED_RUNS} runs failed; latest: {(latest_error or '').splitlines()[0][:300]}"
         )
     if config.ALERT_NO_POSTS_HOURS > 0:
         cutoff = now - timedelta(hours=config.ALERT_NO_POSTS_HOURS)
-        first_run = common.parse_iso(con.execute("SELECT MIN(started_at) FROM runs").fetchone()[0])
-        newest_post = common.parse_iso(con.execute("SELECT MAX(scraped_at) FROM posts").fetchone()[0])
+        first_run = common.parse_iso(common.scalar(con.execute("SELECT MIN(started_at) FROM runs")))
+        newest_post = common.parse_iso(common.scalar(con.execute("SELECT MAX(scraped_at) FROM posts")))
         # Only once the scraper has been running for the whole window, so a fresh install is quiet.
         if first_run and first_run < cutoff and (newest_post is None or newest_post < cutoff):
             found[NO_POSTS] = f"no new post stored in {config.ALERT_NO_POSTS_HOURS:g}h"
@@ -72,7 +75,7 @@ def notify(kind: str, message: str, resolved: bool = False) -> str | None:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=config.ALERT_TIMEOUT) as resp:
+        with common.urlopen()(request, timeout=config.ALERT_TIMEOUT) as resp:
             resp.read()
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         error = f"alert to {common.redact_url(config.ALERT_URL)} failed: {e!r}"
@@ -87,8 +90,11 @@ def update(con: sqlite3.Connection, now: datetime | None = None) -> list[str]:
     delivery errors, if any."""
     now = now or datetime.now(UTC)
     current = conditions(con, now)
-    open_alerts = {kind: message for kind, message in con.execute("SELECT kind, message FROM alerts")}
-    errors = []
+    open_alerts = {
+        common.must_str(r, "kind"): common.must_str(r, "message")
+        for r in common.fetch_all(con.execute("SELECT kind, message FROM alerts"))
+    }
+    errors: list[str | None] = []
     for kind, message in current.items():
         if kind not in open_alerts:
             con.execute(

@@ -4,15 +4,13 @@ import sqlite3
 import time
 from datetime import UTC, datetime
 
-import uiautomator2 as u2
-
-from . import config, device, diagnostics, install, parsing
+from . import config, device, diagnostics, install, parsing, uidevice
 from .common import log
 from .device import DeviceNotReady
 from .versioning import SELECTORS, versioned
 
 
-def _prepare_app(d: u2.Device) -> None:
+def _prepare_app(d: uidevice.Device) -> None:
     """The common start of every navigation: logged in, in front, prompts dismissed, no sheet open."""
     ensure_logged_in(d)
     device.ensure_foreground(d)
@@ -21,15 +19,15 @@ def _prepare_app(d: u2.Device) -> None:
 
 
 @versioned
-def _challenge_present(d: u2.Device) -> str | None:
+def _challenge_present(d: uidevice.Device) -> str | None:
     for t in SELECTORS["challenge_texts"]:
-        if d(textContains=t).exists(timeout=0.5):  # pyright: ignore[reportArgumentType]
+        if d(textContains=t).exists(timeout=0.5):
             return t
     return None
 
 
 @versioned
-def _dismiss_interstitials(d: u2.Device, rounds: int = 4) -> None:
+def _dismiss_interstitials(d: uidevice.Device, rounds: int = 4) -> None:
     for _ in range(rounds):
         btn = device.first(d, text=SELECTORS["dismiss_texts"])
         if not btn:
@@ -39,7 +37,7 @@ def _dismiss_interstitials(d: u2.Device, rounds: int = 4) -> None:
 
 
 @versioned
-def _login_form(d: u2.Device) -> tuple[u2.UiObject, u2.UiObject] | None:
+def _login_form(d: uidevice.Device) -> tuple[uidevice.Selector, uidevice.Selector] | None:
     """Return (username_field, password_field) or None. Instagram's login screen is Jetpack
     Compose: the labels are plain Views and the two EditTexts carry no id, so we go by order."""
     if not device.first(d, text=SELECTORS["login_username_hints"]) and not device.first(
@@ -53,7 +51,7 @@ def _login_form(d: u2.Device) -> tuple[u2.UiObject, u2.UiObject] | None:
 
 
 @versioned
-def ensure_logged_in(d: u2.Device) -> bool:
+def ensure_logged_in(d: uidevice.Device) -> bool:
     """If the login screen is showing, fill credentials from the environment and log in.
 
     Returns True if we are (or became) logged in. Raises RuntimeError on a 2FA/challenge
@@ -145,13 +143,13 @@ def ensure_logged_in(d: u2.Device) -> bool:
 
 
 @versioned
-def _on_following_feed(d: u2.Device) -> bool:
+def _on_following_feed(d: uidevice.Device) -> bool:
     t = d(resourceIdMatches=f".*:id/{SELECTORS['following_title_id']}$", text=SELECTORS["following_text"])
     return t.exists(timeout=1)
 
 
 @versioned
-def open_following_feed(d: u2.Device) -> bool:
+def open_following_feed(d: uidevice.Device) -> bool:
     _prepare_app(d)
     w, h = d.window_size()
     sw = d(description=SELECTORS["feed_switcher_desc"])
@@ -202,7 +200,7 @@ def open_following_feed(d: u2.Device) -> bool:
 
 
 @versioned
-def open_home_feed(d: u2.Device) -> bool:
+def open_home_feed(d: uidevice.Device) -> bool:
     """The FEED_MODE=home alternative to open_following_feed(): navigate to (and stay on) the
     algorithmic Home feed. No switcher involved — just the bottom tab bar's own Home tab, tapped
     directly.
@@ -235,7 +233,7 @@ def open_home_feed(d: u2.Device) -> bool:
     return False
 
 
-def on_target_feed(d: u2.Device) -> bool:
+def on_target_feed(d: uidevice.Device) -> bool:
     """True when the screen currently showing is the specific feed FEED_MODE selects, not just
     any feed at all — the Following and Home feeds are the only two the scraper ever intends to be
     on, and on_home_feed()'s bottom-tab-bar check tells them apart."""
@@ -244,14 +242,14 @@ def on_target_feed(d: u2.Device) -> bool:
     return on_home_feed(d) if config.FEED_MODE == "home" else not on_home_feed(d)
 
 
-def open_target_feed(d: u2.Device) -> bool:
+def open_target_feed(d: uidevice.Device) -> bool:
     """Navigate to whichever feed FEED_MODE selects — the single call site scrape.scrape_once() uses
     throughout, so a run never has to know which mode it's in beyond this one dispatch."""
     return open_home_feed(d) if config.FEED_MODE == "home" else open_following_feed(d)
 
 
 @versioned
-def _on_following_list(d: u2.Device) -> bool:
+def _on_following_list(d: uidevice.Device) -> bool:
     """The Following-list screen (reached via own profile -> "N following"), independent of
     whether the list itself has any rows on screen yet — this is the screen's own view pager,
     present as soon as the screen loads."""
@@ -259,7 +257,7 @@ def _on_following_list(d: u2.Device) -> bool:
 
 
 @versioned
-def open_own_following_list(d: u2.Device) -> bool:
+def open_own_following_list(d: uidevice.Device) -> bool:
     """Navigate from wherever the app is to the logged-in account's own Following list. Returns
     True once the list screen is confirmed on screen, False if navigation failed after a few
     attempts (dump saved) — mirrors open_following_feed()'s shape.
@@ -306,7 +304,7 @@ def open_own_following_list(d: u2.Device) -> bool:
 
 
 @versioned
-def scrape_following_list(d: u2.Device) -> list[str] | None:
+def scrape_following_list(d: uidevice.Device) -> list[str] | None:
     """Scroll the already-open Following list from wherever it starts, collecting every distinct
     username, and return them in first-seen order. Stops after FOLLOWING_LIST_EMPTY_LIMIT
     consecutive screens with no new username (list exhausted), same shape as the main feed's
@@ -336,7 +334,7 @@ def scrape_following_list(d: u2.Device) -> list[str] | None:
     return list(collected) if collected else None
 
 
-def refresh_following_list(d: u2.Device, con: sqlite3.Connection) -> int | None:
+def refresh_following_list(d: uidevice.Device, con: sqlite3.Connection) -> int | None:
     """Navigate to the own Following list, scrape it in full, and replace the stored allowlist
     with exactly what was found — so an unfollow is reflected simply by that username's row no
     longer existing after this runs. Returns the new count, or None if the refresh failed (nothing
@@ -361,22 +359,16 @@ def refresh_following_list(d: u2.Device, con: sqlite3.Connection) -> int | None:
 
 
 @versioned
-def _sheet_open(d: u2.Device) -> bool:
-    if d(description=SELECTORS["copy_link_desc"]).exists(timeout=0.3):  # pyright: ignore[reportArgumentType]
+def _sheet_open(d: uidevice.Device) -> bool:
+    if d(description=SELECTORS["copy_link_desc"]).exists(timeout=0.3):
         return True
-    if any(
-        d(text=t).exists(timeout=0.3)  # pyright: ignore[reportArgumentType]
-        for t in SELECTORS["sheet_markers_text"]
-    ):
+    if any(d(text=t).exists(timeout=0.3) for t in SELECTORS["sheet_markers_text"]):
         return True
-    return any(
-        d(description=t).exists(timeout=0.3)  # pyright: ignore[reportArgumentType]
-        for t in SELECTORS["sheet_markers_desc"]
-    )
+    return any(d(description=t).exists(timeout=0.3) for t in SELECTORS["sheet_markers_desc"])
 
 
 @versioned
-def close_sheets(d: u2.Device, max_back: int = 2) -> bool:
+def close_sheets(d: uidevice.Device, max_back: int = 2) -> bool:
     """Back out of any open share/bottom sheet without touching its contents."""
     for i in range(max_back):
         if not _sheet_open(d) or d.app_current().get("package") != config.IG_PKG:
@@ -391,26 +383,22 @@ def close_sheets(d: u2.Device, max_back: int = 2) -> bool:
 
 
 @versioned
-def on_feed(d: u2.Device) -> bool:
+def on_feed(d: uidevice.Device) -> bool:
     """True when a feed list with post rows is showing (title bars hide while scrolled, so
     they are not a reliable signal)."""
-    return d(resourceIdMatches=f".*:id/{SELECTORS['share_id']}").exists(
-        timeout=0.5  # pyright: ignore[reportArgumentType]
-    ) or d(resourceIdMatches=f".*:id/{SELECTORS['header_id']}").exists(
-        timeout=0.5  # pyright: ignore[reportArgumentType]
-    )
+    return d(resourceIdMatches=f".*:id/{SELECTORS['share_id']}").exists(timeout=0.5) or d(
+        resourceIdMatches=f".*:id/{SELECTORS['header_id']}"
+    ).exists(timeout=0.5)
 
 
 @versioned
-def on_home_feed(d: u2.Device) -> bool:
+def on_home_feed(d: uidevice.Device) -> bool:
     """The Home feed keeps the bottom tab bar; the Following screen does not."""
-    return d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}").exists(
-        timeout=0.5  # pyright: ignore[reportArgumentType]
-    )
+    return d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}").exists(timeout=0.5)
 
 
 @versioned
-def back_to_feed(d: u2.Device, tries: int = 2) -> bool:
+def back_to_feed(d: uidevice.Device, tries: int = 2) -> bool:
     """If a tap opened a profile/hashtag/etc., back out until a feed is showing again. Never
     backs out of the app: if we somehow left it, relaunch instead."""
     for _ in range(tries):
