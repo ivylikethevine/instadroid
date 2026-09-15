@@ -381,8 +381,9 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github/scripts
       # "What changed" is each merged pull request's `## Release note` section (the pull request template's;
-      # release-note.yml requires the section), skipping `none`. The pull requests are the ones GitHub's
-      # generate-notes endpoint lists between the previous non-prerelease tag and this one, so a release
+      # optional, release-note.yml only warns without one), skipping `none` and pull requests with no section.
+      # The pull requests are the ones GitHub's generate-notes endpoint lists between the previous
+      # non-prerelease tag and this one, so a release
       # covers its release candidates too. Only when no pull request wrote a note does that generated list
       # stand in. A squash-merged dev -> main pull request is the only one main's history shows, so its own
       # section carries the notes of everything it brings (CONTRIBUTING).
