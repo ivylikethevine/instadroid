@@ -80,21 +80,3 @@ Open investigations, new capture mechanisms, or changes to the container/process
   code natively — no NDK translation, sidestepping the whole "Which Android?" compatibility matrix
   (README.md). Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in
   the kernel).
-- **Device runs for new profiles outside a manual session**, in two parts:
-  - **redroid on a GitHub-hosted runner (untested).** The ubuntu-24.04 runner kernel (Azure) ships
-    `binder_linux` in its extra-modules package, and runners have sudo and 16 GB of RAM, but no public
-    example of redroid in Actions was found, and that package is sometimes missing from the mirrors.
-    A half-day `workflow_dispatch` test would settle it: modprobe binder, boot the image, install the
-    build, launch, dump. If it works, add a logged-out check to that PR: the build installs,
-    launches without crashing under the ARM translation, and shows the login screen. That can't test
-    feed selectors, since logging in from datacenter IPs triggers challenges and puts the account at
-    risk. The free arm64 runners, with official arm64 redroid images, would skip translation entirely
-    but are unvalidated.
-  - **Logged-in baselines, pulled by the host** (not a self-hosted runner: GitHub advises against those
-    on public repos, since fork PRs can target them). A systemd timer polls with a fine-grained token
-    for labelled work, e.g. a `needs-baseline` label. For each item it waits for a gap between polls,
-    runs `docker compose stop app` and `new-profile baseline <build> --yes` (whose memory and app
-    checks still apply), always runs `restore` and `docker compose start app` afterwards, and pushes
-    only `report.md` to the draft branch. Dumps and the session never leave the host. The remaining
-    risk is running unattended on the host that froze once ([INCIDENTS.md](INCIDENTS.md)).
-  - Fixing selectors, login challenges, reviewing scrubbed fixtures and `validate` stay manual.
