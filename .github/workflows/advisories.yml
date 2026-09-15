@@ -111,7 +111,7 @@ jobs:
           cat "$report"
           echo "found=$found" >>"$GITHUB_OUTPUT"
 
-      - uses: $/.github/actions/upsert-tracking-issue
+      - uses: ./.github/actions/upsert-tracking-issue
         with:
           label: advisories
           label-color: B60205

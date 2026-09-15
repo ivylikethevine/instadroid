@@ -67,7 +67,7 @@ jobs:
             echo "found=0" >>"$GITHUB_OUTPUT"
             echo "nothing newer than the validated builds"
           fi
-      - uses: $/.github/actions/upsert-tracking-issue
+      - uses: ./.github/actions/upsert-tracking-issue
         with:
           label: new-instagram-build
           label-color: FBCA04

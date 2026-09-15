@@ -58,7 +58,7 @@ jobs:
       # coverage.yml's main runs are workflow_run-triggered, hence `event`. A missing or expired
       # artifact isn't a failed deploy: the fallback below publishes "not measured" instead.
       - name: Fetch the newest coverage figures
-        uses: $/.github/actions/fetch-latest-artifact
+        uses: ./.github/actions/fetch-latest-artifact
         with:
           workflow: coverage.yml
           artifact-name: coverage-badge
