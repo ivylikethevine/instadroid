@@ -184,7 +184,8 @@ every third-party action.
 The other workflows:
 
 - `release-note.yml`: the **`release note (pr body)`** check, on every non-draft pull request but
-  Dependabot's, re-run when the body is edited. The body needs a filled-in `## Release note` section
+  Dependabot's, re-run when the body is edited. It never fails: a missing or blank `## Release note`
+  section is a warning, and the job summary shows the note as the release page would list it
   ([Pull requests](#pull-requests)).
 - `coverage.yml`: the test suite with coverage, measured once as data after every green CI run on a
   push to `main`: the `coverage-badge` artifact holds the README's coverage and tests-passed badge
@@ -258,10 +259,10 @@ rather than restating it elsewhere.
   [Which docs change with what](#which-docs-change-with-what), including new or changed environment
   variables in `docker-compose.yml` and `.env.example`.
 - Don't commit `.env`, anything under `local/`, APKs, or real screenshots.
-- Fill in the pull request template's `## Release note` section: one or two sentences a user would
-  read on the release page, or `none` when nothing a user sees changes. The `release note (pr body)`
-  check fails on a missing or blank section, and a release's notes are built from these sections
-  ([RELEASING.md](RELEASING.md#what-the-tag-triggers)).
+- The pull request template's `## Release note` section is optional: one or two sentences a user
+  would read on the release page, or `none` when nothing a user sees changes. A release's notes are
+  built from these sections ([RELEASING.md](RELEASING.md#what-the-tag-triggers)), so a pull request
+  without one adds nothing there; the `release note (pr body)` check warns but doesn't fail.
 - A `dev` → `main` pull request is squash-merged, so it's the only pull request `main`'s history
   shows, and the release lists its note alone: its `## Release note` section collects the notes of
   every pull request it brings, as plain sentences.
