@@ -1,7 +1,8 @@
 """The device the scraper drives, as a structural type: the slice of uiautomator2's Device and UiObject
 this project calls. Code takes a `Device` rather than `uiautomator2.Device`, so the real connection
-and tests/fakedevice.py's scripted stand-in are both accepted without any cast. The declarations
-match typings/uiautomator2 (the local stubs), which the real class is checked against."""
+and tests/fakedevice.py's scripted stand-in are both accepted without any cast. These are also the
+only declarations of it: the local stub typings/uiautomator2 types `connect()` as returning this
+`Device`, so a method added here is one the real uiautomator2 Device has to have."""
 
 from collections.abc import Mapping
 from typing import Protocol

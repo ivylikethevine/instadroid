@@ -45,29 +45,14 @@ def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
     version = _apk_version(version)
     cache_dir = config.APK_CACHE_DIR / version if version else config.APK_CACHE_DIR
     cache_dir.mkdir(parents=True, exist_ok=True)
-    # xapk_dir holds nothing but one unpacked Instagram bundle, so every *.apk in it belongs to
-    # this install (unlike cache_dir itself, which also holds the .xapk apkeep downloaded).
-    xapk_dir = cache_dir / "xapk"
-    cached = sorted(xapk_dir.glob("*.apk")) if xapk_dir.is_dir() else []
+    cached = _cached_apks(cache_dir)
     if not cached:
-        cached = sorted(cache_dir.glob(f"{config.IG_PKG}*.apk"))
-    if not cached:
-        xapks = sorted(cache_dir.glob(f"{config.IG_PKG}*.xapk"))
-        if not xapks:
-            spec = f"{config.IG_PKG}@{version}" if version else config.IG_PKG
-            log(f"fetching {spec} via apkeep (apk-pure)")
-            _run_checked(
-                ["apkeep", "-a", spec, "-d", "apk-pure", str(cache_dir)], f"apkeep fetch of {config.IG_PKG}"
-            )
-            xapks = sorted(cache_dir.glob(f"{config.IG_PKG}*.xapk"))
-        if xapks:
-            # apkeep hands back a bundle (base + per-density/abi/language splits); unpack it once
-            # and cache the extracted APKs so a later reinstall skips both the download and this.
-            with zipfile.ZipFile(xapks[-1]) as zf:
-                zf.extractall(xapk_dir)
-            cached = sorted(xapk_dir.glob("*.apk"))
-        else:
-            cached = sorted(cache_dir.glob(f"{config.IG_PKG}*.apk"))
+        spec = f"{config.IG_PKG}@{version}" if version else config.IG_PKG
+        log(f"fetching {spec} via apkeep (apk-pure)")
+        _run_checked(
+            ["apkeep", "-a", spec, "-d", "apk-pure", str(cache_dir)], f"apkeep fetch of {config.IG_PKG}"
+        )
+        cached = _cached_apks(cache_dir)
     if not cached:
         raise DeviceNotReady(f"apkeep reported success but no {config.IG_PKG} apk was found in {cache_dir}")
     # The base APK (no "config." prefix) has to be install-multiple's first argument; order among
@@ -75,18 +60,33 @@ def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
     base = [p for p in cached if not p.name.startswith("config.")]
     splits = [p for p in cached if p.name.startswith("config.")]
     if not base:
-        raise DeviceNotReady(
-            f"no base apk (only config.* splits) found in {xapk_dir or config.APK_CACHE_DIR}"
-        )
+        raise DeviceNotReady(f"no base apk (only config.* splits) found in {cached[0].parent}")
     return base + splits
 
 
-def install_instagram(d: uidevice.Device, version: str | None = None, downgrade: bool = False) -> None:
+def _cached_apks(cache_dir: Path) -> list[Path]:
+    """The APKs already in `cache_dir`: an unpacked bundle, else a plain Instagram APK, else a
+    downloaded .xapk bundle, unpacked on the spot. Empty when there's nothing to install."""
+    # xapk_dir holds nothing but one unpacked Instagram bundle, so every *.apk in it belongs to
+    # this install (unlike cache_dir itself, which also holds the .xapk apkeep downloaded).
+    xapk_dir = cache_dir / "xapk"
+    if cached := sorted(xapk_dir.glob("*.apk")) or sorted(cache_dir.glob(f"{config.IG_PKG}*.apk")):
+        return cached
+    if xapks := sorted(cache_dir.glob(f"{config.IG_PKG}*.xapk")):
+        # apkeep hands back a bundle (base + per-density/abi/language splits); unpack it once
+        # and cache the extracted APKs so a later reinstall skips both the download and this.
+        with zipfile.ZipFile(xapks[-1]) as zf:
+            zf.extractall(xapk_dir)
+        return sorted(xapk_dir.glob("*.apk"))
+    return []
+
+
+def install_instagram(d: uidevice.Device, version: str | None = None, downgrade: bool = False) -> str | None:
     """Fetch (or reuse a cached) Instagram bundle and adb-install it, same as the manual
-    `apkeep` + `install-multiple` steps in README.md's First-time setup. Raises DeviceNotReady on
-    any failure so the caller's retry ladder (device.is_transient()) handles it rather than aborting the
-    whole run. `downgrade` adds `-r -d`, replacing an installed newer version in place (allowed
-    because redroid is a userdebug build).
+    `apkeep` + `install-multiple` steps in README.md's First-time setup, and return the versionName the
+    device then reports. Raises DeviceNotReady on any failure so the caller's retry ladder
+    (device.is_transient()) handles it rather than aborting the whole run. `downgrade` adds `-r -d`,
+    replacing an installed newer version in place (allowed because redroid is a userdebug build).
     """
     apks = _fetch_instagram_apk(version)
     flags = ["-r", "-d"] if downgrade else []
@@ -100,9 +100,10 @@ def install_instagram(d: uidevice.Device, version: str | None = None, downgrade:
     ]
     log(f"installing {config.IG_PKG} ({len(apks)} apk(s))")
     _run_checked(cmd, f"adb install of {config.IG_PKG}")
-    installed = device.instagram_version(d)
+    installed = device.instagram_version(d, fresh=True)
     log(f"installed {config.IG_PKG}", installed or "(version unknown)")
     versioning.activate_profile(installed)  # device.connect_device() activated before this version existed
+    return installed
 
 
 def install_instagram_version(d: uidevice.Device, version: str | None = None) -> str | None:
@@ -119,8 +120,7 @@ def install_instagram_version(d: uidevice.Device, version: str | None = None) ->
         log(f"{config.IG_PKG} {current} already installed")
         return current
     log(f"replacing {config.IG_PKG} {current or '(not installed)'} with {version or 'latest'}")
-    install_instagram(d, version, downgrade=True)
-    installed = device.instagram_version(d)
+    installed = install_instagram(d, version, downgrade=True)
     if version and installed != version:
         raise DeviceNotReady(
             f"asked adb to install {config.IG_PKG} {version}, but the device reports {installed}"

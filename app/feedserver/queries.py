@@ -53,11 +53,6 @@ def one_row(con: sqlite3.Connection, sql: str, args: Sequence[SqlValue] = ()) ->
 # --- reading rows ---------------------------------------------------------------------------------
 
 
-def values(row: sqlite3.Row) -> tuple[SqlValue, ...]:
-    """Every value of a row, in column order (what tuple(row) gives)."""
-    return tuple(sqlrows.cell(row, i) for i in range(len(row)))
-
-
 def string(row: sqlite3.Row, key: str | int) -> str:
     """row[key] as it reads in an f-string (so NULL is "None"), for a NOT NULL column."""
     return str(sqlrows.cell(row, key))
@@ -114,10 +109,10 @@ def feed_signal(con: sqlite3.Connection, user: str | None, alerts: list[sqlite3.
     media = one_row(con, "SELECT COUNT(*) FROM media")
     avatar = one_row(con, f"SELECT COALESCE(MAX(avatar_updated_at), '') FROM accounts{where}", args)
     return (
-        *(values(counts) if counts else (0, "")),
+        *(sqlrows.values(counts) if counts else (0, "")),
         sqlrows.cell(media, 0) if media else 0,
         sqlrows.cell(avatar, 0) if avatar else "",
-        *(values(a) for a in alerts),
+        *(sqlrows.values(a) for a in alerts),
     )
 
 
@@ -167,9 +162,13 @@ def latest_device(con: sqlite3.Connection) -> sqlite3.Row | None:
     return one_row(con, "SELECT * FROM runs WHERE android_release IS NOT NULL ORDER BY id DESC LIMIT 1")
 
 
+# A runs row is inserted as its run finishes, and runs never overlap, so id order is time order: these
+# read the rows at either end by id rather than MAX/MIN over a table that's never pruned.
+
+
 def last_finished(con: sqlite3.Connection) -> str | None:
     """When the latest run finished, or None before any has."""
-    row = one_row(con, "SELECT MAX(finished_at) FROM runs")
+    row = one_row(con, "SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1")
     return text(row, 0) if row else None
 
 
@@ -177,6 +176,8 @@ def run_times(con: sqlite3.Connection) -> tuple[str | None, str | None, str | No
     """(latest finished_at, latest successful finished_at, first started_at) over every run."""
     row = one_row(
         con,
-        "SELECT MAX(finished_at), MAX(CASE WHEN error IS NULL THEN finished_at END), MIN(started_at) FROM runs",
+        "SELECT (SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1),"
+        " (SELECT finished_at FROM runs WHERE error IS NULL ORDER BY id DESC LIMIT 1),"
+        " (SELECT started_at FROM runs ORDER BY id LIMIT 1)",
     )
     return (text(row, 0), text(row, 1), text(row, 2)) if row else (None, None, None)

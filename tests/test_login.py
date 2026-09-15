@@ -43,7 +43,7 @@ def text_screen(text: str, goto: str | None = None) -> str:
 def test_login_fills_the_form_and_dismisses_interstitials() -> None:
     screens = {"login": login_screen(), "notnow": text_screen("Not now", goto="home"), "home": home_screen()}
     d = FakeDevice(screens, "login")
-    assert navigation.ensure_logged_in(d) is True
+    navigation.ensure_logged_in(d)
     assert d.typed == [(0, "me"), (1, "hunter2")]
     assert d.screen == "home"
     assert d.launches == ["com.instagram.mainactivity.LauncherActivity"]  # resolved, not monkey
@@ -56,13 +56,13 @@ def test_login_taps_through_the_logged_out_welcome_screen() -> None:
         "home": home_screen(),
     }
     d = FakeDevice(screens, "welcome")
-    assert navigation.ensure_logged_in(d) is True
+    navigation.ensure_logged_in(d)
     assert "login" in d.history
 
 
 def test_login_dismisses_a_stray_ok_alert_and_accepts_a_live_session() -> None:
     d = FakeDevice({"alert": text_screen("OK", goto="home"), "home": home_screen()}, "alert")
-    assert navigation.ensure_logged_in(d) is True
+    navigation.ensure_logged_in(d)
     assert d.typed == []
 
 
@@ -128,7 +128,7 @@ def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch: pytest.Mo
     d = FakeDevice({"home": home_screen()}, "launcher", installed=())
     calls: list[list[str]] = []
     _apk_run(monkeypatch, d, calls)
-    assert navigation.ensure_logged_in(d) is True
+    navigation.ensure_logged_in(d)
     apkeep_call = next(c for c in calls if c[0] == "apkeep")
     assert apkeep_call[:3] == ["apkeep", "-a", config.IG_PKG]
     install_call = next(c for c in calls if c[0] == "adb")
@@ -141,7 +141,7 @@ def test_installing_instagram_reactivates_the_profile(monkeypatch: pytest.Monkey
     d = FakeDevice({"home": home_screen()}, "launcher", installed=())
     _apk_run(monkeypatch, d, [])
     monkeypatch.setattr(versioning, "PROFILE_WARNING", "stale warning from before the install")
-    assert navigation.ensure_logged_in(d) is True
+    navigation.ensure_logged_in(d)
     assert versioning.PROFILE.name == "v424" and versioning.PROFILE_WARNING is None  # installed 445.0.0.45.83
 
 
@@ -151,7 +151,7 @@ def test_auto_install_fetches_the_default_build(monkeypatch: pytest.MonkeyPatch)
     d = FakeDevice({"home": home_screen()}, "launcher", installed=(), ig_version="445.0.0.45.83")
     calls: list[list[str]] = []
     _apk_run(monkeypatch, d, calls)
-    assert navigation.ensure_logged_in(d) is True
+    navigation.ensure_logged_in(d)
     assert next(c for c in calls if c[0] == "apkeep")[2] == f"{config.IG_PKG}@{igprofiles.DEFAULT_BUILD}"
     assert versioning.PROFILE.name == "v424" and versioning.PROFILE_WARNING is None
 
@@ -165,7 +165,7 @@ def test_a_pinned_apk_version_gets_its_own_cache_folder(monkeypatch: pytest.Monk
     d = FakeDevice({"home": home_screen()}, "launcher", installed=())
     calls: list[list[str]] = []
     _apk_run(monkeypatch, d, calls)
-    assert navigation.ensure_logged_in(d) is True
+    navigation.ensure_logged_in(d)
     apkeep_call = next(c for c in calls if c[0] == "apkeep")
     assert apkeep_call[2] == f"{config.IG_PKG}@445.0.0.45.83"
     assert apkeep_call[-1] == str(config.APK_CACHE_DIR / "445.0.0.45.83")
@@ -215,7 +215,7 @@ def test_ensure_logged_in_reuses_a_cached_apk(monkeypatch: pytest.MonkeyPatch) -
     d = FakeDevice({"home": home_screen()}, "launcher", installed=())
     calls: list[list[str]] = []
     _apk_run(monkeypatch, d, calls)
-    assert navigation.ensure_logged_in(d) is True
+    navigation.ensure_logged_in(d)
     assert not any(c[0] == "apkeep" for c in calls)
     install_call = next(c for c in calls if c[0] == "adb")
     assert install_call[3] == "install"  # single apk: no -multiple

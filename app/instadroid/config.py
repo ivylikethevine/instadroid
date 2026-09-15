@@ -4,7 +4,7 @@ time, so tests can monkeypatch any of them."""
 import os
 from pathlib import Path
 
-from shared import control
+from shared import control, env
 from shared.fileenv import env_secret
 
 
@@ -19,18 +19,18 @@ def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
 
 
 ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5555")  # redroid's forwarded ADB port
-DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
+DB_PATH = env.env_db_path()  # the feed server reads DB_PATH, MEDIA_DIR and POLL_MAX_HOURS the same way
 # Manual control files (instadroid/control.py): manual.lock holds scheduled runs back, scrape-now cuts
 # the wait short. Defaults to the database directory, which the feed server and the host share. The
 # feed server reads the same three settings through the same shared/control.py functions.
-CONTROL_DIR = str(control.env_control_dir(DB_PATH))
+CONTROL_DIR = control.env_control_dir(DB_PATH)
 LOCK_MAX_HOURS = control.env_lock_max_hours()  # an older lock counts as forgotten; 0 = never
 RUN_NOW_MIN_MINUTES = control.env_run_now_min_minutes()  # rate limit for scrape-now
 CONTROL_POLL_SECONDS = 30.0  # how often a sleeping or locked loop checks the control files
-MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
+MEDIA_DIR = env.env_media_dir()
 DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", "/debug"))
 POLL_MIN_H = float(os.environ.get("POLL_MIN_HOURS", "2.5"))
-POLL_MAX_H = float(os.environ.get("POLL_MAX_HOURS", "4.5"))
+POLL_MAX_H = env.env_poll_max_hours()
 # Which feed to scrape. "chrono" (default): the real chronological Following feed, reached via the
 # switcher — see navigation.open_following_feed(). "home": deliberately stay on the algorithmic Home feed
 # instead and skip the switcher navigation entirely — e.g. pair with FOLLOWING_REFRESH_DAYS's
@@ -51,8 +51,11 @@ MEDIA_QUALITY = int(os.environ.get("MEDIA_QUALITY", "95"))  # encoder quality fo
 # smaller than JPEG at quality 95 and ~56% smaller at 90, re-encoding real crops (2026-09-14). Files
 # already written keep their extension and stay valid after a switch, since the database stores each
 # file name. An unrecognized value falls back to webp.
-MEDIA_FORMAT = _choice("MEDIA_FORMAT", "webp", ("webp", "jpeg"))
-MEDIA_EXTS = (".jpg", ".webp")  # every extension this scraper has ever written
+MEDIA_FORMATS = {"webp": (".webp", "WEBP"), "jpeg": (".jpg", "JPEG")}  # format -> (extension, Pillow format)
+MEDIA_FORMAT = _choice("MEDIA_FORMAT", "webp", tuple(MEDIA_FORMATS))
+# Every extension saved media can have (retention and the avatar sweep look for each): keep a format in
+# MEDIA_FORMATS as long as files written in it may still exist.
+MEDIA_EXTS = tuple(ext for ext, _ in MEDIA_FORMATS.values())
 # Either can come from a file instead (IG_USERNAME_FILE / IG_PASSWORD_FILE, e.g. a Docker secret).
 IG_USERNAME = env_secret("IG_USERNAME")
 IG_PASSWORD = env_secret("IG_PASSWORD")
@@ -79,7 +82,6 @@ DEBUG_KEEP = 12  # debug dump pairs to retain; older ones are pruned on every ne
 PROFILE_CAPTURE_DIR = os.environ.get("PROFILE_CAPTURE_DIR", "").strip()
 CAPTURE_PER_SCREEN = 3
 DEBUG_RETAIN_DAYS = float(os.environ.get("DEBUG_RETAIN_DAYS", "7"))  # 0 disables age-based pruning
-_DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png", ".txt")
 # How much of a filtered logcat to keep per device failure (see diagnostics.save_failure_logcat()).
 LOGCAT_TAIL_LINES = int(os.environ.get("LOGCAT_TAIL_LINES", "2000"))
 LOGCAT_TIMEOUT = 30.0  # seconds for `adb logcat -d`

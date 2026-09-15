@@ -6,8 +6,8 @@ real dump never has (parse_hierarchy() ignores unknown attributes):
   goto="<screen>"  tapping the node switches to that screen ("" = the tap does nothing)
   clip="<text>"    tapping the node copies that text to the clipboard
 
-Back presses and swipes use per-screen maps: `back`, `scroll` (swipe up), `pull` (swipe down) and
-`hswipe` (horizontal). Screens in `foreign` are outside Instagram: app_current() reports the
+Back presses and swipes use per-screen maps: `back`, `scroll` (swipe up) and `hswipe` (horizontal); a
+swipe down does nothing. Screens in `foreign` are outside Instagram: app_current() reports the
 launcher there, and app_start() brings Instagram back on `launch_screen`.
 
 Only the slice of the uiautomator2 API the scraper actually uses is implemented.
@@ -17,13 +17,13 @@ import re
 import zlib
 from collections.abc import Iterable
 
+from instadroid.common import parse_bounds
 from lxml import etree
 from PIL import Image
 
 IG_PKG = "com.instagram.android"
 LAUNCHER_PKG = "com.android.launcher3"
 WIDTH, HEIGHT = 1080, 2340
-_BOUNDS = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 
 type Node = tuple[dict[str, str], list[Node]]
 
@@ -71,11 +71,7 @@ class Out:
 
 
 def _bounds(n: etree._Element) -> tuple[int, int, int, int]:
-    m = _BOUNDS.match(n.get("bounds") or "")
-    if not m:
-        return (0, 0, 0, 0)
-    x1, y1, x2, y2 = map(int, m.groups())
-    return (x1, y1, x2, y2)
+    return parse_bounds(n.get("bounds")) or (0, 0, 0, 0)
 
 
 def _area(n: etree._Element) -> int:
@@ -150,7 +146,6 @@ class FakeDevice:
         *,
         back: dict[str, str] | None = None,
         scroll: dict[str, str] | None = None,
-        pull: dict[str, str] | None = None,
         hswipe: dict[str, str] | None = None,
         foreign: Iterable[str] = ("launcher",),
         launch_screen: str = "home",
@@ -160,7 +155,7 @@ class FakeDevice:
     ) -> None:
         self.screens = {"launcher": hierarchy(), **screens}
         self.screen = start
-        self.back, self.scroll, self.pull, self.hswipe = back or {}, scroll or {}, pull or {}, hswipe or {}
+        self.back, self.scroll, self.hswipe = back or {}, scroll or {}, hswipe or {}
         self.foreign, self.launch_screen, self.launch_blocked = set(foreign), launch_screen, launch_blocked
         self.installed, self.ig_version = list(installed), ig_version
         self.props = {
@@ -250,8 +245,6 @@ class FakeDevice:
             self._go(self.hswipe.get(self.screen))
         elif ty < fy:
             self._go(self.scroll.get(self.screen))
-        else:
-            self._go(self.pull.get(self.screen))
 
     def click(self, x: int, y: int) -> None:
         """Coordinate tap: the smallest node under the point that does something, else the smallest."""

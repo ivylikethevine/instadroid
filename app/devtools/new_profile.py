@@ -42,15 +42,15 @@ from pathlib import Path
 
 import igprofiles
 from igprofiles import BaseProfile, screens, version_key
-from instadroid import parsing, versioning
+from instadroid import diagnostics, parsing, versioning
 from shared import sqlrows
+from shared.errors import short_error
 
 from devtools import ROOT, promote_dump
 
 PROFILES_DIR = ROOT / "app" / "igprofiles"
 DEV_DIR = ROOT / "local" / "data" / "debug" / "profile-dev"  # /debug/profile-dev in the container
 CONTAINER_DEV_DIR = "/debug/profile-dev"
-_DUMP = re.compile(r"^(?P<seq>\d{3})-(?P<screen>[a-z_0-9]+?)(?P<fail>-fail)?_hierarchy\.xml$")
 # Screens whose dumps the parsers read, so a fixture of them checks parse output, not just selectors.
 PARSED_SCREENS = ("feed", "home_feed", "following_list")
 # Baseline caps (docs/PROFILES.md): enough to reach every screen, short enough to stay light.
@@ -379,9 +379,9 @@ class RunSummary:
 def captured_dumps(dumps: Path) -> list[tuple[Path, str, bool]]:
     """(path, screen, failure) for every capture in `dumps`, in capture order."""
     found: list[tuple[Path, str, bool]] = []
-    for path in sorted(dumps.glob("*_hierarchy.xml")) if dumps.is_dir() else []:
-        if m := _DUMP.match(path.name):
-            found.append((path, m["screen"], bool(m["fail"])))
+    for path in sorted(dumps.glob(f"*{diagnostics.HIERARCHY_SUFFIX}")) if dumps.is_dir() else []:
+        if parts := diagnostics.parse_dump_name(path.name):
+            found.append((path, *parts))
     return found
 
 
@@ -456,7 +456,7 @@ def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], r
         "",
     ]
     if run:
-        status = f"error: `{run.error.splitlines()[0]}`" if run.error else "no error"
+        status = f"error: `{short_error(run.error, None)}`" if run.error else "no error"
         lines += [
             f"Latest baseline run: Instagram {run.ig_version or '?'}, {status}, {run.new_posts} new post(s),"
             f" {run.new_stories} new stor(ies), peak {run.mem_peak_mb or '?'} MiB.",
@@ -483,7 +483,7 @@ def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], r
         )
         missing = ", ".join(f"`{k}`" for k in r.check.missing_required) or "—"
         lines.append(
-            f"| {r.path.name.removesuffix('_hierarchy.xml')} | {r.screen} | {result} | {missing} | {parsed or '—'} |"
+            f"| {r.path.name.removesuffix(diagnostics.HIERARCHY_SUFFIX)} | {r.screen} | {result} | {missing} | {parsed or '—'} |"
         )
     lines.append("")
     by_screen: dict[str, list[DumpReport]] = {}
@@ -580,7 +580,7 @@ def validation_problems(profile: BaseProfile, build: str, run: RunSummary | None
         if run.ig_version != build:
             problems.append(f"the latest baseline run scraped Instagram {run.ig_version}, not {build}")
         if run.error:
-            problems.append(f"the latest baseline run failed: {run.error.splitlines()[0]}")
+            problems.append(f"the latest baseline run failed: {short_error(run.error, None)}")
         if not run.new_posts:
             problems.append("the latest baseline run stored no posts")
     return problems

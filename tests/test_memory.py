@@ -14,10 +14,11 @@ from instadroid import (
     scrape,
     uidevice,
 )
+from shared import sqlrows
 
 from tests.deviceflows import StopLoop, feed_device, stop_after_first_sleep
 from tests.fakedevice import FakeDevice, Out
-from tests.support import fetch_row, row_values
+from tests.support import fetch_row
 
 pytestmark = pytest.mark.usefixtures("fast_offline")
 
@@ -173,4 +174,4 @@ def test_main_records_memory_stats(fast_offline: Path, monkeypatch: pytest.Monke
     with pytest.raises(StopLoop):
         scrape.main()
     con = sqlite3.connect(fast_offline / "posts.sqlite")
-    assert row_values(fetch_row(con.execute("SELECT mem_peak_mb, oom_kills FROM runs"))) == (1843, 1)
+    assert sqlrows.values(fetch_row(con.execute("SELECT mem_peak_mb, oom_kills FROM runs"))) == (1843, 1)

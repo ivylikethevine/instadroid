@@ -153,3 +153,5 @@ def test_access_log_blanks_the_token_and_still_skips_health(
     assert TOKEN not in feed.getMessage()
     assert "/instagram.xml?user=a&token=REDACTED&limit=5" in feed.getMessage()
     assert not log_filter.filter(record("/health"))
+    assert log_filter.filter(record("/instagram.xml"))
+    assert log_filter.filter(record("/instagram.xml?user=healthy_eats"))  # not a /health request

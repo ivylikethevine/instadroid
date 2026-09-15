@@ -28,7 +28,7 @@ from tests.deviceflows import (
     top_card_id,
 )
 from tests.fakedevice import FakeDevice
-from tests.support import fetch_row, record_run_ago, row_dict, row_values
+from tests.support import fetch_row, record_run_ago, row_dict
 
 pytestmark = pytest.mark.usefixtures("fast_offline")
 
@@ -70,7 +70,7 @@ def test_scrape_once_end_to_end(fast_offline: Path, monkeypatch: pytest.MonkeyPa
     assert posts["TOP123"]["ig_version"] == posts["OTHER1"]["ig_version"] == "445.0.0.45.83"
     assert posts["OLD1"]["ig_version"] is None  # seeded before this run; never back-filled
     slides = [
-        row_values(r)
+        sqlrows.values(r)
         for r in sqlrows.fetch_all(
             con.execute("SELECT idx, file FROM media WHERE post_id='OTHER1' ORDER BY idx")
         )
