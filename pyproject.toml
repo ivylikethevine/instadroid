@@ -1,3 +1,33 @@
+[project]
+# Not published anywhere: installing the project (`pip install -e '.[dev]'` in the dev venv) puts app/ on
+# the path and adds the developer commands below. The image doesn't install it; it copies app/ instead.
+name = "instadroid"
+version = "0"
+requires-python = ">=3.14"
+dynamic = ["dependencies", "optional-dependencies"]
+
+[project.scripts]
+new-profile = "devtools.new_profile:main"
+promote-dump = "devtools.promote_dump:main"
+check-new-builds = "devtools.check_new_builds:main"
+export-openapi = "devtools.export_openapi:main"
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "app" }
+py-modules = ["scraper"]
+
+[tool.setuptools.packages.find]
+where = ["app"]
+exclude = ["*.fixtures"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["app/requirements.txt"] }
+optional-dependencies.dev = { file = ["requirements-dev.txt"] }
+
 [tool.ruff]
 line-length = 110
 target-version = "py314"
@@ -18,14 +48,13 @@ ignore = ["E501"]
 "typing_extensions.cast".msg = "No cast(): narrow with isinstance or a typed helper instead"
 
 [tool.pytest.ini_options]
-testpaths = ["app/tests"]
-pythonpath = ["app", "scripts"]
+testpaths = ["tests"]
+pythonpath = ["app"]
 cache_dir = "local/.pytest_cache"
 
 [tool.coverage.run]
 data_file = "local/.coverage"
-source = ["app", "scripts"]
-omit = ["app/tests/*"]
+source = ["app"]
 
 [tool.coverage.report]
 # The project rule (README, Development): at least 90% of all Python code is covered by tests.
@@ -35,8 +64,8 @@ fail_under = 90
 # basedpyright: pyright's strict mode plus reportAny/reportExplicitAny, so no value typed Any anywhere, not even
 # one flowing in from the standard library (sqlite3.Row items, json.loads). Strict everywhere, tests included. The libraries that
 # ship no type information (uiautomator2, adbutils, feedgen) get local stubs in typings/.
-include = ["app", "scripts"]
-extraPaths = ["app", "scripts"]
+include = ["app", "tests"]
+extraPaths = ["app"]
 stubPath = "typings"
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
@@ -52,11 +81,27 @@ reportIgnoreCommentWithoutRule = "error"
 enableTypeIgnoreComments = false
 
 [tool.importlinter]
-# Boundaries the design depends on; run as `PYTHONPATH=app lint-imports` from the repo root, like CI.
-# import-linter only handles packages, so the rule that app.py (the feed server) and fileenv.py import
-# nothing from the scraper is tests/test_import_boundaries.py's job.
-root_packages = ["igprofiles", "instadroid"]
+# Boundaries the design depends on; run as `lint-imports` from the repo root in the dev venv, like CI.
+root_packages = ["devtools", "feedserver", "igprofiles", "instadroid", "shared"]
 include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "The feed server runs as its own process and doesn't import the scraper"
+type = "forbidden"
+source_modules = ["feedserver"]
+forbidden_modules = ["instadroid", "igprofiles", "devtools", "uiautomator2", "adbutils"]
+
+[[tool.importlinter.contracts]]
+name = "The scraper doesn't import the feed server"
+type = "forbidden"
+source_modules = ["instadroid", "igprofiles"]
+forbidden_modules = ["feedserver", "devtools"]
+
+[[tool.importlinter.contracts]]
+name = "shared is the leaf both processes import, and imports neither"
+type = "forbidden"
+source_modules = ["shared"]
+forbidden_modules = ["feedserver", "instadroid", "igprofiles", "devtools"]
 
 [[tool.importlinter.contracts]]
 name = "Version profiles don't depend on the scraper code they configure"

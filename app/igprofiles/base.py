@@ -1,4 +1,4 @@
-"""What every Instagram version profile provides. See docs/NEXT.md for the full design."""
+"""What every Instagram version profile provides. See docs/PROFILES.md for the full design."""
 
 import re
 from typing import Literal
@@ -126,7 +126,7 @@ class BaseProfile:
       major        the first Instagram major version it covers (must match the directory name)
       selectors    the full Selectors dict the scraper reads through SELECTORS
       validated    the exact builds a live baseline run and replay fixtures showed it handles
-                   (scripts/new_profile.py validate). Declared on each profile's own class, never
+                   (devtools/new_profile.py validate). Declared on each profile's own class, never
                    inherited: a new profile starts with none.
 
     Behavior overrides: a profile can replace any instadroid function marked @versioned by defining a

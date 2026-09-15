@@ -1,28 +1,52 @@
-__pycache__/
+# Everything this project generates at runtime (databases, media, the redroid volume, logs, the dev
+# venv and tool caches) lives under local/.
 local/
 .claude
 
-**dist**
-**output**
-**target**
-**temp**
-**tmp**
-**build**
-**secret**
-**private**
-**key**
+# Python and build output
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+target/
+output/
+tmp/
+temp/
+.import_linter_cache/
 
-*.apk
-*.xapk
+# Secrets: never commit environment files, keys or certificates.
+.env
+.env.*
+!.env.example
+*.env
+.envrc
+.direnv/
+secret/
+secrets/
+private/
+keys/
 *.key
-*.log
-*.rsa
-*.crt
 *.pem
 *.priv
 *.pub
-*.env*
-!.env.example
+*.rsa
+*.crt
+*.cert
+*.pfx
+
+# Instagram APKs, and screenshots/images, which can hold real account content (fixtures are
+# pseudonymized XML, never images).
+*.apk
+*.xapk
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.psd
+*.log
+
+# Not used in this project; kept out so stray editor or tooling output isn't committed by accident.
 *.js
 *.ts
 *.bat
@@ -30,28 +54,6 @@ local/
 *.ps
 *.ps1
 *.ps2
-*.psd
 *.doc
 *.docx
 *.id
-*.pyc
-*.pem
-*.pub
-*.env
-*.direnv
-*.envrc
-*.rsa
-*.crt
-*.pfx
-*.bmp
-*.cert
-*.key
-*.png
-*.jpg
-*.jpeg
-*.log
-
-# **build** above would also hide these project files.
-!.github/workflows/new-builds.yml
-!scripts/check_new_builds.py
-!app/tests/test_new_builds.py

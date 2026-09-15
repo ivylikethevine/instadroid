@@ -35,7 +35,7 @@ def _run_checked(cmd: list[str], what: str) -> None:
 def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
     """Return the APK(s) to install: the base APK first, then any config.*.apk split. Reuses a
     bundle already sitting in APK_CACHE_DIR (from a previous fetch, or dropped there by hand) so a
-    reinstall after e.g. a /data/system reset (see CLAUDE.md) costs nothing over the network; only
+    reinstall after e.g. a /data/system reset (see docs/INCIDENTS.md) costs nothing over the network; only
     runs apkeep when the cache is empty.
 
     `version` is resolved by _apk_version(). A pinned version gets its own APK_CACHE_DIR/<version>/

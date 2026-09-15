@@ -1,5 +1,8 @@
-__pycache__/
-*.pyc
-tests/
+**/__pycache__/
+**/*.pyc
+*.egg-info/
+# Developer tools run on the host, never in the container.
+devtools/
 # Per-version test fixtures (screen dumps) aren't needed at runtime.
 igprofiles/*/fixtures/
+data/

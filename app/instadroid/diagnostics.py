@@ -128,7 +128,7 @@ def dump_debug(d: uidevice.Device, name: str, xml: str | None = None) -> None:
 
 
 def capture_screen(d: uidevice.Device, screen: str, xml: str | None = None, failure: bool = False) -> None:
-    """Profile capture mode (PROFILE_CAPTURE_DIR set, see scripts/new_profile.py): save this screen
+    """Profile capture mode (PROFILE_CAPTURE_DIR set, see devtools/new_profile.py): save this screen
     as `<seq>-<screen>[-fail]_hierarchy.xml` + `_screen.jpg`, up to CAPTURE_PER_SCREEN per screen
     (failure dumps always), so a baseline run under a new profile leaves one reviewable dump of
     every screen it reached. A no-op otherwise, and never raises: capturing must not change a run."""

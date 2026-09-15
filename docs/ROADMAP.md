@@ -28,14 +28,14 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
 - **Instagram update path**: install-on-missing is automatic (see README.md's "First-time setup"),
   but an _outdated_ install isn't handled yet — detect the forced "update Instagram" screen (as a
   challenge-style stop) and reuse `install.install_instagram()` (`app/instadroid/install.py`)
-  with a newer validated build (`new_profile.py baseline`/`validate`, or `fork` if it drifted), plus a `scraper.py dump` smoke check, keeping the previous xapk in
+  with a newer validated build (`new-profile baseline`/`validate`, or `fork` if it drifted), plus a `scraper.py dump` smoke check, keeping the previous xapk in
   `APK_CACHE_DIR` for rollback.
 - **OpenSSF Best Practices badge**: Scorecard is wired up (`.github/workflows/scorecard.yml` and the
   README badge). What's left is bestpractices.dev, a manual self-certification questionnaire rather
   than a CI job, plus the Scorecard checks still open: branch protection and fuzzing.
 - **Resource-id check for new Instagram builds in CI**: `.github/workflows/new-builds.yml` already opens
   an issue weekly when APKPure lists a major version newer than every validated build
-  (`scripts/check_new_builds.py`). Still to add: a static resource-id report in that issue.
+  (`check-new-builds`, `app/devtools/check_new_builds.py`). Still to add: a static resource-id report in that issue.
   `aapt2 dump resources` on the new build's base APK (about a second) lists every selector resource id missing from
   it, and the ids added or removed since the newest validated build.
   - A research pass on 2026-09-14 ran this on the cached 443-446 builds. All 18 Instagram resource ids
@@ -71,7 +71,7 @@ Open investigations, new capture mechanisms, or changes to the container/process
   plus somewhere to store and serve a video file per post, and meaningfully longer dwell time per
   video post (see README.md's "Staying under the radar") — a real cost/benefit call, not just effort.
 - **Replay whole navigation sequences**: the scraper is now split into `app/instadroid/` modules,
-  and single recorded screens replay through the parsers (`scripts/promote_dump.py` scrubs a
+  and single recorded screens replay through the parsers (`promote-dump` scrubs a
   `DEBUG_DIR` dump into `igprofiles/vXYZ/fixtures/`, `tests/test_replay.py` checks it). The device
   flows still run against hand-written `tests/fakedevice.py` screens; recording a real run's
   sequence of dumps and taps, and replaying it through `fakedevice`, would catch navigation drift
@@ -93,8 +93,8 @@ Open investigations, new capture mechanisms, or changes to the container/process
   - **Logged-in baselines, pulled by the host** (not a self-hosted runner: GitHub advises against those
     on public repos, since fork PRs can target them). A systemd timer polls with a fine-grained token
     for labelled work, e.g. a `needs-baseline` label. For each item it waits for a gap between polls,
-    runs `docker compose stop app` and `new_profile.py baseline <build> --yes` (whose memory and app
+    runs `docker compose stop app` and `new-profile baseline <build> --yes` (whose memory and app
     checks still apply), always runs `restore` and `docker compose start app` afterwards, and pushes
     only `report.md` to the draft branch. Dumps and the session never leave the host. The remaining
-    risk is running unattended on the host that froze once (CLAUDE.md).
+    risk is running unattended on the host that froze once ([INCIDENTS.md](INCIDENTS.md)).
   - Fixing selectors, login challenges, reviewing scrubbed fixtures and `validate` stay manual.
