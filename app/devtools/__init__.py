@@ -5,7 +5,7 @@
     check-new-builds   Instagram builds on APKPure newer than anything validated
     export-openapi     the feed server's spec -> docs/openapi.json
 
-`pip install -e '.[dev]'` from the repository root installs these commands (pyproject.toml's
+`pip install --no-deps -e .` from the repository root (after the requirements-dev.txt lock) installs these commands (pyproject.toml's
 [project.scripts]); `python -m devtools.new_profile` works too.
 """
 

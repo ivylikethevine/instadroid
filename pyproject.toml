@@ -1,10 +1,10 @@
 [project]
-# Not published anywhere: installing the project (`pip install -e '.[dev]'` in the dev venv) puts app/ on
-# the path and adds the developer commands below. The image doesn't install it; it copies app/ instead.
+# Not published anywhere: installing the project (`pip install --no-deps -e .` in the dev venv, after the
+# requirements-dev.txt lock) puts app/ on the path and adds the developer commands below. The image doesn't install it; it copies app/ instead.
 name = "instadroid"
 version = "0"
 requires-python = ">=3.14"
-dynamic = ["dependencies", "optional-dependencies"]
+dynamic = ["dependencies"]
 
 [project.scripts]
 new-profile = "devtools.new_profile:main"
@@ -25,8 +25,8 @@ where = ["app"]
 exclude = ["*.fixtures"]
 
 [tool.setuptools.dynamic]
-dependencies = { file = ["app/requirements.txt"] }
-optional-dependencies.dev = { file = ["requirements-dev.txt"] }
+# The unlocked ranges: the hashed locks (app/requirements.txt, requirements-dev.txt) are installed directly.
+dependencies = { file = ["app/requirements.in"] }
 
 [tool.ruff]
 line-length = 110

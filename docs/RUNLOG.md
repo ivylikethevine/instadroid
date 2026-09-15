@@ -38,7 +38,7 @@ which doesn't affect the selector result, since `igprofiles/` was unchanged. The
 started as `python scraper.py` without `once`, so after the run it went on into the daemon loop's
 sleep and had to be stopped by hand.
 
-Still open (none of these are 446-specific; all were seen on 445 too):
+Still open (none of these are 446-specific; all were seen on 445 too; tracked in [ROADMAP.md](ROADMAP.md)):
 
 - **"no crop: media node not found"**, 4 times in a row on one Reel card, which was then
   stored with permalink and caption but no media file. No dump is taken on that path, so the card's

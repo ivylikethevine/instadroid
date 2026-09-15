@@ -14,11 +14,12 @@ ADD --checksum=sha256:a23579a3ba366d25a6d69848189b983d65662f4ecf4b9e11e165108116
     /usr/local/bin/apkeep
 RUN useradd -r -u 1000 -m app
 WORKDIR /app
+# The hashed lock compiled from requirements.in (pip-compile), so every build installs the same files.
 COPY requirements.txt .
 # adbutils ships Google's platform-tools adb (only needs glibc); link it onto PATH instead of
 # installing Debian's older android-tools-adb and its dependencies. pip itself is removed afterwards:
 # nothing at runtime uses it, and the copies of msgpack and pkg_resources it vendors carry CVEs.
-RUN pip install --no-cache-dir -r requirements.txt \
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt \
     && ln -s "$(python -c 'import adbutils; print(adbutils.adb_path())')" /usr/local/bin/adb \
     && adb version \
     && python -m pip uninstall --yes pip

@@ -28,7 +28,17 @@ Never paste `.env`, `FRESHRSS_REFRESH_URL` (it carries a token), or anything fro
 
 ```bash
 python -m venv local/.venv && . local/.venv/bin/activate
-pip install -e '.[dev]'   # app/requirements.txt, requirements-dev.txt, and the dev commands
+pip install --require-hashes -r requirements-dev.txt   # locked dev tools and app requirements
+pip install --no-deps -e .                              # app/ on the path, and the dev commands
+```
+
+Dependencies are locked with hashes. Edit `app/requirements.in` or `requirements-dev.in`, not the
+`.txt` locks, then regenerate the locks with pip-tools, app first (the dev lock is constrained to
+it), using the command in each lock's header:
+
+```bash
+(cd app && pip-compile --allow-unsafe --generate-hashes --strip-extras requirements.in)
+pip-compile --allow-unsafe --generate-hashes --strip-extras requirements-dev.in
 ```
 
 Before sending a change, run what CI runs:
