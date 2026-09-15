@@ -5,7 +5,7 @@ import igprofiles
 import pytest
 from instadroid import capture, common, config, device, parsing, stories, versioning
 
-FIXTURE = igprofiles.fixture("v445", "feed.xml").read_text()
+FIXTURE = igprofiles.fixture("v424", "feed_445.xml").read_text()
 
 
 def test_parse_hierarchy_finds_both_cards_and_skips_sponsored() -> None:
@@ -27,7 +27,7 @@ def test_headless_top_card_is_identified_from_caption_and_media() -> None:
 def test_full_card_fields() -> None:
     card = parsing.parse_hierarchy(FIXTURE)[1]
     assert card["kind"] == "carousel"
-    assert card["place"] == "San Diego, California"
+    assert card["place"] == "Anytown, Somewhere"
     assert card["posted_date"] == "21 hours ago"
     assert card["bounds"] == "[0,1287][1080,2000]"
     assert card["alt"].startswith("Photo 1 of 7")
@@ -72,10 +72,10 @@ REEL_COLLAB_FIXTURE = """<hierarchy><node><node resource-id="android:id/list">
           bounds="[0,210][1080,2093]" />
   </node>
   <node resource-id="com.instagram.android:id/row_feed_profile_header"
-        content-desc="thewhorrorshowlive posted a video in Precinct DTLA 57 minutes ago"
+        content-desc="showcase.live posted a video in The Venue Downtown 57 minutes ago"
         bounds="[0,210][1080,347]" />
   <node resource-id="com.instagram.android:id/row_feed_photo_profile_name"
-        text="thewhorrorshowlive and 3 others" />
+        text="showcase.live and 3 others" />
   <node resource-id="com.instagram.android:id/row_feed_button_share" bounds="[420,2093][483,2214]" />
   <node resource-id="com.instagram.android:id/row_feed_button_like" />
 </node></node></hierarchy>"""
@@ -85,9 +85,9 @@ def test_reel_with_media_before_header_is_identified_not_split_in_two() -> None:
     posts = parsing.parse_hierarchy(REEL_COLLAB_FIXTURE)
     assert len(posts) == 1  # not two dead-end entries that both fail the final filter
     p = posts[0]
-    assert p["username"] == "thewhorrorshowlive"
+    assert p["username"] == "showcase.live"
     assert p["kind"] == "video"
-    assert p["place"] == "Precinct DTLA"
+    assert p["place"] == "The Venue Downtown"
     assert p["posted_date"] == "57 minutes ago"
     assert p["alt"].startswith("Reel by")
     assert p["headless"] is False
@@ -121,23 +121,27 @@ def test_a_genuinely_different_off_screen_card_is_not_merged_into_the_next_heade
 
 
 def test_post_id_ignores_counts_dates_and_kind() -> None:
-    base = {"username": "u", "kind": "photo", "caption": "", "alt": "Photo 1 of 3 by U, 5 likes, 2 comments"}
-    later = {**base, "kind": "carousel", "alt": "Photo 2 of 3 by U, 9 likes, 4 comments"}
+    base = parsing._new_post("u", "photo", "", "", 0)
+    base["alt"] = "Photo 1 of 3 by U, 5 likes, 2 comments"
+    later = base.copy()
+    later["kind"], later["alt"] = "carousel", "Photo 2 of 3 by U, 9 likes, 4 comments"
+    captioned = base.copy()
+    captioned["caption"] = "hello"
     assert parsing.post_id(base) == parsing.post_id(later)
-    assert parsing.post_id({**base, "caption": "hello"}) != parsing.post_id(base)
+    assert parsing.post_id(captioned) != parsing.post_id(base)
 
 
 @pytest.mark.parametrize(
     ("desc", "expected"),
     [
         (
-            "nykky posted a video in Tiger's Pictionary at #1 Fifth Ave August 29",
-            ("nykky", "video", "Tiger's Pictionary at #1 Fifth Ave", "August 29"),
+            "artist posted a video in Pat's Gallery at #1 Main St August 29",
+            ("artist", "video", "Pat's Gallery at #1 Main St", "August 29"),
         ),
         ("some.one posted a photo 6 days ago", ("some.one", "photo", None, "6 days ago")),
         (
-            "club posted a carousel in San Diego, California 3 days ago",
-            ("club", "carousel", "San Diego, California", "3 days ago"),
+            "club posted a carousel in Anytown, Somewhere 3 days ago",
+            ("club", "carousel", "Anytown, Somewhere", "3 days ago"),
         ),
         ("Sponsored", None),
     ],
@@ -147,6 +151,7 @@ def test_header_regex(desc: str, expected: tuple[str, str, str | None, str] | No
     if expected is None:
         assert m is None
     else:
+        assert m is not None
         assert (m.group("user"), m.group("kind"), m.group("place"), m.group("date")) == expected
 
 
@@ -161,8 +166,10 @@ def test_clean_caption_strips_nbsp() -> None:
 
 def test_permalink_regex_accepts_reel_and_p_with_tracking_params() -> None:
     rx = versioning.SELECTORS["permalink"]
-    assert rx.match("https://www.instagram.com/reel/DdCSb4WsvUs/?stkn=abc").group("code") == "DdCSb4WsvUs"
-    assert rx.match("https://www.instagram.com/p/Dc9fdRTSKE5/").group("type") == "p"
+    reel = rx.match("https://www.instagram.com/reel/AbCdEf12345/?stkn=abc")
+    post = rx.match("https://www.instagram.com/p/ZyXwVu98765/")
+    assert reel is not None and reel.group("code") == "AbCdEf12345"
+    assert post is not None and post.group("type") == "p"
     assert rx.match("https://www.instagram.com/someone/") is None
 
 
@@ -186,7 +193,9 @@ def test_parse_posted_at(text: str, expected: datetime, precision: int) -> None:
 
 def test_parse_posted_at_bare_date_rolls_back_a_year_if_in_the_future() -> None:
     # "now" is Sep 8; a bare "December 25" with no year must mean last December, not next.
-    dt, _ = parsing.parse_posted_at("December 25", NOW)
+    parsed = parsing.parse_posted_at("December 25", NOW)
+    assert parsed is not None
+    dt, _ = parsed
     assert dt.year == 2025
 
 
@@ -203,20 +212,25 @@ def test_parse_posted_at_leap_day_rollback_into_non_leap_year_does_not_raise() -
 
 
 def test_same_post_merges_a_weak_caption_placeholder_into_the_real_row() -> None:
-    real = {"username": "club", "caption": "Attendance check! see you there", "posted_at": NOW}
-    weak = {
+    real: parsing.PostIdentity = {
+        "username": "club",
+        "caption": "Attendance check! see you there",
+        "posted_at": NOW,
+    }
+    weak: parsing.PostIdentity = {
         "username": "club",
         "caption": "Photo 1 of 2 by Club, 113 likes, 10 comments",
         "posted_at": NOW,
         "posted_at_precision": 86400,
     }
     assert parsing.same_post(real, weak) is True  # weak candidate merges into the real row
-    assert parsing.same_post(weak, {**real, "posted_at_precision": 86400}) is True  # or vice versa
+    real_precise: parsing.PostIdentity = {**real, "posted_at_precision": 86400}
+    assert parsing.same_post(weak, real_precise) is True  # or vice versa
 
 
 def test_same_post_refuses_two_real_differing_captions_same_day() -> None:
-    a = {"username": "club", "caption": "First post of the day", "posted_at": NOW}
-    b = {
+    a: parsing.PostIdentity = {"username": "club", "caption": "First post of the day", "posted_at": NOW}
+    b: parsing.PostIdentity = {
         "username": "club",
         "caption": "Second, unrelated post",
         "posted_at": NOW,
@@ -228,8 +242,8 @@ def test_same_post_refuses_two_real_differing_captions_same_day() -> None:
 def test_same_post_respects_time_tolerance() -> None:
     from datetime import timedelta
 
-    existing = {"username": "u", "caption": "", "posted_at": NOW}
-    far = {
+    existing: parsing.PostIdentity = {"username": "u", "caption": "", "posted_at": NOW}
+    far: parsing.PostIdentity = {
         "username": "u",
         "caption": "",
         "posted_at": NOW - timedelta(hours=3),
@@ -239,8 +253,8 @@ def test_same_post_respects_time_tolerance() -> None:
 
 
 def test_same_post_requires_matching_username() -> None:
-    a = {"username": "alice", "caption": "", "posted_at": NOW}
-    b = {"username": "bob", "caption": "", "posted_at": NOW, "posted_at_precision": 60}
+    a: parsing.PostIdentity = {"username": "alice", "caption": "", "posted_at": NOW}
+    b: parsing.PostIdentity = {"username": "bob", "caption": "", "posted_at": NOW, "posted_at_precision": 60}
     assert parsing.same_post(a, b) is False
 
 
@@ -281,17 +295,17 @@ FOLLOWING_LIST_FIXTURE = """<hierarchy><node><node resource-id="com.instagram.an
   </node>
   <node resource-id="com.instagram.android:id/sorting_entry_row_option" text="Sorted by Default" />
   <node resource-id="com.instagram.android:id/follow_list_container">
-    <node resource-id="com.instagram.android:id/follow_list_username" text="nykkyhex" />
-    <node resource-id="com.instagram.android:id/follow_list_subtitle" text="Nykky Hex" />
+    <node resource-id="com.instagram.android:id/follow_list_username" text="some.artist" />
+    <node resource-id="com.instagram.android:id/follow_list_subtitle" text="Some Artist" />
   </node>
   <node resource-id="com.instagram.android:id/follow_list_container">
-    <node resource-id="com.instagram.android:id/follow_list_username" text="lunavonnoir_" />
+    <node resource-id="com.instagram.android:id/follow_list_username" text="night_owl_" />
   </node>
 </node></hierarchy>"""
 
 
 def test_parse_following_list_finds_rows_and_skips_categories_and_sort_header() -> None:
-    assert parsing.parse_following_list(FOLLOWING_LIST_FIXTURE) == ["nykkyhex", "lunavonnoir_"]
+    assert parsing.parse_following_list(FOLLOWING_LIST_FIXTURE) == ["some.artist", "night_owl_"]
 
 
 def test_parse_following_list_returns_empty_for_a_screen_with_no_rows() -> None:
@@ -344,7 +358,7 @@ def test_capture_story_media_crops_and_saves_under_a_stories_subdirectory(
     path = stories.capture_story_media(img, "[0,0][200,400]", 50, "tmpstory")
 
     assert path == tmp_path / "stories" / "tmpstory.webp"
-    assert path.exists()
+    assert path is not None and path.exists()
 
 
 def test_carousel_count_parses_slide_total() -> None:
@@ -368,14 +382,15 @@ def test_safe_filename_rejects_unsafe_input(bad: str) -> None:
 
 def test_avatar_bounds_crops_a_square_inside_the_header() -> None:
     box = capture._avatar_bounds("[0,1150][1080,1287]")
+    assert box is not None
     x1, y1, x2, y2 = box
     assert 0 < x1 < x2 <= 1080
     assert 1150 < y1 < y2 <= 1287
     assert (x2 - x1) == (y2 - y1)  # square crop
 
 
-@pytest.mark.parametrize("bad", [None, "", "not-bounds"])
-def test_avatar_bounds_returns_none_for_missing_or_malformed_bounds(bad: str | None) -> None:
+@pytest.mark.parametrize("bad", ["", "not-bounds"])
+def test_avatar_bounds_returns_none_for_missing_or_malformed_bounds(bad: str) -> None:
     assert capture._avatar_bounds(bad) is None
 
 

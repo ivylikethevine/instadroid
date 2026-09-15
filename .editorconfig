@@ -8,3 +8,8 @@ insert_final_newline = true
 trim_trailing_whitespace = true
 indent_style = space
 indent_size = 2
+
+[*.sh]
+# shfmt reads these: two-space indents, indented case branches, binary operators may start a line.
+switch_case_indent = true
+binary_next_line = true

@@ -6,8 +6,25 @@ from pathlib import Path
 
 from fileenv import env_secret
 
+
+def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
+    """The environment variable `name`, trimmed and lowercased, when it's one of `allowed`; otherwise
+    `default`, with a warning for a value that isn't."""
+    value = os.environ.get(name, default).strip().lower()
+    if value not in allowed:
+        print(f"WARN: unknown {name} {value!r}; falling back to {default}", flush=True)
+        return default
+    return value
+
+
 ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5555")  # redroid's forwarded ADB port
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
+# Manual control files (instadroid/control.py): manual.lock holds scheduled runs back, scrape-now cuts
+# the wait short. Defaults to the database directory, which the feed server and the host share.
+CONTROL_DIR = os.environ.get("CONTROL_DIR", "") or str(Path(DB_PATH).parent)
+LOCK_MAX_HOURS = float(os.environ.get("LOCK_MAX_HOURS", "6"))  # an older lock counts as forgotten; 0 = never
+RUN_NOW_MIN_MINUTES = float(os.environ.get("RUN_NOW_MIN_MINUTES", "30"))  # rate limit for scrape-now
+CONTROL_POLL_SECONDS = 30.0  # how often a sleeping or locked loop checks the control files
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", "/debug"))
 POLL_MIN_H = float(os.environ.get("POLL_MIN_HOURS", "2.5"))
@@ -17,10 +34,7 @@ POLL_MAX_H = float(os.environ.get("POLL_MAX_HOURS", "4.5"))
 # instead and skip the switcher navigation entirely — e.g. pair with FOLLOWING_REFRESH_DAYS's
 # allowlist to filter Home's suggested content rather than fighting the switcher for it. Any other
 # value falls back to "chrono" (logged once at import).
-FEED_MODE = os.environ.get("FEED_MODE", "chrono").strip().lower()
-if FEED_MODE not in ("chrono", "home"):
-    print(f"WARN: unknown FEED_MODE {FEED_MODE!r}; falling back to chrono", flush=True)
-    FEED_MODE = "chrono"
+FEED_MODE = _choice("FEED_MODE", "chrono", ("chrono", "home"))
 MAX_SCROLLS = int(os.environ.get("MAX_SCROLLS", "25"))
 STOP_AFTER_SEEN = int(os.environ.get("STOP_AFTER_SEEN", "4"))
 RETAIN_DAYS = int(os.environ.get("RETAIN_DAYS", "60"))  # 0 disables deletion
@@ -35,10 +49,7 @@ MEDIA_QUALITY = int(os.environ.get("MEDIA_QUALITY", "95"))  # encoder quality fo
 # smaller than JPEG at quality 95 and ~56% smaller at 90, re-encoding real crops (2026-09-14). Files
 # already written keep their extension and stay valid after a switch, since the database stores each
 # file name. An unrecognized value falls back to webp.
-MEDIA_FORMAT = os.environ.get("MEDIA_FORMAT", "webp").strip().lower()
-if MEDIA_FORMAT not in ("webp", "jpeg"):
-    print(f"WARN: unknown MEDIA_FORMAT {MEDIA_FORMAT!r}; falling back to webp", flush=True)
-    MEDIA_FORMAT = "webp"
+MEDIA_FORMAT = _choice("MEDIA_FORMAT", "webp", ("webp", "jpeg"))
 MEDIA_EXTS = (".jpg", ".webp")  # every extension this scraper has ever written
 # Either can come from a file instead (IG_USERNAME_FILE / IG_PASSWORD_FILE, e.g. a Docker secret).
 IG_USERNAME = env_secret("IG_USERNAME")
@@ -50,12 +61,12 @@ IG_PKG = "com.instagram.android"
 # CLAUDE.md, where Instagram's package registration was orphaned but the app itself wasn't touched.
 # 0/false/empty falls back to the original behavior: raise and require a manual `adb install`.
 IG_AUTO_INSTALL = os.environ.get("IG_AUTO_INSTALL", "1").strip().lower() not in ("0", "false", "")
-# Which Instagram version profile to run: a directory under igprofiles/ ("v445", or just "445").
-# Everything version-specific (selectors, the APK build to install, behavior overrides) lives there.
-# Empty = igprofiles.DEFAULT_PROFILE. See docs/NEXT.md.
+# Force one Instagram version profile: a directory under igprofiles/ ("v424", or just "424"). Empty (the
+# default) = the highest profile at or below the installed Instagram version, chosen on every connect.
+# Profiles exist only where Instagram changed something. See docs/NEXT.md.
 IG_PROFILE = os.environ.get("IG_PROFILE", "").strip()
-# Override the Instagram build auto-install and `scraper.py install` fetch. Empty = the active
-# profile's own apk_version; "latest" = whatever apkeep resolves as latest on APKPure.
+# Override the Instagram build auto-install and `scraper.py install` fetch. Empty = igprofiles.DEFAULT_BUILD
+# (see igprofiles.default_build()); "latest" = the newest on APKPure.
 IG_APK_VERSION = os.environ.get("IG_APK_VERSION", "").strip()
 APK_CACHE_DIR = Path(os.environ.get("APK_CACHE_DIR", "/apk"))
 APK_FETCH_TIMEOUT = float(os.environ.get("APK_FETCH_TIMEOUT", "300"))  # apkeep's own download
@@ -71,6 +82,11 @@ _DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png", ".txt")
 LOGCAT_TAIL_LINES = int(os.environ.get("LOGCAT_TAIL_LINES", "2000"))
 LOGCAT_TIMEOUT = 30.0  # seconds for `adb logcat -d`
 PERMALINK_RETRIES = int(os.environ.get("PERMALINK_RETRIES", "2"))  # extra share-sheet passes after the first
+# Backfill: when a post stored under a hash id (no permalink) is back on screen, try Copy link again, at
+# most PERMALINK_BACKFILL_PER_RUN times a run (each is a share-sheet round trip; 0 disables) and
+# PERMALINK_BACKFILL_TRIES times per post across runs (posts.permalink_attempts).
+PERMALINK_BACKFILL_PER_RUN = int(os.environ.get("PERMALINK_BACKFILL_PER_RUN", "3"))
+PERMALINK_BACKFILL_TRIES = int(os.environ.get("PERMALINK_BACKFILL_TRIES", "3"))
 SHARE_TAP_TRIES = int(os.environ.get("SHARE_TAP_TRIES", "2"))  # taps on the share button before giving up
 CAPTION_EXPAND_TRIES = int(
     os.environ.get("CAPTION_EXPAND_TRIES", "2")
@@ -80,6 +96,13 @@ MAX_CAROUSEL_SLIDES = int(os.environ.get("MAX_CAROUSEL_SLIDES", "10"))
 VIDEO_SETTLE_SECONDS = float(os.environ.get("VIDEO_SETTLE_SECONDS", "1.5"))  # let autoplay/overlay settle
 AVATAR_REFRESH_DAYS = int(os.environ.get("AVATAR_REFRESH_DAYS", "14"))
 MEDIA_MAX_MB = float(os.environ.get("MEDIA_MAX_MB", "0"))  # 0 disables the size-based retention cap
+# Database backups (instadroid/backup.py): at the end of a run, when the newest backup in BACKUP_DIR is
+# at least BACKUP_EVERY_HOURS old, keeping the newest BACKUP_KEEP. 0 hours disables the automatic ones.
+# The default directory sits next to the database, which guards against corruption and bad
+# migrations, not disk loss: point it at another mount for that.
+BACKUP_DIR = os.environ.get("BACKUP_DIR", "/db/backups")
+BACKUP_EVERY_HOURS = float(os.environ.get("BACKUP_EVERY_HOURS", "24"))
+BACKUP_KEEP = int(os.environ.get("BACKUP_KEEP", "7"))
 MAX_STORIES_PER_RUN = int(os.environ.get("MAX_STORIES_PER_RUN", "10"))
 TIME_DISTRIBUTION = os.environ.get("TIME_DISTRIBUTION", "uniform")  # uniform | lognormal | daynight
 # "Local" time for the daynight distribution below — deliberately not applied anywhere by default
@@ -136,4 +159,13 @@ SELECTOR_DRIFT_THRESHOLD = float(os.environ.get("SELECTOR_DRIFT_THRESHOLD", "0.5
 # against the host's RAM, see CLAUDE.md), so the scraper has to back off itself: on 2026-09-14 a run
 # at the old 2g limit OOM-killed Android processes and froze the host. 0 disables.
 MEMORY_GUARD_PERCENT = float(os.environ.get("MEMORY_GUARD_PERCENT", "85"))
+# Failure alerts (instadroid/alerts.py). ALERT_URL receives a POST per alert raised or resolved (an ntfy
+# topic URL works as is); it can carry a token, so ALERT_URL_FILE works too. Empty = no push, but open
+# alerts still appear in /instagram.xml and on /status. An alert is raised for a login challenge, for
+# ALERT_FAILED_RUNS failed runs in a row (0 disables), and for no new post in ALERT_NO_POSTS_HOURS
+# (0, the default, disables: a quiet feed isn't necessarily a broken one).
+ALERT_URL = env_secret("ALERT_URL")
+ALERT_FAILED_RUNS = int(os.environ.get("ALERT_FAILED_RUNS", "3"))
+ALERT_NO_POSTS_HOURS = float(os.environ.get("ALERT_NO_POSTS_HOURS", "0"))
+ALERT_TIMEOUT = float(os.environ.get("ALERT_TIMEOUT", "10.0"))
 FRESHRSS_REFRESH_TIMEOUT = float(os.environ.get("FRESHRSS_REFRESH_TIMEOUT", "10.0"))

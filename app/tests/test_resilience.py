@@ -1,11 +1,14 @@
 import sqlite3
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import adbutils
 import pytest
 from instadroid import config, db, device, diagnostics, navigation, scrape, stories
+from instadroid.uidevice import Device
 from uiautomator2.exceptions import HTTPError, LaunchUiAutomationError, UiObjectNotFoundError
+
+from tests.fakedevice import FakeDevice
 
 # A feed list with nothing identifiable in it: parse_hierarchy() returns [] for this.
 EMPTY_XML = '<hierarchy><node resource-id="android:id/list" bounds="[0,0][1080,2340]" /></hierarchy>'
@@ -19,42 +22,55 @@ def con(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
     return db.db_init()
 
 
-class EmptyFeedDevice:
-    clipboard = ""
+class EmptyFeedDevice(FakeDevice):
+    """Every dump is the empty feed list, however the scraper navigates."""
 
     def __init__(self) -> None:
+        super().__init__({"feed": EMPTY_XML}, "feed")
         self.dumps = 0
-        self.pressed: list[str] = []
 
     def dump_hierarchy(self) -> str:
         self.dumps += 1
         return EMPTY_XML
 
-    def press(self, key: str) -> None:
-        self.pressed.append(key)
+
+@dataclass
+class OfflineCalls:
+    open_feed: int = 0
+    dumps: list[str] = field(default_factory=list[str])
+    scrolls: int = 0
 
 
 @pytest.fixture
-def offline_scrape(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+def offline_scrape(monkeypatch: pytest.MonkeyPatch) -> OfflineCalls:
     """Stub out everything in scrape_once() that navigates, so only the scroll loop runs."""
-    calls: dict[str, Any] = {"open_feed": 0, "dumps": [], "scrolls": 0}
+    calls = OfflineCalls()
 
-    def open_feed(d: EmptyFeedDevice) -> None:
-        calls["open_feed"] += 1
+    def open_feed(d: Device) -> None:
+        calls.open_feed += 1
 
-    def scroll(d: EmptyFeedDevice) -> None:
-        calls["scrolls"] += 1
+    def scrape_stories(d: Device, con: sqlite3.Connection) -> int:
+        return 0
+
+    def scroll(d: Device) -> None:
+        calls.scrolls += 1
+
+    def human_pause(lo: float = 1.0, hi: float = 3.0) -> None:
+        pass
+
+    def dump_debug(d: Device, name: str, xml: str | None = None) -> None:
+        calls.dumps.append(name)
 
     monkeypatch.setattr(navigation, "open_following_feed", open_feed)
-    monkeypatch.setattr(stories, "scrape_stories", lambda d, con: 0)
+    monkeypatch.setattr(stories, "scrape_stories", scrape_stories)
     monkeypatch.setattr(device, "human_scroll", scroll)
-    monkeypatch.setattr(device, "human_pause", lambda *a, **k: None)
-    monkeypatch.setattr(diagnostics, "dump_debug", lambda d, name, xml=None: calls["dumps"].append(name))
+    monkeypatch.setattr(device, "human_pause", human_pause)
+    monkeypatch.setattr(diagnostics, "dump_debug", dump_debug)
     return calls
 
 
 def test_empty_screens_reopen_the_feed_once_then_stop_the_run(
-    con: sqlite3.Connection, offline_scrape: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, offline_scrape: OfflineCalls, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "MAX_SCROLLS", 25)
     monkeypatch.setattr(config, "EMPTY_SCREEN_LIMIT", 3)
@@ -63,15 +79,17 @@ def test_empty_screens_reopen_the_feed_once_then_stop_the_run(
     stats = scrape.scrape_once(d, con)
 
     assert d.dumps == 6  # 3 empty screens, reopen, 3 more, stop — not all 25
-    assert offline_scrape["open_feed"] == 2  # the initial open plus exactly one reopen
-    assert offline_scrape["dumps"] == ["last", "empty_feed0", "empty_feed1"]
-    assert "reopened the feed" in stats["warning"]
-    assert "stopped early" in stats["warning"]
-    assert d.pressed[-1] == "home"  # still leaves the app in a natural state
+    assert offline_scrape.open_feed == 2  # the initial open plus exactly one reopen
+    assert offline_scrape.dumps == ["last", "empty_feed0", "empty_feed1"]
+    warning = stats["warning"]
+    assert warning is not None
+    assert "reopened the feed" in warning
+    assert "stopped early" in warning
+    assert d.presses[-1] == "home"  # still leaves the app in a natural state
 
 
 def test_empty_screen_guard_can_be_disabled(
-    con: sqlite3.Connection, offline_scrape: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, offline_scrape: OfflineCalls, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "MAX_SCROLLS", 5)
     monkeypatch.setattr(config, "EMPTY_SCREEN_LIMIT", 0)
@@ -80,12 +98,12 @@ def test_empty_screen_guard_can_be_disabled(
     stats = scrape.scrape_once(d, con)
 
     assert d.dumps == 5
-    assert offline_scrape["open_feed"] == 1
+    assert offline_scrape.open_feed == 1
     assert stats["warning"] is None
 
 
 def test_scrape_stats_report_cards_per_screen_and_shares(
-    con: sqlite3.Connection, offline_scrape: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, offline_scrape: OfflineCalls, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "MAX_SCROLLS", 3)
     monkeypatch.setattr(config, "EMPTY_SCREEN_LIMIT", 0)
@@ -99,7 +117,7 @@ def test_scrape_stats_report_cards_per_screen_and_shares(
 
 
 def test_scrape_once_flags_selector_drift_against_seeded_baseline(
-    con: sqlite3.Connection, offline_scrape: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, offline_scrape: OfflineCalls, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "MAX_SCROLLS", 3)
     monkeypatch.setattr(config, "EMPTY_SCREEN_LIMIT", 0)
@@ -119,7 +137,8 @@ def test_scrape_once_flags_selector_drift_against_seeded_baseline(
 
     stats = scrape.scrape_once(d, con)
 
-    assert "selector drift?" in stats["warning"]
+    warning = stats["warning"]
+    assert warning is not None and "selector drift?" in warning
 
 
 def test_record_run_stores_a_warning(con: sqlite3.Connection) -> None:

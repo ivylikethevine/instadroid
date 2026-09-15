@@ -14,9 +14,10 @@ Used by scripts/new_profile.py (`check`) and tests/test_replay.py; never touches
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
 
 from lxml import etree
+
+from .base import Selectors, SelectorValue
 
 
 @dataclass(frozen=True)
@@ -28,8 +29,10 @@ class Screen:
 
 SCREENS: dict[str, Screen] = {
     "feed": Screen(
-        required=("feed_list_id", "header_id", "header_desc", "share_id", "media_ids", "timestamp"),
+        required=("feed_list_id", "header_id", "header_desc", "share_id", "media_ids"),
+        # timestamp sits under the caption, off screen whenever a tall Reel fills it (seen live on 444).
         optional=(
+            "timestamp",
             "action_bar_id",
             "caption_class",
             "media_alt",
@@ -107,11 +110,16 @@ def screen_of_dump(name: str) -> str | None:
     return next((screen for pattern, screen in _DUMP_SCREENS if pattern.match(name)), None)
 
 
+def screen_of_fixture(name: str) -> str:
+    """The screen a fixture shows, from its name: "feed_444" -> "feed", "home_feed" -> "home_feed"."""
+    return re.sub(r"_\d{3}$", "", name)
+
+
 def _strings(nodes: list[etree._Element]) -> list[str]:
     return [v for n in nodes for v in (n.get("text"), n.get("content-desc")) if v]
 
 
-def key_matches(key: str, value: Any, nodes: list[etree._Element]) -> bool | None:
+def key_matches(key: str, value: SelectorValue, nodes: list[etree._Element]) -> bool | None:
     """Whether selector `key` finds anything among `nodes`, using the same kind of comparison the
     scraper does: resource-id suffix for *_id(s), class name for caption_class, exact text or
     content-desc for strings and lists of strings, a regex match on text/content-desc for patterns.
@@ -160,7 +168,7 @@ class ScreenCheck:
         return not self.missing_required and not self.looks_empty
 
 
-def check_screen(xml: str, screen: str | None, selectors: dict[str, Any]) -> ScreenCheck:
+def check_screen(xml: str, screen: str | None, selectors: Selectors) -> ScreenCheck:
     """Match every selector key against one dump, and sort the expected ones for `screen` (None: no
     expectations, e.g. a manual dump) into matched and missing."""
     nodes = list(etree.fromstring(xml.encode()).iter("node"))

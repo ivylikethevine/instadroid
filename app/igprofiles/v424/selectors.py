@@ -1,16 +1,18 @@
-"""Selectors for Instagram 445.x.
+"""Selectors for Instagram 424 onward (the root profile).
 
-Moved verbatim from scraper.py's original SELECTORS dict (validated live on 445.0.0.45.83), plus the
-few UI strings that used to be hardcoded inline in scraper.py. To support another Instagram version,
-don't edit these: give that version its own igprofiles/vXYZ/selectors.py (see docs/NEXT.md).
+Moved verbatim from scraper.py's original SELECTORS dict (written against 445.0.0.45.83), plus the few
+UI strings that used to be hardcoded inline in scraper.py. When a later Instagram changes one, don't
+edit it here: fork a profile for that version (scripts/new_profile.py fork) and override the key there.
 """
 
 import re
 
-SELECTORS = {
+from igprofiles.base import Selectors
+
+SELECTORS: Selectors = {
     # Every feed card has a header ViewGroup whose content-desc reads e.g.
-    #   "nykkyhex posted a video in Rich's San Diego 21 hours ago"
-    #   "clubsabbat posted a carousel in San Diego, California 3 days ago"
+    #   "some.artist posted a video in Rich's Diner 21 hours ago"
+    #   "some_club posted a carousel in Anytown, Somewhere 3 days ago"
     #   "someone posted a photo August 29"
     "header_id": "row_feed_profile_header",
     "header_desc": re.compile(
@@ -24,7 +26,7 @@ SELECTORS = {
         "row_feed_photo_imageview",
         "zoomable_view_container",
     ),
-    # Content-desc on the media itself ("Reel by Nykky Hex, Liked by ..., August 29" / "Photo 1 of 7 by ...").
+    # Content-desc on the media itself ("Reel by Some Artist, Liked by ..., August 29" / "Photo 1 of 7 by ...").
     "media_alt": re.compile(r"^(Photo|Video|Reel|Image|Carousel)\b", re.I),
     # Caption widget ("<user> text… more"), share button, and the share sheet's Copy link entry.
     "caption_class": "com.instagram.ui.widget.textview.IgTextLayoutView",

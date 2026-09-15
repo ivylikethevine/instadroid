@@ -1,7 +1,7 @@
 """Turn a real hierarchy dump into a replay fixture for a version profile.
 
-    python scripts/promote_dump.py local/data/debug/last_hierarchy.xml v446 home_feed
-    python scripts/promote_dump.py --update v445        # re-record every v445 fixture's expectations
+    python scripts/promote_dump.py local/data/debug/last_hierarchy.xml v424 home_feed_446
+    python scripts/promote_dump.py --update v424        # re-record every v424 fixture's expectations
 
 Writes app/igprofiles/<profile>/fixtures/<name>.xml, with the accounts, display names, places and
 captions it can identify replaced by placeholders, and <name>.expected.json, what the parsers find
@@ -20,13 +20,14 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "app"))
 
 import igprofiles  # noqa: E402
+import jsonvalues  # noqa: E402
 from instadroid import parsing, versioning  # noqa: E402
+from jsonvalues import JSON  # noqa: E402
 from lxml import etree  # noqa: E402
 
 # UI chrome that is the same for everyone; left out of the review list.
@@ -36,8 +37,13 @@ _CHROME = re.compile(
 )
 
 
-def expected(xml: str) -> dict[str, Any]:
-    return json.loads(json.dumps(parsing.parse_screen(xml)))  # plain JSON types, as stored
+def load_json(text: str) -> JSON:
+    """json.loads, typed: e.g. a recorded .expected.json. Raises ValueError if it isn't JSON."""
+    return jsonvalues.loads(text)
+
+
+def expected(xml: str) -> JSON:
+    return load_json(json.dumps(parsing.parse_screen(xml)))  # plain JSON types, as stored
 
 
 def pseudonymize(xml: str) -> str:
@@ -60,15 +66,44 @@ def pseudonymize(xml: str) -> str:
     for username in found["following_list"]:
         alias(username, "user")
     root = etree.fromstring(xml.encode())
-    for n in root.iter("node"):  # "Liked by <someone> and others" names accounts no parser returns
+    selectors = versioning.PROFILE.selectors
+    for n in root.iter("node"):  # names on screen that no parser returns
         for attr in ("text", "content-desc"):
-            for handle in re.findall(r"\b(?:Liked by|by|@)\s?([\w.]{3,30})\b", n.get(attr) or ""):
+            value = n.get(attr) or ""
+            # A card header the post parser skipped (a suggested post, a card cut off at the edge).
+            if m := selectors["header_desc"].match(value):
+                alias(m["user"], "user")
+                alias(m["place"] or "", "Place ")
+            # Every story tray item, including the logged-in account's own (index 0, never parsed).
+            if m := selectors["story_item_desc"].match(value):
+                alias(m["user"], "user")
+            # "Liked by <someone>", "by <someone>", an @mention, "<someone> and 3 others",
+            # "Profile picture of <someone>", "<someone>'s story".
+            handles = [h[1] for h in re.finditer(r"(?:\b(?:Liked by|by|of)\s|@)([\w.]{3,30})\b", value)]
+            handles += [h[1] for h in re.finditer(r"^([\w.]{3,30})(?: and \d+ others?$|'s story\b)", value)]
+            # A collab post's two authors; both lowercase-initial, so "Search and explore" stays.
+            if (m := re.match(r"^([\w.]{3,30}) and ([\w.]{3,30})$", value)) and not (
+                m.group(1)[0].isupper() or m.group(2)[0].isupper()
+            ):
+                handles += [m.group(1), m.group(2)]
+            for handle in handles:
                 if handle not in ("others", "you") and not handle[0].isupper():
                     alias(handle, "user")
+            # A Reel's audio credit, "<artist> · <track>" (or "<account> · Original audio").
+            if m := re.match(r"^\s*(.+?) · (.+?)\s*$", value):
+                alias(m.group(1), "Artist ")
+                if m.group(2) != "Original audio":
+                    alias(m.group(2), "Track ")
+            # A media description on a card no parser returned: "Reel by <display name>, 82 likes, ...".
+            if m := re.match(r"^(?:Photo|Video|Reel|Carousel)(?: \d+ of \d+)? by ([^,]+),", value):
+                alias(m.group(1), "Display ")
+            # "Follow <display name>" on a suggested account.
+            if (m := re.match(r"^Follow (.+)$", value)) and m.group(1) not in ("back", "Back"):
+                alias(m.group(1), "Display ")
     ordered = sorted(names, key=len, reverse=True)  # "ab_c" before "ab"
     pattern = re.compile("|".join(rf"(?<![\w.]){re.escape(v)}(?![\w])" for v in ordered)) if ordered else None
     for n in root.iter("node"):
-        for attr in ("text", "content-desc"):
+        for attr in ("text", "content-desc", "hint"):
             if pattern and (value := n.get(attr)):
                 n.set(attr, pattern.sub(lambda m: names[m.group(0)], value))
     return etree.tostring(root, encoding="unicode", xml_declaration=False)
@@ -76,26 +111,29 @@ def pseudonymize(xml: str) -> str:
 
 def leftover_text(xml: str) -> list[str]:
     root = etree.fromstring(xml.encode())
-    values = {n.get(a) or "" for n in root.iter("node") for a in ("text", "content-desc")}
+    values = {n.get(a) or "" for n in root.iter("node") for a in ("text", "content-desc", "hint")}
     return sorted(v for v in values if v and not _CHROME.match(v))
 
 
-def shape(found: parsing.ScreenParse) -> list[Any]:
+type Shape = tuple[list[tuple[str, bool, bool, bool, bool]], list[bool], int]
+
+
+def shape(found: parsing.ScreenParse) -> Shape:
     """What must survive pseudonymizing: card count and structure, not the text."""
-    return [
+    return (
         [
             (p["kind"], p["complete"], p["headless"], bool(p["caption"]), bool(p["bounds"]))
             for p in found["posts"]
         ],
         [i["seen"] for i in found["story_tray"]],
         len(found["following_list"]),
-    ]
+    )
 
 
 @dataclass
 class Promoted:
     xml_path: Path
-    result: dict[str, Any]
+    result: parsing.ScreenParse
     leftovers: list[str]
 
 
@@ -110,7 +148,8 @@ def promote(dump: Path, profile_name: str, name: str) -> Promoted:
     xml_path = igprofiles.fixture(profile_name, f"{name}.xml")
     xml_path.parent.mkdir(exist_ok=True)
     xml_path.write_text("<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n" + clean + "\n")
-    result = expected(clean)
+    result = parsing.parse_screen(clean)
+    # The same text as dumping expected(clean): the JSON round trip changes no value json.dumps writes.
     xml_path.with_suffix(".expected.json").write_text(json.dumps(result, indent=1, ensure_ascii=False) + "\n")
     return Promoted(xml_path, result, leftover_text(clean))
 
@@ -118,7 +157,7 @@ def promote(dump: Path, profile_name: str, name: str) -> Promoted:
 def rerecord(profile_name: str) -> list[Path]:
     """Re-record every fixture's .expected.json under `profile_name`'s current selectors."""
     versioning.PROFILE = igprofiles.load(profile_name)
-    written = []
+    written: list[Path] = []
     for xml_path in sorted(igprofiles.fixture(profile_name, "").glob("*.xml")):
         out = xml_path.with_suffix(".expected.json")
         out.write_text(json.dumps(expected(xml_path.read_text()), indent=1, ensure_ascii=False) + "\n")
@@ -138,11 +177,16 @@ def print_promoted(promoted: Promoted) -> None:
         print("  ", value)
 
 
+class Options(argparse.Namespace):
+    update: bool
+    args: list[str]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--update", action="store_true", help="re-record expectations for existing fixtures")
     ap.add_argument("args", nargs="+", help="DUMP PROFILE NAME, or with --update just PROFILE")
-    opts = ap.parse_args()
+    opts = ap.parse_args(namespace=Options())
     if opts.update:
         (profile_name,) = opts.args
         for out in rerecord(profile_name):
