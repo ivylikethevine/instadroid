@@ -9,13 +9,15 @@ challenge that nobody answers for a day notifies once, not every retry.
 Announcements are a plain HTTP POST to ALERT_URL: the message as the body, and ntfy's Title, Tags
 and Priority headers, so an ntfy topic URL (https://ntfy.sh/<topic>, or self-hosted) works as is and
 any other webhook still gets the text. With no ALERT_URL, open alerts still show up where someone
-already looks: an entry at the top of /instagram.xml and a line on /status (app.py reads the table).
+already looks: an entry at the top of /instagram.xml and a line on /status (feedserver reads the table).
 """
 
 import sqlite3
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
+
+from shared import sqlrows
 
 from . import common, config
 from .common import log
@@ -37,8 +39,8 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
     found: dict[str, str] = {}
     window = max(config.ALERT_FAILED_RUNS, 1)
     runs = [
-        common.cell_str(r, 0)
-        for r in common.fetch_all(con.execute("SELECT error FROM runs ORDER BY id DESC LIMIT ?", (window,)))
+        sqlrows.cell_str(r, 0)
+        for r in sqlrows.fetch_all(con.execute("SELECT error FROM runs ORDER BY id DESC LIMIT ?", (window,)))
     ]
     latest_error = runs[0] if runs else None
     if latest_error and any(marker in latest_error for marker in _NEEDS_HUMAN):
@@ -49,8 +51,8 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
         )
     if config.ALERT_NO_POSTS_HOURS > 0:
         cutoff = now - timedelta(hours=config.ALERT_NO_POSTS_HOURS)
-        first_run = common.parse_iso(common.scalar(con.execute("SELECT MIN(started_at) FROM runs")))
-        newest_post = common.parse_iso(common.scalar(con.execute("SELECT MAX(scraped_at) FROM posts")))
+        first_run = common.parse_iso(sqlrows.scalar(con.execute("SELECT MIN(started_at) FROM runs")))
+        newest_post = common.parse_iso(sqlrows.scalar(con.execute("SELECT MAX(scraped_at) FROM posts")))
         # Only once the scraper has been running for the whole window, so a fresh install is quiet.
         if first_run and first_run < cutoff and (newest_post is None or newest_post < cutoff):
             found[NO_POSTS] = f"no new post stored in {config.ALERT_NO_POSTS_HOURS:g}h"
@@ -91,8 +93,8 @@ def update(con: sqlite3.Connection, now: datetime | None = None) -> list[str]:
     now = now or datetime.now(UTC)
     current = conditions(con, now)
     open_alerts = {
-        common.must_str(r, "kind"): common.must_str(r, "message")
-        for r in common.fetch_all(con.execute("SELECT kind, message FROM alerts"))
+        sqlrows.must_str(r, "kind"): sqlrows.must_str(r, "message")
+        for r in sqlrows.fetch_all(con.execute("SELECT kind, message FROM alerts"))
     }
     errors: list[str | None] = []
     for kind, message in current.items():

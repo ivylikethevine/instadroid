@@ -43,7 +43,7 @@ jobs:
         env:
           IMAGE: ${{ steps.image.outputs.image }}
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: ./scripts/smoke-test.sh "$IMAGE@$DIGEST"
+        run: ./scripts/ci/smoke-test.sh "$IMAGE@$DIGEST"
 
   publish:
     name: Approve & tag release image

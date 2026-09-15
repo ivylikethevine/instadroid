@@ -216,7 +216,7 @@ def first(d: uidevice.Device, **kinds: Iterable[str]) -> uidevice.Selector | Non
 # is core, the rest may be needed again after a /data reset or a real permission/keychain prompt),
 # but that this container's lmkd never reclaims on its own — it judges free memory against the
 # host, not the container's mem_limit, so a once-launched cached app just sits there for the rest
-# of the container's life (see CLAUDE.md's "Reducing idle memory"). Force-stopped here instead:
+# of the container's life (see docs/INCIDENTS.md, "Reducing idle memory"). Force-stopped here instead:
 # unlike pm disable-user, this only kills the current process, so whatever needs one again just
 # relaunches it — no risk of the packageinstaller-style "required singleton" crash from disabling.
 CACHED_APP_SWEEP = (
@@ -315,5 +315,5 @@ def free_device_memory(d: uidevice.Device) -> None:
     """Force-stop the cached system apps and Instagram itself, before a run (so it never starts on
     top of a still-resident Instagram, e.g. left open by `scraper.py login`) and after it. Instagram
     plus its :fbns process measured ~820MiB resident and lmkd never reclaims it here; the next run
-    cold-launches it anyway, and the login session lives in /data (see CLAUDE.md)."""
+    cold-launches it anyway, and the login session lives in /data (see docs/INCIDENTS.md)."""
     force_stop(d, *CACHED_APP_SWEEP, config.IG_PKG)

@@ -4,7 +4,7 @@
 # restarts a clean pair instead of leaving one half running alone.
 set -euo pipefail
 
-uvicorn app:app --host "${FEED_HOST:-127.0.0.1}" --port "${FEED_PORT:-8000}" &
+uvicorn feedserver:app --host "${FEED_HOST:-127.0.0.1}" --port "${FEED_PORT:-8000}" &
 feed_pid=$!
 python -u scraper.py &
 scraper_pid=$!

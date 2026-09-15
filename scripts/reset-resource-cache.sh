@@ -3,7 +3,7 @@
 # earlier boot (symptom: system_server logs "Version mismatch in Idmap", idmap2d gets repeatedly
 # killed and restarted, boot takes minutes instead of ~35s and sys.boot_completed never gets set).
 # /data/resource-cache is a pure build cache for overlay idmaps: idmap2d regenerates it from the
-# overlay APKs on next boot, so clearing it loses no app/login state. See CLAUDE.md's "appops.xml
+# overlay APKs on next boot, so clearing it loses no app/login state. See docs/INCIDENTS.md's "appops.xml
 # corruption" section for the same class of bug in a different cache file.
 #
 # Stops the compose stack (editing this live while idmap2d is writing to it would just recreate

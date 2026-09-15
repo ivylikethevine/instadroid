@@ -173,6 +173,25 @@
         }
       }
     },
+    "/status": {
+      "get": {
+        "summary": "Status page",
+        "description": "A plain-HTML page of recent runs, the device, and per-account totals.",
+        "operationId": "status_page_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/control": {
       "get": {
         "summary": "Manual control state",
@@ -248,25 +267,6 @@
           },
           "429": {
             "description": "Too soon."
-          }
-        }
-      }
-    },
-    "/status": {
-      "get": {
-        "summary": "Status page",
-        "description": "A plain-HTML page of recent runs, the device, and per-account totals.",
-        "operationId": "status_page_status_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
           }
         }
       }

@@ -42,12 +42,12 @@ done
 # stops them from ever launching, cutting ~145MiB / ~14% off idle container memory (docker stats:
 # 1018MiB -> 873MiB). Left alone on purpose: com.android.settings (core app, large but too risky to
 # disable), com.android.provision / com.android.managedprovisioning (setup-wizard flows this repo's
-# troubleshooting sometimes has to re-run after a `/data/system` reset — see CLAUDE.md), and anything
+# troubleshooting sometimes has to re-run after a `/data/system` reset — see docs/INCIDENTS.md), and anything
 # telephony/Bluetooth/secure-element-related (com.android.phone, com.android.se, rild, bluetooth*) —
 # this repo has hit real crash loops in that area before and it's not where the memory is anyway.
 # DO NOT add com.android.packageinstaller: PackageManagerService requires exactly one enabled
 # "installer" app system-wide and hard-crashes system_server at boot without it ("There must be
-# exactly one installer; found []") — see CLAUDE.md, this took down a whole boot.
+# exactly one installer; found []") — see docs/INCIDENTS.md, this took down a whole boot.
 for p in com.android.documentsui com.android.printspooler com.android.bips \
   com.android.printservice.recommendation com.android.gallery3d com.android.camera2 \
   com.android.cameraextensions com.android.deskclock com.android.calendar \

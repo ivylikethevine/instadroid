@@ -2,7 +2,7 @@
 
 Moved verbatim from scraper.py's original SELECTORS dict (written against 445.0.0.45.83), plus the few
 UI strings that used to be hardcoded inline in scraper.py. When a later Instagram changes one, don't
-edit it here: fork a profile for that version (scripts/new_profile.py fork) and override the key there.
+edit it here: fork a profile for that version (devtools/new_profile.py fork) and override the key there.
 """
 
 import re

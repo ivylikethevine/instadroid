@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ReadOnly, TypedDict, Unpack
 
+from shared import sqlrows
+
 from . import common, config, device, parsing, retention
 from .common import log
 
@@ -85,15 +87,15 @@ class VersionPair(TypedDict):
 
 def stored_post(row: sqlite3.Row) -> StoredPost:
     """A posts row read with `SELECT *`."""
-    text = common.cell_str
+    text = sqlrows.cell_str
     return {
-        "id": common.must_str(row, "id"),
-        "username": common.must_str(row, "username"),
+        "id": sqlrows.must_str(row, "id"),
+        "username": sqlrows.must_str(row, "username"),
         "kind": text(row, "kind"),
         "posted_date": text(row, "posted_date"),
         "caption": text(row, "caption"),
         "media_file": text(row, "media_file"),
-        "scraped_at": common.must_str(row, "scraped_at"),
+        "scraped_at": sqlrows.must_str(row, "scraped_at"),
         "hash": text(row, "hash"),
         "url": text(row, "url"),
         "place": text(row, "place"),
@@ -223,7 +225,7 @@ def _migrate(con: sqlite3.Connection) -> None:
     """Run each MIGRATIONS entry the database hasn't had yet, in order. PRAGMA user_version counts
     how many have run, and is bumped only after each one finishes, so a crash mid-migration retries
     it on the next start. Append new migrations; never reorder or remove one."""
-    done = common.scalar_int(con.execute("PRAGMA user_version")) or 0
+    done = sqlrows.scalar_int(con.execute("PRAGMA user_version")) or 0
     for version, migration in enumerate(MIGRATIONS[done:], start=done + 1):
         migration(con)
         con.execute(f"PRAGMA user_version = {version}")
@@ -232,7 +234,7 @@ def _migrate(con: sqlite3.Connection) -> None:
 
 def _add_columns(con: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
     """ALTER TABLE ADD COLUMN for each {name: type} the table doesn't have yet."""
-    existing = {common.cell(r, 1) for r in common.fetch_all(con.execute(f"PRAGMA table_info({table})"))}
+    existing = {sqlrows.cell(r, 1) for r in sqlrows.fetch_all(con.execute(f"PRAGMA table_info({table})"))}
     for col, kind in columns.items():
         if col not in existing:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
@@ -280,16 +282,16 @@ def version_pairs(con: sqlite3.Connection) -> list[VersionPair]:
     )
     return [
         {
-            "redroid_image": common.cell_str(r, "redroid_image"),
-            "ig_version": common.must_str(r, "ig_version"),
-            "selector_profile": common.cell_str(r, "selector_profile"),
-            "runs": common.must_int(r, "runs"),
-            "clean_runs": common.must_int(r, "clean_runs"),
-            "ok_runs": common.must_int(r, "ok_runs"),
-            "new_posts": common.must_int(r, "new_posts"),
-            "last_run": common.must_str(r, "last_run"),
+            "redroid_image": sqlrows.cell_str(r, "redroid_image"),
+            "ig_version": sqlrows.must_str(r, "ig_version"),
+            "selector_profile": sqlrows.cell_str(r, "selector_profile"),
+            "runs": sqlrows.must_int(r, "runs"),
+            "clean_runs": sqlrows.must_int(r, "clean_runs"),
+            "ok_runs": sqlrows.must_int(r, "ok_runs"),
+            "new_posts": sqlrows.must_int(r, "new_posts"),
+            "last_run": sqlrows.must_str(r, "last_run"),
         }
-        for r in common.fetch_all(cur)
+        for r in sqlrows.fetch_all(cur)
     ]
 
 
@@ -303,7 +305,7 @@ def check_selector_drift(
     it, so a fresh DB or a quiet account can't false-positive on its first few runs."""
     if not config.SELECTOR_DRIFT_BASELINE_RUNS:
         return None
-    rows = common.fetch_all(
+    rows = sqlrows.fetch_all(
         con.execute(
             "SELECT cards_per_screen, share_captioned, share_complete FROM runs"
             " WHERE error IS NULL AND cards_per_screen IS NOT NULL ORDER BY id DESC LIMIT ?",
@@ -316,7 +318,7 @@ def check_selector_drift(
         ("captioned", share_captioned, "share_captioned"),
         ("complete", share_complete, "share_complete"),
     ):
-        baseline_vals = [v for r in rows if (v := common.cell_float(r, key)) is not None]
+        baseline_vals = [v for r in rows if (v := sqlrows.cell_float(r, key)) is not None]
         if len(baseline_vals) < config.SELECTOR_DRIFT_MIN_RUNS:
             continue
         baseline = sum(baseline_vals) / len(baseline_vals)
@@ -339,11 +341,11 @@ def upsert_account(con: sqlite3.Connection, username: str, avatar_file: str | No
 
 
 def needs_avatar_refresh(con: sqlite3.Connection, username: str) -> bool:
-    row = common.fetch_one(
+    row = sqlrows.fetch_one(
         con.execute("SELECT avatar_updated_at FROM accounts WHERE username=?", (username,))
     )
     return common.older_than(
-        common.cell(row, "avatar_updated_at") if row else None, config.AVATAR_REFRESH_DAYS
+        sqlrows.cell(row, "avatar_updated_at") if row else None, config.AVATAR_REFRESH_DAYS
     )
 
 
@@ -352,7 +354,7 @@ def needs_following_refresh(con: sqlite3.Connection) -> bool:
     Following list is captured (and replaced) in one pass, so there's one "when was this last
     done" timestamp, not one per row. No rows at all means never successfully refreshed."""
     return common.older_than(
-        common.scalar(con.execute("SELECT MAX(updated_at) FROM following")), config.FOLLOWING_REFRESH_DAYS
+        sqlrows.scalar(con.execute("SELECT MAX(updated_at) FROM following")), config.FOLLOWING_REFRESH_DAYS
     )
 
 
@@ -366,13 +368,13 @@ def rename_account(con: sqlite3.Connection, old: str, new: str) -> int:
         return 0
     moved = con.execute("UPDATE posts SET username=? WHERE username=?", (new, old)).rowcount
     query = "SELECT account_id, avatar_file FROM accounts WHERE username=?"
-    old_row = common.fetch_one(con.execute(query, (old,)))
-    new_row = common.fetch_one(con.execute(query, (new,)))
-    old_avatar = common.cell_str(old_row, "avatar_file") if old_row else None
-    account_id = (common.cell_str(new_row, "account_id") if new_row else None) or (
-        common.cell_str(old_row, "account_id") if old_row else None
+    old_row = sqlrows.fetch_one(con.execute(query, (old,)))
+    new_row = sqlrows.fetch_one(con.execute(query, (new,)))
+    old_avatar = sqlrows.cell_str(old_row, "avatar_file") if old_row else None
+    account_id = (sqlrows.cell_str(new_row, "account_id") if new_row else None) or (
+        sqlrows.cell_str(old_row, "account_id") if old_row else None
     )
-    avatar_file = (common.cell_str(new_row, "avatar_file") if new_row else None) or old_avatar
+    avatar_file = (sqlrows.cell_str(new_row, "avatar_file") if new_row else None) or old_avatar
     dropped_avatar = old_avatar if old_row and old_avatar != avatar_file else None
     con.execute(
         "INSERT INTO accounts (username, account_id, avatar_file) VALUES (?,?,?)"
@@ -383,11 +385,13 @@ def rename_account(con: sqlite3.Connection, old: str, new: str) -> int:
     con.execute("DELETE FROM accounts WHERE username=?", (old,))
     # Keep the followed-accounts allowlist (if in use) in step with a rename too — otherwise every
     # post from `new` would be filtered out as "not followed" until the next scheduled refresh.
-    following_row = common.fetch_one(con.execute("SELECT updated_at FROM following WHERE username=?", (old,)))
+    following_row = sqlrows.fetch_one(
+        con.execute("SELECT updated_at FROM following WHERE username=?", (old,))
+    )
     if following_row:
         con.execute(
             "INSERT INTO following (username, updated_at) VALUES (?, ?) ON CONFLICT(username) DO NOTHING",
-            (new, common.cell(following_row, "updated_at")),
+            (new, sqlrows.cell(following_row, "updated_at")),
         )
         con.execute("DELETE FROM following WHERE username=?", (old,))
     con.commit()
@@ -397,7 +401,7 @@ def rename_account(con: sqlite3.Connection, old: str, new: str) -> int:
 
 
 def _safe_parse_posted_at(
-    posted_date: str | None, scraped_at_iso: common.SqlValue
+    posted_date: str | None, scraped_at_iso: sqlrows.SqlValue
 ) -> tuple[datetime | None, int | None]:
     """parsing.parse_posted_at(), tolerant of a malformed/legacy scraped_at that fromisoformat rejects.
     Returns (None, None) instead of raising, so one corrupt row can't abort the whole migration."""
@@ -411,24 +415,26 @@ def _migrate_dedupe(con: sqlite3.Connection) -> None:
     hadn't rendered on the first pass. Uses the same merge path as a live scrape. A single corrupt
     row is skipped rather than turned into a permanent boot loop."""
     log("running one-time dedupe migration")
-    for r in common.fetch_all(
+    for r in sqlrows.fetch_all(
         con.execute("SELECT id, posted_date, scraped_at FROM posts WHERE posted_at IS NULL")
     ):
-        posted_at, _ = _safe_parse_posted_at(common.cell_str(r, "posted_date"), common.cell(r, "scraped_at"))
+        posted_at, _ = _safe_parse_posted_at(
+            sqlrows.cell_str(r, "posted_date"), sqlrows.cell(r, "scraped_at")
+        )
         if posted_at:
             con.execute(
-                "UPDATE posts SET posted_at=? WHERE id=?", (posted_at.isoformat(), common.cell(r, "id"))
+                "UPDATE posts SET posted_at=? WHERE id=?", (posted_at.isoformat(), sqlrows.cell(r, "id"))
             )
     con.commit()
     merged = 0
-    for id_row in common.fetch_all(con.execute("SELECT id FROM posts ORDER BY scraped_at")):
-        rid = common.cell(id_row, 0)
-        r = common.fetch_one(con.execute("SELECT * FROM posts WHERE id=?", (rid,)))
+    for id_row in sqlrows.fetch_all(con.execute("SELECT id FROM posts ORDER BY scraped_at")):
+        rid = sqlrows.cell(id_row, 0)
+        r = sqlrows.fetch_one(con.execute("SELECT * FROM posts WHERE id=?", (rid,)))
         if r is None:
             continue  # already merged away as another row's duplicate
         try:
             post = stored_post(r)
-            posted_at, precision = _safe_parse_posted_at(post["posted_date"], common.cell(r, "scraped_at"))
+            posted_at, precision = _safe_parse_posted_at(post["posted_date"], sqlrows.cell(r, "scraped_at"))
             dup = find_duplicate(
                 con, post["username"], posted_at, precision, post["caption"], exclude_id=post["id"]
             )
@@ -438,7 +444,7 @@ def _migrate_dedupe(con: sqlite3.Connection) -> None:
             retention.discard_media(media_to_drop)
             if row["id"] != post["id"]:
                 con.execute("DELETE FROM posts WHERE id=?", (post["id"],))
-            write_merged(con, common.must_str(dup, "id"), row)
+            write_merged(con, sqlrows.must_str(dup, "id"), row)
             merged += 1
         except Exception as e:  # a single corrupt/unexpected row must not block every future start
             log(f"WARN: dedupe migration skipped row {rid!r}:", repr(e))
@@ -449,8 +455,8 @@ def _migrate_accounts(con: sqlite3.Connection) -> None:
     """Migration 2: give every username already in posts an accounts row, so avatar capture and
     rename_account() have something to attach to for accounts seen before that table existed."""
     log("running one-time accounts backfill")
-    for username_row in common.fetch_all(con.execute("SELECT DISTINCT username FROM posts")):
-        username = common.cell(username_row, 0)
+    for username_row in sqlrows.fetch_all(con.execute("SELECT DISTINCT username FROM posts")):
+        username = sqlrows.cell(username_row, 0)
         try:
             con.execute("INSERT OR IGNORE INTO accounts (username) VALUES (?)", (username,))
         except Exception as e:  # a single bad username must not block every future start
@@ -459,7 +465,7 @@ def _migrate_accounts(con: sqlite3.Connection) -> None:
 
 def _migrate_story_retention(con: sqlite3.Connection) -> None:
     """Migration 3: drop stories.expires_at now that stories share RETAIN_DAYS with posts."""
-    cols = {common.cell(r, "name") for r in common.fetch_all(con.execute("PRAGMA table_info(stories)"))}
+    cols = {sqlrows.cell(r, "name") for r in sqlrows.fetch_all(con.execute("PRAGMA table_info(stories)"))}
     if "expires_at" in cols:
         log("running one-time story-retention migration")
         con.execute("DROP INDEX IF EXISTS stories_expires_at")
@@ -492,13 +498,13 @@ def find_duplicate(
         "SELECT * FROM posts WHERE username=? AND posted_at BETWEEN ? AND ?",
         (username, (posted_at - window).isoformat(), (posted_at + window).isoformat()),
     )
-    for r in common.fetch_all(cur):
-        if exclude_id and common.cell(r, "id") == exclude_id:
+    for r in sqlrows.fetch_all(cur):
+        if exclude_id and sqlrows.cell(r, "id") == exclude_id:
             continue
-        stored_at = common.cell_str(r, "posted_at")
+        stored_at = sqlrows.cell_str(r, "posted_at")
         existing: parsing.PostIdentity = {
-            "username": common.must_str(r, "username"),
-            "caption": common.cell_str(r, "caption"),
+            "username": sqlrows.must_str(r, "username"),
+            "caption": sqlrows.cell_str(r, "caption"),
             "posted_at": datetime.fromisoformat(stored_at) if stored_at else None,
         }
         if parsing.same_post(existing, candidate):
