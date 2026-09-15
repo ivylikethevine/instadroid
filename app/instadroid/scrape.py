@@ -5,9 +5,7 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
-
-import uiautomator2 as u2
+from typing import NotRequired, TypedDict
 
 from . import (
     alerts,
@@ -23,6 +21,7 @@ from . import (
     parsing,
     retention,
     stories,
+    uidevice,
     versioning,
 )
 from .common import log
@@ -40,15 +39,15 @@ def _startup_wait_seconds(con: sqlite3.Connection, now: datetime | None = None) 
     if config.SCRAPE_ON_STARTUP:
         return 0.0
     try:
-        row = con.execute("SELECT finished_at, error FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+        row = common.fetch_one(con.execute("SELECT finished_at, error FROM runs ORDER BY id DESC LIMIT 1"))
     except sqlite3.Error:
         return 0.0
     if not row:
         return 0.0
-    finished = common.parse_iso(row[0])
+    finished = common.parse_iso(common.cell(row, 0))
     if finished is None:
         return 0.0
-    error = row[1] or ""
+    error = common.cell_str(row, 1) or ""
     if error and config.RETRY_DELAYS_MINUTES and error.split("(", 1)[0] in device.transient_error_names():
         interval = config.RETRY_DELAYS_MINUTES[0] * 60
     else:
@@ -98,7 +97,7 @@ def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
     if "ajax=" not in url:
         url += ("&" if "?" in url else "?") + "ajax=1"
     try:
-        with urllib.request.urlopen(url, timeout=config.FRESHRSS_REFRESH_TIMEOUT) as resp:
+        with common.urlopen()(url, timeout=config.FRESHRSS_REFRESH_TIMEOUT) as resp:
             resp.read()
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         error = f"FreshRSS refresh ping to {_redact_url(config.FRESHRSS_REFRESH_URL)} failed: {e!r}"
@@ -108,7 +107,7 @@ def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
     return None
 
 
-def scrape_once(d: u2.Device, con: sqlite3.Connection) -> RunStats:
+def scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> RunStats:
     """One scrape run. Starts and ends with Instagram and the cached system apps force-stopped
     (_free_device_memory), the end in a `finally` so a run that raises halfway doesn't leave
     Instagram's ~800MiB resident until the next poll. Adds the run's redroid memory peak and OOM
@@ -130,7 +129,7 @@ def scrape_once(d: u2.Device, con: sqlite3.Connection) -> RunStats:
 
 
 def _store_post(
-    d: u2.Device,
+    d: uidevice.Device,
     con: sqlite3.Connection,
     p: parsing.Post,
     h: str,
@@ -164,7 +163,7 @@ def _store_post(
     }
     if dup := db.find_duplicate(con, p["username"], posted_at, precision, row["caption"]):
         merged, media_to_drop = db.merged_fields(dup, row, now)
-        db.write_merged(con, dup["id"], merged)
+        db.write_merged(con, common.must_str(dup, "id"), merged)
         con.commit()
         # The stored cover wins, so this capture's extra slides are redundant too.
         retention.discard_media(media_to_drop, *extra_media)
@@ -183,6 +182,44 @@ def _store_post(
     return True
 
 
+def _needs_permalink(stored: sqlite3.Row) -> bool:
+    """A stored post with no permalink yet, and backfill tries left."""
+    attempts = common.cell_int(stored, "permalink_attempts") or 0
+    return common.cell_str(stored, "url") is None and attempts < config.PERMALINK_BACKFILL_TRIES
+
+
+def _backfill_permalink(
+    d: uidevice.Device, con: sqlite3.Connection, stored: sqlite3.Row, h: str
+) -> str | None:
+    """Try Copy link once for a post stored under a hash id, and record the link on its row. The id stays:
+    the Atom entry id is derived from it, so changing it would make a reader show the post twice.
+    updated_at moves, so the feed's ETag does and readers pick the link up. A link already stored for
+    another row (the same post captured twice) is left alone. Returns capture.fetch_permalink()'s
+    failure reason, if any."""
+    post_id = common.must_str(stored, "id")
+    url, fail_reason = capture.fetch_permalink(d, h)
+    attempts = (common.cell_int(stored, "permalink_attempts") or 0) + 1
+    con.execute("UPDATE posts SET permalink_attempts=? WHERE id=?", (attempts, post_id))
+    if url:
+        code = url.rstrip("/").rsplit("/", 1)[-1]
+        taken = common.fetch_one(
+            con.execute("SELECT id FROM posts WHERE (id=? OR url=?) AND id != ?", (code, url, post_id))
+        )
+        if taken:
+            log(
+                f"WARN: permalink {code} is already stored for {common.must_str(taken, 'id')}; not backfilling {post_id}"
+            )
+        else:
+            now = datetime.now(UTC).isoformat()
+            con.execute("UPDATE posts SET url=?, updated_at=? WHERE id=?", (url, now, post_id))
+            log(f"backfilled permalink for {post_id}: {url}")
+    con.commit()
+    if not navigation.on_target_feed(d):
+        log(f"WARN: not on the {config.FEED_MODE} feed any more; reopening it")
+        navigation.open_target_feed(d)
+    return fail_reason
+
+
 def _rename_media(pid: str, media: str, extra_media: list[str]) -> tuple[str, list[str]]:
     """Rename a cover and its extra slides to pid.ext, pid_1.ext, ... and return the new names."""
     names = [
@@ -194,7 +231,7 @@ def _rename_media(pid: str, media: str, extra_media: list[str]) -> tuple[str, li
     return names[0], names[1:]
 
 
-def _scrape_feed(d: u2.Device, con: sqlite3.Connection, guard: device.MemoryGuard) -> RunStats:
+def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.MemoryGuard) -> RunStats:
     config.DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     capture.reset_last_url(d)
     navigation.open_target_feed(d)
@@ -209,9 +246,9 @@ def _scrape_feed(d: u2.Device, con: sqlite3.Connection, guard: device.MemoryGuar
         navigation.open_target_feed(d)  # back onto the feed screen the post loop expects
     followed: set[str] | None = None
     if config.FOLLOWING_REFRESH_DAYS:
-        rows = con.execute("SELECT username FROM following").fetchall()
+        rows = common.fetch_all(con.execute("SELECT username FROM following"))
         if rows:  # empty/never-refreshed means "not initialized yet" -> filter nothing
-            followed = {r[0] for r in rows}
+            followed = {common.must_str(r, 0) for r in rows}
     warnings: list[str] = []
     new_stories = 0
     if reason := guard.exceeded():
@@ -225,9 +262,11 @@ def _scrape_feed(d: u2.Device, con: sqlite3.Connection, guard: device.MemoryGuar
             navigation.open_target_feed(d)  # best-effort recovery back onto the screen the post loop expects
     if new_stories:
         log(f"stories: {new_stories} new")
-    new, seen_streak, this_run = 0, 0, set()
+    new = seen_streak = 0
+    this_run: set[str] = set()  # hashes of the cards already handled
     link_failures: dict[str, int] = {}  # hash -> failed share-sheet attempts
     link_sheet_failures = link_clipboard_failures = 0
+    backfills_left = config.PERMALINK_BACKFILL_PER_RUN
     accounts_seen: set[str] = set()  # usernames already upserted this run
     avatars_checked: set[str] = set()  # usernames whose avatar has been considered this run
     filtered_posts = 0  # dropped by the followed-accounts allowlist, if enabled
@@ -295,9 +334,21 @@ def _scrape_feed(d: u2.Device, con: sqlite3.Connection, guard: device.MemoryGuar
                 continue  # still on screen from the previous scroll
             if not p["complete"]:
                 continue  # wait until the whole bottom of the card is on screen (stable identity)
-            if con.execute("SELECT 1 FROM posts WHERE hash=? OR id=?", (h, h)).fetchone():
+            stored = common.fetch_one(
+                con.execute("SELECT id, url, permalink_attempts FROM posts WHERE hash=? OR id=?", (h, h))
+            )
+            if stored:
                 this_run.add(h)
                 seen_streak += 1
+                if backfills_left > 0 and _needs_permalink(stored):
+                    backfills_left -= 1
+                    fail_reason = _backfill_permalink(d, con, stored, h)
+                    if fail_reason == "sheet":
+                        link_sheet_failures += 1
+                    elif fail_reason == "clipboard":
+                        link_clipboard_failures += 1
+                    touched = True
+                    break  # the share sheet came and went; re-dump before the next card
                 continue
             settle = config.VIDEO_SETTLE_SECONDS if p["kind"] == "video" else 0
             media = capture.crop_media(
@@ -323,10 +374,15 @@ def _scrape_feed(d: u2.Device, con: sqlite3.Connection, guard: device.MemoryGuar
                 navigation.open_target_feed(d)
                 this_run.discard(h)  # let the card be handled again where it appears
             pid = url.rstrip("/").rsplit("/", 1)[-1] if url else h
-            row = con.execute("SELECT username FROM posts WHERE id=?", (pid,)).fetchone() if url else None
-            if row and row[0] != p["username"]:
+            row = (
+                common.fetch_one(con.execute("SELECT username FROM posts WHERE id=?", (pid,)))
+                if url
+                else None
+            )
+            owner = common.cell(row, 0) if row else None
+            if row and owner != p["username"]:
                 log(
-                    f"WARN: permalink {pid} belongs to {row[0]}, not {p['username']}; stale clipboard, dropping it"
+                    f"WARN: permalink {pid} belongs to {owner}, not {p['username']}; stale clipboard, dropping it"
                 )
                 url, pid = None, h
             elif row:
@@ -383,18 +439,18 @@ def _scrape_feed(d: u2.Device, con: sqlite3.Connection, guard: device.MemoryGuar
     }
 
 
-def run_recorded(con: sqlite3.Connection) -> tuple[dict[str, Any], Exception | None]:
+def run_recorded(con: sqlite3.Connection) -> tuple[RunStats | None, Exception | None]:
     """Connect, scrape once, and record the run in the runs table whatever happens: one iteration
-    of main()'s loop, and `scraper.py once`. Returns (the run's stats, the exception that ended it or
-    None); a failure is logged, never raised."""
+    of main()'s loop, and `scraper.py once`. Returns (the run's stats, or None when it failed before
+    finishing; the exception that ended it, or None); a failure is logged, never raised."""
     started_at = datetime.now(UTC).isoformat()
     snapshot: device.DeviceSnapshot = {}
-    stats: dict[str, Any] = {}
+    stats: RunStats | None = None
     error, exc = None, None
     try:
         d = device.connect_device()
         snapshot = device.device_snapshot(d)
-        stats = dict(scrape_once(d, con))
+        stats = scrape_once(d, con)
         log(f"run complete: {stats['new']} new posts, {stats['new_stories']} new stories")
     except Exception as e:  # keep the loop alive; log for debugging
         exc, error = e, repr(e)
@@ -403,10 +459,31 @@ def run_recorded(con: sqlite3.Connection) -> tuple[dict[str, Any], Exception | N
             diagnostics.save_failure_logcat(error)
     if snapshot:  # connected, so a profile was activated (possibly re-activated by an install)
         snapshot["selector_profile"] = versioning.PROFILE.name
-    recorded = {k: v for k, v in stats.items() if k != "new"}
-    db.record_run(
-        con, started_at, datetime.now(UTC).isoformat(), stats.get("new", 0), error, snapshot, **recorded
-    )
+    # Every stat but `new` is a runs column. Copied only when present, as a spread of the stats would.
+    metrics: db.RunMetrics = {}
+    if stats is not None:
+        if "new_stories" in stats:
+            metrics["new_stories"] = stats["new_stories"]
+        if "link_sheet_failures" in stats:
+            metrics["link_sheet_failures"] = stats["link_sheet_failures"]
+        if "link_clipboard_failures" in stats:
+            metrics["link_clipboard_failures"] = stats["link_clipboard_failures"]
+        if "warning" in stats:
+            metrics["warning"] = stats["warning"]
+        if "filtered_posts" in stats:
+            metrics["filtered_posts"] = stats["filtered_posts"]
+        if "cards_per_screen" in stats:
+            metrics["cards_per_screen"] = stats["cards_per_screen"]
+        if "share_captioned" in stats:
+            metrics["share_captioned"] = stats["share_captioned"]
+        if "share_complete" in stats:
+            metrics["share_complete"] = stats["share_complete"]
+        if "mem_peak_mb" in stats:
+            metrics["mem_peak_mb"] = stats["mem_peak_mb"]
+        if "oom_kills" in stats:
+            metrics["oom_kills"] = stats["oom_kills"]
+    new_posts = stats.get("new", 0) if stats is not None else 0
+    db.record_run(con, started_at, datetime.now(UTC).isoformat(), new_posts, error, snapshot, **metrics)
     try:
         alerts.update(con)
     except (OSError, sqlite3.Error) as e:  # alerting must never take the loop down with it

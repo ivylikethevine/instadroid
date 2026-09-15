@@ -50,3 +50,8 @@ local/
 *.jpg
 *.jpeg
 *.log
+
+# **build** above would also hide these project files.
+!.github/workflows/new-builds.yml
+!scripts/check_new_builds.py
+!app/tests/test_new_builds.py

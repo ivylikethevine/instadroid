@@ -5,13 +5,10 @@ import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 
-import uiautomator2 as u2
 from igprofiles.screens import screen_of_dump
-from PIL import Image
 
-from . import config
+from . import config, uidevice
 from .common import log
 
 _captured: dict[str, int] = {}  # screen -> pairs saved to PROFILE_CAPTURE_DIR by this process
@@ -24,7 +21,7 @@ def prune_debug_dumps() -> None:
     (e.g. a scratch test*.sqlite a DB_PATH may still point at) is left alone. Best-effort: a file
     that can't be removed is logged and skipped, never raised."""
     try:
-        doomed = []
+        doomed: list[Path] = []
         hierarchies = sorted(config.DEBUG_DIR.glob("*_hierarchy.xml"), key=lambda p: p.stat().st_mtime)
         for old in hierarchies[: -config.DEBUG_KEEP]:
             stem = old.name.removesuffix("_hierarchy.xml")
@@ -63,7 +60,7 @@ _LOGCAT_PRIORITY = re.compile(r"^\S+\s+\S+\s+\d+\s+\d+\s+([VDIWEF])\s")  # `-v t
 def _filter_logcat(text: str) -> list[str]:
     """Error/fatal lines and known crash signatures from `logcat -v threadtime` output, last
     LOGCAT_TAIL_LINES of them."""
-    kept = []
+    kept: list[str] = []
     for line in text.splitlines():
         m = _LOGCAT_PRIORITY.match(line)
         if (m and m.group(1) in "EF") or _LOGCAT_SIGNATURES.search(line):
@@ -107,13 +104,13 @@ def save_failure_logcat(error: str) -> Path | None:
     return path
 
 
-def _write_pair(directory: Path, stem: str, d: u2.Device, xml: str) -> None:
+def _write_pair(directory: Path, stem: str, d: uidevice.Device, xml: str) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{stem}_hierarchy.xml").write_text(xml)
-    cast(Image.Image, d.screenshot()).convert("RGB").save(directory / f"{stem}_screen.jpg", quality=70)
+    d.screenshot().convert("RGB").save(directory / f"{stem}_screen.jpg", quality=70)
 
 
-def dump_debug(d: u2.Device, name: str, xml: str | None = None) -> None:
+def dump_debug(d: uidevice.Device, name: str, xml: str | None = None) -> None:
     """Save a hierarchy + screenshot pair for later inspection. Pass `xml` when the caller
     already has a fresh dump, to avoid a redundant device round-trip. Best-effort: a debug dump is
     a diagnostic aid, not part of the scrape itself, so a write failure here (e.g. a stale file
@@ -130,7 +127,7 @@ def dump_debug(d: u2.Device, name: str, xml: str | None = None) -> None:
     capture_screen(d, screen_of_dump(name) or name, xml, failure=True)
 
 
-def capture_screen(d: u2.Device, screen: str, xml: str | None = None, failure: bool = False) -> None:
+def capture_screen(d: uidevice.Device, screen: str, xml: str | None = None, failure: bool = False) -> None:
     """Profile capture mode (PROFILE_CAPTURE_DIR set, see scripts/new_profile.py): save this screen
     as `<seq>-<screen>[-fail]_hierarchy.xml` + `_screen.jpg`, up to CAPTURE_PER_SCREEN per screen
     (failure dumps always), so a baseline run under a new profile leaves one reviewable dump of

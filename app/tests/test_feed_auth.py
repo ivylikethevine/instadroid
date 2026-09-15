@@ -4,6 +4,7 @@ import base64
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +12,13 @@ from fastapi.testclient import TestClient
 from tests.test_feed import _write_image, make_app
 
 TOKEN = "s3cret-token"
+
+
+class Credentials(TypedDict, total=False):
+    """The ways a request can carry the token, as TestClient.get() keyword arguments."""
+
+    headers: dict[str, str]
+    params: dict[str, str]
 
 
 def _auth_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -62,7 +70,7 @@ def test_health_stays_open_for_the_compose_healthcheck(
     ],
 )
 def test_the_token_is_accepted_as_bearer_basic_or_query(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, dict[str, str]]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kwargs: Credentials
 ) -> None:
     assert _auth_app(tmp_path, monkeypatch).get("/instagram.xml", **kwargs).status_code == 200
 

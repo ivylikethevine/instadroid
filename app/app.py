@@ -25,13 +25,13 @@ from functools import lru_cache
 from hashlib import sha256
 from html import escape
 from pathlib import Path
-from typing import Any
 from urllib.parse import quote, urlencode
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from feedgen.entry import FeedEntry
 from feedgen.feed import FeedGenerator
 from fileenv import env_secret
 from PIL import Image
@@ -152,25 +152,90 @@ async def _require_token(request: Request, call_next: Callable[[Request], Awaita
     )
 
 
-def _query(sql: str, args: Sequence[object] = (), default: Any = None, one: bool = False) -> Any:
-    """Run a read-only query and return its rows (or first row with `one`), or `default` when the
-    database or table doesn't exist yet (the scraper creates both on its first start). Read-only so
-    the scraper's writer lock never blocks a request."""
+# Every value sqlite3 hands back (no converters are registered), and what an ETag is computed over.
+type SqlValue = str | int | float | bytes | None
+type EtagPart = SqlValue | tuple[SqlValue, ...]
+
+
+def _query[T](sql: str, args: Sequence[SqlValue], fetch: Callable[[sqlite3.Cursor], T], default: T) -> T:
+    """Run a read-only query and `fetch` from its cursor, or `default` when the database or table
+    doesn't exist yet (the scraper creates both on its first start). Read-only so the scraper's writer
+    lock never blocks a request."""
     if not Path(DB_PATH).exists():
         return default
     with closing(sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)) as con:
         con.row_factory = sqlite3.Row
         try:
-            cur = con.execute(sql, args)
-            return cur.fetchone() if one else cur.fetchall()
+            return fetch(con.execute(sql, args))
         except sqlite3.OperationalError:
             return default
 
 
-def _col(row: sqlite3.Row, name: str, default: Any = None) -> Any:
-    """row[name], or `default` when a runs/posts row predates that column (sqlite3.Row has no get)."""
-    keys = row.keys()  # sqlite3.Row's `in` checks values, not column names
-    return row[name] if name in keys else default
+# typeshed types whatever a cursor or sqlite3.Row yields as Any, so every value read goes through one of
+# these two narrowing functions (mapped over the cursor or row, never indexing it directly).
+def _as_row(fetched: object) -> sqlite3.Row | None:
+    return fetched if isinstance(fetched, sqlite3.Row) else None
+
+
+def _as_sql_value(value: object) -> SqlValue:
+    if value is None or isinstance(value, str | int | float | bytes):
+        return value
+    raise TypeError(f"unexpected sqlite value {value!r}")
+
+
+def _all_rows(sql: str, args: Sequence[SqlValue] = ()) -> list[sqlite3.Row]:
+    """Every row of a read-only query, or none before the database or table exists."""
+    return _query(sql, args, lambda cur: [row for row in map(_as_row, cur) if row is not None], [])
+
+
+def _one_row(sql: str, args: Sequence[SqlValue] = ()) -> sqlite3.Row | None:
+    """The first row of a read-only query, or None (also before the database or table exists)."""
+    return _query(sql, args, lambda cur: next(map(_as_row, cur), None), None)
+
+
+def _values(row: sqlite3.Row) -> tuple[SqlValue, ...]:
+    """Every value of a row, in column order (what tuple(row) gives)."""
+    return tuple(map(_as_sql_value, row))
+
+
+def _value(row: sqlite3.Row, key: str | int) -> SqlValue:
+    """row[key]: by position, or by column name (ValueError for a column the row doesn't have)."""
+    return _values(row)[key if isinstance(key, int) else row.keys().index(key)]
+
+
+def _str(row: sqlite3.Row, key: str | int) -> str:
+    """row[key] as it reads in an f-string (so NULL is "None"), for a NOT NULL column."""
+    return str(_value(row, key))
+
+
+def _text(row: sqlite3.Row, key: str | int) -> str | None:
+    """row[key] as text, or None for NULL."""
+    value = _value(row, key)
+    return value if value is None or isinstance(value, str) else str(value)
+
+
+def _int(row: sqlite3.Row, key: str | int) -> int | None:
+    """An INTEGER column (or COUNT) of a row, or None for NULL."""
+    value = _value(row, key)
+    if value is None or isinstance(value, int):
+        return value
+    raise TypeError(f"expected an integer in column {key!r}, got {value!r}")
+
+
+def _has(row: sqlite3.Row, name: str) -> bool:
+    """Whether a row has column `name`: False for a runs/posts row that predates it."""
+    columns = row.keys()  # sqlite3.Row's `in` checks values, not column names
+    return name in columns
+
+
+def _col_text(row: sqlite3.Row, name: str) -> str | None:
+    """A text column, or None when it's NULL or the row predates that column (sqlite3.Row has no get)."""
+    return _text(row, name) if _has(row, name) else None
+
+
+def _col_int(row: sqlite3.Row, name: str) -> int | None:
+    """An integer column, or None when it's NULL or the row predates that column."""
+    return _int(row, name) if _has(row, name) else None
 
 
 def _limit(limit: int) -> int:
@@ -181,7 +246,7 @@ def _utc(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def _cached(request: Request, *parts: object) -> tuple[str, Response | None]:
+def _cached(request: Request, *parts: EtagPart) -> tuple[str, Response | None]:
     """(ETag over `parts`, a 304 response if the client already has it, else None)."""
     etag = f'"{sha256("|".join(map(str, parts)).encode()).hexdigest()}"'
     if request.headers.get("if-none-match") == etag:
@@ -229,10 +294,10 @@ def _img(file: str) -> str:
     return f'<img src="{_media_url(file)}" alt=""{size} />'
 
 
-def _thumbnail(fe: Any, file: str) -> None:
+def _thumbnail(fe: FeedEntry, file: str) -> None:
     """Attach a Media RSS <media:thumbnail> (the full cover image, with its dimensions when known)
     for readers that show a picture in list view. Needs fg.load_extension("media"), which adds
-    `fe.media` at runtime (hence Any: feedgen's FeedEntry has no such attribute statically)."""
+    `fe.media` at runtime (_new_feed() always loads it)."""
     thumb = {"url": _media_url(file)}
     if dims := _image_size(file):
         thumb |= {"width": str(dims[0]), "height": str(dims[1])}
@@ -282,10 +347,9 @@ def _caption_html(caption: str) -> str:
 
 def rows(user: str | None, limit: int) -> list[sqlite3.Row]:
     where = " WHERE username = ?" if user else ""
-    return _query(
+    return _all_rows(
         f"SELECT * FROM posts{where} ORDER BY COALESCE(posted_at, scraped_at) DESC LIMIT ?",
         (*([user] if user else []), _limit(limit)),
-        default=[],
     )
 
 
@@ -295,52 +359,44 @@ def _media_rows(post_ids: list[str]) -> dict[str, list[str]]:
     if post_ids:
         placeholders = ",".join("?" * len(post_ids))
         sql = f"SELECT post_id, file FROM media WHERE post_id IN ({placeholders}) ORDER BY post_id, idx"
-        for post_id, file in _query(sql, post_ids, default=[]):
-            out.setdefault(post_id, []).append(file)
+        for row in _all_rows(sql, post_ids):
+            out.setdefault(_str(row, 0), []).append(_str(row, 1))
     return out
 
 
 def _avatar_files() -> dict[str, str]:
     """{username: avatar_file} for every account with a captured avatar."""
     sql = "SELECT username, avatar_file FROM accounts WHERE avatar_file IS NOT NULL"
-    return dict(map(tuple, _query(sql, default=[])))
+    return {_str(row, 0): _str(row, 1) for row in _all_rows(sql)}
 
 
-def _feed_signal(user: str | None) -> tuple[object, ...]:
+def _feed_signal(user: str | None) -> tuple[EtagPart, ...]:
     """Cheap ETag input for /instagram.xml: post count and latest change (updated_at also moves when
     a row is merged in place), extra-slide count and latest avatar refresh, scoped to `user` when
     given so one account's new post doesn't invalidate every other per-account feed."""
     where, args = (" WHERE username = ?", (user,)) if user else ("", ())
-    posts = _query(
-        f"SELECT COUNT(*), COALESCE(MAX(COALESCE(updated_at, scraped_at)), '') FROM posts{where}",
-        args,
-        one=True,
+    posts = _one_row(
+        f"SELECT COUNT(*), COALESCE(MAX(COALESCE(updated_at, scraped_at)), '') FROM posts{where}", args
     )
-    media = _query("SELECT COUNT(*) FROM media", one=True)
-    avatar = _query(f"SELECT COALESCE(MAX(avatar_updated_at), '') FROM accounts{where}", args, one=True)
-    alerts = tuple(tuple(a) for a in _open_alerts()) if not user else ()
+    media = _one_row("SELECT COUNT(*) FROM media")
+    avatar = _one_row(f"SELECT COALESCE(MAX(avatar_updated_at), '') FROM accounts{where}", args)
+    alerts = tuple(_values(a) for a in _open_alerts()) if not user else ()
     return (
-        *(tuple(posts) if posts else (0, "")),
-        media[0] if media else 0,
-        avatar[0] if avatar else "",
+        *(_values(posts) if posts else (0, "")),
+        _value(media, 0) if media else 0,
+        _value(avatar, 0) if avatar else "",
         *alerts,
     )
 
 
 def _open_alerts() -> list[sqlite3.Row]:
     """The scraper's open failure alerts (instadroid/alerts.py), oldest first; none before that table exists."""
-    return _query("SELECT kind, message, raised_at FROM alerts ORDER BY raised_at", default=[])
+    return _all_rows("SELECT kind, message, raised_at FROM alerts ORDER BY raised_at")
 
 
 def _post_count() -> int:
-    row = _query("SELECT COUNT(*) FROM posts", one=True)
-    return row[0] if row else 0
-
-
-_ATOM: dict[int | str, dict[str, Any]] = {
-    200: {"content": {"application/atom+xml": {}}, "description": "An Atom feed."},
-    304: {},
-}
+    row = _one_row("SELECT COUNT(*) FROM posts")
+    return (_int(row, 0) or 0) if row else 0
 
 
 class Health(BaseModel):
@@ -349,7 +405,14 @@ class Health(BaseModel):
     reason: str | None = None
 
 
-@app.get("/instagram.xml", response_class=Response, responses=_ATOM, summary="Posts feed")
+# responses= for the Atom feed routes, written out on each: FastAPI types that parameter as
+# dict[int | str, dict[str, Any]], which only a literal in place matches without an Any of our own.
+@app.get(
+    "/instagram.xml",
+    response_class=Response,
+    responses={200: {"content": {"application/atom+xml": {}}, "description": "An Atom feed."}, 304: {}},
+    summary="Posts feed",
+)
 def feed(request: Request, user: str | None = None, limit: int = 200) -> Response:
     """Stored posts as Atom, newest first. `user` narrows it to one account; `limit` is capped at
     500."""
@@ -362,60 +425,60 @@ def feed(request: Request, user: str | None = None, limit: int = 200) -> Respons
     )
 
     entries = rows(user, limit)
-    extra_slides = _media_rows([r["id"] for r in entries])
+    extra_slides = _media_rows([_str(r, "id") for r in entries])
     avatars = _avatar_files()
 
     # Open failure alerts go first in the aggregate feed, where a reader is already looking. Each gets
     # a new id per raise, so a reader shows it again if it's resolved and raised later.
     for alert in [] if user else _open_alerts():
+        message = _str(alert, "message")
         fe = fg.add_entry(order="append")
-        fe.id(f"{PUBLIC_URL}/alert/{alert['kind']}/{alert['raised_at']}")
-        fe.title(f"⚠ instadroid needs attention: {alert['message'][:90]}")
+        fe.id(f"{PUBLIC_URL}/alert/{_str(alert, 'kind')}/{_str(alert, 'raised_at')}")
+        fe.title(f"⚠ instadroid needs attention: {message[:90]}")
         fe.link(href=f"{PUBLIC_URL}/status")
-        raised = _dt(alert["raised_at"]) or datetime.now(UTC)
+        raised = _dt(_text(alert, "raised_at")) or datetime.now(UTC)
         fe.updated(raised)
         fe.published(raised)
         fe.content(
-            f"<p>{escape(alert['message'])}</p><p><small>since {_utc(raised)} · "
+            f"<p>{escape(message)}</p><p><small>since {_utc(raised)} · "
             f'<a href="{PUBLIC_URL}/status">status page</a></small></p>',
             type="html",
         )
 
     for r in entries:
+        username, kind, media_file = _str(r, "username"), _text(r, "kind"), _text(r, "media_file")
         fe = fg.add_entry(order="append")
-        fe.id(f"{PUBLIC_URL}/post/{r['id']}")
-        caption = r["caption"] or ""
-        first_line = caption.split("\n", 1)[0][:90] or r["kind"] or "post"
-        marker = "▶ " if r["kind"] == "video" else ""  # Reels and videos are stored as kind "video"
-        fe.title(f"{marker}{r['username']}: {first_line}")
-        url = _col(r, "url") or f"https://www.instagram.com/{r['username']}/"
+        fe.id(f"{PUBLIC_URL}/post/{_str(r, 'id')}")
+        caption = _text(r, "caption") or ""
+        first_line = caption.split("\n", 1)[0][:90] or kind or "post"
+        marker = "▶ " if kind == "video" else ""  # Reels and videos are stored as kind "video"
+        fe.title(f"{marker}{username}: {first_line}")
+        url = _col_text(r, "url") or f"https://www.instagram.com/{username}/"
         fe.link(href=url)
-        fe.author(name=r["username"])
-        fe.updated(_dt(r["scraped_at"]) or datetime.now(UTC))
-        posted_abs = _dt(_col(r, "posted_at"))
+        fe.author(name=username)
+        fe.updated(_dt(_text(r, "scraped_at")) or datetime.now(UTC))
+        posted_abs = _dt(_col_text(r, "posted_at"))
         if posted_abs:
             fe.published(posted_abs)
         html = ""
-        avatar = avatars.get(r["username"])
+        avatar = avatars.get(username)
         if avatar:
             html += f'<p><img src="{_media_url(avatar)}" alt="" width="48" height="48" /></p>'
-        for slide in ([r["media_file"]] if r["media_file"] else []) + extra_slides.get(r["id"], []):
+        for slide in ([media_file] if media_file else []) + extra_slides.get(_str(r, "id"), []):
             html += f"<p>{_img(slide)}</p>"
-        if r["media_file"]:
-            _thumbnail(fe, r["media_file"])
+        if media_file:
+            _thumbnail(fe, media_file)
         html += f"<p>{_caption_html(caption)}</p>"
         # Both dates are also on the entry itself (<published>/<updated>) for readers that sort by
         # those, but spelling them out here means sorting-by-eye works in any reader.
-        meta = []
-        if r["posted_date"]:
-            meta.append(
-                f"Posted {escape(r['posted_date'])}" + (f" ({_utc(posted_abs)})" if posted_abs else "")
-            )
+        meta: list[str] = []
+        if posted_date := _text(r, "posted_date"):
+            meta.append(f"Posted {escape(posted_date)}" + (f" ({_utc(posted_abs)})" if posted_abs else ""))
         elif posted_abs:
             meta.append(f"Posted {_utc(posted_abs)}")
-        if place := _col(r, "place"):
+        if place := _col_text(r, "place"):
             meta.append(f"at {escape(place)}")
-        if scraped_abs := _dt(r["scraped_at"]):
+        if scraped_abs := _dt(_text(r, "scraped_at")):
             meta.append(f"saved {_utc(scraped_abs)}")
         meta.append(f'<a href="{escape(url)}">open on Instagram</a>')
         html += f"<p><small>{' · '.join(meta)}</small></p>"
@@ -426,16 +489,21 @@ def feed(request: Request, user: str | None = None, limit: int = 200) -> Respons
 
 def _story_rows(limit: int) -> list[sqlite3.Row]:
     """Stored stories, newest first (they share RETAIN_DAYS with posts; the scraper prunes them)."""
-    return _query("SELECT * FROM stories ORDER BY scraped_at DESC LIMIT ?", (_limit(limit),), default=[])
+    return _all_rows("SELECT * FROM stories ORDER BY scraped_at DESC LIMIT ?", (_limit(limit),))
 
 
 def _stories_stats() -> tuple[int, str]:
     """(count, latest scraped_at) - the ETag input for /stories.xml."""
-    row = _query("SELECT COUNT(*), COALESCE(MAX(scraped_at), '') FROM stories", one=True)
-    return tuple(row) if row else (0, "")
+    row = _one_row("SELECT COUNT(*), COALESCE(MAX(scraped_at), '') FROM stories")
+    return (_int(row, 0) or 0, _str(row, 1)) if row else (0, "")
 
 
-@app.get("/stories.xml", response_class=Response, responses=_ATOM, summary="Stories feed")
+@app.get(
+    "/stories.xml",
+    response_class=Response,
+    responses={200: {"content": {"application/atom+xml": {}}, "description": "An Atom feed."}, 304: {}},
+    summary="Stories feed",
+)
 def stories_feed(request: Request, limit: int = 200) -> Response:
     """Stored story frames as Atom, newest first; `limit` is capped at 500."""
     etag, not_modified = _cached(request, limit, *_stories_stats())
@@ -444,17 +512,18 @@ def stories_feed(request: Request, limit: int = 200) -> Response:
     fg = _new_feed(f"{PUBLIC_URL}/stories.xml", "Instagram — Stories")
 
     for r in _story_rows(limit):
+        username, media_file = _str(r, "username"), _text(r, "media_file")
         fe = fg.add_entry(order="append")
-        fe.id(f"{PUBLIC_URL}/story/{r['id']}")
-        fe.title(f"{r['username']}'s story")
-        fe.link(href=f"https://www.instagram.com/{r['username']}/")
-        fe.author(name=r["username"])
-        scraped = _dt(r["scraped_at"]) or datetime.now(UTC)
+        fe.id(f"{PUBLIC_URL}/story/{_str(r, 'id')}")
+        fe.title(f"{username}'s story")
+        fe.link(href=f"https://www.instagram.com/{username}/")
+        fe.author(name=username)
+        scraped = _dt(_text(r, "scraped_at")) or datetime.now(UTC)
         fe.updated(scraped)
         fe.published(scraped)
-        html = f"<p>{_img(r['media_file'])}</p>" if r["media_file"] else ""
-        if r["media_file"]:
-            _thumbnail(fe, r["media_file"])
+        html = f"<p>{_img(media_file)}</p>" if media_file else ""
+        if media_file:
+            _thumbnail(fe, media_file)
         html += f"<p><small>saved {_utc(scraped)}</small></p>"
         fe.content(html, type="html")
 
@@ -462,7 +531,7 @@ def stories_feed(request: Request, limit: int = 200) -> Response:
 
 
 def _usernames() -> list[str]:
-    return [r[0] for r in _query("SELECT DISTINCT username FROM posts ORDER BY username", default=[])]
+    return [_str(r, 0) for r in _all_rows("SELECT DISTINCT username FROM posts ORDER BY username")]
 
 
 @app.get("/users", summary="Accounts with stored posts")
@@ -523,13 +592,12 @@ def _scraper_health(now: datetime | None = None) -> tuple[str, str]:
     progress fits comfortably inside that slack). FAILING: no *successful* run for two full poll
     cycles plus an hour, e.g. a login challenge nobody has answered yet. No runs at all is healthy —
     the scraper may simply be on its first one."""
-    row = _query(
-        "SELECT MAX(finished_at), MAX(CASE WHEN error IS NULL THEN finished_at END), MIN(started_at) FROM runs",
-        one=True,
+    row = _one_row(
+        "SELECT MAX(finished_at), MAX(CASE WHEN error IS NULL THEN finished_at END), MIN(started_at) FROM runs"
     )
     if not row:
         return "", ""
-    last_finished, last_ok, first_started = row
+    last_finished, last_ok, first_started = _text(row, 0), _text(row, 1), _text(row, 2)
     now = now or datetime.now(UTC)
     finished = _dt(last_finished)
     if finished and now - finished > timedelta(hours=POLL_MAX_HOURS + 0.5):
@@ -561,21 +629,20 @@ def health() -> Health | JSONResponse:
 
 
 def _user_counts() -> list[sqlite3.Row]:
-    return _query(
+    return _all_rows(
         "SELECT username, COUNT(*) AS n, MAX(COALESCE(posted_at, scraped_at)) AS latest"
-        " FROM posts GROUP BY username ORDER BY username",
-        default=[],
+        " FROM posts GROUP BY username ORDER BY username"
     )
 
 
 def _recent_runs(limit: int = 10) -> list[sqlite3.Row]:
-    return _query("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,), default=[])
+    return _all_rows("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))
 
 
 def _latest_device() -> sqlite3.Row | None:
     """Device props from the most recent run that got far enough to read them (a run that failed
     before connect_device() leaves these NULL). SELECT * so an old runs table still works."""
-    return _query("SELECT * FROM runs WHERE android_release IS NOT NULL ORDER BY id DESC LIMIT 1", one=True)
+    return _one_row("SELECT * FROM runs WHERE android_release IS NOT NULL ORDER BY id DESC LIMIT 1")
 
 
 def _short_error(error: str, limit: int = 140) -> str:
@@ -586,7 +653,7 @@ def _short_error(error: str, limit: int = 140) -> str:
 
 
 def _duration(run: sqlite3.Row) -> str:
-    start, end = _dt(run["started_at"]), _dt(run["finished_at"])
+    start, end = _dt(_text(run, "started_at")), _dt(_text(run, "finished_at"))
     if not start or not end:
         return "—"
     m, s = divmod(int((end - start).total_seconds()), 60)
@@ -595,21 +662,20 @@ def _duration(run: sqlite3.Row) -> str:
 
 def _link_failures(run: sqlite3.Row) -> str:
     """ "sheet/clipboard" failure counts for a run, or "—" for a row from before these columns."""
-    if _col(run, "link_sheet_failures", "—") == "—":
+    if not _has(run, "link_sheet_failures"):
         return "—"
-    return f"{run['link_sheet_failures'] or 0} sheet / {run['link_clipboard_failures'] or 0} clipboard"
+    return f"{_int(run, 'link_sheet_failures') or 0} sheet / {_int(run, 'link_clipboard_failures') or 0} clipboard"
 
 
 def _run_count(run: sqlite3.Row, col: str) -> str:
     """An integer runs column as text, or "—" for a row from before that column existed."""
-    value = _col(run, col, "—")
-    return "—" if value == "—" else str(value or 0)
+    return str(_int(run, col) or 0) if _has(run, col) else "—"
 
 
 def _run_memory(run: sqlite3.Row) -> str:
     """redroid's peak memory during a run ("1843 MiB"), plus its OOM kills when there were any, or
     "—" when it wasn't measured (the cgroup wasn't readable, or a row from before these columns)."""
-    peak, ooms = _col(run, "mem_peak_mb"), _col(run, "oom_kills")
+    peak, ooms = _col_int(run, "mem_peak_mb"), _col_int(run, "oom_kills")
     if peak is None:
         return "—"
     return f"{peak} MiB" + (f", {ooms} OOM kill(s)" if ooms else "")
@@ -617,13 +683,13 @@ def _run_memory(run: sqlite3.Row) -> str:
 
 def _run_text(run: sqlite3.Row, col: str) -> str:
     """A text column off a runs row, or "" when it's NULL or the row predates that column."""
-    return _col(run, col) or ""
+    return _col_text(run, col) or ""
 
 
 def _run_result(run: sqlite3.Row) -> tuple[str, str]:
     """(css class, text) for a run's Result cell: its error, else its warning, else "ok"."""
-    if run["error"]:
-        return "err", _short_error(run["error"])
+    if error := _text(run, "error"):
+        return "err", _short_error(error)
     if warning := _run_text(run, "warning"):
         return "warn", f"warn: {_short_error(warning)}"
     return "", "ok"
@@ -676,8 +742,8 @@ def scrape_now() -> ControlState:
     Refused while locked, and within RUN_NOW_MIN_MINUTES of the last run finishing."""
     if _control_state().locked:
         raise HTTPException(409, "the manual lock is in place; release it first")
-    row = _query("SELECT MAX(finished_at) FROM runs", one=True)
-    if row and (finished := _dt(row[0])):
+    row = _one_row("SELECT MAX(finished_at) FROM runs")
+    if row and (finished := _dt(_text(row, 0))):
         since = (datetime.now(UTC) - finished).total_seconds() / 60
         if since < RUN_NOW_MIN_MINUTES:
             raise HTTPException(
@@ -693,7 +759,7 @@ def scrape_now() -> ControlState:
 def status_page() -> HTMLResponse:
     """A plain-HTML page of recent runs, the device, and per-account totals."""
     users = _user_counts()
-    total = sum(u["n"] for u in users)
+    total = sum(_int(u, "n") or 0 for u in users)
     stories_count = _stories_stats()[0]
     runs = _recent_runs()
     device = _latest_device()
@@ -702,11 +768,11 @@ def status_page() -> HTMLResponse:
 
     device_line = "no successful run yet"
     if device:
-        device_line = f"Android {escape(device['android_release'] or '?')}"
-        if device["android_sdk"]:
-            device_line += f" (API {escape(device['android_sdk'])})"
-        if device["device_product"]:
-            device_line += f" — {escape(device['device_product'])}"
+        device_line = f"Android {escape(_text(device, 'android_release') or '?')}"
+        if sdk := _text(device, "android_sdk"):
+            device_line += f" (API {escape(sdk)})"
+        if product := _text(device, "device_product"):
+            device_line += f" — {escape(product)}"
         if ig := _run_text(device, "ig_version"):
             device_line += f" · Instagram {escape(ig)}"
         if profile := _run_text(device, "selector_profile"):
@@ -718,22 +784,24 @@ def status_page() -> HTMLResponse:
         latest_html = "<p>No scrape runs recorded yet.</p>"
     else:
         warning = _run_text(latest, "warning")
-        if latest["error"] or health_label:
-            status_word, status_class = ("ERROR" if latest["error"] else health_label), "bad"
+        error = _text(latest, "error")
+        new_posts = _int(latest, "new_posts")
+        if error or health_label:
+            status_word, status_class = ("ERROR" if error else health_label), "bad"
         elif warning:
             status_word, status_class = "WARN", "warn"
         else:
             status_word, status_class = "OK", "good"
         latest_html = f"""
         <p><span class="badge {status_class}">{status_word}</span>
-           finished {escape(latest["finished_at"])} ({_duration(latest)}),
-           {latest["new_posts"] if latest["new_posts"] is not None else 0} new post(s)</p>
-        {f'<p class="err">{escape(_short_error(latest["error"]))}</p>' if latest["error"] else ""}
+           finished {escape(_str(latest, "finished_at"))} ({_duration(latest)}),
+           {new_posts if new_posts is not None else 0} new post(s)</p>
+        {f'<p class="err">{escape(_short_error(error))}</p>' if error else ""}
         {f'<p class="err">{escape(health_reason)}</p>' if health_reason else ""}
-        {f'<p class="warn">{escape(warning)}</p>' if warning and not latest["error"] else ""}
+        {f'<p class="warn">{escape(warning)}</p>' if warning and not error else ""}
         """
     latest_html += "".join(
-        f'<p class="err">Alert since {escape(a["raised_at"][:16])}: {escape(a["message"])}</p>'
+        f'<p class="err">Alert since {escape(_str(a, "raised_at")[:16])}: {escape(_str(a, "message"))}</p>'
         for a in _open_alerts()
     )
     control = _control_state()
@@ -746,9 +814,13 @@ def status_page() -> HTMLResponse:
         css, text = _run_result(r)
         return f'<td class="{css}">{escape(text)}</td>'
 
+    def _new_posts_cell(r: sqlite3.Row) -> str:
+        new_posts = _int(r, "new_posts")
+        return f"<td>{new_posts if new_posts is not None else '—'}</td>"
+
     runs_rows = "".join(
-        f"<tr><td>{escape(r['started_at'])}</td><td>{_duration(r)}</td>"
-        f"<td>{r['new_posts'] if r['new_posts'] is not None else '—'}</td>"
+        f"<tr><td>{escape(_str(r, 'started_at'))}</td><td>{_duration(r)}</td>"
+        f"{_new_posts_cell(r)}"
         f"<td>{escape(_run_count(r, 'new_stories'))}</td>"
         f"<td>{escape(_run_count(r, 'filtered_posts'))}</td>"
         f"<td>{escape(_link_failures(r))}</td>"
@@ -758,7 +830,8 @@ def status_page() -> HTMLResponse:
         for r in runs
     )
     users_rows = "".join(
-        f"<tr><td>{escape(u['username'])}</td><td>{u['n']}</td><td>{escape(u['latest'] or '—')}</td></tr>"
+        f"<tr><td>{escape(_str(u, 'username'))}</td><td>{_str(u, 'n')}</td>"
+        f"<td>{escape(_text(u, 'latest') or '—')}</td></tr>"
         for u in users
     )
 

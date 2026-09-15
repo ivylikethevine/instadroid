@@ -6,7 +6,7 @@ except deciding what a changed selector or override should be. Everything works 
     python scripts/new_profile.py promote 447.0.0.12.34    # captured screens -> scrubbed replay fixtures
     python scripts/new_profile.py validate 447.0.0.12.34   # preconditions, then record the build as validated
     python scripts/new_profile.py fork 447.0.0.12.34       # only on drift: a new igprofiles/v447/
-    python scripts/new_profile.py restore                  # put the newest validated build back
+    python scripts/new_profile.py restore                  # put the default build (igprofiles.DEFAULT_BUILD) back
 
 A build runs under the profile covering it: the highest one at or below its major version. A profile
 exists only where Instagram changed something, so a build that `check` finds nothing wrong with is
@@ -31,7 +31,6 @@ Everything a baseline produces goes to local/data/debug/profile-dev/<major>/, ne
 
 import argparse
 import inspect
-import json
 import re
 import sqlite3
 import subprocess
@@ -48,7 +47,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import igprofiles  # noqa: E402
 import promote_dump  # noqa: E402
 from igprofiles import BaseProfile, screens, version_key  # noqa: E402
-from instadroid import parsing, versioning  # noqa: E402
+from instadroid import common, parsing, versioning  # noqa: E402
 
 PROFILES_DIR = ROOT / "app" / "igprofiles"
 DEV_DIR = ROOT / "local" / "data" / "debug" / "profile-dev"  # /debug/profile-dev in the container
@@ -68,22 +67,25 @@ MIN_HOST_AVAILABLE_MIB = 2048
 # --- builds and forks ------------------------------------------------------------------------------
 
 
-def parse_version(version: str) -> int:
+def parse_version(version: str, below_floor: bool = False) -> int:
     """The major version of a full Instagram build ("444.0.0.46.85" -> 444). Raises ValueError for
-    anything else, or a major below the supported floor."""
+    anything else, or a major below the supported floor unless `below_floor`."""
     m = _VERSION.match(version.strip())
     if not m:
         raise ValueError(f"{version!r} is not a full Instagram build like 444.0.0.46.85 (see APKPure)")
     major = int(m.group(1))
-    if major < igprofiles.MIN_MAJOR:
+    if major < igprofiles.MIN_MAJOR and not below_floor:
         raise ValueError(f"Instagram {major} is below the supported floor ({igprofiles.MIN_MAJOR})")
     return major
 
 
-def covering_profile(build: str) -> BaseProfile:
-    """The profile `build` runs under: the highest one at or below its major version."""
-    major = parse_version(build)
-    name = igprofiles.covering(major)
+def covering_profile(build: str, below_floor: bool = False) -> BaseProfile:
+    """The profile `build` runs under: the highest one at or below its major version. With
+    `below_floor`, a build older than every profile runs under the lowest one, which is how the
+    scraper itself treats it; that's for evaluating whether the floor could move, and only baseline
+    and check accept it."""
+    major = parse_version(build, below_floor)
+    name = igprofiles.covering(major) or (igprofiles.available()[0] if below_floor else None)
     if name is None:
         raise ValueError(f"no profile covers Instagram {major}: the oldest is {igprofiles.available()[0]}")
     return igprofiles.load(name)
@@ -112,12 +114,13 @@ class Profile(Profile{parent_major}):
     selectors = f'''"""Selectors for Instagram {major} onward.
 
 {parent}'s, with the keys {major} changed overridden, e.g.
-`SELECTORS = {{**SELECTORS_{parent_major}, "share_id": "..."}}`.
+`SELECTORS: Selectors = {{**SELECTORS_{parent_major}, "share_id": "..."}}`.
 """
 
+from igprofiles.base import Selectors
 from igprofiles.{parent}.selectors import SELECTORS as SELECTORS_{parent_major}
 
-SELECTORS = {{**SELECTORS_{parent_major}}}
+SELECTORS: Selectors = {{**SELECTORS_{parent_major}}}
 '''
     return {"__init__.py": init, "selectors.py": selectors}
 
@@ -145,7 +148,7 @@ def fork(build: str, root: Path = PROFILES_DIR, today: date | None = None) -> Pa
 
 
 def parent_of(profile: BaseProfile) -> BaseProfile | None:
-    """The profile this one subclasses (v440 for a v447 forked from it), or None for the root profile."""
+    """The profile this one subclasses (v424 for a v447 forked from it), or None for the root profile."""
     for cls in inspect.getmro(type(profile))[1:]:
         if cls is not BaseProfile and issubclass(cls, BaseProfile) and "major" in vars(cls):
             return cls()
@@ -156,7 +159,7 @@ def parent_of(profile: BaseProfile) -> BaseProfile | None:
 
 
 def dev_dir(build: str, root: Path = DEV_DIR) -> Path:
-    return root / str(parse_version(build))
+    return root / str(parse_version(build, below_floor=True))
 
 
 def baseline_env(
@@ -165,7 +168,7 @@ def baseline_env(
     """Container environment for a baseline: automatic profile selection, capture mode, a scratch
     database and media directory, the run caps, and no FreshRSS ping (nothing it stores belongs in the
     real feed)."""
-    base = f"{CONTAINER_DEV_DIR}/{parse_version(build)}"
+    base = f"{CONTAINER_DEV_DIR}/{parse_version(build, below_floor=True)}"
     return {
         "IG_PROFILE": "",  # whichever profile covers the build, whatever .env forces
         "IG_APK_VERSION": "",
@@ -195,7 +198,7 @@ _UNITS = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "kB": 1000, "MB":
 
 def parse_mem_usage(text: str) -> tuple[int, int]:
     """(used, limit) bytes from `docker stats`' MemUsage column, e.g. "1.03GiB / 3GiB"."""
-    sizes = re.findall(r"([\d.]+)\s*([KMG]?i?B|kB|MB|GB)", text)
+    sizes = [(m[1], m[2]) for m in re.finditer(r"([\d.]+)\s*([KMG]?i?B|kB|MB|GB)", text)]
     if len(sizes) != 2:
         raise ValueError(f"unrecognized docker stats memory usage {text!r}")
     used, limit = (int(float(n) * _UNITS[u]) for n, u in sizes)
@@ -218,7 +221,7 @@ class HostState:
 def preflight_problems(state: HostState, memory: bool = True) -> list[str]:
     """Reasons not to drive the device now; empty means go. `memory=False` skips the headroom checks,
     for an install alone (restore), which doesn't open Instagram."""
-    problems = []
+    problems: list[str] = []
     if not state.redroid_running:
         problems.append("redroid isn't running: `docker compose up -d redroid` first")
     if state.app_running:
@@ -280,7 +283,7 @@ def _run_logged(cmd: Sequence[str], log_path: Path) -> int:
     ):
         log.write("$ " + " ".join(cmd) + "\n")
         assert proc.stdout is not None
-        for line in proc.stdout:
+        for line in map(str, proc.stdout):  # typeshed types a Popen's pipe as IO[Any]; these are str lines
             sys.stdout.write(line)
             log.write(line)
     return proc.returncode
@@ -297,8 +300,9 @@ def baseline(
     following: bool = False,
     install: bool = True,
     yes: bool = False,
+    below_floor: bool = False,
 ) -> int:
-    profile = covering_profile(build)
+    profile = covering_profile(build, below_floor)
     if problems := preflight_problems(read_host_state()):
         print("Not starting the baseline run:")
         for p in problems:
@@ -327,18 +331,18 @@ def baseline(
         return 1
     code = _run_logged(compose_run(["once"], env), log_path)
     print(f"\nrun {'failed' if code else 'finished'}; checking what was captured\n")
-    check(build)
+    check(build, below_floor=below_floor)
     print(
         f"\nThe device now has Instagram {build}. Before `docker compose start app`, run"
-        " `python scripts/new_profile.py restore` to put the newest validated build back."
+        " `python scripts/new_profile.py restore` to put the default build back."
     )
     return code
 
 
 def restore(yes: bool = False) -> int:
-    build = igprofiles.newest_build()
+    build = igprofiles.default_build()
     if build is None:
-        print("Not restoring: no build is validated with any profile")
+        print("Not restoring: no default build and none validated")
         return 1
     if problems := preflight_problems(read_host_state(), memory=False):
         print("Not restoring:", *problems, sep="\n  - ")
@@ -377,7 +381,7 @@ class RunSummary:
 
 def captured_dumps(dumps: Path) -> list[tuple[Path, str, bool]]:
     """(path, screen, failure) for every capture in `dumps`, in capture order."""
-    found = []
+    found: list[tuple[Path, str, bool]] = []
     for path in sorted(dumps.glob("*_hierarchy.xml")) if dumps.is_dir() else []:
         if m := _DUMP.match(path.name):
             found.append((path, m["screen"], bool(m["fail"])))
@@ -414,7 +418,7 @@ def _item_count(xml: str, screen: str) -> int:
 
 def check_dumps(profile: BaseProfile, dumps: Path) -> list[DumpReport]:
     parent = parent_of(profile)
-    reports = []
+    reports: list[DumpReport] = []
     for path, screen, failure in captured_dumps(dumps):
         xml = path.read_text()
         parsed = _with_profile(profile, lambda xml=xml, screen=screen: _parse_summary(xml, screen))
@@ -442,23 +446,29 @@ def run_summary(db_path: Path) -> RunSummary | None:
     if not db_path.exists():
         return None
     with sqlite3.connect(db_path) as con:
-        con.row_factory = sqlite3.Row
         try:
-            row = con.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+            row = common.fetch_one(con.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1"))
         except sqlite3.OperationalError:
             return None
-    if not row:
+    if row is None:
         return None
-    keys = row.keys()
+    columns = set(row.keys())  # an older runs table may not have every column yet
+
+    def text(name: str) -> str | None:
+        return common.cell_str(row, name) if name in columns else None
+
+    def integer(name: str) -> int | None:
+        return common.cell_int(row, name) if name in columns else None
+
     return RunSummary(
-        ig_version=row["ig_version"] if "ig_version" in keys else None,
-        error=row["error"],
-        warning=row["warning"] if "warning" in keys else None,
-        new_posts=row["new_posts"] or 0,
-        new_stories=(row["new_stories"] if "new_stories" in keys else 0) or 0,
-        mem_peak_mb=row["mem_peak_mb"] if "mem_peak_mb" in keys else None,
-        redroid_image=row["redroid_image"] if "redroid_image" in keys else None,
-        android_release=row["android_release"],
+        ig_version=text("ig_version"),
+        error=text("error"),
+        warning=text("warning"),
+        new_posts=integer("new_posts") or 0,
+        new_stories=integer("new_stories") or 0,
+        mem_peak_mb=integer("mem_peak_mb"),
+        redroid_image=text("redroid_image"),
+        android_release=text("android_release"),
     )
 
 
@@ -529,9 +539,9 @@ def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], r
     return "\n".join(lines)
 
 
-def check(build: str, dumps: Path | None = None) -> bool:
+def check(build: str, dumps: Path | None = None, below_floor: bool = False) -> bool:
     """Print and save the report; True when every captured screen has its required keys."""
-    profile = covering_profile(build)
+    profile = covering_profile(build, below_floor)
     out = dev_dir(build)
     reports = check_dumps(profile, dumps or out / "dumps")
     text = render_report(build, profile, reports, run_summary(out / "posts.sqlite"))
@@ -580,7 +590,7 @@ def promote(build: str, wanted: Sequence[str] = PARSED_SCREENS) -> int:
 
 def validation_problems(profile: BaseProfile, build: str, run: RunSummary | None) -> list[str]:
     """What still stands between `build` and validated with `profile`."""
-    problems = []
+    problems: list[str] = []
     major = parse_version(build)
     fixtures = sorted(igprofiles.fixture(profile.name, "").glob(f"*_{major}.expected.json"))
     if not fixtures:
@@ -588,8 +598,8 @@ def validation_problems(profile: BaseProfile, build: str, run: RunSummary | None
     for expected in fixtures:
         name = expected.name.removesuffix(".expected.json")
         xml = expected.with_name(f"{name}.xml").read_text()
-        parsed = _with_profile(profile, lambda xml=xml: json.loads(json.dumps(parsing.parse_screen(xml))))
-        if parsed != json.loads(expected.read_text()):
+        parsed = _with_profile(profile, lambda xml=xml: promote_dump.expected(xml))
+        if parsed != promote_dump.load_json(expected.read_text()):
             problems.append(
                 f"{expected.name} no longer parses as recorded (re-record with promote_dump.py --update)"
             )
@@ -620,7 +630,7 @@ def add_validated(init: Path, build: str) -> None:
     first), or give the class one after its `selectors` line."""
     text = init.read_text()
     m = _VALIDATED.search(text)
-    builds = set(re.findall(r'"([^"]+)"', m["body"])) if m else set()
+    builds = {b[1] for b in re.finditer(r'"([^"]+)"', m["body"])} if m else set[str]()
     lines = "".join(f'        "{b}",\n' for b in sorted(builds | {build}, key=version_key))
     block = f"    validated = (\n{lines}    )\n"
     if m:
@@ -657,9 +667,31 @@ def validate(build: str) -> int:
 # --- CLI -------------------------------------------------------------------------------------------
 
 
+class Options(argparse.Namespace):
+    """The parsed command line; each subcommand sets only its own options."""
+
+    command: str
+    build: str
+    scrolls: int
+    stories: int
+    following: bool
+    yes: bool
+    no_install: bool
+    below_floor: bool
+    dumps: Path | None
+    screens: str
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
+
+    def floor_option(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--below-floor",
+            action="store_true",
+            help="allow a build older than every profile, run under the lowest (evaluating the floor)",
+        )
 
     def run_options(p: argparse.ArgumentParser) -> None:
         p.add_argument("--scrolls", type=int, default=DEFAULT_SCROLLS, help="MAX_SCROLLS for the run")
@@ -671,9 +703,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("build")
     p.add_argument("--no-install", action="store_true", help="the build is already installed")
     run_options(p)
+    floor_option(p)
     p = sub.add_parser("check", help="report selector keys per captured screen")
     p.add_argument("build")
     p.add_argument("--dumps", type=Path, help="directory of captured dumps (default: the baseline's)")
+    floor_option(p)
     p = sub.add_parser("promote", help="captured screens -> replay fixtures")
     p.add_argument("build")
     p.add_argument("--screens", default=",".join(PARSED_SCREENS), help="comma-separated screens")
@@ -681,18 +715,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("build")
     p = sub.add_parser("fork", help="create a profile for a build whose check found drift")
     p.add_argument("build")
-    p = sub.add_parser("restore", help="install the newest validated build again")
+    p = sub.add_parser("restore", help="install the default build again")
     p.add_argument("--yes", action="store_true")
 
-    opts = ap.parse_args(argv)
+    opts = ap.parse_args(argv, namespace=Options())
     try:
         match opts.command:
             case "baseline":
                 return baseline(
-                    opts.build, opts.scrolls, opts.stories, opts.following, not opts.no_install, opts.yes
+                    opts.build,
+                    opts.scrolls,
+                    opts.stories,
+                    opts.following,
+                    not opts.no_install,
+                    opts.yes,
+                    opts.below_floor,
                 )
             case "check":
-                return 0 if check(opts.build, opts.dumps) else 1
+                return 0 if check(opts.build, opts.dumps, opts.below_floor) else 1
             case "promote":
                 return promote(opts.build, [s for s in opts.screens.split(",") if s])
             case "validate":
@@ -705,6 +745,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
             case "restore":
                 return restore(opts.yes)
+            case _:
+                pass
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

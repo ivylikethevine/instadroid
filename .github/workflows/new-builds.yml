@@ -1,0 +1,57 @@
+name: New Instagram builds
+
+# Weekly: list the Instagram builds APKPure serves and, when a major version newer than every validated
+# build shows up, open (or refresh) one issue saying which builds need a baseline on a device. Nothing is
+# downloaded but apkeep's version listing: no APK, account, session or dump touches this workflow.
+on:
+  schedule:
+    - cron: "37 8 * * 1" # weekly
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: new-builds
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check APKPure for new builds
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # open or refresh the tracking issue
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.14"
+      # The same pinned release and checksum as app/Dockerfile.
+      - name: Install apkeep
+        run: |
+          curl -fsSL -o apkeep https://github.com/EFForg/apkeep/releases/download/1.0.0/apkeep-x86_64-unknown-linux-gnu
+          echo "a23579a3ba366d25a6d69848189b983d65662f4ecf4b9e11e16510811659de4e  apkeep" | sha256sum -c -
+          chmod +x apkeep
+      - name: List builds
+        run: ./apkeep -l -a com.instagram.android -d apk-pure > versions.txt
+      - name: Compare with validated builds
+        run: python scripts/check_new_builds.py --versions-file versions.txt > body.md
+      - name: Open or refresh the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ ! -s body.md ]; then
+            echo "nothing newer than the validated builds"
+            exit 0
+          fi
+          gh label create new-instagram-build --color FBCA04 --description "Instagram builds to validate" --force
+          number=$(gh issue list --label new-instagram-build --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file body.md
+          else
+            gh issue create --title "New Instagram builds to validate" --label new-instagram-build --body-file body.md
+          fi

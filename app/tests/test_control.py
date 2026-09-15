@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from instadroid import config, control, db, scrape
 
-from tests.test_feed import make_app
+from tests.test_feed import json_body, json_object, make_app
 
 
 @pytest.fixture
@@ -69,7 +69,7 @@ def test_wait_sleeps_in_steps_and_ends_early_for_scrape_now(
     control.wait(con, 100)
     assert sleeps == [30, 30]  # the third check found the request (no runs yet, so it's due)
     sleeps.clear()
-    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(time, "sleep", sleeps.append)
     control.wait(con, 75)
     assert sleeps == [30, 30, 15]
 
@@ -95,7 +95,10 @@ def test_the_poll_loop_holds_while_locked(
         started.append(1)
         raise StopLoop
 
-    monkeypatch.setattr(scrape, "_startup_wait_seconds", lambda c: 0)
+    def startup_wait_seconds(c: sqlite3.Connection) -> float:
+        return 0
+
+    monkeypatch.setattr(scrape, "_startup_wait_seconds", startup_wait_seconds)
     monkeypatch.setattr(scrape, "run_recorded", run_recorded)
     with pytest.raises(StopLoop):
         scrape.main()
@@ -113,13 +116,13 @@ def _control_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 def test_control_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = _control_app(tmp_path, monkeypatch)
     control_dir = tmp_path / "control"
-    assert client.post("/control/lock").json() == {"locked": True, "scrape_now": False}
+    assert json_body(client.post("/control/lock")) == {"locked": True, "scrape_now": False}
     assert (control_dir / "manual.lock").exists()
     assert client.post("/control/scrape-now").status_code == 409  # locked
-    assert client.delete("/control/lock").json() == {"locked": False, "scrape_now": False}
+    assert json_body(client.delete("/control/lock")) == {"locked": False, "scrape_now": False}
     assert client.post("/control/scrape-now").status_code == 202  # no runs recorded yet
     assert (control_dir / "scrape-now").exists()
-    assert client.get("/control").json() == {"locked": False, "scrape_now": True}
+    assert json_body(client.get("/control")) == {"locked": False, "scrape_now": True}
     assert "scrape-now request is waiting" in client.get("/status").text
 
     con = sqlite3.connect(tmp_path / "posts.sqlite")
@@ -131,7 +134,8 @@ def test_control_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     con.commit()
     con.close()
     r = client.post("/control/scrape-now")
-    assert r.status_code == 429 and "25" in r.json()["detail"]  # 30 - 5 minutes to go
+    detail = json_object(r)["detail"]
+    assert r.status_code == 429 and isinstance(detail, str) and "25" in detail  # 30 - 5 minutes to go
 
 
 def test_control_endpoints_need_the_feed_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

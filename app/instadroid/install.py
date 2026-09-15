@@ -5,19 +5,19 @@ import zipfile
 from pathlib import Path
 
 import igprofiles
-import uiautomator2 as u2
 
-from . import config, device, versioning
+from . import config, device, uidevice, versioning
 from .common import log
 from .device import DeviceNotReady
 
 
 def _apk_version(version: str | None = None) -> str:
-    """The Instagram build to fetch: `version` if given, else IG_APK_VERSION, else the newest validated
-    build (of IG_PROFILE's profile when that's set, otherwise of any profile). "latest" (or an empty
+    """The Instagram build to fetch: `version` if given, else IG_APK_VERSION, else the default build
+    (igprofiles.default_build(): DEFAULT_BUILD, or IG_PROFILE's newest validated build when that profile
+    hasn't validated it). "latest" (or an empty
     string, including when nothing is validated) means whatever apkeep resolves as latest."""
     if version is None:
-        version = config.IG_APK_VERSION or igprofiles.newest_build(config.IG_PROFILE or None) or ""
+        version = config.IG_APK_VERSION or igprofiles.default_build(config.IG_PROFILE or None) or ""
     version = version.strip()
     return "" if version.lower() == "latest" else version
 
@@ -81,7 +81,7 @@ def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
     return base + splits
 
 
-def install_instagram(d: u2.Device, version: str | None = None, downgrade: bool = False) -> None:
+def install_instagram(d: uidevice.Device, version: str | None = None, downgrade: bool = False) -> None:
     """Fetch (or reuse a cached) Instagram bundle and adb-install it, same as the manual
     `apkeep` + `install-multiple` steps in README.md's First-time setup. Raises DeviceNotReady on
     any failure so the caller's retry ladder (device.is_transient()) handles it rather than aborting the
@@ -105,7 +105,7 @@ def install_instagram(d: u2.Device, version: str | None = None, downgrade: bool 
     versioning.activate_profile(installed)  # device.connect_device() activated before this version existed
 
 
-def install_instagram_version(d: u2.Device, version: str | None = None) -> str | None:
+def install_instagram_version(d: uidevice.Device, version: str | None = None) -> str | None:
     """`scraper.py install [VERSION]`: put exactly `version` (default: the active profile's
     apk_version, see _apk_version(); "latest" = newest on APKPure) on the device, replacing whatever
     is installed, including a newer version. A no-op if that version is already installed. Returns

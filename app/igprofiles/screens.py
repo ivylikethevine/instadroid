@@ -14,9 +14,10 @@ Used by scripts/new_profile.py (`check`) and tests/test_replay.py; never touches
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
 
 from lxml import etree
+
+from .base import Selectors, SelectorValue
 
 
 @dataclass(frozen=True)
@@ -118,7 +119,7 @@ def _strings(nodes: list[etree._Element]) -> list[str]:
     return [v for n in nodes for v in (n.get("text"), n.get("content-desc")) if v]
 
 
-def key_matches(key: str, value: Any, nodes: list[etree._Element]) -> bool | None:
+def key_matches(key: str, value: SelectorValue, nodes: list[etree._Element]) -> bool | None:
     """Whether selector `key` finds anything among `nodes`, using the same kind of comparison the
     scraper does: resource-id suffix for *_id(s), class name for caption_class, exact text or
     content-desc for strings and lists of strings, a regex match on text/content-desc for patterns.
@@ -167,7 +168,7 @@ class ScreenCheck:
         return not self.missing_required and not self.looks_empty
 
 
-def check_screen(xml: str, screen: str | None, selectors: dict[str, Any]) -> ScreenCheck:
+def check_screen(xml: str, screen: str | None, selectors: Selectors) -> ScreenCheck:
     """Match every selector key against one dump, and sort the expected ones for `screen` (None: no
     expectations, e.g. a manual dump) into matched and missing."""
     nodes = list(etree.fromstring(xml.encode()).iter("node"))

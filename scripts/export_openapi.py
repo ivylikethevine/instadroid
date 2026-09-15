@@ -24,9 +24,16 @@ def render() -> str:
         os.environ["MEDIA_DIR"] = tmp
         os.environ["DB_PATH"] = str(Path(tmp) / "posts.sqlite")
         sys.path.insert(0, str(ROOT / "app"))
+        from jsonvalues import JSON
+
         import app
 
-        return json.dumps(app.app.openapi(), indent=2, ensure_ascii=False) + "\n"
+        spec: dict[str, JSON] = app.app.openapi()
+        return json.dumps(spec, indent=2, ensure_ascii=False) + "\n"
+
+
+class Options(argparse.Namespace):
+    check: bool
 
 
 def main() -> int:
@@ -35,7 +42,7 @@ def main() -> int:
     )
     parser.add_argument("--check", action="store_true", help="fail instead of writing when the spec differs")
     spec = render()
-    if parser.parse_args().check:
+    if parser.parse_args(namespace=Options()).check:
         if not SPEC.exists() or SPEC.read_text() != spec:
             print(f"{SPEC.relative_to(ROOT)} is out of date: run python scripts/export_openapi.py")
             return 1

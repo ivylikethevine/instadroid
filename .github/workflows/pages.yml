@@ -32,7 +32,7 @@ jobs:
           cache: pip
       - run: pip install -r app/requirements.txt -r scripts/requirements-dev.txt
       - run: mkdir -p local # pyproject.toml keeps coverage's data file there
-      - run: python -m pytest -q --cov=app --cov-report=term
+      - run: python -m pytest -q --cov=app --cov=scripts --cov-report=term --cov-fail-under=90
       - name: Total coverage
         id: coverage
         run: echo "percent=$(python -m coverage report --format=total)" >> "$GITHUB_OUTPUT"
