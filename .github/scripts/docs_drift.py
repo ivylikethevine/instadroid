@@ -203,7 +203,7 @@ def _contents_problems(path: Path) -> list[str]:
     anchors: set[str] = set()
     seen: Counter[str] = Counter()
     entries: list[tuple[bool, str]] = []  # (nested, anchor)
-    in_contents = False
+    in_contents = has_contents = False
     for _, line in body:
         heading = _HEADING.match(line)
         if heading:
@@ -212,6 +212,7 @@ def _contents_problems(path: Path) -> list[str]:
             seen[base] += 1
             in_contents = len(heading.group(1)) == 2 and heading.group(2) == "Contents"
             if in_contents:
+                has_contents = True
                 continue
             anchors.add(anchor)
             if len(heading.group(1)) == 2:
@@ -220,7 +221,6 @@ def _contents_problems(path: Path) -> list[str]:
         entry = _ENTRY.match(line) if in_contents else None
         if entry:
             entries.append((bool(entry.group(1)), entry.group(2)))
-    has_contents = any(line == "## Contents" for _, line in body)
     if not has_contents:
         return [f"{len(lines)} lines and no ## Contents"] if len(lines) > CONTENTS_MIN_LINES else []
     problems: list[str] = []

@@ -18,8 +18,18 @@ function _id_first() {
   sed -n "s|$1.*|\1|p" "$2" | head -n1
 }
 
+# _python_matches <want> <label> <version> <where> - one Python version line, a problem unless it's <want>
+function _python_matches() {
+  if [ "$3" = "$1" ]; then
+    printf '%-32s %-14s matches (%s)\n' "$2" "$3" "$4"
+  else
+    printf '%-32s %-14s MISMATCH (%s; requires-python says %s)\n' "$2" "${3:--}" "$4" "$1"
+    _ci_problem "python version" "$2 in $4 is '${3:-missing}', requires-python is $1 - move them together"
+  fi
+}
+
 function ci_local_checks() {
-  local want v f label where rows="" theme repo
+  local want v f theme repo
 
   echo "## Local checks (check_tool_versions.local.sh)"
   echo
@@ -30,28 +40,18 @@ function ci_local_checks() {
   if [ -z "$want" ]; then
     _ci_problem "python version" "no requires-python = \">=X.Y\" in pyproject.toml"
   else
+    printf '%-32s %-14s reference (pyproject.toml requires-python)\n' "python" "$want"
     v="$(_id_first '^target-version = "py\([0-9][0-9]*\)"' pyproject.toml)"
-    rows+="ruff target-version|${v:+${v:0:1}.${v:1}}|pyproject.toml [tool.ruff]"$'\n'
+    _python_matches "$want" "ruff target-version" "${v:+${v:0:1}.${v:1}}" "pyproject.toml [tool.ruff]"
     v="$(_id_first '^pythonVersion = "\([0-9][0-9.]*\)"' pyproject.toml)"
-    rows+="basedpyright pythonVersion|$v|pyproject.toml [tool.basedpyright]"$'\n'
+    _python_matches "$want" "basedpyright pythonVersion" "$v" "pyproject.toml [tool.basedpyright]"
     v="$(_id_first '^FROM python:\([0-9][0-9.]*\)-' app/Dockerfile)"
-    rows+="app/Dockerfile FROM python|$v|app/Dockerfile"$'\n'
+    _python_matches "$want" "app/Dockerfile FROM python" "$v" app/Dockerfile
     for f in .github/workflows/*.yml; do
       while IFS= read -r v; do
-        rows+="setup-python python-version|$v|$f"$'\n'
+        _python_matches "$want" "setup-python python-version" "$v" "$f"
       done < <(sed -n 's|.*python-version: "\([0-9][0-9.]*\)".*|\1|p' "$f" | sort -u)
     done
-
-    printf '%-32s %-14s reference (pyproject.toml requires-python)\n' "python" "$want"
-    while IFS='|' read -r label v where; do
-      [ -n "$label" ] || continue
-      if [ "$v" = "$want" ]; then
-        printf '%-32s %-14s matches (%s)\n' "$label" "$v" "$where"
-      else
-        printf '%-32s %-14s MISMATCH (%s; requires-python says %s)\n' "$label" "${v:--}" "$where" "$want"
-        _ci_problem "python version" "$label in $where is '${v:-missing}', requires-python is $want - move them together"
-      fi
-    done <<<"$rows"
   fi
 
   # The docs site's remote theme, in the root _config.yml (pages.yml builds the site from the root).
