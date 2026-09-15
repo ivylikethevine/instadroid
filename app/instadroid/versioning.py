@@ -1,4 +1,4 @@
-"""The active Instagram version profile (see igprofiles/ and docs/NEXT.md) and the @versioned
+"""The active Instagram version profile (see igprofiles/ and docs/PROFILES.md) and the @versioned
 hook that lets a profile replace any UI-dependent function."""
 
 import functools
@@ -119,7 +119,7 @@ def activate_profile(installed: str | None) -> None:
         newest = max(profile.own_validated, key=version_key) if profile.own_validated else "none yet"
         warnings.append(
             f"Instagram {installed} hasn't been validated with profile {profile.name}"
-            f" (newest validated: {newest}; see docs/NEXT.md)"
+            f" (newest validated: {newest}; see docs/PROFILES.md)"
         )
     if unknown := _unknown_hooks(profile):
         warnings.append(

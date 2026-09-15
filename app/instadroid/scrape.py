@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
+from shared import sqlrows
+
 from . import (
     alerts,
     backup,
@@ -39,15 +41,15 @@ def _startup_wait_seconds(con: sqlite3.Connection, now: datetime | None = None) 
     if config.SCRAPE_ON_STARTUP:
         return 0.0
     try:
-        row = common.fetch_one(con.execute("SELECT finished_at, error FROM runs ORDER BY id DESC LIMIT 1"))
+        row = sqlrows.fetch_one(con.execute("SELECT finished_at, error FROM runs ORDER BY id DESC LIMIT 1"))
     except sqlite3.Error:
         return 0.0
     if not row:
         return 0.0
-    finished = common.parse_iso(common.cell(row, 0))
+    finished = common.parse_iso(sqlrows.cell(row, 0))
     if finished is None:
         return 0.0
-    error = common.cell_str(row, 1) or ""
+    error = sqlrows.cell_str(row, 1) or ""
     if error and config.RETRY_DELAYS_MINUTES and error.split("(", 1)[0] in device.transient_error_names():
         interval = config.RETRY_DELAYS_MINUTES[0] * 60
     else:
@@ -163,7 +165,7 @@ def _store_post(
     }
     if dup := db.find_duplicate(con, p["username"], posted_at, precision, row["caption"]):
         merged, media_to_drop = db.merged_fields(dup, row, now)
-        db.write_merged(con, common.must_str(dup, "id"), merged)
+        db.write_merged(con, sqlrows.must_str(dup, "id"), merged)
         con.commit()
         # The stored cover wins, so this capture's extra slides are redundant too.
         retention.discard_media(media_to_drop, *extra_media)
@@ -184,8 +186,8 @@ def _store_post(
 
 def _needs_permalink(stored: sqlite3.Row) -> bool:
     """A stored post with no permalink yet, and backfill tries left."""
-    attempts = common.cell_int(stored, "permalink_attempts") or 0
-    return common.cell_str(stored, "url") is None and attempts < config.PERMALINK_BACKFILL_TRIES
+    attempts = sqlrows.cell_int(stored, "permalink_attempts") or 0
+    return sqlrows.cell_str(stored, "url") is None and attempts < config.PERMALINK_BACKFILL_TRIES
 
 
 def _backfill_permalink(
@@ -196,18 +198,18 @@ def _backfill_permalink(
     updated_at moves, so the feed's ETag does and readers pick the link up. A link already stored for
     another row (the same post captured twice) is left alone. Returns capture.fetch_permalink()'s
     failure reason, if any."""
-    post_id = common.must_str(stored, "id")
+    post_id = sqlrows.must_str(stored, "id")
     url, fail_reason = capture.fetch_permalink(d, h)
-    attempts = (common.cell_int(stored, "permalink_attempts") or 0) + 1
+    attempts = (sqlrows.cell_int(stored, "permalink_attempts") or 0) + 1
     con.execute("UPDATE posts SET permalink_attempts=? WHERE id=?", (attempts, post_id))
     if url:
         code = url.rstrip("/").rsplit("/", 1)[-1]
-        taken = common.fetch_one(
+        taken = sqlrows.fetch_one(
             con.execute("SELECT id FROM posts WHERE (id=? OR url=?) AND id != ?", (code, url, post_id))
         )
         if taken:
             log(
-                f"WARN: permalink {code} is already stored for {common.must_str(taken, 'id')}; not backfilling {post_id}"
+                f"WARN: permalink {code} is already stored for {sqlrows.must_str(taken, 'id')}; not backfilling {post_id}"
             )
         else:
             now = datetime.now(UTC).isoformat()
@@ -246,9 +248,9 @@ def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.Memo
         navigation.open_target_feed(d)  # back onto the feed screen the post loop expects
     followed: set[str] | None = None
     if config.FOLLOWING_REFRESH_DAYS:
-        rows = common.fetch_all(con.execute("SELECT username FROM following"))
+        rows = sqlrows.fetch_all(con.execute("SELECT username FROM following"))
         if rows:  # empty/never-refreshed means "not initialized yet" -> filter nothing
-            followed = {common.must_str(r, 0) for r in rows}
+            followed = {sqlrows.must_str(r, 0) for r in rows}
     warnings: list[str] = []
     new_stories = 0
     if reason := guard.exceeded():
@@ -334,7 +336,7 @@ def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.Memo
                 continue  # still on screen from the previous scroll
             if not p["complete"]:
                 continue  # wait until the whole bottom of the card is on screen (stable identity)
-            stored = common.fetch_one(
+            stored = sqlrows.fetch_one(
                 con.execute("SELECT id, url, permalink_attempts FROM posts WHERE hash=? OR id=?", (h, h))
             )
             if stored:
@@ -375,11 +377,11 @@ def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.Memo
                 this_run.discard(h)  # let the card be handled again where it appears
             pid = url.rstrip("/").rsplit("/", 1)[-1] if url else h
             row = (
-                common.fetch_one(con.execute("SELECT username FROM posts WHERE id=?", (pid,)))
+                sqlrows.fetch_one(con.execute("SELECT username FROM posts WHERE id=?", (pid,)))
                 if url
                 else None
             )
-            owner = common.cell(row, 0) if row else None
+            owner = sqlrows.cell(row, 0) if row else None
             if row and owner != p["username"]:
                 log(
                     f"WARN: permalink {pid} belongs to {owner}, not {p['username']}; stale clipboard, dropping it"

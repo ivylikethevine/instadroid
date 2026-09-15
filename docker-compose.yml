@@ -32,7 +32,7 @@ services:
     restart: unless-stopped
     # Memory: a live scrape measured 1.98GiB (2026-09-11), and on 2026-09-14 a scrape sat at
     # 1.7-1.99GiB of the old 2g for its whole run, the kernel OOM-killed 7 Android processes inside
-    # the container, and the host desktop froze until the run was stopped (see CLAUDE.md). 3g gives
+    # the container, and the host desktop froze until the run was stopped (see docs/INCIDENTS.md). 3g gives
     # real headroom over that peak. memswap_limit equal to mem_limit means no swap: a container
     # thrashing swap is exactly the kind of pressure that stalls the whole host. The scraper also
     # stops a run itself before this ceiling (MEMORY_GUARD_PERCENT in app/instadroid/config.py).
@@ -59,7 +59,7 @@ services:
       - androidboot.use_memfd=true
 
   # One-shot, before redroid: refuses to start it on a /data volume last used by a different Android
-  # major version, which corrupted appops.xml, the idmap cache and telephony.db before (CLAUDE.md).
+  # major version, which corrupted appops.xml, the idmap cache and telephony.db before (docs/INCIDENTS.md).
   # The image that last used the volume is recorded in local/data/android.image; see
   # scripts/guard-android-data.sh for what to do when it refuses. Same image as app, nothing to pull.
   android-data-guard:
@@ -127,8 +127,8 @@ services:
     mem_limit: 256m
     memswap_limit: 256m
     cpus: 1.5
-    # /health returns 503 once scraping looks stuck or keeps failing (see _scraper_health() in
-    # app.py), so `docker ps` shows "unhealthy". Docker itself doesn't restart unhealthy containers.
+    # /health returns 503 once scraping looks stuck or keeps failing (see scraper_health() in
+    # app/feedserver/status.py), so `docker ps` shows "unhealthy". Docker itself doesn't restart unhealthy containers.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s
@@ -138,7 +138,7 @@ services:
 
   # Optional: a real FreshRSS to subscribe to this instance's feeds. Off by default — start with
   # `docker compose --profile freshrss up -d freshrss`. First-run setup (creates the SQLite-backed
-  # instance and a user with an API token) is two one-time commands, see README's FreshRSS section:
+  # instance and a user with an API token) is two one-time commands, see docs/FRESHRSS.md:
   #   docker compose exec freshrss ./cli/do-install.php --default_user <name> --auth_type form --db-type sqlite
   #   docker compose exec freshrss ./cli/create-user.php --user <name> --password <pw> --token <token> --no-default-feeds
   # That token is what FRESHRSS_REFRESH_URL (app service env, read by the scraper) is built from.
@@ -152,7 +152,7 @@ services:
     # 127.0.0.1:8000 (FEED_HOST default), which a bridged container could not reach, and the
     # scraper's refresh ping has to reach FreshRSS back over that same loopback. LISTEN below keeps
     # FreshRSS itself loopback-only despite host networking; the feed is only authenticated when
-    # FEED_TOKEN is set (see README's FreshRSS section) — nothing here should reach the LAN.
+    # FEED_TOKEN is set (see docs/FRESHRSS.md) — nothing here should reach the LAN.
     network_mode: host
     environment:
       LISTEN: ${FRESHRSS_LISTEN:-127.0.0.1:8080}

@@ -9,7 +9,7 @@ without a warning. Keys in SITUATIONAL belong to no one screen (interstitials, c
 clipboard). Every key in a profile's selectors belongs to at least one of these, which
 tests/test_profiles.py checks, so a new selector key has to be placed here.
 
-Used by scripts/new_profile.py (`check`) and tests/test_replay.py; never touches a device.
+Used by devtools/new_profile.py (`check`) and tests/test_replay.py; never touches a device.
 """
 
 import re

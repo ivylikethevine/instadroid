@@ -4,7 +4,7 @@ time, so tests can monkeypatch any of them."""
 import os
 from pathlib import Path
 
-from fileenv import env_secret
+from shared.fileenv import env_secret
 
 
 def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
@@ -58,12 +58,12 @@ IG_PKG = "com.instagram.android"
 # If the device has no Instagram installed, navigation.ensure_logged_in() fetches it with apkeep (built into
 # the image, see Dockerfile) and adb-installs it, instead of just raising — this is what lets the
 # service recover on its own from a fresh /data volume or the /data/system-reset scenario in
-# CLAUDE.md, where Instagram's package registration was orphaned but the app itself wasn't touched.
+# docs/INCIDENTS.md, where Instagram's package registration was orphaned but the app itself wasn't touched.
 # 0/false/empty falls back to the original behavior: raise and require a manual `adb install`.
 IG_AUTO_INSTALL = os.environ.get("IG_AUTO_INSTALL", "1").strip().lower() not in ("0", "false", "")
 # Force one Instagram version profile: a directory under igprofiles/ ("v424", or just "424"). Empty (the
 # default) = the highest profile at or below the installed Instagram version, chosen on every connect.
-# Profiles exist only where Instagram changed something. See docs/NEXT.md.
+# Profiles exist only where Instagram changed something. See docs/PROFILES.md.
 IG_PROFILE = os.environ.get("IG_PROFILE", "").strip()
 # Override the Instagram build auto-install and `scraper.py install` fetch. Empty = igprofiles.DEFAULT_BUILD
 # (see igprofiles.default_build()); "latest" = the newest on APKPure.
@@ -71,7 +71,7 @@ IG_APK_VERSION = os.environ.get("IG_APK_VERSION", "").strip()
 APK_CACHE_DIR = Path(os.environ.get("APK_CACHE_DIR", "/apk"))
 APK_FETCH_TIMEOUT = float(os.environ.get("APK_FETCH_TIMEOUT", "300"))  # apkeep's own download
 DEBUG_KEEP = 12  # debug dump pairs to retain; older ones are pruned on every new dump
-# Profile development (scripts/new_profile.py baseline): when set, every screen the scraper visits
+# Profile development (devtools/new_profile.py baseline): when set, every screen the scraper visits
 # is also saved here as a numbered hierarchy + screenshot pair (up to CAPTURE_PER_SCREEN of each
 # screen, plus every failure dump), never pruned, for `new_profile.py check`. Empty = off.
 PROFILE_CAPTURE_DIR = os.environ.get("PROFILE_CAPTURE_DIR", "").strip()
@@ -156,7 +156,7 @@ SELECTOR_DRIFT_MIN_RUNS = int(os.environ.get("SELECTOR_DRIFT_MIN_RUNS", "3"))
 SELECTOR_DRIFT_THRESHOLD = float(os.environ.get("SELECTOR_DRIFT_THRESHOLD", "0.5"))
 # Stop a run early once redroid's container memory reaches this percent of its mem_limit, read from
 # the device's own cgroup (see device._redroid_memory()). Android's lmkd never reclaims here (it judges
-# against the host's RAM, see CLAUDE.md), so the scraper has to back off itself: on 2026-09-14 a run
+# against the host's RAM, see docs/INCIDENTS.md), so the scraper has to back off itself: on 2026-09-14 a run
 # at the old 2g limit OOM-killed Android processes and froze the host. 0 disables.
 MEMORY_GUARD_PERCENT = float(os.environ.get("MEMORY_GUARD_PERCENT", "85"))
 # Failure alerts (instadroid/alerts.py). ALERT_URL receives a POST per alert raised or resolved (an ntfy

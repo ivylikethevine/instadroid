@@ -19,6 +19,8 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from shared import sqlrows
+
 from . import common, config
 from .common import log
 
@@ -61,7 +63,7 @@ def request_run_now() -> None:
 
 
 def minutes_since_last_run(con: sqlite3.Connection, now: datetime | None = None) -> float | None:
-    finished = common.parse_iso(common.scalar(con.execute("SELECT MAX(finished_at) FROM runs")))
+    finished = common.parse_iso(sqlrows.scalar(con.execute("SELECT MAX(finished_at) FROM runs")))
     if finished is None:
         return None
     return ((now or datetime.now(UTC)) - finished).total_seconds() / 60

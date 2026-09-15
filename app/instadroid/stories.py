@@ -8,6 +8,7 @@ from typing import Protocol, TypedDict
 
 from lxml import etree
 from PIL import Image, ImageStat
+from shared import sqlrows
 
 from . import capture, common, config, device, diagnostics, navigation, parsing, uidevice
 from .common import log
@@ -205,12 +206,12 @@ def _find_story_duplicate(con: sqlite3.Connection, username: str, phash: str) ->
     """True if this account has a story stored in the last day (a story's lifetime) that looks the
     same. The byte hash alone missed these: every capture re-encodes a fresh screenshot."""
     cutoff = (datetime.now(UTC) - timedelta(days=1)).isoformat()
-    rows = common.fetch_all(
+    rows = sqlrows.fetch_all(
         con.execute(
             "SELECT phash FROM stories WHERE username=? AND scraped_at > ? AND phash IS NOT NULL",
             (username, cutoff),
         )
     )
     return any(
-        (int(common.must_str(r, 0), 16) ^ int(phash, 16)).bit_count() <= STORY_PHASH_DISTANCE for r in rows
+        (int(sqlrows.must_str(r, 0), 16) ^ int(phash, 16)).bit_count() <= STORY_PHASH_DISTANCE for r in rows
     )

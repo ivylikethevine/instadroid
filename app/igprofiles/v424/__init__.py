@@ -1,7 +1,7 @@
 """Instagram 424 onward: the root profile, holding the full selectors.
 
 The selectors were written against 445.0.0.45.83 and have since handled every build listed in
-`validated` unchanged, 2026-09-14 (docs/NEXT.md's run log). A later version that changes something
+`validated` unchanged, 2026-09-14 (docs/RUNLOG.md). A later version that changes something
 gets its own profile subclassing this one.
 """
 
