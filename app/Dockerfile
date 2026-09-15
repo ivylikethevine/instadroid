@@ -40,3 +40,7 @@ USER 1000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD ["python", "-c", "import os, urllib.request as u; u.urlopen('http://localhost:' + os.environ.get('FEED_PORT', '8000') + '/health', timeout=3)"]
 CMD ["./entrypoint.sh"]
+
+LABEL org.opencontainers.image.source=https://github.com/ivylikethevine/instadroid
+LABEL org.opencontainers.image.description="python slim based installation of instadroid, an instagram to rss converter using an android emulator"
+LABEL org.opencontainers.image.licenses=MIT
