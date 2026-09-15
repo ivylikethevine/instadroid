@@ -51,10 +51,10 @@ def _login_form(d: uidevice.Device) -> tuple[uidevice.Selector, uidevice.Selecto
 
 
 @versioned
-def ensure_logged_in(d: uidevice.Device) -> bool:
+def ensure_logged_in(d: uidevice.Device) -> None:
     """If the login screen is showing, fill credentials from the environment and log in.
 
-    Returns True if we are (or became) logged in. Raises RuntimeError on a 2FA/challenge
+    Returns once we are (or became) logged in. Raises RuntimeError on a 2FA/challenge
     screen so the caller can abort and a human can finish it.
     """
     if config.IG_PKG not in d.app_list():
@@ -67,7 +67,7 @@ def ensure_logged_in(d: uidevice.Device) -> bool:
     device.launch_app(d)
     device.human_pause(4, 6)
     for attempt in range(3):
-        if d.app_current().get("package") == config.IG_PKG:
+        if device.in_foreground(d):
             break
         log(f"WARN: {config.IG_PKG} not foregrounded yet (attempt {attempt}); retrying launch")
         device.launch_app(d)
@@ -102,12 +102,12 @@ def ensure_logged_in(d: uidevice.Device) -> bool:
         # No login screen, so the session is live, provided Instagram is still up: a build that
         # crashes at startup is in front just long enough for the check above, then gone (seen live
         # with 400.0.0.49.68), and every check since found nothing because nothing was there.
-        if d.app_current().get("package") != config.IG_PKG:
+        if not device.in_foreground(d):
             diagnostics.dump_debug(d, "login")
             raise DeviceNotReady(
                 f"{config.IG_PKG} left the foreground right after launch (crashing at startup?)"
             )
-        return True
+        return
     if not (config.IG_USERNAME and config.IG_PASSWORD):
         diagnostics.dump_debug(d, "login")
         raise RuntimeError("login screen shown but IG_USERNAME/IG_PASSWORD not set")
@@ -139,7 +139,6 @@ def ensure_logged_in(d: uidevice.Device) -> bool:
         diagnostics.dump_debug(d, "login")
         raise RuntimeError(f"still on login screen after submit (wrong password?); see {config.DEBUG_DIR}")
     log("logged in")
-    return True
 
 
 @versioned
@@ -151,7 +150,7 @@ def _on_following_feed(d: uidevice.Device) -> bool:
 @versioned
 def open_following_feed(d: uidevice.Device) -> bool:
     _prepare_app(d)
-    w, h = d.window_size()
+    w, h = device.window_size(d)
     sw = d(description=SELECTORS["feed_switcher_desc"])
     for attempt in range(4):
         # The action bar hides while scrolled; pull back to the top so we can see where we are.
@@ -242,10 +241,14 @@ def on_target_feed(d: uidevice.Device) -> bool:
     return on_home_feed(d) if config.FEED_MODE == "home" else not on_home_feed(d)
 
 
-def open_target_feed(d: uidevice.Device) -> bool:
-    """Navigate to whichever feed FEED_MODE selects — the single call site scrape.scrape_once() uses
-    throughout, so a run never has to know which mode it's in beyond this one dispatch."""
-    return open_home_feed(d) if config.FEED_MODE == "home" else open_following_feed(d)
+def open_target_feed(d: uidevice.Device) -> None:
+    """Navigate to whichever feed FEED_MODE selects — what the scrape run and stories call to get
+    onto (or back onto) the feed, so neither has to know which mode it's in beyond this dispatch. A
+    failure to get there is logged (with a dump) by the feed's own opener; the run carries on."""
+    if config.FEED_MODE == "home":
+        open_home_feed(d)
+    else:
+        open_following_feed(d)
 
 
 @versioned
@@ -334,19 +337,18 @@ def scrape_following_list(d: uidevice.Device) -> list[str] | None:
     return list(collected) if collected else None
 
 
-def refresh_following_list(d: uidevice.Device, con: sqlite3.Connection) -> int | None:
+def refresh_following_list(d: uidevice.Device, con: sqlite3.Connection) -> None:
     """Navigate to the own Following list, scrape it in full, and replace the stored allowlist
     with exactly what was found — so an unfollow is reflected simply by that username's row no
-    longer existing after this runs. Returns the new count, or None if the refresh failed (nothing
-    collected, or navigation never reached the list) — on None, the existing stored list (if any)
-    is left untouched rather than wiped, and db.needs_following_refresh() will keep returning True so
-    the next run tries again."""
+    longer existing after this runs. If the refresh fails (nothing collected, or navigation never
+    reached the list), the existing stored list (if any) is left untouched rather than wiped, and
+    db.needs_following_refresh() will keep returning True so the next run tries again."""
     if not open_own_following_list(d):
-        return None
+        return
     usernames = scrape_following_list(d)
     if not usernames:
         log("WARN: following-list refresh collected nothing; keeping the existing list")
-        return None
+        return
     now_iso = datetime.now(UTC).isoformat()
     con.execute("DELETE FROM following")
     con.executemany(
@@ -355,7 +357,6 @@ def refresh_following_list(d: uidevice.Device, con: sqlite3.Connection) -> int |
     )
     con.commit()
     log(f"following list refreshed: {len(usernames)} accounts")
-    return len(usernames)
 
 
 @versioned
@@ -371,7 +372,7 @@ def _sheet_open(d: uidevice.Device) -> bool:
 def close_sheets(d: uidevice.Device, max_back: int = 2) -> bool:
     """Back out of any open share/bottom sheet without touching its contents."""
     for i in range(max_back):
-        if not _sheet_open(d) or d.app_current().get("package") != config.IG_PKG:
+        if not _sheet_open(d) or not device.in_foreground(d):
             break
         if i > 0 and on_feed(d):
             break  # feed rows visible: the marker is a false positive, another Back would exit

@@ -74,3 +74,9 @@ def minutes_since(finished_at: SqlValue, now: datetime | None = None) -> float |
     if finished is None:
         return None
     return ((now or datetime.now(UTC)) - finished).total_seconds() / 60
+
+
+def run_now_due(since: float | None, min_minutes: float) -> bool:
+    """Whether a scrape-now request may start a run, `since` minutes (minutes_since()) after the last one
+    finished: once `min_minutes` have passed, or when no run has finished yet."""
+    return since is None or since >= min_minutes

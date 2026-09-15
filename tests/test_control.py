@@ -17,7 +17,7 @@ from tests.support import json_body, json_object, record_run_ago
 
 @pytest.fixture
 def con(con: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
-    monkeypatch.setattr(config, "CONTROL_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "CONTROL_DIR", tmp_path)
     monkeypatch.setattr(config, "RUN_NOW_MIN_MINUTES", 30)
     monkeypatch.setattr(config, "CONTROL_POLL_SECONDS", 30)
     return con
@@ -41,10 +41,9 @@ def test_lock_and_its_expiry(
 
 def test_scrape_now_waits_for_the_rate_limit(con: sqlite3.Connection, tmp_path: Path) -> None:
     control.request_run_now()
+    record_run_ago(con, 45)
     record_run_ago(con, 10)
     assert not control.take_run_now(con) and (tmp_path / "scrape-now").exists()  # too soon: kept
-    record_run_ago(con, 45)  # MAX(finished_at) is still 10 minutes ago
-    assert not control.take_run_now(con)
     con.execute("DELETE FROM runs")
     record_run_ago(con, 45)
     assert control.take_run_now(con) and not (tmp_path / "scrape-now").exists()

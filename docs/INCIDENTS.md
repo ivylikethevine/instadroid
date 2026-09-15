@@ -57,7 +57,7 @@ container; Android regenerates a fresh `appops.xml` on next boot with no data lo
 then ran cleanly through boot with zero `Bad operation` errors.
 
 This is why two different Android major-version redroid images must never share one `/data` volume,
-and why, since 2026-09-14, the one-shot `android-data-guard` compose service
+and why, since 2026-09-14, the one-shot `init` compose service
 (`scripts/guard-android-data.sh`) records the image that last used the volume in
 `local/data/android.image` and refuses to start redroid on a different Android major version.
 

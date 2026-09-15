@@ -9,6 +9,7 @@ import time
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from typing import TypedDict
+from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo
 
 import adbutils
@@ -66,13 +67,32 @@ def transient_error_names() -> set[str]:
     return {c.__name__ for base in _TRANSIENT for c in walk(base)}
 
 
-def instagram_version(d: uidevice.Device) -> str | None:
-    """The installed Instagram versionName, or None if it isn't installed or adb misbehaves."""
+# Readings remembered per connection (see the two functions below), keyed on the device object itself
+# (weakly, so a finished run's connection, or a test's fake device, takes its entries with it).
+_window_sizes: WeakKeyDictionary[uidevice.Device, tuple[int, int]] = WeakKeyDictionary()
+_ig_versions: WeakKeyDictionary[uidevice.Device, str | None] = WeakKeyDictionary()
+
+
+def window_size(d: uidevice.Device) -> tuple[int, int]:
+    """d.window_size(), read once per connection: uiautomator2 runs two shell commands for it, and
+    redroid's resolution and rotation are fixed."""
+    if (size := _window_sizes.get(d)) is None:
+        size = _window_sizes[d] = d.window_size()
+    return size
+
+
+def instagram_version(d: uidevice.Device, *, fresh: bool = False) -> str | None:
+    """The installed Instagram versionName, or None if it isn't installed or adb misbehaves. The
+    `dumpsys package` behind it is large, so a successful read is remembered for the connection;
+    `fresh` reads again (install.py, after installing)."""
+    if not fresh and d in _ig_versions:
+        return _ig_versions[d]
     try:
         m = re.search(r"versionName=(\S+)", d.shell(["dumpsys", "package", config.IG_PKG]).output or "")
     except Exception:
         return None
-    return m.group(1) if m else None
+    version = _ig_versions[d] = m.group(1) if m else None
+    return version
 
 
 def device_snapshot(d: uidevice.Device) -> DeviceSnapshot:
@@ -101,7 +121,7 @@ def connect_device() -> uidevice.Device:
     adbutils.adb.connect(config.ADB_ADDR, timeout=30)
     d = u2.connect(config.ADB_ADDR)
     d.implicitly_wait(10)
-    log("device:", d.info.get("productName"), d.window_size())
+    log("device:", d.info.get("productName"), window_size(d))
     versioning.activate_profile(instagram_version(d))
     return d
 
@@ -124,9 +144,14 @@ def launch_app(d: uidevice.Device) -> None:
         d.app_start(config.IG_PKG, stop=False)
 
 
+def in_foreground(d: uidevice.Device) -> bool:
+    """True when Instagram is the app in front."""
+    return d.app_current().get("package") == config.IG_PKG
+
+
 def ensure_foreground(d: uidevice.Device) -> bool:
     """Relaunch Instagram if something else is in front. True if it had to."""
-    if d.app_current().get("package") == config.IG_PKG:
+    if in_foreground(d):
         return False
     launch_app(d)
     human_pause(3, 5)
@@ -188,7 +213,7 @@ def human_scroll(
 ) -> None:
     """Scroll up by a random amount at a random speed, like a thumb would. `start` and `distance`
     are fractions of screen height; the defaults are tuned for feed cards."""
-    w, h = d.window_size()
+    w, h = window_size(d)
     x = random.randint(int(w * 0.3), int(w * 0.7))
     y1 = random.randint(int(h * start[0]), int(h * start[1]))
     y2 = y1 - random.randint(int(h * distance[0]), int(h * distance[1]))
@@ -279,13 +304,11 @@ class MemoryGuard:
         self.peak: int | None = None
         first = self._read()
         self.oom_kill_start = first["oom_kill"] if first else None
-        self.last = first
 
     def _read(self) -> MemoryReading | None:
         m = _redroid_memory(self.d)
         if m:
             self.peak = max(self.peak or 0, m["current"])
-        self.last = m
         return m
 
     def exceeded(self) -> str | None:

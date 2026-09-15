@@ -78,6 +78,15 @@ def test_screen_of_dump(name: str, screen: str | None) -> None:
     assert screens.screen_of_dump(name) == screen
 
 
+def test_capture_file_names_read_back_as_their_screen() -> None:
+    name = diagnostics.dump_stem(4, "feed_switch_menu", True) + diagnostics.HIERARCHY_SUFFIX
+    assert name == "004-feed_switch_menu-fail_hierarchy.xml"
+    assert diagnostics.parse_dump_name(name) == ("feed_switch_menu", True)
+    assert diagnostics.parse_dump_name("001-feed_hierarchy.xml") == ("feed", False)
+    assert diagnostics.parse_dump_name("last_hierarchy.xml") is None  # a plain debug dump
+    assert diagnostics.parse_dump_name("001-feed_screen.jpg") is None
+
+
 def test_key_matching_follows_the_scrapers_comparisons() -> None:
     xml = hierarchy(
         node("feed_tab"),

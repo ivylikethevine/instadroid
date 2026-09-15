@@ -116,11 +116,11 @@ def test_open_target_feed_dispatches_by_feed_mode(
 ) -> None:
     d = feed_device(start="home")
     monkeypatch.setattr(config, "FEED_MODE", "home")
-    assert navigation.open_target_feed(d) is True
+    navigation.open_target_feed(d)
     assert d.screen == "home"
     d = feed_device(start="home")
     monkeypatch.setattr(config, "FEED_MODE", "chrono")
-    assert navigation.open_target_feed(d) is True
+    navigation.open_target_feed(d)
     assert d.screen == "following"
 
 
@@ -206,9 +206,8 @@ def test_refresh_following_list_replaces_the_stored_list(
     con.commit()
     d = feed_device_with_following([["alice", "bob"]], main_scroll={}, start="following")
 
-    n = navigation.refresh_following_list(d, con)
+    navigation.refresh_following_list(d, con)
 
-    assert n == 2
     assert set(sql_column(con.execute("SELECT username FROM following"))) == {"alice", "bob"}
 
 
@@ -221,9 +220,8 @@ def test_refresh_following_list_keeps_the_existing_list_on_a_failed_scrape(
     con.commit()
     d = feed_device_with_following([[]], main_scroll={}, start="following")  # empty list = parse failure
 
-    n = navigation.refresh_following_list(d, con)
+    navigation.refresh_following_list(d, con)
 
-    assert n is None
     assert set(sql_column(con.execute("SELECT username FROM following"))) == {"good_data"}
 
 

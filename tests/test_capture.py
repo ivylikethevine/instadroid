@@ -152,13 +152,17 @@ def test_a_blank_story_frame_is_discarded(monkeypatch: pytest.MonkeyPatch) -> No
 # --- media format ---------------------------------------------------------------------------------
 
 
-def test_jpeg_media_format_still_writes_jpegs(fast_offline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from PIL import Image
-
-    monkeypatch.setattr(config, "MEDIA_FORMAT", "jpeg")
+@pytest.mark.parametrize("media_format", list(config.MEDIA_FORMATS))
+def test_each_media_format_writes_its_own_encoding_and_extension(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, media_format: str
+) -> None:
+    monkeypatch.setattr(config, "MEDIA_FORMAT", media_format)
+    ext, pil_format = config.MEDIA_FORMATS[media_format]
     path = stories.capture_story_media(Image.new("RGB", (200, 400), "red"), "[0,0][200,400]", 0, "s")
     assert path is not None
-    assert path.name == "s.jpg" and path.read_bytes()[:3] == b"\xff\xd8\xff"
+    assert path.name == f"s{ext}" and ext in config.MEDIA_EXTS
+    with Image.open(path) as img:
+        assert img.format == pil_format
 
 
 def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file(

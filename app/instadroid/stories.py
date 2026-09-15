@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol, TypedDict
 
+from igprofiles.screens import id_matches
 from lxml import etree
 from PIL import Image, ImageStat
 from shared import sqlrows
@@ -71,7 +72,9 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
         device.human_pause(1, 1.5)
         return None
     xml = d.dump_hierarchy()
-    if SELECTORS["story_viewer_id"] not in xml:  # exists() can win a race against a fast auto-exit
+    nodes = [(n.get("resource-id") or "", n) for n in etree.fromstring(xml.encode()).iter("node")]
+    # exists() can win a race against a fast auto-exit. Parsing here is milliseconds, off the device.
+    if not any(id_matches(rid, SELECTORS["story_viewer_id"]) for rid, _ in nodes):
         log(f"WARN: story for {item['username']} closed before it could be read; dump saved")
         diagnostics.dump_debug(d, f"story_{common.safe_filename(item['username']) or 'unknown'}", xml=xml)
         d.press("back")
@@ -81,17 +84,15 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
     diagnostics.capture_screen(d, "story_viewer", xml, image=img)
     d.press("back")  # off the device from here on; cropping/saving below never risks the timer
     device.human_pause(1, 1.5)
-    root = etree.fromstring(xml.encode())
     media_bounds = clip_top = None
     posted_date = ""
-    for n in root.iter("node"):
-        rid = (n.get("resource-id") or "").split("/")[-1]
-        if rid == SELECTORS["story_media_id"] and media_bounds is None:
+    for rid, n in nodes:
+        if id_matches(rid, SELECTORS["story_media_id"]) and media_bounds is None:
             media_bounds = n.get("bounds")
-        elif rid == SELECTORS["story_shadow_id"] and clip_top is None:
+        elif id_matches(rid, SELECTORS["story_shadow_id"]) and clip_top is None:
             if b := common.parse_bounds(n.get("bounds")):
                 clip_top = b[3]
-        elif rid == SELECTORS["story_timestamp_id"] and not posted_date:
+        elif id_matches(rid, SELECTORS["story_timestamp_id"]) and not posted_date:
             posted_date = n.get("text") or ""
     path = capture_story_media(
         img, media_bounds, clip_top or 0, f"tmp_{item['username']}_{int(time.time() * 1000)}"
@@ -102,10 +103,10 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
 @versioned
 def scrape_stories(d: uidevice.Device, con: sqlite3.Connection) -> int:
     """Visit each not-yet-seen account's story from the Home feed's tray, capture its current
-    frame, and return to the Following feed afterward. Stories have no stable public id the way
-    posts do (no permalink/shortcode), so a capture is checked against the DB only afterwards: a
-    blank frame, or one that looks like a story the account posted in the last day
-    (_find_story_duplicate()), is discarded."""
+    frame, and return to the feed FEED_MODE scrapes (navigation.open_target_feed()) afterward. Stories
+    have no stable public id the way posts do (no permalink/shortcode), so a capture is checked against
+    the DB only afterwards: a blank frame, or one that looks like a story the account posted in the last
+    day (_find_story_duplicate()), is discarded."""
     for _ in range(3):
         if navigation.on_home_feed(d):
             break

@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from shared.errors import short_error
 
 from tests.feedclient import make_app
 
@@ -76,19 +77,17 @@ def test_status_page_flags_an_error_run(tmp_path: Path, monkeypatch: pytest.Monk
     assert "login failed" in body
 
 
-def test_short_error_truncates_multiline_stack_traces(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    make_app(tmp_path, monkeypatch)
-    from feedserver import status
-
-    assert status.short_error("RuntimeError('simple')") == "RuntimeError('simple')"
+def test_short_error_truncates_multiline_stack_traces() -> None:
+    assert short_error("RuntimeError('simple')") == "RuntimeError('simple')"
     multiline = "LaunchUiAutomationError('boom', 'a huge\nmulti-line\njava stack trace')"
-    result = status.short_error(multiline)
+    result = short_error(multiline)
     assert "\n" not in result
     assert result.startswith("LaunchUiAutomationError")
     long_one_liner = "x" * 200
-    assert status.short_error(long_one_liner) == "x" * 139 + "…"
+    assert short_error(long_one_liner) == "x" * 139 + "…"
+    assert short_error(long_one_liner, 300) == long_one_liner
+    assert short_error(long_one_liner + "\nmore", None) == long_one_liner
+    assert short_error("") == ""
 
 
 def test_status_page_shows_link_failure_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

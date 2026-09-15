@@ -9,6 +9,7 @@ RUN apt-get update \
 # apkeep fetches the Instagram APK from APKPure when the device doesn't have it installed (see
 # instadroid/install.py) — pinned to a specific release + checksum rather than trusting whatever
 # "latest" resolves to at build time. ADD verifies the checksum itself, so no curl in the image.
+# .github/workflows/new-builds.yml reads its apkeep URL and checksum from this ADD.
 ADD --checksum=sha256:a23579a3ba366d25a6d69848189b983d65662f4ecf4b9e11e16510811659de4e --chmod=0755 \
     https://github.com/EFForg/apkeep/releases/download/1.0.0/apkeep-x86_64-unknown-linux-gnu \
     /usr/local/bin/apkeep
@@ -23,12 +24,12 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.txt \
     && ln -s "$(python -c 'import adbutils; print(adbutils.adb_path())')" /usr/local/bin/adb \
     && adb version \
     && python -m pip uninstall --yes pip
-COPY scraper.py entrypoint.sh ./
+COPY scraper.py ./
+COPY --chmod=0755 entrypoint.sh ./
 COPY shared ./shared
 COPY feedserver ./feedserver
 COPY instadroid ./instadroid
 COPY igprofiles ./igprofiles
-RUN chmod +x entrypoint.sh
 # /db, /media, /debug are bind-mounted by docker-compose in normal use; created here (owned by
 # app) so the image also runs standalone with no mounts, e.g. the CI smoke test. /apk likewise
 # caches the downloaded Instagram APK (see APK_CACHE_DIR in instadroid/config.py).

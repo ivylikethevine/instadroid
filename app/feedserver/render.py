@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from hashlib import sha256
 from html import escape
-from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from fastapi import Request, Response
@@ -65,7 +64,7 @@ def _image_size_cached(path: str, mtime_ns: int, size: int) -> tuple[int, int] |
 
 def _image_size(file: str) -> tuple[int, int] | None:
     """Dimensions of a stored media file (relative to MEDIA_DIR), or None if it's missing."""
-    path = Path(settings.MEDIA_DIR) / file
+    path = settings.MEDIA_DIR / file
     try:
         st = path.stat()
     except OSError:

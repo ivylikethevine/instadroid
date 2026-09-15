@@ -145,7 +145,6 @@ OLDER_CARDS = [
 class FeedDeviceOptions(TypedDict, total=False):
     """The FakeDevice options feed_device() passes through (it sets back, scroll and hswipe itself)."""
 
-    pull: dict[str, str] | None
     foreign: Iterable[str]
     launch_screen: str
     launch_blocked: bool
