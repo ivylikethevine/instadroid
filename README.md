@@ -268,7 +268,8 @@ everything else it reconciles. Each run's `/status` page shows how many posts a 
 
 ```bash
 python -m venv local/.venv && . local/.venv/bin/activate
-pip install -e '.[dev]'                # app/requirements.txt + requirements-dev.txt, and the dev commands
+pip install --require-hashes -r requirements-dev.txt   # locked dev tools + app requirements
+pip install --no-deps -e .             # app/ on the path, and the dev commands
 ruff check . && ruff format --check . && basedpyright
 pytest -q                              # parser, feed, and device-flow tests; temp SQLite db
 pytest -q --cov --cov-report=term-missing   # with coverage (fails under 90%)
@@ -313,7 +314,7 @@ does. No real account data is used in any fixture.
 CI (`.github/workflows/ci.yml`) runs:
 
 - ruff, basedpyright and import-linter (`lint-imports`), and the test suite with coverage;
-- `pip-audit` on the requirements (also weekly), and GitHub's dependency review on pull requests;
+- `pip-audit` on the hashed dependency locks (also weekly), and GitHub's dependency review on pull requests;
 - shellcheck and shfmt on the shell scripts;
 - markdownlint, prettier and a relative-link check (lychee) on the docs, and typos over everything
   (external links are checked weekly by `.github/workflows/links.yml`);

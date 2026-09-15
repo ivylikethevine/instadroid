@@ -42,7 +42,7 @@ jobs:
       - name: Install check-new-builds
         run: |
           pip install --no-deps -e .
-          pip install "$(grep '^typing_extensions' app/requirements.txt)"
+          ./scripts/ci/pip-install-locked.sh app/requirements.txt typing-extensions
       - name: Compare with validated builds
         run: check-new-builds --versions-file versions.txt > body.md
       - name: Open or refresh the issue

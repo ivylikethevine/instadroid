@@ -10,10 +10,19 @@ Ordered by scope, smallest first.
 
 A config flag, one function, a CI tweak, or docs.
 
-Nothing open. Done: Markdown lint and format checks, a link check (relative links on pull
+- **Dump the card when its media node isn't found**: one Reel card logged "no crop: media node not
+  found" 4 times in a row and was stored with no media file ([run log](RUNLOG.md), 446 validation
+  run). `scrape.py` only logs on that path, so the card's hierarchy has never been seen; call
+  `_dump_debug` there.
+- **Rewrite git history to remove leaked identifiers**: the working tree was scrubbed, but older
+  commits still carry real usernames, captions and places (the list is in [PROFILES.md](PROFILES.md)'s
+  leak scan). `git filter-repo --replace-text` with a replacements file, then a force-push and a
+  fresh clone everywhere. The repository owner's call; not done yet.
+
+Done: Markdown lint and format checks, a link check (relative links on pull
 requests, external links weekly), spell check (typos), container image scanning (Trivy,
-report-only), dependency review on pull requests, shell formatting (shfmt) and import boundaries
-(import-linter). Earlier: credentials from a file, caption hashtag/mention links, optional feed
+report-only), dependency review on pull requests, shell formatting (shfmt), import boundaries
+(import-linter) and hashed dependency locks (pip-compile). Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
 
@@ -21,10 +30,15 @@ spec.
 
 A feature across several parts of the scraper, compose or CI, or repeated real-device work.
 
-- **Locked dependencies**: `app/requirements.txt` uses `>=` ranges, so image builds aren't reproducible and
-  `pip-audit` checks whatever resolves on the day. Lock with hashes (`uv lock`/`uv export`, or
-  `pip-compile --generate-hashes`), install from the lock in the Dockerfile and CI, and let Dependabot
-  update the lock. Also improves Scorecard's Pinned-Dependencies check.
+- **Retry Instagram 446**: 446.0.0.49.77 is in `v424.validated` but has crashed on launch since
+  2026-09-15 (a native `SIGSEGV` in `RenderThread`; [run log](RUNLOG.md)), so `igprofiles.DEFAULT_BUILD`
+  is pinned to 445. Retry it; if it still crashes, drop it from `v424.validated` and update its
+  [`COMPATIBILITY.md`](COMPATIBILITY.md) row. If it works, promote its fixtures too: none have been
+  recorded for 446.
+- **Baseline what hasn't been checked yet**: no capture-mode baseline has covered the own profile,
+  the Following list (`--following`) or the login form, so their required selector keys are unchecked
+  on every build. And 425-439 run with the "hasn't been validated" warning until each gets a
+  `new-profile baseline`/`validate`.
 - **Instagram update path**: install-on-missing is automatic (see README.md's "First-time setup"),
   but an _outdated_ install isn't handled yet — detect the forced "update Instagram" screen (as a
   challenge-style stop) and reuse `install.install_instagram()` (`app/instadroid/install.py`)
@@ -51,6 +65,12 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
 
 Open investigations, new capture mechanisms, or changes to the container/process topology.
 
+- **Posts processed twice in one run, and Copy link misses**: in the 446 validation run, 3 of 6 new
+  posts came back on a later screen, failed Copy link three times each, and were merged into the rows
+  stored moments earlier ([run log](RUNLOG.md)). That fits `_post_key()` hashing a truncated caption
+  once and the expanded caption the next time, but it's unconfirmed. Copy link also often leaves the
+  clipboard empty (6 of 8 attempts in the 445 baseline), mostly on cards already back on screen, and
+  a post whose every retry fails is stored under a hash id (README.md's "Known limitations").
 - **Reach the real Following feed without the switcher**: under `gpu_mode=guest` the switcher's
   bottom sheet may not open, and the scraper then falls back to Home — algorithmic, with suggested
   posts mixed in. Investigate a deep link or activity intent that opens Following directly;

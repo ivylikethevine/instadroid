@@ -109,8 +109,8 @@ what changed after it.
 ## Adding a version
 
 `new-profile` (`app/devtools/new_profile.py`) does the mechanical parts, and everything in it works on
-an exact build. It runs on the host from the dev venv (`pip install -e '.[dev]'` puts it on the
-`PATH`), since it writes into `app/igprofiles/`. The steps that touch the
+an exact build. It runs on the host from the dev venv (`pip install --no-deps -e .` puts it on
+the `PATH`), since it writes into `app/igprofiles/`. The steps that touch the
 device go through `docker compose run` with this working tree's `app/` mounted into the container, so
 a selector edit is live on the next run without rebuilding the image. What stays manual is deciding
 what a changed selector or override should be.
@@ -173,7 +173,7 @@ what a changed selector or override should be.
       444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77 (see the [run log](RUNLOG.md)). Replay fixtures for 424 and 440-445
       (none recorded for 446). 425-439 run with the "hasn't been validated" warning until each gets a baseline.
 - [x] Floor moved to 424 and the default install pinned to 445 (2026-09-15).
-- [ ] Retry 446; if it still crashes, drop it from `v424.validated`.
+- [ ] Retry 446; if it still crashes, drop it from `v424.validated` (tracked in [ROADMAP.md](ROADMAP.md)).
 - [x] Old-build probe, `400.0.0.49.68`: installs, but crashes at native startup on every launch ([run log](RUNLOG.md)).
 - [x] Leak scan of fixtures, tests, docs and git history (below); working tree cleaned, history not rewritten.
 
@@ -206,4 +206,4 @@ intentional.
 `app/igprofiles/v445.py`, `app/tests/test_parser.py`, `NEXT.md`/`docs/NEXT.md`): the same identifiers.
 Removing them means rewriting published history, e.g. `git filter-repo --replace-text` with a
 replacements file, then a force-push and re-cloning everywhere. That's the repository owner's call;
-it hasn't been done.
+it hasn't been done ([ROADMAP.md](ROADMAP.md)).

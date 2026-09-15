@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-      - run: pip install -e '.[dev]'
+      - run: pip install --require-hashes -r requirements-dev.txt && pip install --no-deps -e .
       - run: mkdir -p local # pyproject.toml keeps coverage's data file there
       - run: python -m pytest -q --cov --cov-report=term --cov-fail-under=90
       - name: Total coverage
