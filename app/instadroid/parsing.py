@@ -2,9 +2,8 @@
 list, timestamps, and post identity. No device access, so it's what the replay tests exercise."""
 
 import re
-from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any, TypedDict
+from typing import NotRequired, TypedDict
 
 from lxml import etree
 
@@ -54,11 +53,20 @@ def parse_posted_at(text: str, now: datetime) -> tuple[datetime, int] | None:
     return None
 
 
-def is_weak_caption(caption: str) -> bool:
+def is_weak_caption(caption: str | None) -> bool:
     return not caption or bool(_WEAK_CAPTION.match(caption))
 
 
-def same_post(existing: Mapping[str, Any], candidate: Mapping[str, Any]) -> bool:
+class PostIdentity(TypedDict):
+    """What same_post() compares: a stored post, or a freshly parsed card with its time's precision."""
+
+    username: str
+    caption: NotRequired[str | None]
+    posted_at: NotRequired[datetime | None]
+    posted_at_precision: NotRequired[int | None]
+
+
+def same_post(existing: PostIdentity, candidate: PostIdentity) -> bool:
     """True if `existing` (a stored post: username, caption, posted_at) and `candidate` (a
     freshly parsed card: username, caption, posted_at, posted_at_precision) are the same
     Instagram post seen twice — typically because a card was captured before its caption widget
@@ -322,10 +330,16 @@ def carousel_count(alt: str) -> int:
     return int(m.group(2)) if m else 1
 
 
+class ParsedPost(Post):
+    """A Post plus its "id" (post_id()), so identity drift shows up in replay fixtures too."""
+
+    id: str
+
+
 class ScreenParse(TypedDict):
     """Everything the parsers find on one hierarchy dump, as the replay fixtures record it."""
 
-    posts: list[dict]  # each Post plus its "id" (post_id), so identity drift shows up too
+    posts: list[ParsedPost]
     story_tray: list[StoryItem]
     following_list: list[str]
 

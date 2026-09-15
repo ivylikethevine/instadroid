@@ -1,13 +1,15 @@
-"""Selectors for Instagram 445.x.
+"""Selectors for Instagram 424 onward (the root profile).
 
-Moved verbatim from scraper.py's original SELECTORS dict (validated live on 445.0.0.45.83), plus the
-few UI strings that used to be hardcoded inline in scraper.py. To support another Instagram version,
-don't edit these: give that version its own igprofiles/vXYZ/selectors.py (see docs/NEXT.md).
+Moved verbatim from scraper.py's original SELECTORS dict (written against 445.0.0.45.83), plus the few
+UI strings that used to be hardcoded inline in scraper.py. When a later Instagram changes one, don't
+edit it here: fork a profile for that version (scripts/new_profile.py fork) and override the key there.
 """
 
 import re
 
-SELECTORS = {
+from igprofiles.base import Selectors
+
+SELECTORS: Selectors = {
     # Every feed card has a header ViewGroup whose content-desc reads e.g.
     #   "some.artist posted a video in Rich's Diner 21 hours ago"
     #   "some_club posted a carousel in Anytown, Somewhere 3 days ago"

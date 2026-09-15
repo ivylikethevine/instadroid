@@ -4,13 +4,12 @@ import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TypedDict
+from typing import Protocol, TypedDict
 
-import uiautomator2 as u2
 from lxml import etree
 from PIL import Image, ImageStat
 
-from . import capture, common, config, device, diagnostics, navigation, parsing
+from . import capture, common, config, device, diagnostics, navigation, parsing, uidevice
 from .common import log
 from .versioning import SELECTORS, versioned
 
@@ -43,7 +42,7 @@ def capture_story_media(
 
 
 @versioned
-def capture_story(d: u2.Device, item: parsing.StoryItem) -> CapturedStory | None:
+def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory | None:
     """Open one tray item's story, capture its current frame, and always exit back to the Home
     feed via Back. Never tap forward inside the viewer (past this one open tap): the message/like/
     reshare/profile-picture/menu targets are all real actions on someone else's story, and on this
@@ -100,7 +99,7 @@ def capture_story(d: u2.Device, item: parsing.StoryItem) -> CapturedStory | None
 
 
 @versioned
-def scrape_stories(d: u2.Device, con: sqlite3.Connection) -> int:
+def scrape_stories(d: uidevice.Device, con: sqlite3.Connection) -> int:
     """Visit each not-yet-seen account's story from the Home feed's tray, capture its current
     frame, and return to the Following feed afterward. Stories have no stable public id the way
     posts do (no permalink/shortcode), so a capture is checked against the DB only afterwards: a
@@ -175,9 +174,20 @@ def scrape_stories(d: u2.Device, con: sqlite3.Connection) -> int:
 STORY_PHASH_DISTANCE = 10
 
 
+class _Resizable(Protocol):
+    """Image.resize() as _dhash() calls it. Pillow annotates `size` as also accepting a numpy array,
+    a type left unknown when numpy isn't installed, so the method is read through this instead."""
+
+    def resize(self, size: tuple[int, int]) -> Image.Image: ...
+
+
+def _resized(img: _Resizable, size: tuple[int, int]) -> Image.Image:
+    return img.resize(size)
+
+
 def _dhash(img: Image.Image) -> str:
     """64-bit difference hash: survives re-encoding and small overlays, unlike a byte hash."""
-    px = img.convert("L").resize((9, 8)).tobytes()
+    px = _resized(img.convert("L"), (9, 8)).tobytes()
     bits = 0
     for i in range(72):
         if i % 9 != 8:
@@ -195,8 +205,12 @@ def _find_story_duplicate(con: sqlite3.Connection, username: str, phash: str) ->
     """True if this account has a story stored in the last day (a story's lifetime) that looks the
     same. The byte hash alone missed these: every capture re-encodes a fresh screenshot."""
     cutoff = (datetime.now(UTC) - timedelta(days=1)).isoformat()
-    rows = con.execute(
-        "SELECT phash FROM stories WHERE username=? AND scraped_at > ? AND phash IS NOT NULL",
-        (username, cutoff),
+    rows = common.fetch_all(
+        con.execute(
+            "SELECT phash FROM stories WHERE username=? AND scraped_at > ? AND phash IS NOT NULL",
+            (username, cutoff),
+        )
     )
-    return any((int(r[0], 16) ^ int(phash, 16)).bit_count() <= STORY_PHASH_DISTANCE for r in rows)
+    return any(
+        (int(common.must_str(r, 0), 16) ^ int(phash, 16)).bit_count() <= STORY_PHASH_DISTANCE for r in rows
+    )

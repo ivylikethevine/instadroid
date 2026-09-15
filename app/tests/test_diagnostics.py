@@ -6,30 +6,32 @@ from pathlib import Path
 import pytest
 from instadroid import config, db, device, diagnostics
 
-
-class Out:
-    def __init__(self, output: str) -> None:
-        self.output = output
+from tests.fakedevice import FakeDevice, Out
+from tests.test_feed import sql_row
 
 
-class VersionedDevice:
-    def shell(self, cmd: list[str] | str) -> Out:
-        if isinstance(cmd, list) and cmd[:2] == ["dumpsys", "package"]:
-            return Out(
-                "Packages:\n  Package [com.instagram.android]\n    versionCode=385111379\n"
-                "    versionName=445.0.0.45.83\n"
-            )
-        return Out(
-            {"getprop ro.build.version.release": "13", "getprop ro.build.version.sdk": "33"}.get(cmd, "")
-        )
+class VersionedDevice(FakeDevice):
+    def __init__(self) -> None:
+        super().__init__({}, "launcher")
+
+    def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
+        if isinstance(cmdargs, list):
+            if cmdargs[:2] == ["dumpsys", "package"]:
+                return Out(
+                    "Packages:\n  Package [com.instagram.android]\n    versionCode=385111379\n"
+                    "    versionName=445.0.0.45.83\n"
+                )
+            return Out("")
+        props = {"getprop ro.build.version.release": "13", "getprop ro.build.version.sdk": "33"}
+        return Out(props.get(cmdargs, ""))
 
 
 def test_device_snapshot_records_instagram_version_and_image(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDROID_IMAGE", "erstt/redroid:13.0.0_ndk_ChromeOS")
     snapshot = device.device_snapshot(VersionedDevice())
-    assert snapshot["android_release"] == "13"
-    assert snapshot["ig_version"] == "445.0.0.45.83"
-    assert snapshot["redroid_image"] == "erstt/redroid:13.0.0_ndk_ChromeOS"
+    assert snapshot.get("android_release") == "13"
+    assert snapshot.get("ig_version") == "445.0.0.45.83"
+    assert snapshot.get("redroid_image") == "erstt/redroid:13.0.0_ndk_ChromeOS"
 
 
 def test_record_run_stores_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -39,8 +41,7 @@ def test_record_run_stores_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         con, "2026-09-11T00:00:00+00:00", "2026-09-11T00:05:00+00:00", 0, None,
         {"ig_version": "445.0.0.45.83", "redroid_image": "img:tag"},
     )  # fmt: skip
-    row = con.execute("SELECT ig_version, redroid_image FROM runs").fetchone()
-    assert tuple(row) == ("445.0.0.45.83", "img:tag")
+    assert sql_row(con.execute("SELECT ig_version, redroid_image FROM runs")) == ("445.0.0.45.83", "img:tag")
 
 
 @pytest.fixture

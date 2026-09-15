@@ -73,7 +73,10 @@ now runs cleanly through boot with zero `Bad operation` errors.
 
 **Takeaway: never point two different Android major-version redroid images at the same `/data`
 volume.** If a different Android version needs testing again, give it its own volume path (e.g.
-`./local/data/android-15`) rather than reusing `./local/data/android`.
+`./local/data/android-15`) rather than reusing `./local/data/android`. Since 2026-09-14 compose
+enforces this: the one-shot `android-data-guard` service (`scripts/guard-android-data.sh`) records the
+image that last used the volume in `local/data/android.image`, and redroid won't start if the
+configured image is a different Android major version.
 
 ## More cross-version `/data` corruption: idmap cache and telephony.db (2026-09-11)
 
@@ -293,9 +296,9 @@ What changed as a result:
   finishes, too.
 
 **Before any device-driving run (login, once, a manual scrape, and `scripts/new_profile.py`'s
-`baseline`, `new` and `restore`): check `docker stats` headroom, force-stop Instagram, and ask the user
+`baseline` and `restore`): check `docker stats` headroom, force-stop Instagram, and ask the user
 first.** `new_profile.py baseline` checks headroom and refuses while the `app` service is running,
-but that doesn't replace asking; its other subcommands (`scaffold`, `check`, `promote`, `validate`)
+but that doesn't replace asking; its other subcommands (`check`, `promote`, `validate`, `fork`)
 never touch the device. Optional host-side mitigation, the user's call since
 it's host-wide: `sysctl vm.oom_dump_tasks=0` stops each OOM kill from dumping every process to the
 kernel log.

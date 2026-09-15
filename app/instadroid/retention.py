@@ -4,7 +4,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import config
+from . import common, config
 from .common import log
 
 
@@ -12,9 +12,13 @@ def _delete_post(con: sqlite3.Connection, post_id: str) -> None:
     """Delete one post row, its extra-slide media rows, and unlink every file involved (cover +
     slides). Reads media_file straight off the posts row rather than only the media table, since a
     row can predate carousel capture (or be inserted directly, as tests do) with no media rows."""
-    row = con.execute("SELECT media_file FROM posts WHERE id=?", (post_id,)).fetchone()
-    files = {row["media_file"]} if row and row["media_file"] else set()
-    files |= {r[0] for r in con.execute("SELECT file FROM media WHERE post_id=?", (post_id,))}
+    row = common.fetch_one(con.execute("SELECT media_file FROM posts WHERE id=?", (post_id,)))
+    media_file = common.cell_str(row, "media_file") if row else None
+    files: set[str | None] = {media_file} if media_file else set()
+    files |= {
+        common.cell_str(r, 0)
+        for r in common.fetch_all(con.execute("SELECT file FROM media WHERE post_id=?", (post_id,)))
+    }
     con.execute("DELETE FROM posts WHERE id=?", (post_id,))
     con.execute("DELETE FROM media WHERE post_id=?", (post_id,))
     con.commit()
@@ -37,9 +41,9 @@ def _media_and_db_size_mb() -> float:
     if Path(config.DB_PATH).exists():
         con = sqlite3.connect(config.DB_PATH)
         try:
-            page_count = con.execute("PRAGMA page_count").fetchone()[0]
-            freelist = con.execute("PRAGMA freelist_count").fetchone()[0]
-            page_size = con.execute("PRAGMA page_size").fetchone()[0]
+            page_count = common.scalar_int(con.execute("PRAGMA page_count")) or 0
+            freelist = common.scalar_int(con.execute("PRAGMA freelist_count")) or 0
+            page_size = common.scalar_int(con.execute("PRAGMA page_size")) or 0
             total += (page_count - freelist) * page_size
         finally:
             con.close()
@@ -56,13 +60,13 @@ def _enforce_size_cap(con: sqlite3.Connection) -> None:
         return
     removed = 0
     while _media_and_db_size_mb() > config.MEDIA_MAX_MB:
-        row = con.execute(
-            "SELECT id FROM posts ORDER BY COALESCE(posted_at, scraped_at) ASC LIMIT 1"
-        ).fetchone()
+        row = common.fetch_one(
+            con.execute("SELECT id FROM posts ORDER BY COALESCE(posted_at, scraped_at) ASC LIMIT 1")
+        )
         if not row:
             log(f"retention: still over MEDIA_MAX_MB={config.MEDIA_MAX_MB} with no posts left to remove")
             break
-        _delete_post(con, row["id"])
+        _delete_post(con, common.must_str(row, "id"))
         removed += 1
     if removed:
         log(f"retention: removed {removed} additional post(s) to stay under {config.MEDIA_MAX_MB}MB")
@@ -74,10 +78,10 @@ def prune_expired_stories(con: sqlite3.Connection) -> None:
     if config.RETAIN_DAYS <= 0:
         return
     cutoff = (datetime.now(UTC) - timedelta(days=config.RETAIN_DAYS)).isoformat()
-    gone = con.execute("SELECT media_file FROM stories WHERE scraped_at < ?", (cutoff,)).fetchall()
+    gone = common.fetch_all(con.execute("SELECT media_file FROM stories WHERE scraped_at < ?", (cutoff,)))
     cur = con.execute("DELETE FROM stories WHERE scraped_at < ?", (cutoff,))
     con.commit()
-    discard_media(*(fn for (fn,) in gone))
+    discard_media(*(common.cell_str(r, 0) for r in gone))
     if cur.rowcount:
         log(f"retention: removed {cur.rowcount} expired stor{'y' if cur.rowcount == 1 else 'ies'}")
 
@@ -89,16 +93,23 @@ def prune_old_posts(con: sqlite3.Connection) -> None:
     if config.RETAIN_DAYS > 0:
         cutoff = (datetime.now(UTC) - timedelta(days=config.RETAIN_DAYS)).isoformat()
         old_ids = [
-            r[0]
-            for r in con.execute("SELECT id FROM posts WHERE COALESCE(posted_at, scraped_at) < ?", (cutoff,))
+            common.must_str(r, 0)
+            for r in common.fetch_all(
+                con.execute("SELECT id FROM posts WHERE COALESCE(posted_at, scraped_at) < ?", (cutoff,))
+            )
         ]
         for pid in old_ids:
             _delete_post(con, pid)
         if old_ids:
             log(f"retention: removed {len(old_ids)} post(s) older than {config.RETAIN_DAYS}d")
     if config.MEDIA_DIR.exists():
-        kept = {r[0] for r in con.execute("SELECT media_file FROM posts WHERE media_file IS NOT NULL")}
-        kept |= {r[0] for r in con.execute("SELECT file FROM media")}
+        kept = {
+            common.cell_str(r, 0)
+            for r in common.fetch_all(
+                con.execute("SELECT media_file FROM posts WHERE media_file IS NOT NULL")
+            )
+        }
+        kept |= {common.cell_str(r, 0) for r in common.fetch_all(con.execute("SELECT file FROM media"))}
         # Only ever written media_file names are *.jpg/*.webp (capture.crop_media()), and these globs are
         # non-recursive, so pointing MEDIA_DIR at the wrong directory can't delete unrelated files
         # and avatars/ (its own subdirectory) is never touched by this sweep.

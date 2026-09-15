@@ -35,9 +35,10 @@ Before sending a change, run what CI runs:
 
 ```bash
 ruff check . && ruff format --check .      # also formats Python code blocks in Markdown
-pyright
-pytest -q
-shellcheck -S warning scripts/*.sh
+basedpyright
+PYTHONPATH=app lint-imports               # import boundaries (pyproject.toml)
+pytest -q --cov=app --cov=scripts   # fails under 90% coverage
+shellcheck -S warning scripts/*.sh && shfmt -d scripts/ app/entrypoint.sh
 docker compose config -q
 ```
 
@@ -57,12 +58,15 @@ Everything specific to one Instagram major version lives in its own directory,
 The oldest supported version is 440. [NEXT.md](NEXT.md) describes the design and walks through adding
 a version step by step. The short version:
 
-- **Use `scripts/new_profile.py`** to scaffold the directory, take a capture-mode baseline run, see
-  which selector keys each screen is missing, promote fixtures and mark the profile validated.
-- **Change the version's own directory, not shared code.** If 446 renamed a resource-id, override that
-  key in `v446/selectors.py`. If it changed behavior, override the `@versioned` function as a method
-  on `v446`'s `Profile`. Don't add `if version == ...` checks to `app/instadroid/`.
-- **Keep older profiles passing.** The whole existing test suite runs against `v445`, and
+- **Use `scripts/new_profile.py`** to take a capture-mode baseline run of the build, see which selector
+  keys each screen is missing, promote fixtures and record the build as validated. A version that
+  changes nothing gets no profile of its own; `fork` creates one only when something drifted.
+- **Change the version's own profile, not shared code.** If 447 renamed a resource-id, fork a `v447`
+  profile and override that key in `v447/selectors.py`. If it changed behavior, override the
+  `@versioned` function as a method on `v447`'s `Profile`. Don't add `if version == ...` checks to
+  `app/instadroid/`.
+- **Keep older versions passing.** The whole existing test suite runs against the root profile,
+  `v424`, `tests/test_replay.py` replays every validated version's fixtures, and
   `test_every_profile_meets_the_contract` checks every profile directory automatically.
 - **Fixtures must be synthetic or scrubbed.** A dump from a real feed goes into `vXYZ/fixtures/` only
   through `scripts/promote_dump.py`, which replaces the usernames, names, places and captions it can
@@ -84,6 +88,8 @@ freeze from a scrape that ran out of memory. In particular:
 
 - Branch from `dev` and open the pull request against `dev`; `main` is what releases are cut from.
 - Keep each pull request to one change, and explain the why, not just the what.
+- **All Python code must be 100% type annotated and at least 90% covered by tests** (see the rule in
+  the README's Development section). New code comes with its tests, and CI fails below either bar.
 - Update the docs your change affects (`README.md`, `.env.example`, `docs/`) in the same pull
   request, including new or changed environment variables in `docker-compose.yml` and `.env.example`.
 - Don't commit `.env`, anything under `local/`, APKs, or real screenshots.

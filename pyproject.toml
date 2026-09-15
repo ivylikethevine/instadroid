@@ -5,10 +5,17 @@ extend-exclude = ["local"]
 cache-dir = "local/.ruff_cache"
 
 [tool.ruff.lint]
-# ANN: every function is annotated, tests included. ANN401 allows an explicit Any where a value is
-# genuinely dynamic (the @versioned dispatch, uiautomator2 objects without stubs).
-select = ["E", "F", "W", "I", "B", "UP", "SIM", "ANN"]
-ignore = ["E501", "ANN401"]
+# ANN: every function is annotated, tests included, and ANN401 forbids an explicit Any. TID251 bans the
+# typing escape hatches outright (see banned-api below), PGH forbids blanket `# type: ignore`/`# noqa`, and
+# RUF100 flags a `# noqa` that no longer suppresses anything. tests/test_typing_policy.py covers the rest.
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ANN", "TID251", "PGH", "RUF100"]
+ignore = ["E501"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing.Any".msg = "No Any: give the value a real type (see README's Development section)"
+"typing_extensions.Any".msg = "No Any: give the value a real type"
+"typing.cast".msg = "No cast(): narrow with isinstance or a typed helper instead"
+"typing_extensions.cast".msg = "No cast(): narrow with isinstance or a typed helper instead"
 
 [tool.pytest.ini_options]
 testpaths = ["app/tests"]
@@ -17,12 +24,58 @@ cache_dir = "local/.pytest_cache"
 
 [tool.coverage.run]
 data_file = "local/.coverage"
+source = ["app", "scripts"]
 omit = ["app/tests/*"]
 
-[tool.pyright]
+[tool.coverage.report]
+# The project rule (README, Development): at least 90% of all Python code is covered by tests.
+fail_under = 90
+
+[tool.basedpyright]
+# basedpyright: pyright's strict mode plus reportAny/reportExplicitAny, so no value typed Any anywhere, not even
+# one flowing in from the standard library (sqlite3.Row items, json.loads). Strict everywhere, tests included. The libraries that
+# ship no type information (uiautomator2, adbutils, feedgen) get local stubs in typings/.
 include = ["app", "scripts"]
-# Tests run under pytest instead; their assertions on Optional values would need narrowing noise.
-exclude = ["app/tests"]
-extraPaths = ["app"]
+extraPaths = ["app", "scripts"]
+stubPath = "typings"
 pythonVersion = "3.14"
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"
+# Tests exercise private helpers on purpose, and ruff already reports unused names.
+reportPrivateUsage = false
+reportUnusedImport = false
+reportUnusedVariable = false
+reportUnusedFunction = false
+reportUnusedClass = false
+reportAny = "error"
+reportExplicitAny = "error"
+reportIgnoreCommentWithoutRule = "error"
+enableTypeIgnoreComments = false
+
+[tool.importlinter]
+# Boundaries the design depends on; run as `PYTHONPATH=app lint-imports` from the repo root, like CI.
+# import-linter only handles packages, so the rule that app.py (the feed server) and fileenv.py import
+# nothing from the scraper is tests/test_import_boundaries.py's job.
+root_packages = ["igprofiles", "instadroid"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Version profiles don't depend on the scraper code they configure"
+type = "forbidden"
+source_modules = ["igprofiles"]
+forbidden_modules = ["instadroid"]
+
+[[tool.importlinter.contracts]]
+name = "Parsing stays pure: no device, network or database code (what the replay tests rely on)"
+type = "forbidden"
+source_modules = ["instadroid.parsing"]
+forbidden_modules = [
+    "uiautomator2",
+    "adbutils",
+    "instadroid.device",
+    "instadroid.navigation",
+    "instadroid.capture",
+    "instadroid.stories",
+    "instadroid.scrape",
+    "instadroid.install",
+    "instadroid.db",
+]

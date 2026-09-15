@@ -1,9 +1,13 @@
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TypedDict, Unpack
 
 import pytest
 from instadroid import config, db, device, diagnostics, retention
+
+from tests.fakedevice import FakeDevice, Out
+from tests.test_feed import fetch_row, sql_column
 
 
 @pytest.fixture
@@ -41,7 +45,7 @@ def test_prune_old_posts_deletes_rows_and_media_past_retain_days(
 
     retention.prune_old_posts(con)
 
-    ids = {r[0] for r in con.execute("SELECT id FROM posts")}
+    ids = set(sql_column(con.execute("SELECT id FROM posts")))
     assert ids == {"new"}
     assert not (media / "old.jpg").exists()
     assert (media / "new.jpg").exists()
@@ -105,20 +109,38 @@ def test_merge_bumps_updated_at_without_touching_scraped_at(
     )
     con.commit()
 
-    existing = con.execute("SELECT * FROM posts WHERE id='h1'").fetchone()
+    existing = fetch_row(con.execute("SELECT * FROM posts WHERE id='h1'"))
     now = datetime.now(UTC)
     merged, media_to_drop = db.merged_fields(existing, _candidate(caption="The real caption"), now)
-    db.write_merged(con, existing["id"], merged)
+    db.write_merged(con, "h1", merged)
     con.commit()
 
-    row = con.execute("SELECT * FROM posts WHERE id=?", (merged["id"],)).fetchone()
+    row = fetch_row(con.execute("SELECT * FROM posts WHERE id=?", (merged["id"],)))
     assert row["caption"] == "The real caption"
     assert row["scraped_at"] == scraped_at  # unchanged: still when it was first seen
     assert row["updated_at"] == now.isoformat()  # changed: this is when the content changed
     assert media_to_drop is None
 
 
-def _candidate(**fields: object) -> db.PostRow:
+class PostFields(TypedDict, total=False):
+    """Any subset of db.PostRow's fields."""
+
+    id: str
+    username: str
+    kind: str
+    posted_date: str
+    caption: str
+    media_file: str | None
+    scraped_at: str
+    hash: str
+    url: str | None
+    place: str
+    posted_at: str | None
+    updated_at: str
+    ig_version: str | None
+
+
+def _candidate(**fields: Unpack[PostFields]) -> db.PostRow:
     """A freshly captured post with a hash id and no permalink, as scrape._store_post() builds it."""
     now = datetime.now(UTC).isoformat()
     row: db.PostRow = {
@@ -126,7 +148,8 @@ def _candidate(**fields: object) -> db.PostRow:
         "media_file": None, "scraped_at": now, "hash": "h2", "url": None, "place": "", "posted_at": None,
         "updated_at": now, "ig_version": None,
     }  # fmt: skip
-    return {**row, **fields}  # type: ignore[return-value]
+    row.update(fields)
+    return row
 
 
 def test_merge_keeps_the_first_seen_instagram_version(
@@ -139,10 +162,10 @@ def test_merge_keeps_the_first_seen_instagram_version(
         " VALUES ('h1','club','Reel by Club',?,'h1',?,'400.0.0.1.1')",
         (ts, ts),
     )
-    existing = con.execute("SELECT * FROM posts WHERE id='h1'").fetchone()
+    existing = fetch_row(con.execute("SELECT * FROM posts WHERE id='h1'"))
     candidate = _candidate(kind="video", posted_date="1 day ago", ig_version="445.0.0.45.83")
     merged, _ = db.merged_fields(existing, candidate, datetime.now(UTC))
-    db.write_merged(con, existing["id"], merged)
+    db.write_merged(con, "h1", merged)
     assert (
         con.execute("SELECT ig_version FROM posts WHERE id=?", (merged["id"],)).fetchone()[0] == "400.0.0.1.1"
     )
@@ -176,7 +199,7 @@ def test_db_init_backfills_updated_at_for_rows_from_before_the_column_existed(
 
     con = db.db_init()
 
-    row = con.execute("SELECT updated_at FROM posts WHERE id='h1'").fetchone()
+    row = fetch_row(con.execute("SELECT updated_at FROM posts WHERE id='h1'"))
     assert row["updated_at"] == scraped_at
 
 
@@ -232,11 +255,7 @@ def test_dump_debug_does_not_raise_on_a_write_failure(
     blocked.write_text("not a directory")
     monkeypatch.setattr(config, "DEBUG_DIR", blocked)
 
-    class FakeDevice:
-        def dump_hierarchy(self) -> str:
-            return "<hierarchy/>"
-
-    diagnostics.dump_debug(FakeDevice(), "whatever")  # must not raise
+    diagnostics.dump_debug(FakeDevice({"blank": "<hierarchy/>"}, "blank"), "whatever")  # must not raise
 
 
 def test_record_run_writes_a_row(con_and_media: tuple[sqlite3.Connection, Path]) -> None:
@@ -246,7 +265,7 @@ def test_record_run_writes_a_row(con_and_media: tuple[sqlite3.Connection, Path])
 
     db.record_run(con, started, finished, 3, None, {"android_release": "13", "android_sdk": "33"})
 
-    row = con.execute("SELECT * FROM runs").fetchone()
+    row = fetch_row(con.execute("SELECT * FROM runs"))
     assert row["new_posts"] == 3
     assert row["error"] is None
     assert row["android_release"] == "13"
@@ -261,7 +280,7 @@ def test_record_run_stores_link_failure_counts(con_and_media: tuple[sqlite3.Conn
 
     db.record_run(con, started, finished, 1, None, {}, link_sheet_failures=2, link_clipboard_failures=1)
 
-    row = con.execute("SELECT * FROM runs").fetchone()
+    row = fetch_row(con.execute("SELECT * FROM runs"))
     assert row["link_sheet_failures"] == 2
     assert row["link_clipboard_failures"] == 1
 
@@ -285,15 +304,15 @@ def test_record_run_stores_selector_drift_stats(con_and_media: tuple[sqlite3.Con
         con, started, finished, 0, None, {}, cards_per_screen=4.5, share_captioned=0.8, share_complete=0.9
     )
 
-    row = con.execute("SELECT cards_per_screen, share_captioned, share_complete FROM runs").fetchone()
+    row = fetch_row(con.execute("SELECT cards_per_screen, share_captioned, share_complete FROM runs"))
     assert row["cards_per_screen"] == 4.5
     assert row["share_captioned"] == 0.8
     assert row["share_complete"] == 0.9
 
 
-def _insert_run(con: sqlite3.Connection, **stats: object) -> None:
+def _insert_run(con: sqlite3.Connection, error: str | None = None, **stats: Unpack[db.RunMetrics]) -> None:
     started = datetime.now(UTC).isoformat()
-    db.record_run(con, started, started, 0, stats.pop("error", None), {}, **stats)
+    db.record_run(con, started, started, 0, error, {}, **stats)
 
 
 def test_selector_drift_flags_a_drop_below_the_baseline(
@@ -402,7 +421,7 @@ def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(
 
     retention.prune_expired_stories(con)
 
-    ids = {r[0] for r in con.execute("SELECT id FROM stories")}
+    ids = set(sql_column(con.execute("SELECT id FROM stories")))
     assert ids == {"fresh"}
     assert not (media / "stories" / "old.jpg").exists()
     assert (media / "stories" / "fresh.jpg").exists()
@@ -436,24 +455,28 @@ def test_prune_expired_stories_disabled_when_retain_days_is_zero(
 def test_launch_app_falls_back_to_monkey_launch_without_recursing_forever() -> None:
     # resolve-activity failing used to recurse into _launch_app itself instead of falling back,
     # which is unbounded recursion, not a fallback.
-    class FakeDevice:
+    class NoResolveDevice(FakeDevice):
         def __init__(self) -> None:
+            super().__init__({}, "launcher")
             self.app_start_calls: list[tuple[str, str | None, bool | None]] = []
 
-        def shell(self, args: list[str]) -> None:
+        def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
             raise RuntimeError("resolve-activity unavailable")
 
-        def app_start(self, pkg: str, activity: str | None = None, stop: bool | None = None) -> None:
-            self.app_start_calls.append((pkg, activity, stop))
+        def app_start(self, package_name: str, activity: str | None = None, stop: bool = False) -> None:
+            self.app_start_calls.append((package_name, activity, stop))
 
-    d = FakeDevice()
+    d = NoResolveDevice()
     device.launch_app(d)  # must not raise RecursionError
     assert d.app_start_calls == [(config.IG_PKG, None, False)]
 
 
 def test_device_snapshot_tolerates_shell_failures() -> None:
-    class BrokenDevice:
-        def shell(self, cmd: list[str] | str) -> None:
+    class BrokenDevice(FakeDevice):
+        def __init__(self) -> None:
+            super().__init__({}, "launcher")
+
+        def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
             raise RuntimeError("adb not connected")
 
     snapshot = device.device_snapshot(BrokenDevice())
@@ -499,7 +522,7 @@ def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(
 
     # dedupe (v1), accounts backfill (v2), story-retention cleanup (v3)
     assert con.execute("PRAGMA user_version").fetchone()[0] == 3
-    ids = {r[0] for r in con.execute("SELECT id FROM posts")}
+    ids = set(sql_column(con.execute("SELECT id FROM posts")))
     assert ids == {"bad", "good"}  # the corrupt row is left alone, not dropped or crashed on
 
     # Re-running db_init() (as a real restart would) must be a no-op, not a repeat crash.
@@ -603,7 +626,7 @@ def test_size_cap_removes_oldest_posts_first_when_over_budget(
 
     retention.prune_old_posts(con)
 
-    ids = {r[0] for r in con.execute("SELECT id FROM posts")}
+    ids = set(sql_column(con.execute("SELECT id FROM posts")))
     assert ids == {"newer"}
     assert not (media / "older.jpg").exists()
     assert (media / "newer.jpg").exists()
@@ -635,7 +658,7 @@ def test_merge_accounts_repoints_posts_and_drops_old_account_row(
     assert moved == 1
     assert con.execute("SELECT username FROM posts WHERE id='p1'").fetchone()[0] == "new_handle"
     assert con.execute("SELECT COUNT(*) FROM accounts WHERE username='old_handle'").fetchone()[0] == 0
-    new_account = con.execute("SELECT account_id FROM accounts WHERE username='new_handle'").fetchone()
+    new_account = fetch_row(con.execute("SELECT account_id FROM accounts WHERE username='new_handle'"))
     assert new_account["account_id"] == "acct123"  # carried over from the old handle
 
 
@@ -655,7 +678,7 @@ def test_rename_account_keeps_a_followed_allowlist_entry_in_sync(
 
     db.rename_account(con, "old_handle", "new_handle")
 
-    assert {r[0] for r in con.execute("SELECT username FROM following")} == {"new_handle"}
+    assert set(sql_column(con.execute("SELECT username FROM following"))) == {"new_handle"}
 
 
 def test_rename_account_leaves_the_allowlist_alone_when_the_old_name_wasnt_on_it(
@@ -667,7 +690,7 @@ def test_rename_account_leaves_the_allowlist_alone_when_the_old_name_wasnt_on_it
 
     db.rename_account(con, "old_handle", "new_handle")
 
-    assert {r[0] for r in con.execute("SELECT username FROM following")} == {"someone_else"}
+    assert set(sql_column(con.execute("SELECT username FROM following"))) == {"someone_else"}
 
 
 def test_needs_avatar_refresh_true_when_never_captured(

@@ -30,8 +30,8 @@ if command -v dmesg >/dev/null 2>&1 && dmesg_out="$( (dmesg -T 2>/dev/null || dm
     | grep -iE 'binder|redroid|panic|oops|hwservicemanager|servicemanager' || echo "(no matching lines in the tail; full dump saved to $DMESG_FILE)"
 else
   echo "can't read the kernel ring buffer (dmesg missing, or this user lacks permission — try" \
-       "sudo, or 'sudo sysctl kernel.dmesg_restrict=0'); skipping. This is where an early" \
-       "binder/pre-adb crash would show up, so a real startup failure may need it."
+    "sudo, or 'sudo sysctl kernel.dmesg_restrict=0'); skipping. This is where an early" \
+    "binder/pre-adb crash would show up, so a real startup failure may need it."
 fi
 
 echo
@@ -40,13 +40,13 @@ adb devices
 
 if ! adb -s "$S" shell true >/dev/null 2>&1; then
   echo "adb can't reach $S (still booting, or a binder/servicemanager-level crash before adb comes" \
-       "up — see the dmesg output above, this is the case logcat below can't see)."
+    "up — see the dmesg output above, this is the case logcat below can't see)."
   exit 1
 fi
 
 echo
 echo "== adb logcat -d (saved in full to $LOGCAT_FILE) =="
-adb -s "$S" logcat -d > "$LOGCAT_FILE" 2>&1
+adb -s "$S" logcat -d >"$LOGCAT_FILE" 2>&1
 
 declare -a patterns=(
   'WATCHDOG KILLING'

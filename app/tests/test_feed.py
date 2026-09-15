@@ -1,9 +1,75 @@
 import sqlite3
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx2 import Response
+from jsonvalues import JSON as Json
+from jsonvalues import loads
+
+
+def parse_json(text: str | bytes) -> Json:
+    return loads(text)
+
+
+def json_body(r: Response) -> Json:
+    """A response's JSON body (what r.json() returns, but typed)."""
+    return parse_json(r.content)
+
+
+def json_object(r: Response) -> dict[str, Json]:
+    """A response's JSON body, which must be an object."""
+    body = json_body(r)
+    assert isinstance(body, dict), body
+    return body
+
+
+def json_at(value: Json, *path: str) -> Json:
+    """value[path[0]][path[1]]..., where every step must be an object."""
+    for key in path:
+        assert isinstance(value, dict), f"expected an object at {key!r}, got {value!r}"
+        value = value[key]
+    return value
+
+
+# What sqlite3 hands back for a column (no converters are registered).
+type SqlValue = str | int | float | bytes | None
+
+
+def sql_value(value: object) -> SqlValue:
+    assert value is None or isinstance(value, str | int | float | bytes), value
+    return value
+
+
+def sql_rows(rows: Iterable[Iterable[object]]) -> list[tuple[SqlValue, ...]]:
+    """Every row of a cursor (plain tuples or sqlite3.Row), with each column typed as a sqlite value."""
+    return [tuple(sql_value(v) for v in row) for row in rows]
+
+
+def sql_dict(row: sqlite3.Row) -> dict[str, SqlValue]:
+    """A sqlite3.Row as a column -> value dict."""
+    return dict(zip(row.keys(), sql_rows([row])[0], strict=True))
+
+
+def fetch_row(rows: Iterable[object]) -> sqlite3.Row:
+    """The first row of a cursor whose connection uses sqlite3.Row, which must have one."""
+    row = next(iter(rows), None)
+    assert isinstance(row, sqlite3.Row), row
+    return row
+
+
+def sql_row(rows: Iterable[Iterable[object]]) -> tuple[SqlValue, ...]:
+    """The first row of a cursor, which must have one."""
+    found = sql_rows(rows)
+    assert found, "the query returned no rows"
+    return found[0]
+
+
+def sql_column(rows: Iterable[Iterable[object]]) -> list[SqlValue]:
+    """The first column of every row."""
+    return [row[0] for row in sql_rows(rows)]
 
 
 def make_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -69,10 +135,10 @@ def test_feed_entries_expose_both_posted_and_saved_dates_for_sorting(
 
 def test_user_filter_and_users_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = make_app(tmp_path, monkeypatch)
-    assert client.get("/users").json() == ["other", "someone"]
+    assert json_body(client.get("/users")) == ["other", "someone"]
     body = client.get("/instagram.xml", params={"user": "other"}).text
     assert "other" in body and "someone" not in body
-    assert client.get("/health").json() == {"ok": True, "posts": 2}
+    assert json_body(client.get("/health")) == {"ok": True, "posts": 2}
 
 
 def test_limit_is_clamped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,8 +190,8 @@ def test_missing_posts_table_returns_empty_instead_of_500(
     client = TestClient(app.app)
 
     assert client.get("/instagram.xml").status_code == 200
-    assert client.get("/users").json() == []
-    assert client.get("/health").json() == {"ok": True, "posts": 0}
+    assert json_body(client.get("/users")) == []
+    assert json_body(client.get("/health")) == {"ok": True, "posts": 0}
 
 
 def test_etag_changes_when_a_row_is_merged_in_place(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -544,6 +610,7 @@ def test_opml_lists_every_account_plus_the_aggregate_and_stories_feeds(
     root = ET.fromstring(r.text)
     assert root.tag == "opml"
     category = root.find("./body/outline")
+    assert category is not None
     assert category.get("text") == "Instagram"
     outlines = category.findall("outline")
     xml_urls = [o.get("xmlUrl") for o in outlines]
@@ -620,7 +687,7 @@ def test_dt_handles_naive_and_malformed_timestamps(tmp_path: Path, monkeypatch: 
     naive = app._dt("2026-09-08T10:00:00")
     assert naive is not None and naive.tzinfo is not None  # naive input gets UTC attached
     aware = app._dt("2026-09-08T10:00:00+00:00")
-    assert aware.tzinfo is not None
+    assert aware is not None and aware.tzinfo is not None
 
 
 def _write_image(path: Path, size: tuple[int, int]) -> None:

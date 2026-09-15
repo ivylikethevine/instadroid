@@ -34,11 +34,12 @@ track those). They are:
   logs, `/status`, debug dumps, the feeds, or the published image) is in scope.
 - **The feed server** (`app.py`: `/instagram.xml`, `/stories.xml`, `/opml`, `/media`, `/status`,
   `/health`). It's unauthenticated unless `FEED_TOKEN` is set. Anything that reaches beyond what it's
-  meant to serve is in scope: getting past the token, a media signature that opens a file it wasn't
+  meant to serve is in scope: getting past the token, triggering `/control` changes from another
+  site (cross-site POST/DELETE requests are refused), a media signature that opens a file it wasn't
   issued for, path traversal out of the media directory, injection through captions or usernames
   into the Atom/HTML output, or reading the database or `.env`.
-- **Secrets in logs.** `FRESHRSS_REFRESH_URL` carries an API token and is logged with its query
-  string stripped, and a `?token=` feed token is blanked in the access log. A way to get either token
+- **Secrets in logs.** `FRESHRSS_REFRESH_URL` and `ALERT_URL` can carry tokens and are logged without
+  their query string or credentials, and a `?token=` feed token is blanked in the access log. A way to get either token
   into a log is in scope.
 - **The release pipeline and image**: the GitHub Actions workflows, the published
   `ghcr.io/ivylikethevine/instadroid` image and its build-provenance attestation, and the pinned
