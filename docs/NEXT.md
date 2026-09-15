@@ -23,7 +23,7 @@ recorded as validated with the profile that already covers it.
 
 ## Design: profiles at change points
 
-```
+```text
 app/igprofiles/
   __init__.py      available(), load(), covering(), select(), default_build(), fixture(); MIN_MAJOR, DEFAULT_BUILD
   base.py          BaseProfile, the contract every profile follows
@@ -42,13 +42,13 @@ A profile vN covers every Instagram build from major N up to the next profile. T
 **the highest profile at or below the installed version** (`igprofiles.covering()`), so with only
 `v424` today, every supported build runs under it. What lives in a profile:
 
-| What | Where |
-|---|---|
-| Selectors (resource-ids, content-desc patterns, UI strings) | `vXYZ/selectors.py` |
-| Behavior that differs (parsing, navigation, capture, login) | methods on `Profile` (below) |
-| The exact builds shown to work with it | `Profile.validated` (on its own class, never inherited) |
-| Test fixtures (hierarchy dumps and what they must parse to), per validated version | `vXYZ/fixtures/<screen>_<major>.xml` |
-| Human notes (`scraper.py profiles` prints them) | `Profile.notes` |
+| What                                                                               | Where                                                   |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Selectors (resource-ids, content-desc patterns, UI strings)                        | `vXYZ/selectors.py`                                     |
+| Behavior that differs (parsing, navigation, capture, login)                        | methods on `Profile` (below)                            |
+| The exact builds shown to work with it                                             | `Profile.validated` (on its own class, never inherited) |
+| Test fixtures (hierarchy dumps and what they must parse to), per validated version | `vXYZ/fixtures/<screen>_<major>.xml`                    |
+| Human notes (`scraper.py profiles` prints them)                                    | `Profile.notes`                                         |
 
 `tests/test_profiles.py` enforces the shape: every profile except the lowest must differ from the one
 it subclasses (in its selectors or an override method), and every validated build must be one its
@@ -59,6 +59,7 @@ profile actually covers.
 On every connect (and after an install) `versioning.activate_profile()` picks the profile covering
 the installed version. Before a device is connected, the newest profile stands in. Warnings go to the
 log and show on `/status` as a run warning:
+
 - an installed major version with no build validated with its profile (e.g. a newer Instagram than
   anything checked so far): it runs anyway;
 - an installed version below every profile: the lowest profile runs.
@@ -130,6 +131,7 @@ what a changed selector or override should be.
    share sheet, the profile and Following list, and the login form. That's up to 3 of each, plus
    every failure dump. They land in `local/data/debug/profile-dev/447/dumps/` along with
    `baseline.log`.
+
 3. **Check**: `python scripts/new_profile.py check 447.0.0.x.y` (run automatically after a baseline). For
    each captured screen it lists the selector keys the scraper needs there that matched nothing, and
    what the parsers find under the covering profile and its parent. It also flags dumps with almost no
@@ -160,13 +162,13 @@ what a changed selector or override should be.
 ## Status
 
 - [x] Profile system: directory profiles, loader with the 424 floor (440 until 2026-09-15), `IG_PROFILE`, `@versioned`
-  behavior overrides, contract tests, `scraper.py profiles`.
+      behavior overrides, contract tests, `scraper.py profiles`.
 - [x] Tooling for adding versions: `scripts/new_profile.py`, capture mode, `igprofiles/screens.py`.
 - [x] Profiles only where something changes (2026-09-14): one root profile, `v424`; the covering
-  profile is chosen automatically; `validated` lists builds; fixtures per version.
+      profile is chosen automatically; `validated` lists builds; fixtures per version.
 - [x] Validated with `v424`: 424.0.0.49.64, 440.1.0.46.86, 441.0.0.43.81, 442.0.0.46.79, 443.0.0.48.82,
-  444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77 (see the run log). Replay fixtures for 424 and 440-445
-  (none recorded for 446). 425-439 run with the "hasn't been validated" warning until each gets a baseline.
+      444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77 (see the run log). Replay fixtures for 424 and 440-445
+      (none recorded for 446). 425-439 run with the "hasn't been validated" warning until each gets a baseline.
 - [x] Floor moved to 424 and the default install pinned to 445 (2026-09-15).
 - [ ] Retry 446; if it still crashes, drop it from `v424.validated`.
 - [x] Old-build probe, `400.0.0.49.68`: installs, but crashes at native startup on every launch (run log).
@@ -176,15 +178,17 @@ what a changed selector or override should be.
 
 Searched every tracked file, and every added line in all 74 commits of git history. The search
 covered:
+
 - 130 real identifiers collected locally: the usernames, captions, shortcodes and places in the real
   and scratch databases, the handles and display names in raw debug dumps, and the logged-in
   account's username;
-- patterns: "<user> posted a", "<user>'s story", Instagram post and profile URLs, display names in
+- patterns: `<user> posted a`, `<user>'s story`, Instagram post and profile URLs, display names in
   media descriptions, @handles, email addresses and phone numbers.
 
 It also checked for committed images, databases, APKs or raw dumps: none, ever.
 
 **Found and replaced in the working tree:**
+
 - account names and places from real posts in `v440/selectors.py` (now `v424/`) comments and in `test_parser.py`
   (four usernames, a display name, a venue, two permalink shortcodes);
 - a real city and state in the 445 feed fixture and two tests;
@@ -240,7 +244,7 @@ Still open (none of these are 446-specific; all were seen on 445 too):
   hierarchy is still unseen; wiring `_dump_debug` in there is the next step.
 - **Re-processing of a just-stored post**: 3 of the 6 new posts (a carousel, the Reel and a photo)
   came back on a later screen, failed Copy link three times each, and were then merged into the row
-  stored moments earlier. This happens *within one run*, not just across runs, which fits the
+  stored moments earlier. This happens _within one run_, not just across runs, which fits the
   truncated-vs-expanded caption hashing theory for `_post_key()`; still unconfirmed.
 - **One post without a permalink**: Copy link failed on every retry for one photo, so it's stored
   under a hash id.
@@ -250,12 +254,12 @@ Still open (none of these are 446-specific; all were seen on 445 too):
 `MAX_SCROLLS=5`, `MAX_STORIES_PER_RUN=2`, scratch database). redroid was started once and stepped down one
 build at a time (446 → 444 → 443 → 442 → 441) with `baseline`. Every downgrade kept the login.
 
-| Build | Profile | Result | Peak memory |
-|---|---|---|---|
-| 444.0.0.46.85 | `v444` (from v445) | 2 stories, 2 posts (a Reel, a photo), full captions, media, permalinks; Following feed reached through the switcher | 2048 MiB |
-| 443.0.0.48.82 | `v443` (from v444) | same | 2179 MiB |
-| 442.0.0.46.79 | `v442` (from v443) | same | 2153 MiB |
-| 441.0.0.43.81 | `v441` (from v442) | same (baseline and check only; not promoted or validated yet) | 2088 MiB |
+| Build         | Profile            | Result                                                                                                              | Peak memory |
+| ------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------- | ----------- |
+| 444.0.0.46.85 | `v444` (from v445) | 2 stories, 2 posts (a Reel, a photo), full captions, media, permalinks; Following feed reached through the switcher | 2048 MiB    |
+| 443.0.0.48.82 | `v443` (from v444) | same                                                                                                                | 2179 MiB    |
+| 442.0.0.46.79 | `v442` (from v443) | same                                                                                                                | 2153 MiB    |
+| 441.0.0.43.81 | `v441` (from v442) | same (baseline and check only; not promoted or validated yet)                                                       | 2088 MiB    |
 
 `check` found every required selector key on every captured screen: the feed switcher menu, the
 Following feed, the Home feed and story tray, the story viewer, the share sheet and the feed. No
@@ -302,6 +306,7 @@ root profile's name) down to 424 is a decision still to make. 425-439 would then
 Restoring 446 afterwards (a 424 → 446 jump) wasn't smooth: the first launches landed back on the
 launcher and Android logged an ANR for Instagram at over 200% CPU, apparently first-launch work on
 data from 22 versions back under ARM translation. What followed, 00:15-00:42 PDT:
+
 - **446 now crashes on launch.** Every launch reaches `MainTabActivity`, then dies within about 5 seconds:
   a native `SIGSEGV` in `RenderThread`, with an empty backtrace (translated ARM code), sometimes preceded
   by an ANR. A redroid restart didn't change it.
@@ -323,7 +328,7 @@ longer depends on it: `igprofiles.DEFAULT_BUILD` pins auto-install and `restore`
 **Floor moved to 424, 2026-09-15.** The root profile `v440` became `v424` (`MIN_MAJOR = 424`) with
 its selectors unchanged, and the 424 baseline above was promoted (`feed_424`, `home_feed_424`) and
 validated. Promoting it turned up one scrubbing miss, a display name in a Reel's media description
-on a card no parser returned ("Reel by <name>, 82 likes, ..."); `promote_dump.pseudonymize()` now
+on a card no parser returned (`Reel by <name>, 82 likes, ...`); `promote_dump.pseudonymize()` now
 catches those, and no committed fixture had one. `DEFAULT_BUILD = "445.0.0.45.83"` replaced the
 newest validated build as the default install.
 

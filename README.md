@@ -276,6 +276,7 @@ python scripts/export_openapi.py       # after changing a route in app/app.py
 ```
 
 All Python code, tests included, is fully typed with no `Any`:
+
 - ruff's `ANN` rules require an annotation on every function and ban an explicit `Any`;
 - basedpyright checks `app/` (tests included) and `scripts/` in strict mode with `reportAny`, so no
   value typed `Any` gets through, not even one returned by the standard library;
@@ -292,9 +293,12 @@ screens are synthetic hierarchy XML, with `goto`/`clip` attributes on nodes scri
 does. No real account data is used in any fixture.
 
 CI (`.github/workflows/ci.yml`) runs:
+
 - ruff, basedpyright and import-linter (`lint-imports`), and the test suite with coverage;
 - `pip-audit` on the requirements (also weekly), and GitHub's dependency review on pull requests;
 - shellcheck and shfmt on the shell scripts;
+- markdownlint, prettier and a relative-link check (lychee) on the docs, and typos over everything
+  (external links are checked weekly by `.github/workflows/links.yml`);
 - hadolint, a build and smoke test of the image, a Trivy scan of it (report-only, to the Security
   tab), and `docker compose config`;
 - gitleaks, actionlint and zizmor.
@@ -347,7 +351,7 @@ category. It's a subscription list, not a feed: adding `/opml` as a feed URL fai
 
 - **Import it once**: Subscription management → Import/Export, then import the file saved from
   `/opml`.
-- **Keep it in sync** (FreshRSS 1.20+): create a category and set its *Dynamic OPML* URL to
+- **Keep it in sync** (FreshRSS 1.20+): create a category and set its _Dynamic OPML_ URL to
   `$PUBLIC_URL/opml`. FreshRSS then re-reads the outline on its own schedule, so accounts that
   appear later (or a rename via `scraper.py rename`) are picked up without re-importing.
 

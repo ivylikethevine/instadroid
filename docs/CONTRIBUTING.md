@@ -39,6 +39,10 @@ basedpyright
 PYTHONPATH=app lint-imports               # import boundaries (pyproject.toml)
 pytest -q --cov=app --cov=scripts   # fails under 90% coverage
 shellcheck -S warning scripts/*.sh && shfmt -d scripts/ app/entrypoint.sh
+typos                                     # spelling, everywhere ([tool.typos] in pyproject.toml)
+git ls-files -z '*.md' | xargs -0 npx --yes markdownlint-cli2@0.23.2
+git ls-files -z '*.md' | xargs -0 npx --yes prettier@3.9.6 --check
+git ls-files -z '*.md' | xargs -0 lychee --offline --include-fragments   # relative links
 docker compose config -q
 ```
 
