@@ -6,24 +6,18 @@ title: Roadmap
 
 Ordered by scope, smallest first.
 
-### Small
+## Small
 
 A config flag, one function, a CI tweak, or docs.
 
-- **Markdown lint and format check**: `.markdownlint.yaml` and `.prettierrc.yaml` are configured, but CI
-  runs neither. Add `markdownlint-cli2` and `prettier --check '**/*.md'` so the docs stay as consistent
-  as the code.
-- **Link check**: `lychee` over README.md and `docs/`, which cross-link heavily (and have moved files
-  around more than once). Probably scheduled weekly for external links, so a flaky site doesn't fail
-  pull requests.
-- **Spell check**: `crate-ci/typos` over code and docs. Fast, low false-positive rate, and this repo is
-  prose-heavy (docstrings, NEXT.md, CLAUDE.md).
+Nothing open. Done: Markdown lint and format checks, a link check (relative links on pull
+requests, external links weekly), spell check (typos), container image scanning (Trivy,
+report-only), dependency review on pull requests, shell formatting (shfmt) and import boundaries
+(import-linter). Earlier: credentials from a file, caption hashtag/mention links, optional feed
+auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
+spec.
 
-Done: container image scanning (Trivy, report-only), dependency review on pull requests, shell
-formatting (shfmt) and import boundaries (import-linter). Earlier: credentials from a file, caption hashtag/mention links, optional feed auth, the
-compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.html)) and the committed OpenAPI spec.
-
-### Medium
+## Medium
 
 A feature across several parts of the scraper, compose or CI, or repeated real-device work.
 
@@ -41,8 +35,8 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   than a CI job, plus the Scorecard checks still open: branch protection and fuzzing.
 - **Resource-id check for new Instagram builds in CI**: `.github/workflows/new-builds.yml` already opens
   an issue weekly when APKPure lists a major version newer than every validated build
-  (`scripts/check_new_builds.py`). Still to add: a static resource-id report in that issue. `aapt2 dump
-  resources` on the new build's base APK (about a second) lists every selector resource id missing from
+  (`scripts/check_new_builds.py`). Still to add: a static resource-id report in that issue.
+  `aapt2 dump resources` on the new build's base APK (about a second) lists every selector resource id missing from
   it, and the ids added or removed since the newest validated build.
   - A research pass on 2026-09-14 ran this on the cached 443-446 builds. All 18 Instagram resource ids
     the selectors use were present in every one, matching the 445 selectors working unchanged on 446.
@@ -53,7 +47,7 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
     account, session, dump or APK may end up in a cache or artifact: in a public repo, anyone can read
     both.
 
-### Large
+## Large
 
 Open investigations, new capture mechanisms, or changes to the container/process topology.
 

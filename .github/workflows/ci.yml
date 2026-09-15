@@ -85,6 +85,33 @@ jobs:
       - run: pip install "$(grep '^shfmt-py==' scripts/requirements-dev.txt)"
       - run: shfmt -d scripts/ app/entrypoint.sh
 
+  docs:
+    if: github.event.pull_request.draft != true
+    name: Docs (markdownlint + prettier + links + typos)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      # Both read their settings from .markdownlint.yaml and .prettierrc.yaml; versions pinned here.
+      - run: git ls-files -z '*.md' | xargs -0 npx --yes markdownlint-cli2@0.23.2
+      - run: git ls-files -z '*.md' | xargs -0 npx --yes prettier@3.9.6 --check
+      # Relative links and #fragments only, so a flaky external site can't fail a pull request;
+      # .github/workflows/links.yml checks external links weekly.
+      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: --offline --include-fragments --no-progress './**/*.md'
+          fail: true
+      # Spelling over everything git tracks, configured in pyproject.toml's [tool.typos].
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.14"
+      - run: pip install "$(grep '^typos==' scripts/requirements-dev.txt)"
+      - run: typos
+
   docker:
     if: github.event.pull_request.draft != true
     name: Docker (hadolint + build + compose config)

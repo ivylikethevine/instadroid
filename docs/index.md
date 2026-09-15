@@ -11,10 +11,10 @@ _Following_ feed as Atom for FreshRSS.
 See the [README](https://github.com/ivylikethevine/instadroid#readme) for setup and usage. This
 site holds the project's longer-lived reference docs:
 
-- [Roadmap](ROADMAP.html) — planned work, ordered by scope.
-- [Version profiles](NEXT.html) — how per-Instagram-version selector profiles work and how to add one.
-- [Compatibility](COMPATIBILITY.html) — which redroid image runs which Instagram build.
+- [Roadmap](ROADMAP.md) — planned work, ordered by scope.
+- [Version profiles](NEXT.md) — how per-Instagram-version selector profiles work and how to add one.
+- [Compatibility](COMPATIBILITY.md) — which redroid image runs which Instagram build.
 - [OpenAPI spec](openapi.json) — the feed server's routes.
-- [Security policy](SECURITY.html) — supported versions and how to report a vulnerability.
-- [Contributing](CONTRIBUTING.html) — how to send a bug report or pull request.
-- [Code of Conduct](CODE_OF_CONDUCT.html)
+- [Security policy](SECURITY.md) — supported versions and how to report a vulnerability.
+- [Contributing](CONTRIBUTING.md) — how to send a bug report or pull request.
+- [Code of Conduct](CODE_OF_CONDUCT.md)

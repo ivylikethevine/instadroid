@@ -31,8 +31,9 @@ something to ask permission for each time.
   `aureliolo/redroid:14.0.0_amd64_with_gapps` (the only Android-14 redroid image found) boots fine
   and is host-safe, but ships **no ARM translation at all** — confirmed by both a device-side check
   (no `libndk_translation.so`/`libhoudini.so`/native-bridge property anywhere) and empirically:
-  launching Instagram crashes the linker outright (`dlopen failed: ... EM_AARCH64 ... instead of
-  EM_X86_64`). Not fixable by config; this image class just can't run arm64 apps. `erstt/redroid`
+  launching Instagram crashes the linker outright
+  (`dlopen failed: ... EM_AARCH64 ... instead of EM_X86_64`). Not fixable by config; this image
+  class just can't run arm64 apps. `erstt/redroid`
   is the only source found with confirmed, working ARM translation.
 - `abing7k/redroid:a11_ndk_amd` (Android 11, the original image) crashed Instagram at native
   startup across 3 tested APK versions — separate from and predating the kernel-panic incident.
@@ -89,8 +90,9 @@ mixed into the Android-13 `/data` volume):
   `/data/resource-cache` had two mtime generations of the same SystemUI overlay `.frro`/`@idmap`
   files. Fixed with the same move-aside pattern; now scripted as `scripts/reset-resource-cache.sh`
   — run that first if boot is slow and `idmap` shows up in logcat.
-- **`com.android.phone` crash loop**: `SQLiteException: Can't downgrade database from version
-  4063240 to 3735560` in `com.android.providers.telephony`'s `telephony.db` (at
+- **`com.android.phone` crash loop**:
+  `SQLiteException: Can't downgrade database from version 4063240 to 3735560` in
+  `com.android.providers.telephony`'s `telephony.db` (at
   `/data/user_de/0/com.android.providers.telephony/databases/`, not `/data/data` — telephony uses
   device-encrypted storage). Logcat showed this firing thousands of times in the ring buffer — a
   tight crash loop, not an occasional error — and was destabilizing Instagram's own UI automation
@@ -102,7 +104,7 @@ A third, unrelated issue also surfaced in the same session: `system_server` dead
 boot inside `PermissionPolicyService.grantOrUpgradeDefaultRuntimePermissionsIfNeeded` (a
 `CompletableFuture.get()` that never completed), got Watchdog-killed every few minutes, and
 retried forever without ever reaching `sys.boot_completed`. This was a genuine code-level hang, not
-a corrupted-file issue — resetting `/data/system/users/0/package-restrictions.xml` alone did *not*
+a corrupted-file issue — resetting `/data/system/users/0/package-restrictions.xml` alone did _not_
 fix it. Recovery required a full reset of `/data/system`, `/data/system_ce`, and `/data/system_de`
 (moved aside, not deleted) — but **`/data/data` was left untouched, and Instagram's login session
 survived** (`scraper.py login` returned "no login screen; assume session is live" with zero
@@ -128,7 +130,7 @@ adb isn't even up yet — see below) and prints the matching fix in one command.
 **Note on `docker logs ig-redroid`: it stays almost empty even during a real startup failure, by
 design.** redroid's image `ENTRYPOINT` is Android's `/init` directly (confirmed via `docker image
 inspect`) — there's no wrapper piping `logcat` to the container's stdout. Being privileged, `/init`
-and the kernel binder driver write straight to the *host's* kernel ring buffer instead, so a
+and the kernel binder driver write straight to the _host's_ kernel ring buffer instead, so a
 binder-level or pre-`adb` crash (like the Android-15 hwservicemanager crash within ~3s of boot, or
 the 2026-09-10 kernel panic) only ever shows up in host `dmesg`/`journalctl -k`, never in `docker
 logs`. There is no supported `androidboot.*` flag to change this — redroid's documented options
@@ -168,7 +170,7 @@ that hit 1.98GiB, and why `mem_limit` should not be lowered based on the numbers
 ~350MiB sitting in Android's "Cached" process tier — apps like the camera, gallery, contacts,
 calendar, clock, print spooler, and file picker, none of which the scraper's UI automation ever
 opens. On a real device these get reclaimed by `lmkd` under memory pressure; here they don't,
-because the container reports the *host's* full RAM to the guest (`dumpsys meminfo`'s "Total RAM"
+because the container reports the _host's_ full RAM to the guest (`dumpsys meminfo`'s "Total RAM"
 line shows the host's real ~64GiB, not the `mem_limit` cgroup ceiling), so lmkd's minfree
 thresholds — calibrated for a 64GiB device — never trip. Cached apps just accumulate for the
 container's lifetime instead of being evicted.
@@ -192,7 +194,7 @@ it — it looked like just another idle UI app the scraper's `adb install`-based
 It was disabled live against an already-booted instance, measured (looked fine), and written up as
 safe. It isn't: `PackageManagerService`'s constructor requires exactly one enabled app matching the
 system installer role, and hard-crashes if it finds zero. That check only runs during
-`PackageManagerService` startup, i.e. on a *cold* boot — an already-running instance never hits it,
+`PackageManagerService` startup, i.e. on a _cold_ boot — an already-running instance never hits it,
 which is exactly why the live test missed it. The next cold restart hit a tight ~5s crash loop:
 `Zygote failed to write to system_server FD`, `*** FATAL EXCEPTION IN SYSTEM PROCESS`,
 `java.lang.RuntimeException: There must be exactly one installer; found []` at
@@ -201,7 +203,7 @@ which is exactly why the live test missed it. The next cold restart hit a tight 
 `adb root`, then `adb shell mv /data/system/users/0/package-restrictions.xml
 /data/system/users/0/package-restrictions.xml.bak` (this is where `pm disable-user` state lives)
 and restart the container — Android regenerates a clean one on next boot, which re-enables
-*everything*, so the (corrected, `packageinstaller`-free) disable list has to be re-run afterward.
+_everything_, so the (corrected, `packageinstaller`-free) disable list has to be re-run afterward.
 Confirmed fixed and confirmed to survive a subsequent cold restart cleanly.
 
 **Takeaway that generalizes beyond this one package: test `pm disable-user` changes against a full
@@ -222,7 +224,7 @@ far above the 1.1-1.26GiB figure in "Memory limits" above, which was evidently m
 lighter run. `dumpsys meminfo` explained why: `com.instagram.android` alone was 702MiB resident,
 plus a 116MiB `:fbns` (push-notification) subprocess the scraper has no use for (it polls, it's
 never woken by a push) — ~820MiB neither `tune-android.sh` nor the app-sweep above ever touched,
-because both only look at *other* apps. Same root cause as the "Reducing idle memory" section:
+because both only look at _other_ apps. Same root cause as the "Reducing idle memory" section:
 this container's `lmkd` never reclaims anything, so once Instagram is opened by a run it just sits
 there fully resident for the entire ~2.5-4.5h gap until the next one — every run before this fix
 was paying that ~820MiB tax continuously, not just while actually scraping.
@@ -231,14 +233,14 @@ Fix: `scrape_once()` (now in `app/instadroid/scrape.py`) force-stops `com.instag
 of a run (`device.free_device_memory()`, which force-stops it along with the cached-app sweep) — same reasoning as
 that sweep: this container can't rely on `lmkd` to do it, so the scraper does it explicitly instead.
 Confirmed safe **the hard way**: the very first live test of this (a rushed manual `am force-stop`
-+ immediate `scraper.py once`, run back-to-back with other manual `adb`/`am` commands in between)
+and immediate `scraper.py once`, run back-to-back with other manual `adb`/`am` commands in between)
 hit `DeviceNotReady: could not bring com.instagram.android to the foreground` — looked at first
 like cold boot being slower than `ensure_logged_in()`'s retry budget assumes. Timed it in isolation
 and it wasn't: `app_current()` reported Instagram foregrounded in ~1.1s from a genuine cold start,
 well inside the existing retry budget. Re-ran the real flow cleanly (`am force-stop`, then only
 `scraper.py once`, no manual commands in between) and it worked — twice more, through the actual
-`scrape_once()` code path after rebuilding the image with the fix, each time confirmed by `pidof
-com.instagram.android` finding nothing right after a run and the next run's log showing no
+`scrape_once()` code path after rebuilding the image with the fix, each time confirmed by
+`pidof com.instagram.android` finding nothing right after a run and the next run's log showing no
 foreground warnings at all. Conclusion: the one failure was this session's own rapid-fire manual
 `adb`/`am` commands stepping on each other, not a real cold-start timing problem — but this is
 exactly the kind of thing the `packageinstaller` incident above says to verify with a real run
@@ -246,7 +248,7 @@ rather than assume, so it was.
 
 Effect measured over two consecutive real runs: memory after each run settled around ~1.03GiB
 (down from Instagram's own ~1.7-1.9GiB while it's actually open) and stayed there until the next
-run relaunches it. This does **not** lower the peak *during* an active scrape — Instagram is still
+run relaunches it. This does **not** lower the peak _during_ an active scrape — Instagram is still
 open and using its ~820MiB then, same as always — it only stops paying that cost through the idle
 gap between runs, which is most of the container's time.
 
@@ -267,7 +269,7 @@ Android processes inside the container (`journalctl -k`: `Memory cgroup out of m
 ... (d.process.media)`, `ackageinstaller`, `ndroid.keychain`, `d.process.acore`, ...). Each kill dumped
 the container's ~875-process table to the kernel log (~1,400 lines in a minute). The user's whole
 desktop froze until they stopped the scrape container. No hung-task/lockup lines were logged and an
-unrelated `rustc` build was running at the same time, so the freeze isn't *proven* to be the OOM
+unrelated `rustc` build was running at the same time, so the freeze isn't _proven_ to be the OOM
 storm, but the timing matches and nothing else in the logs does.
 
 Also learned: a Bash tool call that came back "rejected" had in fact already started that container
@@ -283,9 +285,9 @@ What changed as a result:
   `memswap_limit: 256m`.
 - **Memory guard** (`device.MemoryGuard` in `app/instadroid/`, `MEMORY_GUARD_PERCENT`, default 85): the scraper
   reads redroid's own cgroup v2 files through adb (`/sys/fs/cgroup/memory.current`, `memory.max`,
-  `memory.events`, `memory.stat`; readable as the adb shell user), and counts usage the way `docker
-  stats` does, excluding `inactive_file` cache. The first live 446 run showed why: counting that
-  cache, the guard stopped a run at "2756 of 3072 MiB" while `docker stats` peaked at ~2.3GiB, and
+  `memory.events`, `memory.stat`; readable as the adb shell user), and counts usage the way
+  `docker stats` does, excluding `inactive_file` cache. The first live 446 run showed why: counting
+  that cache, the guard stopped a run at "2756 of 3072 MiB" while `docker stats` peaked at ~2.3GiB, and
   the kernel reclaims that cache before it would ever OOM-kill. It checks before stories and before every
   screen, and stops the run early with a warning once usage crosses the threshold. Each run records
   `runs.mem_peak_mb` and `runs.oom_kills` (the `oom_kill` delta over the run), shown in `/status`'s

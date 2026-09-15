@@ -322,7 +322,9 @@ def test_without_an_override_the_base_implementation_runs() -> None:
 
 def test_a_misnamed_override_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     class Typo(type(ROOT)):
-        def parse_heirarchy(self, base: Callable[[str], list[parsing.Post]], xml: str) -> list[parsing.Post]:
+        def parse_hierarchies(
+            self, base: Callable[[str], list[parsing.Post]], xml: str
+        ) -> list[parsing.Post]:
             return base(xml)
 
     def select_profile(requested: str, installed: str | None) -> tuple[BaseProfile, str | None]:
@@ -332,5 +334,5 @@ def test_a_misnamed_override_is_reported(monkeypatch: pytest.MonkeyPatch) -> Non
     versioning.activate_profile(None)  # nothing installed, so no validation warning alongside it
     assert (
         versioning.PROFILE_WARNING
-        == "profile v424 defines parse_heirarchy, which match no @versioned function"
+        == "profile v424 defines parse_hierarchies, which match no @versioned function"
     )
