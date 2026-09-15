@@ -24,10 +24,10 @@ def _taken_at(path: Path) -> datetime | None:
 
 
 def backups() -> list[Path]:
-    """Existing backups in BACKUP_DIR, oldest first."""
+    """Existing backups in BACKUP_DIR, oldest first (_NAME is fixed-width UTC, so by name)."""
     directory = Path(config.BACKUP_DIR)
     found = [p for p in directory.glob("posts-*.sqlite") if _taken_at(p)] if directory.is_dir() else []
-    return sorted(found, key=lambda p: _taken_at(p) or datetime.min.replace(tzinfo=UTC))
+    return sorted(found, key=lambda p: p.name)
 
 
 def backup_database(con: sqlite3.Connection, force: bool = False, now: datetime | None = None) -> Path | None:

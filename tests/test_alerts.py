@@ -7,21 +7,21 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from instadroid import alerts, config, db
+from instadroid import alerts, config
+from shared.sqlrows import SqlValue
 
 from tests.feedclient import make_app
-from tests.support import SqlValue, sql_column
+from tests.support import record_run_ago, sql_column
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
 CHALLENGE = "RuntimeError(\"Instagram wants a human: 'Confirm it's you' screen; see /debug\")"
 
 
 @pytest.fixture
-def con(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
+def con(con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
     monkeypatch.setattr(config, "ALERT_FAILED_RUNS", 3)
     monkeypatch.setattr(config, "ALERT_NO_POSTS_HOURS", 0)
-    return db.db_init()
+    return con
 
 
 def kinds(con: sqlite3.Connection) -> list[SqlValue]:
@@ -29,8 +29,7 @@ def kinds(con: sqlite3.Connection) -> list[SqlValue]:
 
 
 def _run(con: sqlite3.Connection, hours_ago: float, error: str | None = None) -> None:
-    started = (NOW - timedelta(hours=hours_ago)).isoformat()
-    db.record_run(con, started, started, 0, error, {})
+    record_run_ago(con, hours_ago * 60, error, now=NOW)
 
 
 @pytest.fixture

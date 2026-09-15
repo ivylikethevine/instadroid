@@ -1,5 +1,5 @@
 """Shared by the device-flow tests: synthetic screens, a FakeDevice wired up as a Home -> Following feed
-(feed_device) and typed SQLite reads. Their fixture, fast_offline, is in conftest.py."""
+(feed_device) and seeded posts. Their fixture, fast_offline, is in conftest.py."""
 
 import sqlite3
 import time
@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import NoReturn, TypedDict, Unpack
 
 import pytest
-from igprofiles.v424.selectors import SELECTORS as SELECTORS_445
+from igprofiles.v424.selectors import SELECTORS
 from instadroid import (
     config,
     diagnostics,
@@ -18,9 +18,7 @@ from instadroid import (
 from tests.fakedevice import FakeDevice, Node, hierarchy, node
 
 SAVE_FAILURE_LOGCAT = diagnostics.save_failure_logcat  # captured before conftest stubs it out
-_caption_class = SELECTORS_445["caption_class"]  # read at import, before conftest pins the profile
-assert isinstance(_caption_class, str)
-CAPTION = _caption_class
+CAPTION = SELECTORS["caption_class"]  # from v424's own module, whatever profile a test pins
 ACTION_BAR = node("action_bar_container", bounds=(0, 142, 1080, 289))
 FOLLOWING_TITLE = node(
     "action_bar_title", cls="android.widget.TextView", text="Following", bounds=(150, 160, 500, 270)
@@ -28,31 +26,6 @@ FOLLOWING_TITLE = node(
 TOP_URL = "https://www.instagram.com/reel/TOP123/?igsh=abc"
 OTHER_URL = "https://www.instagram.com/p/OTHER1/?igsh=xyz"
 PROFILE_TAB = node("profile_tab", desc="Profile", bounds=(864, 2088, 1080, 2214), goto="profile")
-
-type SqlValue = str | int | float | bytes | None
-
-
-def rows(con: sqlite3.Connection, sql: str) -> list[dict[str, SqlValue]]:
-    """A query's rows as {column: value}, for a connection whose row_factory is sqlite3.Row."""
-    found: list[sqlite3.Row] = con.execute(sql).fetchall()
-    return [dict(zip(r.keys(), r, strict=True)) for r in found]
-
-
-def row(con: sqlite3.Connection, sql: str) -> dict[str, SqlValue] | None:
-    """The first row of rows(), or None when the query matches nothing."""
-    found = rows(con, sql)
-    return found[0] if found else None
-
-
-def values(con: sqlite3.Connection, sql: str) -> list[tuple[SqlValue, ...]]:
-    """A query's rows as plain tuples, whatever the connection's row_factory."""
-    found: list[Iterable[SqlValue]] = con.execute(sql).fetchall()
-    return [tuple(r) for r in found]
-
-
-def scalar(con: sqlite3.Connection, sql: str) -> SqlValue:
-    """The first column of the first row, e.g. a COUNT(*)."""
-    return values(con, sql)[0][0]
 
 
 class RunOptions(TypedDict, total=False):
@@ -288,12 +261,17 @@ def seed_post(
     days_ago: int,
     h: str | None = None,
     url: str | None = None,
+    *,
+    now: datetime | None = None,
+    permalink_attempts: int = 0,
 ) -> None:
-    ts = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
+    """A photo post scraped, posted and last updated `days_ago` days before `now` (default: the current
+    time), stored under `pid` with hash `h` (default: `pid`)."""
+    ts = ((now or datetime.now(UTC)) - timedelta(days=days_ago)).isoformat()
     con.execute(
         "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash, url,"
-        " posted_at, updated_at) VALUES (?,?,?,?,?,NULL,?,?,?,?,?)",
-        (pid, username, "photo", "x", caption, ts, h or pid, url, ts, ts),
+        " posted_at, updated_at, permalink_attempts) VALUES (?,?,?,?,?,NULL,?,?,?,?,?,?)",
+        (pid, username, "photo", "x", caption, ts, h or pid, url, ts, ts, permalink_attempts),
     )
     con.commit()
 

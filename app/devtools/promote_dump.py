@@ -18,10 +18,12 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import igprofiles
+from igprofiles import BaseProfile, screens
 from instadroid import parsing, versioning
 from lxml import etree
 
@@ -35,13 +37,38 @@ _CHROME = re.compile(
 )
 
 
-def load_json(text: str) -> JSON:
-    """json.loads, typed: e.g. a recorded .expected.json. Raises ValueError if it isn't JSON."""
-    return jsonvalues.loads(text)
-
-
 def expected(xml: str) -> JSON:
-    return load_json(json.dumps(parsing.parse_screen(xml)))  # plain JSON types, as stored
+    return jsonvalues.loads(json.dumps(parsing.parse_screen(xml)))  # plain JSON types, as stored
+
+
+def write_expected(xml_path: Path, found: parsing.ScreenParse) -> Path:
+    """Record what the parsers found in a fixture as its .expected.json. The same text as dumping
+    expected(xml): the JSON round trip changes no value json.dumps writes."""
+    out = xml_path.with_suffix(".expected.json")
+    out.write_text(json.dumps(found, indent=1, ensure_ascii=False) + "\n")
+    return out
+
+
+def fixture_problems(profile: BaseProfile, recorded: Path) -> list[str]:
+    """What's wrong with a fixture under `profile`, given its .expected.json (tests/test_replay.py and
+    `new-profile validate`): it no longer parses as recorded, or, named after a screen (feed_445.xml,
+    home_feed_444.xml, ...), it lacks a selector key the scraper needs there beyond what the parsers
+    read (see igprofiles/screens.py)."""
+    problems: list[str] = []
+    name = recorded.name.removesuffix(".expected.json")
+    xml = recorded.with_name(f"{name}.xml").read_text()
+    with versioning.using(profile):
+        parsed = expected(xml)
+    if parsed != jsonvalues.loads(recorded.read_text()):
+        problems.append(
+            f"{recorded.name} no longer parses as recorded (re-record with promote-dump --update)"
+        )
+    screen = screens.screen_of_fixture(name)
+    if screen in screens.SCREENS and (
+        missing := screens.check_screen(xml, screen, profile.selectors).missing_required
+    ):
+        problems.append(f"fixture {name}.xml is missing required keys {', '.join(missing)}")
+    return problems
 
 
 def pseudonymize(xml: str) -> str:
@@ -138,29 +165,28 @@ class Promoted:
 def promote(dump: Path, profile_name: str, name: str) -> Promoted:
     """Scrub `dump` into igprofiles/<profile>/fixtures/<name>.xml and record what the parsers find in
     it under that profile. Raises ValueError, writing nothing, if scrubbing changed what parses."""
-    versioning.PROFILE = igprofiles.load(profile_name)
     raw = dump.read_text()
-    clean = pseudonymize(raw)
-    if shape(parsing.parse_screen(clean)) != shape(parsing.parse_screen(raw)):
-        raise ValueError(f"pseudonymizing {dump.name} changed what the parsers find; not writing a fixture")
+    with versioning.using(igprofiles.load(profile_name)):
+        clean = pseudonymize(raw)
+        result = parsing.parse_screen(clean)
+        if shape(result) != shape(parsing.parse_screen(raw)):
+            raise ValueError(
+                f"pseudonymizing {dump.name} changed what the parsers find; not writing a fixture"
+            )
     xml_path = igprofiles.fixture(profile_name, f"{name}.xml")
     xml_path.parent.mkdir(exist_ok=True)
     xml_path.write_text("<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n" + clean + "\n")
-    result = parsing.parse_screen(clean)
-    # The same text as dumping expected(clean): the JSON round trip changes no value json.dumps writes.
-    xml_path.with_suffix(".expected.json").write_text(json.dumps(result, indent=1, ensure_ascii=False) + "\n")
+    write_expected(xml_path, result)
     return Promoted(xml_path, result, leftover_text(clean))
 
 
 def rerecord(profile_name: str) -> list[Path]:
     """Re-record every fixture's .expected.json under `profile_name`'s current selectors."""
-    versioning.PROFILE = igprofiles.load(profile_name)
-    written: list[Path] = []
-    for xml_path in sorted(igprofiles.fixture(profile_name, "").glob("*.xml")):
-        out = xml_path.with_suffix(".expected.json")
-        out.write_text(json.dumps(expected(xml_path.read_text()), indent=1, ensure_ascii=False) + "\n")
-        written.append(out)
-    return written
+    with versioning.using(igprofiles.load(profile_name)):
+        return [
+            write_expected(xml_path, parsing.parse_screen(xml_path.read_text()))
+            for xml_path in sorted(igprofiles.fixture(profile_name, "").glob("*.xml"))
+        ]
 
 
 def print_promoted(promoted: Promoted) -> None:
@@ -180,11 +206,11 @@ class Options(argparse.Namespace):
     args: list[str]
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--update", action="store_true", help="re-record expectations for existing fixtures")
     ap.add_argument("args", nargs="+", help="DUMP PROFILE NAME, or with --update just PROFILE")
-    opts = ap.parse_args(namespace=Options())
+    opts = ap.parse_args(argv, namespace=Options())
     if opts.update:
         (profile_name,) = opts.args
         for out in rerecord(profile_name):

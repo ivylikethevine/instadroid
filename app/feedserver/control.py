@@ -1,13 +1,11 @@
 """/control: the manual lock and scrape-now requests, as files the scraper's poll loop reads
-(instadroid/control.py)."""
-
-import time
-from datetime import UTC, datetime
+(shared/control.py, instadroid/control.py)."""
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from shared import control as files
 
-from . import queries, render, settings
+from . import queries, settings
 
 router = APIRouter()
 
@@ -18,13 +16,10 @@ class ControlState(BaseModel):
 
 
 def current_state() -> ControlState:
-    lock_file = settings.CONTROL_DIR / "manual.lock"
-    try:
-        age = time.time() - lock_file.stat().st_mtime
-        locked = settings.LOCK_MAX_HOURS <= 0 or age < settings.LOCK_MAX_HOURS * 3600
-    except OSError:
-        locked = False
-    return ControlState(locked=locked, scrape_now=(settings.CONTROL_DIR / "scrape-now").exists())
+    return ControlState(
+        locked=files.locked(settings.CONTROL_DIR, settings.LOCK_MAX_HOURS),
+        scrape_now=files.run_now_requested(settings.CONTROL_DIR),
+    )
 
 
 @router.get("/control", summary="Manual control state")
@@ -37,14 +32,13 @@ def control_state() -> ControlState:
 def lock() -> ControlState:
     """Stop the scraper starting runs while the device is driven by hand. A run already going finishes.
     The lock is ignored once it's LOCK_MAX_HOURS old."""
-    settings.CONTROL_DIR.mkdir(parents=True, exist_ok=True)
-    (settings.CONTROL_DIR / "manual.lock").touch()
+    files.set_lock(settings.CONTROL_DIR, True)
     return current_state()
 
 
 @router.delete("/control/lock", summary="Release the lock")
 def unlock() -> ControlState:
-    (settings.CONTROL_DIR / "manual.lock").unlink(missing_ok=True)
+    files.set_lock(settings.CONTROL_DIR, False)
     return current_state()
 
 
@@ -59,13 +53,12 @@ def scrape_now() -> ControlState:
     Refused while locked, and within RUN_NOW_MIN_MINUTES of the last run finishing."""
     if current_state().locked:
         raise HTTPException(409, "the manual lock is in place; release it first")
-    if finished := render.parse_dt(queries.last_finished()):
-        since = (datetime.now(UTC) - finished).total_seconds() / 60
-        wait = settings.RUN_NOW_MIN_MINUTES
-        if since < wait:
-            raise HTTPException(
-                429, f"the last run finished {since:.0f} min ago; try again in {wait - since:.0f} min"
-            )
-    settings.CONTROL_DIR.mkdir(parents=True, exist_ok=True)
-    (settings.CONTROL_DIR / "scrape-now").touch()
+    with queries.connection() as con:
+        since = files.minutes_since(queries.last_finished(con))
+    wait = settings.RUN_NOW_MIN_MINUTES
+    if since is not None and since < wait:
+        raise HTTPException(
+            429, f"the last run finished {since:.0f} min ago; try again in {wait - since:.0f} min"
+        )
+    files.request_run_now(settings.CONTROL_DIR)
     return current_state()

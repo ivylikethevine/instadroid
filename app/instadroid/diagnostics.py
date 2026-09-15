@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from igprofiles.screens import screen_of_dump
+from PIL import Image
 
 from . import config, uidevice
 from .common import log
@@ -104,10 +105,10 @@ def save_failure_logcat(error: str) -> Path | None:
     return path
 
 
-def _write_pair(directory: Path, stem: str, d: uidevice.Device, xml: str) -> None:
+def _write_pair(directory: Path, stem: str, xml: str, image: Image.Image) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{stem}_hierarchy.xml").write_text(xml)
-    d.screenshot().convert("RGB").save(directory / f"{stem}_screen.jpg", quality=70)
+    image.convert("RGB").save(directory / f"{stem}_screen.jpg", quality=70)
 
 
 def dump_debug(d: uidevice.Device, name: str, xml: str | None = None) -> None:
@@ -119,19 +120,27 @@ def dump_debug(d: uidevice.Device, name: str, xml: str | None = None) -> None:
     is also kept in PROFILE_CAPTURE_DIR, since these are exactly the screens a new profile breaks on."""
     try:
         xml = xml if xml is not None else d.dump_hierarchy()
-        _write_pair(config.DEBUG_DIR, name, d, xml)
+        image = d.screenshot()
+        _write_pair(config.DEBUG_DIR, name, xml, image)
         prune_debug_dumps()
     except OSError as e:
         log(f"WARN: could not write debug dump {name!r}:", repr(e))
         return
-    capture_screen(d, screen_of_dump(name) or name, xml, failure=True)
+    capture_screen(d, screen_of_dump(name) or name, xml, failure=True, image=image)
 
 
-def capture_screen(d: uidevice.Device, screen: str, xml: str | None = None, failure: bool = False) -> None:
+def capture_screen(
+    d: uidevice.Device,
+    screen: str,
+    xml: str | None = None,
+    failure: bool = False,
+    image: Image.Image | None = None,
+) -> None:
     """Profile capture mode (PROFILE_CAPTURE_DIR set, see devtools/new_profile.py): save this screen
     as `<seq>-<screen>[-fail]_hierarchy.xml` + `_screen.jpg`, up to CAPTURE_PER_SCREEN per screen
     (failure dumps always), so a baseline run under a new profile leaves one reviewable dump of
-    every screen it reached. A no-op otherwise, and never raises: capturing must not change a run."""
+    every screen it reached. Pass `xml`/`image` when the caller already has them, to skip the device
+    round-trip. A no-op otherwise, and never raises: capturing must not change a run."""
     if not config.PROFILE_CAPTURE_DIR:
         return
     count = _captured.get(screen, 0)
@@ -141,6 +150,11 @@ def capture_screen(d: uidevice.Device, screen: str, xml: str | None = None, fail
     seq = sum(_captured.values())
     stem = f"{seq:03d}-{screen}" + ("-fail" if failure else "")
     try:
-        _write_pair(Path(config.PROFILE_CAPTURE_DIR), stem, d, xml if xml is not None else d.dump_hierarchy())
+        _write_pair(
+            Path(config.PROFILE_CAPTURE_DIR),
+            stem,
+            xml if xml is not None else d.dump_hierarchy(),
+            image if image is not None else d.screenshot(),
+        )
     except Exception as e:  # a device hiccup or a full disk; the run itself goes on
         log(f"WARN: could not capture screen {stem!r}:", repr(e))

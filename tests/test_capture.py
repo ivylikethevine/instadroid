@@ -11,8 +11,9 @@ from instadroid import (
     stories,
 )
 from PIL import Image, ImageDraw, ImageOps
+from shared import sqlrows
 
-from tests.deviceflows import CAPTION, TOP_URL, feed_device, following_screen, scalar, top_card_id
+from tests.deviceflows import CAPTION, TOP_URL, feed_device, following_screen, top_card_id
 from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, Node, node
 
 pytestmark = pytest.mark.usefixtures("fast_offline")
@@ -136,7 +137,7 @@ def test_a_recaptured_story_is_not_stored_twice(monkeypatch: pytest.MonkeyPatch)
     d = feed_device(start="home")  # a different frame from the same account is still new
     d.screenshot = lambda: _story_frame(1)
     assert stories.scrape_stories(d, con) == 1
-    assert scalar(con, "SELECT COUNT(*) FROM stories") == 2
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM stories")) == 2
     assert len(list((config.MEDIA_DIR / "stories").iterdir())) == 2  # discarded crops removed
 
 
@@ -145,7 +146,7 @@ def test_a_blank_story_frame_is_discarded(monkeypatch: pytest.MonkeyPatch) -> No
     d = feed_device(start="home")
     d.screenshot = lambda: Image.new("RGB", (WIDTH, HEIGHT), (2, 2, 2))
     assert stories.scrape_stories(d, con) == 0
-    assert scalar(con, "SELECT COUNT(*) FROM stories") == 0
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM stories")) == 0
 
 
 # --- media format ---------------------------------------------------------------------------------

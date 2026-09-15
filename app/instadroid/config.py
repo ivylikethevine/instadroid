@@ -4,6 +4,7 @@ time, so tests can monkeypatch any of them."""
 import os
 from pathlib import Path
 
+from shared import control
 from shared.fileenv import env_secret
 
 
@@ -20,10 +21,11 @@ def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
 ADB_ADDR = os.environ.get("ADB_ADDR", "127.0.0.1:5555")  # redroid's forwarded ADB port
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
 # Manual control files (instadroid/control.py): manual.lock holds scheduled runs back, scrape-now cuts
-# the wait short. Defaults to the database directory, which the feed server and the host share.
-CONTROL_DIR = os.environ.get("CONTROL_DIR", "") or str(Path(DB_PATH).parent)
-LOCK_MAX_HOURS = float(os.environ.get("LOCK_MAX_HOURS", "6"))  # an older lock counts as forgotten; 0 = never
-RUN_NOW_MIN_MINUTES = float(os.environ.get("RUN_NOW_MIN_MINUTES", "30"))  # rate limit for scrape-now
+# the wait short. Defaults to the database directory, which the feed server and the host share. The
+# feed server reads the same three settings through the same shared/control.py functions.
+CONTROL_DIR = str(control.env_control_dir(DB_PATH))
+LOCK_MAX_HOURS = control.env_lock_max_hours()  # an older lock counts as forgotten; 0 = never
+RUN_NOW_MIN_MINUTES = control.env_run_now_min_minutes()  # rate limit for scrape-now
 CONTROL_POLL_SECONDS = 30.0  # how often a sleeping or locked loop checks the control files
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", "/debug"))
@@ -71,9 +73,9 @@ IG_APK_VERSION = os.environ.get("IG_APK_VERSION", "").strip()
 APK_CACHE_DIR = Path(os.environ.get("APK_CACHE_DIR", "/apk"))
 APK_FETCH_TIMEOUT = float(os.environ.get("APK_FETCH_TIMEOUT", "300"))  # apkeep's own download
 DEBUG_KEEP = 12  # debug dump pairs to retain; older ones are pruned on every new dump
-# Profile development (devtools/new_profile.py baseline): when set, every screen the scraper visits
+# Profile development (`new-profile baseline`): when set, every screen the scraper visits
 # is also saved here as a numbered hierarchy + screenshot pair (up to CAPTURE_PER_SCREEN of each
-# screen, plus every failure dump), never pruned, for `new_profile.py check`. Empty = off.
+# screen, plus every failure dump), never pruned, for `new-profile check`. Empty = off.
 PROFILE_CAPTURE_DIR = os.environ.get("PROFILE_CAPTURE_DIR", "").strip()
 CAPTURE_PER_SCREEN = 3
 DEBUG_RETAIN_DAYS = float(os.environ.get("DEBUG_RETAIN_DAYS", "7"))  # 0 disables age-based pruning

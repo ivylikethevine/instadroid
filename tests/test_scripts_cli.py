@@ -2,18 +2,14 @@
 new_profile's subcommands, with anything that would touch docker or a device replaced."""
 
 import subprocess
-import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+import igprofiles
 import pytest
 from devtools import check_new_builds, export_openapi, new_profile, promote_dump
 
-FEED_445 = Path(__file__).resolve().parents[1] / "app" / "igprofiles" / "v424" / "fixtures" / "feed_445.xml"
-
-
-def _argv(monkeypatch: pytest.MonkeyPatch, script: str, *args: str) -> None:
-    monkeypatch.setattr(sys, "argv", [script, *args])
+FEED_445 = igprofiles.fixture("v424", "feed_445.xml")
 
 
 # --- export_openapi -----------------------------------------------------------------------------
@@ -21,8 +17,7 @@ def _argv(monkeypatch: pytest.MonkeyPatch, script: str, *args: str) -> None:
 
 def test_export_openapi_check_passes_on_the_committed_spec(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FEED_TOKEN", raising=False)
-    _argv(monkeypatch, "export_openapi.py", "--check")
-    assert export_openapi.main() == 0
+    assert export_openapi.main(["--check"]) == 0
 
 
 def test_export_openapi_writes_and_detects_drift(
@@ -33,14 +28,11 @@ def test_export_openapi_writes_and_detects_drift(
     spec.parent.mkdir()
     monkeypatch.setattr(export_openapi, "ROOT", tmp_path)
     monkeypatch.setattr(export_openapi, "SPEC", spec)
-    _argv(monkeypatch, "export_openapi.py", "--check")
-    assert export_openapi.main() == 1  # missing counts as out of date
-    _argv(monkeypatch, "export_openapi.py")
-    assert export_openapi.main() == 0 and spec.read_text().startswith("{")
-    _argv(monkeypatch, "export_openapi.py", "--check")
-    assert export_openapi.main() == 0
+    assert export_openapi.main(["--check"]) == 1  # missing counts as out of date
+    assert export_openapi.main([]) == 0 and spec.read_text().startswith("{")
+    assert export_openapi.main(["--check"]) == 0
     spec.write_text("{}\n")
-    assert export_openapi.main() == 1
+    assert export_openapi.main(["--check"]) == 1
     assert "is out of date" in capsys.readouterr().out
 
 
@@ -48,24 +40,23 @@ def test_export_openapi_writes_and_detects_drift(
 
 
 def test_check_new_builds_prints_an_issue_only_for_newer_majors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     listing = tmp_path / "versions.txt"
+    argv = ["--versions-file", str(listing)]
     listing.write_text("440.1.0.46.86, 999.0.0.1.2\n")
-    _argv(monkeypatch, "check_new_builds.py", "--versions-file", str(listing))
-    assert check_new_builds.main() == 0
+    assert check_new_builds.main(argv) == 0
     assert "| 999 | `999.0.0.1.2` |" in capsys.readouterr().out
     listing.write_text("440.1.0.46.86\n")
-    assert check_new_builds.main() == 0 and capsys.readouterr().out == ""
+    assert check_new_builds.main(argv) == 0 and capsys.readouterr().out == ""
 
 
 def test_check_new_builds_fails_on_a_listing_without_builds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     listing = tmp_path / "versions.txt"
     listing.write_text("error: apkpure unreachable\n")
-    _argv(monkeypatch, "check_new_builds.py", "--versions-file", str(listing))
-    assert check_new_builds.main() == 1
+    assert check_new_builds.main(["--versions-file", str(listing)]) == 1
     assert "did apkeep fail?" in capsys.readouterr().err
 
 
@@ -89,13 +80,11 @@ def test_promote_dump_main_promotes_and_rerecords(
     monkeypatch.setattr(promote_dump, "promote", promote)
     monkeypatch.setattr(promote_dump, "rerecord", rerecord)
     monkeypatch.setattr(promote_dump, "ROOT", tmp_path)
-    _argv(monkeypatch, "promote_dump.py", str(FEED_445), "v424", "feed_445")
-    promote_dump.main()
+    promote_dump.main([str(FEED_445), "v424", "feed_445"])
     assert written == [(FEED_445, "v424", "feed_445")]
     out = capsys.readouterr().out
     assert "0 post(s)" in out and "left over" in out
-    _argv(monkeypatch, "promote_dump.py", "--update", "v424")
-    promote_dump.main()
+    promote_dump.main(["--update", "v424"])
     assert "wrote app/igprofiles/v424/fixtures/feed_445.expected.json" in capsys.readouterr().out
 
 
@@ -104,9 +93,8 @@ def test_promote_dump_main_exits_with_the_scrubbing_error(monkeypatch: pytest.Mo
         raise ValueError("pseudonymizing changed what the parsers find")
 
     monkeypatch.setattr(promote_dump, "promote", promote)
-    _argv(monkeypatch, "promote_dump.py", str(FEED_445), "v424", "feed_445")
     with pytest.raises(SystemExit, match="pseudonymizing changed"):
-        promote_dump.main()
+        promote_dump.main([str(FEED_445), "v424", "feed_445"])
 
 
 # --- new_profile --------------------------------------------------------------------------------

@@ -10,20 +10,18 @@ downloads an APK or touches a device.
 """
 
 import argparse
-import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import igprofiles
-
-_BUILD = re.compile(r"\b\d{3}\.\d+\.\d+\.\d+\.\d+\b")
 
 
 def newer_builds(listing: str, newest_validated: str | None) -> dict[int, str]:
     """{major: newest build} for every major version in `listing` above the newest validated build's."""
     floor = igprofiles.major_of(newest_validated) or 0
     newest: dict[int, str] = {}
-    for build in (m[0] for m in _BUILD.finditer(listing)):
+    for build in (m[0] for m in igprofiles.BUILD.finditer(listing)):
         major = igprofiles.major_of(build) or 0
         if major > floor and (
             major not in newest or igprofiles.version_key(build) > igprofiles.version_key(newest[major])
@@ -63,12 +61,12 @@ class Options(argparse.Namespace):
     versions_file: Path | None
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--versions-file", type=Path, help="apkeep's listing (default: stdin)")
-    opts = ap.parse_args(namespace=Options())
+    opts = ap.parse_args(argv, namespace=Options())
     listing = opts.versions_file.read_text() if opts.versions_file else sys.stdin.read()
-    if not _BUILD.search(listing):
+    if not igprofiles.BUILD.search(listing):
         print("no Instagram builds in the listing; did apkeep fail?", file=sys.stderr)
         return 1
     newest = igprofiles.newest_build()

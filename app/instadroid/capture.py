@@ -132,6 +132,12 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
     return f"https://www.instagram.com/{m.group('type')}/{m.group('code')}/", None
 
 
+def permalink_code(url: str) -> str:
+    """The shortcode of a permalink fetch_permalink() returned: the id the post is stored under."""
+    m = SELECTORS["permalink"].match(url)
+    return m.group("code") if m else url
+
+
 def media_ext() -> str:
     return ".webp" if config.MEDIA_FORMAT == "webp" else ".jpg"
 
