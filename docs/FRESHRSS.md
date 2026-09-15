@@ -1,7 +1,3 @@
----
-title: FreshRSS
----
-
 # FreshRSS
 
 Subscribe to `http://<host>:8000/instagram.xml` (set `PUBLIC_URL` in compose to whatever

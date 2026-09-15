@@ -1,24 +1,151 @@
 name: Publish
 
+# A pushed v* tag releases the app image unattended: gate (signed tag on main, green CI) -> build and push
+# by digest -> scan that digest (fixable HIGH/CRITICAL blocks) -> publish: promote it to its release tags
+# with signed provenance and SBOM attestations -> release: the GitHub Release. Each job needs every job
+# before it, so nothing is promoted unless gate, build and scan all passed. Only the jobs that push, attest
+# or upload take write permissions, each scoped to what it does.
+#
+# A manual dispatch is a rehearsal of the same pipeline on the dispatched commit: gate (green CI only),
+# build, smoke test and scan. publish and release run only for a pushed v* tag, so a rehearsal can't
+# promote or release anything. Its image is pushed by digest with no tag and stays in GHCR as an untagged
+# version until deleted.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
+# Releases queue one behind another and are never cancelled part-way through tagging or attesting. A
+# rehearsal queues in its own group: a pending run replaces the one pending before it in the same group,
+# and a rehearsal must never displace a queued release.
+concurrency:
+  group: ${{ github.event_name == 'push' && 'release' || 'release-rehearsal' }}
+  cancel-in-progress: false
+
 jobs:
-  build:
-    name: Build & push (untagged)
+  # Releases run unattended, so this is the check before anything is built or promoted: the tag is a
+  # well-formed version signed by a key in .github/allowed_signers, its commit is on main, and ci.yml
+  # passed on that commit. A rehearsal has no tag, so it only checks CI.
+  gate:
+    name: gate (signed tag on main + green CI)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
-      contents: read
-      packages: write
+      contents: read # fetch the tag and allowed_signers, compare the tagged commit with main
+      actions: read # list ci.yml's runs for the commit
+    outputs:
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      # A hyphen makes a prerelease (v1.0.0-rc1): a GitHub prerelease, never the latest release, and no
+      # `latest` or vX.Y image tag (see publish). Build metadata (`+...`) isn't accepted in a tag.
+      - name: Tag is vX.Y.Z or vX.Y.Z-<prerelease>
+        id: tag
+        if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$TAG isn't vX.Y.Z or vX.Y.Z-<prerelease>"
+            exit 1
+          fi
+          case "$TAG" in
+            *-*) echo "prerelease=true" ;;
+            *) echo "prerelease=false" ;;
+          esac >>"$GITHUB_OUTPUT"
+      # allowed_signers from the tagged commit, which the next steps require to be on main: a key reaches
+      # it only through a reviewed merge.
+      - if: github.event_name == 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/allowed_signers
+          sparse-checkout-cone-mode: false
+      - name: Tag is signed by an allowed key
+        if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # checkout recreates the tag as a lightweight ref to the commit, which drops the signed tag
+          # object, so fetch the real one (a public repository: no credentials needed)
+          git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+          if [ "$(git cat-file -t "refs/tags/$TAG")" != tag ]; then
+            echo "::error::$TAG is a lightweight tag; release tags are signed annotated tags (git tag -s)"
+            exit 1
+          fi
+          if [ "$(git rev-parse "refs/tags/$TAG^{commit}")" != "$SHA" ]; then
+            echo "::error::$TAG no longer points at $SHA; it moved after this run started"
+            exit 1
+          fi
+          git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v "$TAG" || {
+            echo "::error::$TAG isn't signed by a key in .github/allowed_signers"
+            exit 1
+          }
+      - name: Tagged commit is on main
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          # "identical": main's tip; "ahead": main has moved past it. Anything else isn't on main.
+          status=$(gh api "repos/$REPO/compare/$SHA...main" --jq .status)
+          case "$status" in
+            identical | ahead) echo "$SHA is on main" ;;
+            *)
+              echo "::error::$SHA isn't on main (compare status: $status); tag a commit from main"
+              exit 1
+              ;;
+          esac
+      - name: ci.yml passed on the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          # Only runs that ran every job count: a push to main, the weekly schedule, or a dispatch. A draft
+          # pull request's run skips every job and still concludes success. A tag pushed right after a
+          # merge waits for that push's run, up to 20 minutes. To rehearse a commit that only has pull
+          # request runs, dispatch ci.yml on its branch first.
+          runs="repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA"
+          full='.workflow_runs[] | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
+          for _ in $(seq 1 40); do
+            green=$(gh api "$runs&status=success" --jq "[$full] | length")
+            if [ "$green" -gt 0 ]; then
+              echo "ci.yml passed on $SHA"
+              exit 0
+            fi
+            pending=$(gh api "$runs" --jq "[$full | select(.status != \"completed\")] | length")
+            [ "$pending" -gt 0 ] || break
+            echo "ci.yml is still running on $SHA; waiting"
+            sleep 30
+          done
+          echo "::error::no successful full ci.yml run on $SHA; re-run this workflow once CI is green"
+          exit 1
+
+  build:
+    name: build and push by digest (buildx)
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read # checkout: the build context
+      packages: write # push the image by digest
     outputs:
       image: ${{ steps.image.outputs.image }}
       digest: ${{ steps.build.outputs.digest }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set lowercase image name
@@ -26,53 +153,156 @@ jobs:
         env:
           REPOSITORY: ${{ github.repository }}
         run: echo "image=$(echo "ghcr.io/$REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         id: build
         with:
           context: app
           outputs: type=image,name=${{ steps.image.outputs.image }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # No build cache: a cached `apt-get upgrade` layer would ship, and scan, whatever Debian fixes
+          # existed when the cache was written.
+          no-cache: true
+          # BuildKit's SBOM of the image and full build provenance, stored in the pushed index next to the
+          # image manifest; the retag in `publish` carries both, and it attests the SBOM from there.
+          sbom: true
+          provenance: mode=max
       - name: Smoke test image
         env:
           IMAGE: ${{ steps.image.outputs.image }}
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: ./scripts/ci/smoke-test.sh "$IMAGE@$DIGEST"
+        run: ./.github/scripts/smoke-test.sh "$IMAGE@$DIGEST"
 
-  publish:
-    name: Approve & tag release image
-    needs: build
+  # The gate between build and publish: trivy over the exact digest publish would tag. A fixable HIGH or
+  # CRITICAL finding fails this job, so nothing reaches a release tag; the fix is usually a rebuild or a
+  # base-image repin. An accepted finding goes in .trivyignore, with a reason and an expiry date.
+  scan:
+    name: scan release image (trivy)
+    needs: [gate, build]
     runs-on: ubuntu-latest
-    environment: publish
+    timeout-minutes: 15
     permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    outputs:
-      digest: ${{ steps.final-digest.outputs.digest }}
-      tags: ${{ steps.meta.outputs.tags }}
+      contents: read # checkout: setup-tool and .trivyignore
+      packages: read # pull the pushed digest
+      security-events: write # upload the SARIF to code scanning
     steps:
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The tools.txt pin, sha256-verified; the vulnerability database is downloaded fresh on every scan.
+      - uses: $/.github/actions/setup-tool
+        with:
+          tool: trivy
+      # One scan as JSON, converted to the table and the SARIF so they can't disagree. trivy exits 1 on a
+      # finding and on a failed scan alike; only a scan that ran writes the report.
+      - id: scan
+        name: Scan the pushed digest
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          set -uo pipefail
+          rc=0
+          trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+            --ignorefile .trivyignore --no-progress \
+            --format json --output "$RUNNER_TEMP/trivy.json" "$IMAGE@$DIGEST" || rc=$?
+          if ! jq -e .SchemaVersion "$RUNNER_TEMP/trivy.json" >/dev/null 2>&1; then
+            echo "::error title=trivy::the scan of $IMAGE@$DIGEST did not run (exit $rc)"
+            exit 1
+          fi
+          set -e
+          trivy convert --format table --table-mode detailed --output "$RUNNER_TEMP/trivy.txt" "$RUNNER_TEMP/trivy.json"
+          trivy convert --format sarif --output "$RUNNER_TEMP/trivy.sarif" "$RUNNER_TEMP/trivy.json"
+          cat "$RUNNER_TEMP/trivy.txt"
+          echo "found=$rc" >>"$GITHUB_OUTPUT"
+      - name: Upload the findings to code scanning
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: ${{ runner.temp }}/trivy.sarif
+          category: release-image
+      - name: Block publish on a fixable finding
+        if: steps.scan.outputs.found != '0'
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          {
+            echo "### Fixable HIGH/CRITICAL vulnerabilities block this release"
+            echo
+            echo "In \`$IMAGE@$DIGEST\`, also in the Security tab under \`release-image\`."
+            echo
+            echo '````'
+            cat "$RUNNER_TEMP/trivy.txt"
+            echo '````'
+          } >>"$GITHUB_STEP_SUMMARY"
+          echo "::error title=trivy::fixable HIGH/CRITICAL vulnerabilities in the release image; nothing was tagged"
+          exit 1
+
+  publish:
+    name: promote and tag release image (imagetools + attest)
+    needs: [gate, build, scan]
+    # A pushed v* tag only: this condition is what keeps a dispatch rehearsal from promoting anything.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The deployment record and the scope for this job's permissions. It has no required reviewer:
+    # releases run unattended, and the gate job above is the check.
+    environment: publish
+    permissions:
+      contents: read
+      packages: write # tag the digest, push the attestations beside it
+      id-token: write # the OIDC identity Sigstore signs the attestations with
+      attestations: write # record the attestations in the repository
+    outputs:
+      digest: ${{ steps.final-digest.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      # Block, not audit: this job holds the package-write and signing tokens, so it may reach only what its
+      # steps need. GHCR (ghcr.io, and pkg-containers.githubusercontent.com, where it redirects blob reads),
+      # the GitHub API (metadata-action's repository lookup, the attestation upload) and public-good Sigstore
+      # (Fulcio certificates, the Rekor log), which actions/attest uses for a public repository; a private
+      # one would need fulcio.githubapp.com and timestamp.githubapp.com instead. The Actions service
+      # endpoints (OIDC token, cache) are allowed by the agent itself. Tighten or extend this from the
+      # audit insights of a run.
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >-
+            api.github.com:443
+            ghcr.io:443
+            pkg-containers.githubusercontent.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+      # No setup-buildx-action: `docker buildx imagetools` talks to the registry directly, with the runner's
+      # buildx and no builder, so no BuildKit image is pulled from Docker Hub.
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # prefix=v rather than a literal `v` in the pattern: for a prerelease, metadata-action ignores any
+      # pattern but {{raw}} and emits {{version}}, which would drop the v. So vX.Y.Z gets vX.Y.Z, vX.Y and
+      # (latest=auto) latest; vX.Y.Z-rc1 gets only vX.Y.Z-rc1, since latest=auto skips a semver prerelease.
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: meta
         with:
           images: ${{ needs.build.outputs.image }}
           flavor: latest=auto
           tags: |
-            type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern={{version}},prefix=v
+            type=semver,pattern={{major}}.{{minor}},prefix=v
       - name: Tag built digest with release tags
         env:
           IMAGE: ${{ needs.build.outputs.image }}
@@ -98,23 +328,96 @@ jobs:
           subject-name: ${{ needs.build.outputs.image }}
           subject-digest: ${{ steps.final-digest.outputs.digest }}
           push-to-registry: true
+      # The SBOM build stored in the index, read back as SPDX JSON rather than regenerated, so the signed
+      # document is the one the image already carries. The image is single-platform, so .SBOM isn't
+      # keyed by platform.
+      - name: Extract the SBOM
+        id: sbom
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ steps.final-digest.outputs.digest }}
+        run: |
+          out="$RUNNER_TEMP/sbom.spdx.json"
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{ json .SBOM.SPDX }}' >"$out"
+          jq -e .spdxVersion "$out" >/dev/null || {
+            echo "::error title=sbom::no SPDX SBOM in $IMAGE@$DIGEST"
+            exit 1
+          }
+          echo "path=$out" >>"$GITHUB_OUTPUT"
+      # actions/attest directly: attest-build-provenance above wraps the same action, and
+      # actions/attest-sbom is deprecated in its favour. The header-size bump is the one the wrapper sets.
+      - name: Attest the SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        env:
+          NODE_OPTIONS: "--max-http-header-size=32768"
+        with:
+          subject-name: ${{ needs.build.outputs.image }}
+          subject-digest: ${{ steps.final-digest.outputs.digest }}
+          sbom-path: ${{ steps.sbom.outputs.path }}
+          push-to-registry: true
 
   release:
-    name: Create GitHub Release
-    needs: [build, publish]
+    name: create GitHub Release (release notes)
+    needs: [gate, build, scan, publish]
+    # A pushed v* tag only, like publish: a rehearsal never creates a release.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
-      contents: write
+      contents: write # generate the notes and create the release
+      pull-requests: read # each merged pull request's body, for its release note
     steps:
-      - name: Build release notes
-        id: notes
+      # Block, not audit: this job holds a contents-write token. It reaches github.com (the checkout) and
+      # the GitHub API (tags, generated notes, pull request bodies, the release itself), nothing else; it
+      # uploads no assets, so not uploads.github.com. Tighten or extend this from the audit insights of a run.
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >-
+            api.github.com:443
+            github.com:443
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      # "What changed" is each merged pull request's `## Release note` section (the pull request template's;
+      # release-note.yml requires the section), skipping `none`. The pull requests are the ones GitHub's
+      # generate-notes endpoint lists between the previous non-prerelease tag and this one, so a release
+      # covers its release candidates too. Only when no pull request wrote a note does that generated list
+      # stand in. A squash-merged dev -> main pull request is the only one main's history shows, so its own
+      # section carries the notes of everything it brings (CONTRIBUTING).
+      - name: Write the release notes
         env:
+          GH_TOKEN: ${{ github.token }}
           IMAGE: ${{ needs.build.outputs.image }}
           DIGEST: ${{ needs.publish.outputs.digest }}
           TAGS: ${{ needs.publish.outputs.tags }}
-          REPOSITORY: ${{ github.repository }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          tags="$(gh api --paginate "repos/$REPO/git/matching-refs/tags/v" --jq '.[].ref | ltrimstr("refs/tags/")')"
+          # the highest vX.Y.Z sorting below this tag (this tag is in the list already, or added, so awk
+          # can find its position)
+          prev="$({
+            printf '%s\n' "$tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true
+            printf '%s\n' "$TAG"
+          } | sort -uV | awk -v tag="$TAG" '$0 == tag { print prev; exit } { prev = $0 }')"
+          echo "previous non-prerelease tag: ${prev:-none}"
+          args=(-f "tag_name=$TAG")
+          [ -z "$prev" ] || args+=(-f "previous_tag_name=$prev")
+          gh api -X POST "repos/$REPO/releases/generate-notes" "${args[@]}" --jq .body >"$RUNNER_TEMP/generated.md"
+          .github/scripts/release_notes.sh "$REPO" "$RUNNER_TEMP/generated.md" >"$RUNNER_TEMP/changed.md"
           {
+            if [ -s "$RUNNER_TEMP/changed.md" ]; then
+              cat "$RUNNER_TEMP/changed.md"
+              [ -z "$prev" ] || printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$REPO" "$prev" "$TAG"
+            else
+              echo "No merged pull request wrote a release note; the merged pull requests:"
+              echo
+              cat "$RUNNER_TEMP/generated.md"
+            fi
+            echo
             echo "## Images"
             echo
             echo "| Image | Tag | Digest |"
@@ -146,11 +449,36 @@ jobs:
             echo "### Verify provenance"
             echo
             echo '```bash'
-            echo "gh attestation verify oci://$IMAGE@$DIGEST --repo $REPOSITORY"
+            echo "gh attestation verify oci://$IMAGE@$DIGEST --repo $REPO"
             echo '```'
-          } >> release-notes.md
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          body_path: release-notes.md
-          generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+            echo
+            echo "### Verify the SBOM"
+            echo
+            echo '```bash'
+            echo "gh attestation verify oci://$IMAGE@$DIGEST --repo $REPO \\"
+            echo "  --predicate-type https://spdx.dev/Document/v2.3"
+            echo '```'
+          } >"$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md" >>"$GITHUB_STEP_SUMMARY"
+      # gh, which the runner already has, rather than a release action (zizmor: superfluous-actions). A
+      # prerelease (gate's output: a hyphen in the tag) is marked as one and never made the latest release,
+      # matching the images, where it never moves `latest`. A re-run edits the release an earlier attempt
+      # created instead of failing on it.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.gate.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          # a release is left to GitHub's own choice of latest (by date and version), so a patch to an
+          # older line doesn't take it
+          flags=(--prerelease=false)
+          [ "$PRERELEASE" != true ] || flags=(--prerelease --latest=false)
+          notes="$RUNNER_TEMP/release-notes.md"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$REPO" --title "$TAG" --notes-file "$notes" "${flags[@]}"
+          else
+            gh release create "$TAG" --repo "$REPO" --verify-tag --title "$TAG" --notes-file "$notes" "${flags[@]}"
+          fi

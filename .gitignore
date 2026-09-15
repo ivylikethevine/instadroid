@@ -1,7 +1,15 @@
 # Everything this project generates at runtime (databases, media, the redroid volume, logs, the dev
 # venv and tool caches) lives under local/.
 local/
-.claude
+
+# Claude Code: .claude/settings.json is shared and tracked; personal overrides, agent worktrees and
+# host-specific agent notes stay local.
+.claude/settings.local.json
+.claude/worktrees/
+CLAUDE.local.md
+
+# The Markdown tools' npm install (`npm ci --prefix .github`, from .github/package-lock.json)
+node_modules/
 
 # Python and build output
 __pycache__/
@@ -14,6 +22,10 @@ output/
 tmp/
 temp/
 .import_linter_cache/
+
+# Local Jekyll builds of the site (root _config.yml); unanchored, so an old build under docs/ matches too.
+_site/
+.jekyll-cache/
 
 # Secrets: never commit environment files, keys or certificates.
 .env

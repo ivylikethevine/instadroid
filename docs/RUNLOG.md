@@ -1,7 +1,3 @@
----
-title: Run log
----
-
 # Version profiles: run log
 
 Dated device runs behind the [version profiles](PROFILES.md): baselines, validations and probes of

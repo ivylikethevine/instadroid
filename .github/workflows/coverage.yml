@@ -1,0 +1,172 @@
+name: Coverage
+
+# The test suite with coverage, measured once, as data: the `coverage-badge` artifact holds the README's
+# two shields.io endpoint files, coverage.json (the total, bright green from pyproject.toml's
+# fail_under) and tests.json (tests passed), written by .github/scripts/coverage_badges.sh. pages.yml
+# fetches the newest one from main and serves it as badges/*.json, so no coverage service, token or
+# badge branch is involved. The gate itself is ci.yml's test job; this workflow only measures.
+#
+# After every green CI run on a push to main (workflow_run), and on dispatch. workflow_run is safe
+# here: the measuring job runs only for a green push to main or a dispatch, checks out the default
+# branch rather than anything from the triggering run, and holds nothing but a read token.
+#
+# On same-repo, non-draft pull requests too, for the `comment` job: the PR's figures beside main's
+# latest, in one comment edited in place on every push. Never a fork's: its token can't comment, and
+# its run must never be a candidate for main's figures (fetch-latest-artifact also scopes pages.yml's
+# lookup to workflow_run runs on main). Markdown- and docs-only pull requests don't change either figure.
+on: # zizmor: ignore[dangerous-triggers]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore: ["**/*.md", "docs/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# A newer push to a pull request replaces its in-flight measurement; main's runs queue, since pages.yml
+# deploys from each one.
+concurrency:
+  group: coverage-${{ github.event.pull_request.number || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  coverage:
+    name: Measure (pytest + coverage)
+    # a dispatch; a green push to main; or a same-repo, non-draft pull request
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       !github.event.pull_request.draft)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-build-isolation --no-deps -e .
+      # ci.yml's test command (scripts/check.sh test, floor included), plus a JUnit report for the count
+      - run: scripts/check.sh test -- --junitxml="$RUNNER_TEMP/junit.xml"
+      # Whatever the suite managed to measure, even when a test or the floor failed: the PR comment
+      # still shows the number, and a failed run is never the one pages.yml picks up.
+      - name: Write the badge endpoints
+        if: ${{ !cancelled() }}
+        run: .github/scripts/coverage_badges.sh "$RUNNER_TEMP/junit.xml" coverage-badge
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() && hashFiles('coverage-badge/coverage.json') != '' }}
+        with:
+          name: coverage-badge
+          path: coverage-badge
+          if-no-files-found: error
+      # the per-file report, for reading a gap without rerunning anything locally
+      - name: Render the HTML report
+        if: ${{ !cancelled() && hashFiles('local/.coverage') != '' }}
+        run: python -m coverage html --directory coverage-html
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() && hashFiles('coverage-html/index.html') != '' }}
+        with:
+          name: coverage-html
+          path: coverage-html
+          retention-days: 90
+
+  # The PR's figures beside main's newest, as one comment edited in place. Nothing here runs the PR's
+  # code; the checkout is only for the local fetch-latest-artifact action. continue-on-error: a comment
+  # that can't be posted (a read-only token, e.g. Dependabot's) never fails the run.
+  comment:
+    name: Coverage comment
+    needs: coverage
+    if: always() && github.event_name == 'pull_request' && needs.coverage.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    concurrency:
+      group: coverage-comment-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      actions: read # main's artifact, from another workflow run
+      pull-requests: write # post or edit the comment
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download this run's figures
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-badge
+          path: ${{ runner.temp }}/pr
+      # main's runs of this workflow are workflow_run-triggered, hence `event`
+      - name: Fetch main's figures
+        uses: $/.github/actions/fetch-latest-artifact
+        with:
+          workflow: coverage.yml
+          artifact-name: coverage-badge
+          dest-subdir: main
+          event: workflow_run
+          found-message: main's figures from coverage run
+          missing-message: no successful coverage run on main - nothing to compare with
+      # via env, never inline ${{ }} in the run block (zizmor: template-injection)
+      - name: Post or update the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          marker='<!-- coverage-comment -->'
+          # fig <dir> <file> - the number in a badge's message, or nothing: an artifact is data, and
+          # nothing but digits read from one reaches the comment
+          fig() {
+            local v=""
+            [ -f "$1/$2" ] && v="$(jq -r '.message // ""' "$1/$2" 2>/dev/null || true)"
+            v="${v%%[!0-9]*}"
+            printf '%s' "$v"
+          }
+          # row <label> <unit> <this PR> <main>
+          row() {
+            local now="not measured" was="not measured" change="-"
+            [ -z "$3" ] || now="$3$2"
+            [ -z "$4" ] || was="$4$2"
+            [ -z "$3" ] || [ -z "$4" ] || change="$(printf '%+d' "$(($3 - $4))")"
+            printf '| %s | %s | %s | %s |\n' "$1" "$now" "$was" "$change"
+          }
+          pr="$RUNNER_TEMP/pr" main="$RUNNER_TEMP/main"
+          body="$(
+            printf '%s\n### Coverage\n\n| | This PR | main | Change |\n| --- | ---: | ---: | ---: |\n' "$marker"
+            row coverage % "$(fig "$pr" coverage.json)" "$(fig "$main" coverage.json)"
+            row "tests passed" "" "$(fig "$pr" tests.json)" "$(fig "$main" tests.json)"
+            printf '\nMeasured at %s by [this run](%s). %s\n' \
+              "$HEAD_SHA" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              "The floor is \`fail_under\` in \`pyproject.toml\`; ci.yml enforces it."
+          )"
+          printf '%s\n' "$body" >>"$GITHUB_STEP_SUMMARY"
+          id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n1)"
+          if [ -n "$id" ]; then
+            set -- -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id"
+          else
+            set -- "repos/$GITHUB_REPOSITORY/issues/$PR/comments"
+          fi
+          gh api "$@" -f body="$body" >/dev/null || {
+            echo "::warning title=coverage comment::could not comment on PR #$PR - a read-only token? The table is in this job's summary."
+            exit 0
+          }
+          echo "coverage comment updated on PR #$PR"

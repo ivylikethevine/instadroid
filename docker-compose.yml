@@ -14,6 +14,9 @@
 # Why the limits are what they are: CLAUDE.md ("Memory") and docs/INCIDENTS.md. Why this redroid
 # image: README.md ("Which Android?") and docs/COMPATIBILITY.md.
 
+# The redroid tag, for init's Android-version guard and the app's run records. The redroid service
+# pins the same tag by digest on its own `image:` line, where Dependabot and the image scan read it;
+# .github/scripts/check_tool_versions.local.sh checks the two tags agree.
 x-redroid-image: &redroid_image erstt/redroid:13.0.0_ndk_ChromeOS
 
 # init and app run the same locally built image, so it's built once.
@@ -39,7 +42,7 @@ services:
       - ./local/data:/data
 
   redroid:
-    image: *redroid_image
+    image: erstt/redroid:13.0.0_ndk_ChromeOS@sha256:26884891bc012a9e26e803b187a1f01c4d4ef3ddfef68afbbb3a508683b5dfa0
     container_name: ig-redroid
     privileged: true
     restart: unless-stopped # back after a host reboot; `docker compose stop`/`down` keeps it down
@@ -88,15 +91,15 @@ services:
     mem_limit: 256m
     memswap_limit: 256m
     cpus: 1.5
-    # Healthcheck: the image's own (app/Dockerfile), probing /health. Docker only marks the container
-    # unhealthy; it doesn't restart it.
+    # No healthcheck here: the image's HEALTHCHECK (app/Dockerfile) probes /health. Docker only marks
+    # the container unhealthy; it doesn't restart it.
     # Optional Docker secret instead of IG_PASSWORD in .env: create the file (readable by uid 1000),
     # uncomment this and the top-level `secrets:` at the end, and set
     # IG_PASSWORD_FILE=/run/secrets/ig_password in .env.
     # secrets: [ig_password]
 
   freshrss:
-    image: freshrss/freshrss:1.30.0-alpine
+    image: freshrss/freshrss:1.30.0-alpine@sha256:fcff0b573f2bf3aff375c7de08e26588d752a63094e161b3276ec26736ce17fd
     container_name: ig-freshrss
     profiles: [freshrss]
     restart: unless-stopped

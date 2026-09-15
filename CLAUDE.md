@@ -1,75 +1,99 @@
-# redroid on this host
+# CLAUDE.md — working on instadroid
 
-The rules and takeaways for running redroid and the scraper here. The dated write-ups behind them
-(symptoms, log lines, root causes, full recovery steps) are in
-[`docs/INCIDENTS.md`](docs/INCIDENTS.md); read the matching section there before a recovery. The
-image compatibility history is in `README.md`'s "Which Android?" and `docs/COMPATIBILITY.md`.
+Only what an agent session can't derive from the code and the docs. The human contract (the checks,
+what CI runs, the device-run rules, which docs change with what) is
+[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md); this file links to it rather than copying it, and adds
+what an agent needs beyond it.
 
-## History
+## Contents
 
-On 2026-09-10, starting the privileged `redroid` compose service on this host caused a full kernel
-panic. Root cause: this host's kernel ships Android's Rust binder driver built in
-(`CONFIG_ANDROID_BINDER_IPC_RUST=y`), and a classic out-of-tree binder driver (`binder_linux-dkms`)
-was also installed the same day — two binder IPC implementations stacked on one kernel, with the
-in-kernel Rust one separately carrying a disclosed race-condition bug (CVE-2025-68260) that panics
-under binder IPC load. The user removed `binder_linux-dkms` and rebooted.
+- [Verification loop](#verification-loop)
+- [Hard constraints](#hard-constraints)
+- [Traps](#traps)
+  - [redroid boot and logs](#redroid-boot-and-logs)
+  - [Recovering a corrupted `/data`](#recovering-a-corrupted-data)
+  - [Memory](#memory)
+  - [Device-driving runs](#device-driving-runs)
+- [Docs rules](#docs-rules)
+- [Repository mechanics](#repository-mechanics)
+- [Machine-specific notes](#machine-specific-notes)
 
-Since then, `docker compose up` (which starts redroid) has been run repeatedly on this host — by
-the user and by Claude directly — with zero host impact every time, including container crashes.
-Running `docker compose`, including redroid, is normal, permitted work here, not something to ask
-permission for each time. (Device-driving scraper runs are the exception: see "Before any
-device-driving run" below.)
+## Verification loop
 
-## What's validated
+From the repository root, with the dev venv set up
+([CONTRIBUTING.md](docs/CONTRIBUTING.md#development-setup)), `scripts/check.sh` runs the same
+commands CI's blocking jobs run, grouped as those jobs are (`scripts/check.sh --help` lists them):
 
-- `erstt/redroid:13.0.0_ndk_ChromeOS` (Android 13, ChromeOS's ARC++ NDK translation) — **works**.
-  Instagram installs, logs in, and scrapes successfully end-to-end. This is the image in
-  `docker-compose.yml`. Known quirk: the Following-feed switcher's bottom sheet doesn't open under
-  `androidboot.redroid_gpu_mode=guest`; `=host` was tried and rejected (see below) — stay on `guest`.
-- `erstt/redroid:15.0.0_ndk_AVD` (Android 15) — **does not work** on this host: `hwservicemanager`/
-  `servicemanager` fatal within ~3s of boot, twice, host unaffected; memory ruled out; a binder ABI
-  mismatch with this host's kernel binder driver. Not worth retrying without a new hypothesis.
-  Today's `mem_limit`/`shm_size` were tuned for Android 13, so don't read them as evidence either way
-  for a future Android-15 retry.
-- No Android 14 NDK build exists upstream (`erstt/redroid` only publishes 11/12/13/15).
-  `aureliolo/redroid:14.0.0_amd64_with_gapps` boots fine and is host-safe, but ships **no ARM
-  translation at all** (launching Instagram crashes the linker:
-  `EM_AARCH64 ... instead of EM_X86_64`). Not fixable by config; this image class just can't run arm64 apps. `erstt/redroid` is
-  the only source found with confirmed, working ARM translation.
-- `abing7k/redroid:a11_ndk_amd` (Android 11, the original image) crashed Instagram at native
-  startup across 3 tested APK versions.
+```bash
+scripts/check.sh --install   # once: tools.txt's pinned actionlint, shellcheck, hadolint, lychee
+scripts/check.sh             # everything: python, test, audit, shell, docs, workflows, docker
+scripts/check.sh --fast      # python + test, the inner loop for a Python change
+scripts/check.sh docs        # one group (or one check, e.g. `typos`)
+```
 
-## Good practice, not a gate
+Run it before declaring anything done; a tool it reports as SKIP locally fails under CI. A prose-only
+diff can run just `docs`, and a change to a feed server route needs `export-openapi` (the suite fails
+until `docs/openapi.json` matches). It never touches the device or starts a container.
 
-Pull the image before starting it (`docker compose pull redroid`) so a bad tag
-fails cheaply, and prefer starting detached (`up -d`) with a quick look at logs/host responsiveness
-after, over walking away mid-boot unattended. Tear a test container down when done rather than
-leaving it running. None of this requires checking in first. Both compose services use
-`restart: unless-stopped` (since 2026-09-10), so they also come back on their own after a host
+## Hard constraints
+
+The rules and the incidents behind them are in
+[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#running-against-a-real-device) and
+[docs/INCIDENTS.md](docs/INCIDENTS.md); read the matching INCIDENTS section before a recovery.
+
+- **One Android major version per `/data` volume.** Never point two different Android major-version
+  redroid images at the same volume; give another version its own path (e.g.
+  `./local/data/android-15`). The `init` service's guard (`scripts/guard-android-data.sh`) refuses
+  a mismatch; don't route around it by deleting `local/data/android.image`.
+- **Ask the user before any device-driving run**: `scraper.py login`, `once`, `scrape-now`, a manual
+  scrape, `new-profile baseline` and `new-profile restore` (`.claude/settings.json` asks for these).
+  First check `docker stats` headroom and force-stop Instagram. `new-profile baseline` checks headroom
+  and refuses while the `app` service runs, but that doesn't replace asking; its other subcommands
+  (`check`, `promote`, `validate`, `fork`) never touch the device. Running `docker compose` itself,
+  redroid included (`pull`, `up -d`, `logs`, `stop`, `down`), is normal work, not something to ask
+  about each time.
+- **Don't lower redroid's `mem_limit` without remeasuring peak memory.** It's 3g
+  (`REDROID_MEM_LIMIT`) with `memswap_limit` equal to it (no container swap, the thrashing mode that
+  stalls a host), `cpus: 4` (`REDROID_CPUS`), and the app container 256m with `memswap_limit: 256m`.
+  redroid's `shm_size: 1g` is deliberately generous: under-provisioning it risks screenshot and
+  graphics-buffer failures much harder to diagnose than a plain OOM kill. Peaks are in
+  [docs/RUNLOG.md](docs/RUNLOG.md).
+- **Never disable `com.android.packageinstaller`.** `PackageManagerService` requires exactly one
+  enabled installer and crash-loops on the next cold boot without it.
+- **Don't use host GPU mode** (`androidboot.redroid_gpu_mode=host`). `docker-compose.yml` stays on
+  `guest`, the validated default; don't retry `=host` unless the user raises it again
+  ([docs/COMPATIBILITY.md](docs/COMPATIBILITY.md#weighed-and-not-shipped)).
+
+Good practice, not a gate: pull the image before starting it (`docker compose pull redroid`) so a bad
+tag fails cheaply, prefer starting detached (`up -d`) with a quick look at logs and host
+responsiveness after, over walking away mid-boot, and tear a test container down when done. Both
+compose services use `restart: unless-stopped`, so they also come back on their own after a host
 reboot; `docker compose stop`/`down` is what keeps them down.
 
-One separate, harness-level thing worth knowing: the auto-mode permission classifier has, on this
-host, sometimes blocked a `docker compose up`/`run` for `redroid` outright, inconsistently (a later
-identical command has also gone through). That's independent of this file and not something editing
-it changes — if it happens, don't try to route around it; say so and let the user run the command or
-grant a Bash permission rule.
+## Traps
 
-## One Android major version per `/data` volume
+### redroid boot and logs
 
-**Never point two different Android major-version redroid images at the same `/data` volume.**
-Android 15 leftovers in Android 13's `./local/data/android` caused a string of crash loops
-(appops.xml, idmap cache, telephony.db; see `docs/INCIDENTS.md`). If a different Android version
-needs testing again, give it its own volume path (e.g. `./local/data/android-15`). Since 2026-09-14
-compose enforces this: the one-shot `init` service (`scripts/guard-android-data.sh`)
-records the image that last used the volume in `local/data/android.image`, and redroid won't start
-if the configured image is a different Android major version.
+**A blind container restart costs 1-9+ minutes and usually fixes nothing.** When redroid boot is
+slow, adb is stuck `offline`, or automation is flaky, read `adb -s 127.0.0.1:5555 logcat -d` first
+(grep for `WATCHDOG KILLING`, `FATAL EXCEPTION`, `Version mismatch`, `Can't downgrade database`); the
+log almost always names the blocked call directly. The running scraper also saves a filtered copy
+after any device failure (`local/data/debug/logcat_<time>.txt`), so check there first.
+`scripts/diagnose.sh` runs this triage, plus a host `dmesg` check for failures before adb is even up,
+and prints the matching fix.
 
-## Recovering a corrupted `/data`
+**`docker logs ig-redroid` stays almost empty even during a real startup failure, by design.**
+redroid's `ENTRYPOINT` is Android's `/init`, which (privileged) writes to the _host's_ kernel ring
+buffer, so a binder-level or pre-`adb` crash only shows up in host `dmesg`/`journalctl -k`. No
+`androidboot.*` flag changes this. `scripts/diagnose.sh` checks both sources.
 
-The pattern: `adb root` (this image's adbd runs unauthenticated, `ro.adb.secure=0`), move the bad
-file aside (never delete it), restart the container; Android regenerates it on next boot. App state
-(login session, installed APK) lives elsewhere in `/data` and survives. Known cases, each written up
-in `docs/INCIDENTS.md`:
+### Recovering a corrupted `/data`
+
+**A corrupted `/data` can look like "redroid still works, just slow".** The pattern: `adb root` (this
+image's adbd runs unauthenticated, `ro.adb.secure=0`), move the bad file aside (never delete it),
+restart the container; Android regenerates it on next boot. App state (login session, installed APK)
+lives elsewhere in `/data` and survives. Known cases, each written up in
+[docs/INCIDENTS.md](docs/INCIDENTS.md):
 
 - `Bad operation #N` from `AppOpsService.readUidOps`, system_server crash loop →
   `mv /data/system/appops.xml /data/system/appops.xml.corrupt-bak`.
@@ -90,95 +114,87 @@ in `docs/INCIDENTS.md`:
   (`app/instadroid/navigation.py`, via `apkeep`, cached under `local/data/apk`; `IG_AUTO_INSTALL`
   opts out).
 
-## Read the logs before restarting
+Before a risky recovery step, stop redroid and snapshot `/data` with
+`scripts/snapshot-android-data.sh`.
 
-**When redroid boot is slow, adb is stuck `offline`, or automation is flaky, read
-`adb -s 127.0.0.1:5555 logcat -d` (grep for `WATCHDOG KILLING`, `FATAL EXCEPTION`, `Version
-mismatch`, `Can't downgrade database`) before restarting the container again.** Each blind restart
-costs 1-9+ minutes; the log almost always names the actual blocked call directly.
-The running scraper also saves a filtered copy automatically after any device failure
-(`local/data/debug/logcat_<time>.txt`), so check there first.
-`scripts/diagnose.sh` runs this triage (plus a host `dmesg` check, for failures early enough that
-adb isn't even up yet) and prints the matching fix in one command.
+### Memory
 
-**`docker logs ig-redroid` stays almost empty even during a real startup failure, by design**:
-redroid's `ENTRYPOINT` is Android's `/init`, which (privileged) writes to the _host's_ kernel ring
-buffer, so a binder-level or pre-`adb` crash only shows up in host `dmesg`/`journalctl -k`. No
-`androidboot.*` flag changes this. `scripts/diagnose.sh` checks both sources.
+**This container's Android never reclaims memory on its own.** It sees the host's full RAM, not the
+cgroup limit, so `lmkd` never trips, and cached apps and a closed-but-running Instagram stay
+resident. So it's done explicitly:
 
-## Host GPU mode: don't
+- `scripts/tune-android.sh` `pm disable-user`s 16 unused AOSP/Google apps. Deliberately left enabled:
+  `com.android.settings`, `com.android.provision`/`com.android.managedprovisioning` (may need to run
+  after a `/data/system` reset), and anything telephony/Bluetooth/secure-element-related.
+- `scrape_once()` (`app/instadroid/scrape.py`) force-stops Instagram and the cached apps at the start
+  and end of every run, the end in a `finally`; `scraper.py login` force-stops Instagram when it
+  finishes.
 
-**Do not use host GPU mode for redroid** (`androidboot.redroid_gpu_mode=host`). Tried on 2026-09-10:
-it did engage the host Mesa renderer, but boot went from ~35s to ~340s with a `BOOT TIMEOUT`, and the
-user stopped the investigation — the reasoning given was that FreshRSS/other clients consuming this
-feed may not support whatever that mode changes. `docker-compose.yml` stays on
-`androidboot.redroid_gpu_mode=guest`, the validated default. Don't retry `=host` without the user
-raising it again.
+**A `pm disable-user` change can pass a live test and crash-loop the very next boot.** Some AOSP
+roles (the installer here) are only validated during `PackageManagerService` startup. Test any
+change to the disable list against a full cold restart, not just the already-booted instance you
+disabled it on.
 
-## Memory
+**Counting file cache makes the memory guard stop healthy runs.** The guard (`device.MemoryGuard`,
+`MEMORY_GUARD_PERCENT`, default 85) reads redroid's cgroup v2 files through adb and counts usage like
+`docker stats` does, excluding `inactive_file`; counting that cache once stopped a run far below real
+pressure. It checks before stories and every screen, stops a run early with a warning past the
+threshold, and records `runs.mem_peak_mb` and `runs.oom_kills`; any OOM kill is a run warning. Keep
+that accounting if you touch it.
 
-This container's Android never reclaims memory on its own: it sees the host's ~64GiB, so `lmkd`
-never trips, and cached apps and a closed-but-running Instagram stay resident. So it's done
-explicitly:
+### Device-driving runs
 
-- `scripts/tune-android.sh` `pm disable-user`s 16 unused AOSP/Google apps (idle 1018MiB → ~746MiB).
-  Deliberately left enabled: `com.android.settings`, `com.android.provision`/
-  `com.android.managedprovisioning` (may need to run after a `/data/system` reset), and anything
-  telephony/Bluetooth/secure-element-related.
-- **`com.android.packageinstaller` must never be disabled**: `PackageManagerService` requires exactly
-  one enabled installer and crash-loops on the next cold boot without it.
-- **Test `pm disable-user` changes against a full cold restart, not just the already-booted instance
-  you disabled them on.** Some AOSP roles (installer here) are only validated during
-  `PackageManagerService` startup, so a live test can look completely fine and still crash-loop the
-  very next boot.
-- `scrape_once()` (`app/instadroid/scrape.py`) force-stops Instagram (~820MiB resident: 702MiB app
-  plus a 116MiB `:fbns` subprocess) and the cached apps at the start and end of every run, the end in
-  a `finally`; `scraper.py login` force-stops Instagram when it finishes. After a run redroid settles
-  around ~1.03GiB.
-- Don't interleave manual `adb`/`am` commands with a scraper run: rapid-fire manual commands once
-  produced a `DeviceNotReady: could not bring com.instagram.android to the foreground` that looked
-  like a cold-start timing bug and wasn't. Verify a suspected device-timing problem with a clean,
-  real run.
+**Rapid-fire manual `adb`/`am` commands during a run fake a cold-start bug.** They once produced a
+`DeviceNotReady: could not bring com.instagram.android to the foreground` that looked like a timing
+bug and wasn't. Don't interleave manual commands with a scraper run, and verify a suspected
+device-timing problem with a clean, real run.
 
-Measured: redroid idles ~500-750MiB; a live-account scrape hit 1.98GiB of the old 2g limit, and
-capture-mode baselines at 3g have peaked at 1.9-2.4GiB (`docs/RUNLOG.md`). The app container idles
-~67-97MiB and peaks ~97-125MiB.
+**A Bash tool call that comes back "rejected" may already have started the container.** Check
+`docker ps` / `docker events --since ...` before assuming nothing ran.
 
-**On `mem_limit`: do not lower it.** Current settings in `docker-compose.yml`: redroid `mem_limit` 3g
-(`REDROID_MEM_LIMIT`) with `memswap_limit` equal to it (no container swap, the thrashing mode that
-stalls a host) and `cpus: 4` (`REDROID_CPUS`, half this host's 8 cores); the app container 256m with
-`memswap_limit: 256m`. redroid's `shm_size: 1g` is deliberately generous, since under-provisioning it risks
-screenshot/graphics-buffer failures that are much harder to diagnose than a plain OOM kill. Worth
-remeasuring peak after more real-world runs before ever considering lowering anything.
+**The app container showing "unhealthy" during `scraper.py once` is noise.** The healthcheck probes
+the feed server, which `scraper.py once` doesn't start.
 
-The scraper's memory guard (`device.MemoryGuard`, `MEMORY_GUARD_PERCENT`, default 85) reads
-redroid's cgroup v2 files through adb, counting usage like `docker stats` does (excluding
-`inactive_file`), checks before stories and every screen, and stops a run early with a warning past
-the threshold. Each run records `runs.mem_peak_mb` and `runs.oom_kills` (shown on `/status`); any
-OOM kill is a run warning.
+**A run that parses zero posts isn't proof the selectors broke.** Look at the dumps first: an empty
+feed-switcher `context_menu` popup holding focus (the guest-GPU switcher quirk) makes every screen
+parse nothing while the screenshot shows a normal feed.
 
-## Before any device-driving run
+Optional host-side mitigation, the user's call since it's host-wide: `sysctl vm.oom_dump_tasks=0`
+stops each OOM kill from dumping every process to the kernel log.
 
-On 2026-09-14 Claude started a scrape right after `scraper.py login` (which left Instagram open)
-without checking headroom; redroid sat at 1.7-1.99GiB of its then-2g limit, the memcg OOM killer
-killed 7 Android processes, and the user's whole desktop froze until they stopped the container
-(`docs/INCIDENTS.md` has the timeline).
+## Docs rules
 
-**Before any device-driving run (login, once, a manual scrape, and `new-profile baseline` and
-`new-profile restore`): check `docker stats` headroom, force-stop Instagram, and ask the user
-first.** `new-profile baseline` checks headroom and refuses while the `app` service is running,
-but that doesn't replace asking; its other subcommands (`check`, `promote`, `validate`, `fork`)
-never touch the device. Optional host-side mitigation, the user's call since
-it's host-wide: `sysctl vm.oom_dump_tasks=0` stops each OOM kill from dumping every process to the
-kernel log.
+- Which doc a change updates is
+  [CONTRIBUTING.md's _Which docs change with what_](docs/CONTRIBUTING.md#which-docs-change-with-what);
+  every fact has one home, mapped by [docs/README.md](docs/README.md). Link to that home, don't copy
+  it, this file included.
+- Image compatibility history lives in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), dated incident
+  write-ups in [docs/INCIDENTS.md](docs/INCIDENTS.md), and dated device runs (with peak memory) in
+  [docs/RUNLOG.md](docs/RUNLOG.md), newest at the bottom. A new rule from an incident goes in
+  CONTRIBUTING's device-run rules and here, kept short, with the story in INCIDENTS.
+- No Jekyll front matter in any Markdown file: the site is built from the repository root
+  (`_config.yml`), with `README.md` as its home page.
 
-Also from that incident:
+## Repository mechanics
 
-- A Bash tool call that comes back "rejected" may already have started the container. Check
-  `docker ps` / `docker events --since ...` before assuming nothing ran.
-- The app container showing "unhealthy" during `scraper.py once` is noise: the healthcheck probes the
-  feed server, which `scraper.py once` doesn't start.
-- The partial 445 run from that incident is **not** evidence that the 445 selectors are broken: its
-  dumps showed only an empty feed-switcher `context_menu` popup holding focus (the guest-GPU switcher
-  quirk, possibly worsened by the OOM kills), so every screen parsed zero posts. A clean 445 baseline
-  was taken later that day.
+- **CI tiers.** Every job and workflow is
+  [CONTRIBUTING.md's _What CI runs_](docs/CONTRIBUTING.md#what-ci-runs); the test tiers, and which of
+  them CI runs, are [docs/TESTING.md](docs/TESTING.md). Real-device runs are never in CI.
+- **Releases.** A pushed `vX.Y.Z` tag runs `publish.yml` unattended. Its gate requires the tag to be
+  signed by a key in `.github/allowed_signers`, the tagged commit to be on `main`, and a green `ci.yml`
+  run on that commit ([docs/RELEASING.md](docs/RELEASING.md)). The version is the tag: never bump
+  `pyproject.toml`'s `0.0.0.dev0` placeholder.
+- **Pins.** Every action is pinned to a commit SHA with a version comment. Python dependencies are
+  hashed pip-compile locks: edit the `.in` files and regenerate app first
+  ([CONTRIBUTING.md](docs/CONTRIBUTING.md#development-setup)). markdownlint-cli2 and prettier are
+  locked in `.github/package-lock.json`. The CI tools (actionlint, shellcheck, hadolint, trivy,
+  lychee) are sha256-pinned rows in `.github/actions/setup-tool/tools.txt`; move a pin there, not in
+  a workflow. Images are pinned by digest (the Dockerfile's base, and compose's redroid and FreshRSS).
+  `apkeep` is pinned by URL and checksum in `app/Dockerfile`'s `ADD`, which `new-builds.yml` reads,
+  so keep that line's shape. Pins Dependabot can't move are drift-checked by `tool-versions.yml`.
+
+## Machine-specific notes
+
+Host-specific notes for the maintainer's machine (its kernel and binder history, its sizing, the
+harness quirks seen there, and the dated narratives behind some rules above) live in untracked
+`CLAUDE.local.md` beside this file; `.gitignore` keeps it out of the repository.

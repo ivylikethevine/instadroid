@@ -1,0 +1,36 @@
+name: Feature request
+description: A setting, a feed, or a behavior instadroid should have
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        [docs/ROADMAP.md](https://github.com/ivylikethevine/instadroid/blob/main/docs/ROADMAP.md)
+        is what's already planned, ordered by scope. A case it doesn't consider is worth raising.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What you want
+      description: The behavior, not the implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+      description: >-
+        The workaround, if there is one: a FreshRSS filter, a cron job, driving the device by
+        hand. Sometimes that turns out to be the answer, and it's always the measure of how much
+        this would buy.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before you send it
+      options:
+        - label: I checked docs/ROADMAP.md for an existing entry.
+          required: true

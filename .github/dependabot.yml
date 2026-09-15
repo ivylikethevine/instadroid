@@ -1,14 +1,91 @@
+# Moves the hashed pip locks, the Markdown tools' npm lock, the digest-pinned images, and the SHA-pinned
+# `uses:` in the workflows and composite actions, via one weekly pull request into dev.
+#
+# What this file cannot cover, and what covers it instead:
+#
+#   * The CI tools in .github/actions/setup-tool/tools.txt (actionlint, shellcheck, hadolint, trivy,
+#     lychee): release assets with no ecosystem here. tool-versions.yml reports their drift in one
+#     tracking issue, on the same Monday and with the same 7-day cooldown.
+#   * The inline pins in .github/scripts/check_tool_versions.local.sh: apkeep's ADD URL in app/Dockerfile
+#     and the Pages site's remote_theme. Also tool-versions.yml, which checks there too that the Python
+#     version agrees across pyproject.toml, app/Dockerfile and every setup-python, and that
+#     docker-compose.yml's x-redroid-image tag still matches the redroid service's pinned image (this
+#     file moves only the latter).
+#   * Whether an image bump fixes anything: the docker ecosystems are version-updates-only (GHSA has no
+#     container ecosystem), and a digest is just a digest. image-scan.yml measures that with trivy.
+#   * The language lines themselves (setup-python's python-version, setup-node's node-version): moved by
+#     hand.
+#
+# Every ecosystem feeds one multi-ecosystem group, so a Monday run opens (or rebases) a single pull
+# request. schedule, commit-message and target-branch are group-only keys (GitHub rejects them on an
+# entry in a group); `patterns` is required per entry, and cooldown/ignore stay per ecosystem. Dependabot
+# security updates, if enabled in the repository settings, still open their own pull requests.
 version: 2
+
+multi-ecosystem-groups:
+  all-dependencies:
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: deps
+    # pull requests land on dev (docs/CONTRIBUTING.md)
+    target-branch: dev
+
 updates:
+  # app/requirements.in -> the hashed app/requirements.txt the image and CI install
   - package-ecosystem: pip
     directory: /app
-    schedule: { interval: weekly }
+    multi-ecosystem-group: all-dependencies
+    patterns: ["*"]
+    # let a release age before its bump: a compromised release's window is its first days (zizmor's
+    # dependabot-cooldown audit gates this in ci.yml)
+    cooldown:
+      default-days: 7
+
+  # requirements-dev.in -> the hashed requirements-dev.txt (ruff, basedpyright, zizmor, typos, ...)
   - package-ecosystem: pip
     directory: /
-    schedule: { interval: weekly }
+    multi-ecosystem-group: all-dependencies
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+
+  # .github/package.json -> package-lock.json (markdownlint-cli2, prettier)
+  - package-ecosystem: npm
+    directory: /.github
+    multi-ecosystem-group: all-dependencies
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+
+  # app/Dockerfile's digest-pinned python base image
   - package-ecosystem: docker
     directory: /app
-    schedule: { interval: weekly }
-  - package-ecosystem: github-actions
+    multi-ecosystem-group: all-dependencies
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+
+  # docker-compose.yml's digest-pinned redroid and freshrss images
+  - package-ecosystem: docker-compose
     directory: /
-    schedule: { interval: weekly }
+    multi-ecosystem-group: all-dependencies
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+    ignore:
+      # A new Android major needs its own /data volume and its own validation (CLAUDE.md): a migration,
+      # not an update. Digest refreshes of the pinned tag still come.
+      - dependency-name: erstt/redroid
+        update-types: ["version-update:semver-major"]
+
+  # the composite actions under .github/actions/ pin their own `uses:` (actions/cache in setup-tool, ...)
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    multi-ecosystem-group: all-dependencies
+    patterns: ["*"]
+    cooldown:
+      default-days: 7

@@ -1,7 +1,3 @@
----
-title: Roadmap
----
-
 # Roadmap
 
 Ordered by scope, smallest first.
@@ -17,11 +13,12 @@ A config flag, one function, a CI tweak, or docs.
 - **Rewrite git history to remove leaked identifiers**: the working tree was scrubbed, but older
   commits still carry real usernames, captions and places (the list is in [PROFILES.md](PROFILES.md)'s
   leak scan). `git filter-repo --replace-text` with a replacements file, then a force-push and a
-  fresh clone everywhere. The repository owner's call; not done yet.
+  fresh clone everywhere. The repository owner's call; not done yet. The maintainer has an offline
+  runbook for it, kept outside the repository.
 
 Done: Markdown lint and format checks, a link check (relative links on pull
-requests, external links weekly), spell check (typos), container image scanning (Trivy,
-report-only), dependency review on pull requests, shell formatting (shfmt), import boundaries
+requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:
+advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
 (import-linter) and hashed dependency locks (pip-compile). Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
@@ -46,7 +43,8 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   `APK_CACHE_DIR` for rollback.
 - **OpenSSF Best Practices badge**: Scorecard is wired up (`.github/workflows/scorecard.yml` and the
   README badge). What's left is bestpractices.dev, a manual self-certification questionnaire rather
-  than a CI job, plus the Scorecard checks still open: branch protection and fuzzing.
+  than a CI job, plus the Scorecard checks still open: branch protection and fuzzing. The answer sheet
+  and the open checks are in [`OPENSSF-IMPROVEMENTS.md`](OPENSSF-IMPROVEMENTS.md).
 - **Resource-id check for new Instagram builds in CI**: `.github/workflows/new-builds.yml` already opens
   an issue weekly when APKPure lists a major version newer than every validated build
   (`check-new-builds`, `app/devtools/check_new_builds.py`). Still to add: a static resource-id report in that issue.
@@ -97,6 +95,6 @@ Open investigations, new capture mechanisms, or changes to the container/process
   sequence of dumps and taps, and replaying it through `fakedevice`, would catch navigation drift
   (a moved tab, a new interstitial) the same way.
 - **arm64 host support**: on an arm64 host, official `redroid/redroid` images run Instagram's arm64
-  code natively — no NDK translation, sidestepping the whole "Which Android?" compatibility matrix
-  (README.md). Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in
+  code natively — no NDK translation, sidestepping the whole compatibility matrix
+  ([`COMPATIBILITY.md`](COMPATIBILITY.md)). Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in
   the kernel).

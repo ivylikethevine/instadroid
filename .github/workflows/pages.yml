@@ -1,76 +1,101 @@
 name: Pages
 
-on:
+# The project site: the repository's Markdown built by Jekyll from the root (_config.yml; README.md is
+# the home page), plus badges/coverage.json and badges/tests.json, the shields.io endpoints the README's
+# badges read (https://ivylikethevine.github.io/instadroid/badges/coverage.json). Nothing is measured
+# here: the badge files are coverage.yml's `coverage-badge` artifact from its newest green run on main.
+#
+# Triggers: Coverage finishing on main (a green push to main has been measured, so the badges move);
+# a push to main that changes the site's own sources, which needs no new measurement; and dispatch.
+# workflow_run is safe here: the build job refuses a Coverage run that failed or came from a pull
+# request, checks out the default branch, and reads the badge through an API query for main's newest
+# green workflow_run-triggered Coverage run rather than the triggering run's payload.
+on: # zizmor: ignore[dangerous-triggers]
+  workflow_run:
+    workflows: [Coverage]
+    types: [completed]
+    branches: [main]
   push:
     branches: [main]
+    paths: [README.md, "docs/**", _config.yml]
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
-# Only one deploy in flight at a time; a newer push to main should win over an in-progress older
-# one rather than queuing behind it.
+# One deploy at a time, never cancelled: cancelling mid-deploy can leave Pages half-updated. A newer
+# run waits for the running one, and replaces any older run still pending.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
-    name: Build (coverage + Jekyll)
+    name: Build (Jekyll + badges)
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'pull_request')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # coverage.yml's artifact, from another workflow run
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      # Coverage badge data: re-run the test suite with coverage (same command as ci.yml's `test`
-      # job) so the number reflects this exact commit, then write it as a shields.io endpoint JSON
-      # into the site (below) instead of on a dedicated orphan branch.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: "3.14"
-          cache: pip
-      - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-deps -e .
-      - run: mkdir -p local # pyproject.toml keeps coverage's data file there
-      - run: python -m pytest -q --cov --cov-report=term
-      - name: Total coverage
-        id: coverage
-        run: echo "percent=$(python -m coverage report --format=total)" >> "$GITHUB_OUTPUT"
-
-      # Written into the Jekyll *source* (not docs/_site afterward): jekyll-build-pages runs as
-      # root in a container, so the _site it creates isn't writable by the runner user. Jekyll
-      # copies front-matter-less files through verbatim, so this still lands at /coverage.json.
-      - name: Write coverage.json into the site source
-        env:
-          PERCENT: ${{ steps.coverage.outputs.percent }}
-        run: |
-          case "$PERCENT" in
-            ''|*[!0-9]*) echo "unexpected coverage value: '$PERCENT'" >&2; exit 1 ;;
-          esac
-          # Bright green from the project's floor, pyproject.toml's [tool.coverage.report] fail_under.
-          floor=$(python -c "import tomllib; print(int(tomllib.load(open('pyproject.toml', 'rb'))['tool']['coverage']['report']['fail_under']))")
-          if [ "$PERCENT" -ge "$floor" ]; then color=brightgreen
-          elif [ "$PERCENT" -ge 75 ]; then color=green
-          elif [ "$PERCENT" -ge 60 ]; then color=yellow
-          else color=red
-          fi
-          printf '{"schemaVersion": 1, "label": "coverage", "message": "%s%%", "color": "%s"}\n' \
-            "$PERCENT" "$color" > docs/coverage.json
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1.0.13
         with:
-          source: docs
-          destination: docs/_site
+          source: .
+          destination: ./_site
+
+      # coverage.yml's main runs are workflow_run-triggered, hence `event`. A missing or expired
+      # artifact isn't a failed deploy: the fallback below publishes "not measured" instead.
+      - name: Fetch the newest coverage figures
+        uses: $/.github/actions/fetch-latest-artifact
+        with:
+          workflow: coverage.yml
+          artifact-name: coverage-badge
+          dest-subdir: coverage-badge
+          event: workflow_run
+          found-message: badge figures from coverage run
+          missing-message: no successful coverage run on main - the badges read "not measured"
+          warn-on-missing: "true"
+
+      - name: Write the badge endpoints into the site
+        run: |
+          set -euo pipefail
+          # jekyll-build-pages is a container action running as root, so the _site it creates isn't
+          # writable by the runner user until it's handed back.
+          sudo chown -R "$(id -u):$(id -g)" _site
+          mkdir -p _site/badges
+          for badge in coverage tests; do
+            src="$RUNNER_TEMP/coverage-badge/$badge.json"
+            # only a well-formed shields endpoint gets through; anything else is "not measured"
+            if [ -f "$src" ] && jq -e '.schemaVersion == 1 and (.message | type) == "string"' "$src" >/dev/null 2>&1; then
+              cp "$src" "_site/badges/$badge.json"
+            else
+              printf '{"schemaVersion":1,"label":"%s","message":"not measured","color":"lightgrey","cacheSeconds":300}\n' \
+                "$badge" >"_site/badges/$badge.json"
+            fi
+            echo "$badge: $(jq -r .message "_site/badges/$badge.json")"
+          done
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: docs/_site
+          path: _site
 
   deploy:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pages: write # to deploy to Pages
       id-token: write # to verify the deployment originated from this workflow run
@@ -78,5 +103,8 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
       - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
         id: deployment
