@@ -75,7 +75,7 @@ jobs:
             echo '```'
           } >"$RUNNER_TEMP/report.md"
 
-      - uses: $/.github/actions/upsert-tracking-issue
+      - uses: ./.github/actions/upsert-tracking-issue
         with:
           label: tool-versions
           label-color: 0E8A16
