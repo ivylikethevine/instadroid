@@ -5,7 +5,7 @@
 #   scripts/check.sh [--all]            every check (the default)
 #   scripts/check.sh --fast             python + test: the inner loop for a Python change
 #   scripts/check.sh --lint             every static check: python, shell, docs, workflows, docker
-#   scripts/check.sh <subcommand>...    only those; `test -- <pytest args>` passes arguments on
+#   scripts/check.sh <subcommand>...    only those; `test -- <pytest args>` passes arguments on to pytest
 #   scripts/check.sh --install [...]    first fetch tools.txt's pinned binaries into local/ci-tools
 #
 # Subcommands, grouped as ci.yml's jobs are:
@@ -22,7 +22,8 @@
 # Tools come from the dev venv (local/.venv, activated or not; CONTRIBUTING's development setup),
 # .github/node_modules (`npm ci`, run here when the lock is newer), and PATH, with local/ci-tools
 # first once --install has filled it (CHECK_TOOLS_DIR overrides the directory). Locally a missing
-# tool is reported as SKIP; under CI (CI=true) it fails the run.
+# tool is reported as SKIP; under CI (CI=true) it fails the run. PIP_AUDIT_ARGS adds arguments to
+# pip-audit, split on whitespace (advisories.yml's Markdown report flags).
 set -uo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,6 +31,7 @@ cd "$root" || exit 2
 
 tools_dir="${CHECK_TOOLS_DIR:-$root/local/ci-tools}"
 roster_tools=(actionlint shellcheck hadolint lychee)
+all_groups=(python test audit shell docs workflows docker)
 
 usage() {
   sed -n '2,/^set -uo/{/^set -uo/d;s/^# \{0,1\}//;p}' "$0"
@@ -51,7 +53,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
   -h | --help) usage ;;
   --install) install=1 ;;
-  --all) selected+=(python test audit shell docs workflows docker) ;;
+  --all) selected+=("${all_groups[@]}") ;;
   --fast) selected+=(python test) ;;
   --lint) selected+=(python shell docs workflows docker) ;;
   --)
@@ -92,7 +94,7 @@ if [ -n "$install" ]; then
   done
   [ "${#selected[@]}" -gt 0 ] || exit 0
 fi
-[ "${#selected[@]}" -gt 0 ] || selected=(python test audit shell docs workflows docker)
+[ "${#selected[@]}" -gt 0 ] || selected=("${all_groups[@]}")
 
 [ -d "$tools_dir" ] && PATH="$tools_dir:$PATH"
 if [ -z "${VIRTUAL_ENV:-}" ] && [ -x local/.venv/bin/python ]; then
@@ -114,17 +116,22 @@ record() { # <status> <name> [detail]
   results+=("$(printf '%s%-5s%s %s%s' "$color" "$1" "$reset" "$2" "${3:+ ($3)}")")
 }
 
-# need <name> <tool>... - true when every tool is on PATH; otherwise SKIP locally, FAIL under CI
+# missing <name> <detail> [local hint] - a check that can't run: FAIL under CI, SKIP locally (with the hint)
+missing() {
+  if [ "${CI:-}" = true ]; then
+    record FAIL "$1" "$2"
+  else
+    record SKIP "$1" "$2${3:-}"
+  fi
+}
+
+# need <name> <tool>... - true when every tool is on PATH; otherwise `missing`
 need() {
   local name="$1" tool
   shift
   for tool in "$@"; do
     command -v "$tool" >/dev/null 2>&1 && continue
-    if [ "${CI:-}" = true ]; then
-      record FAIL "$name" "$tool not installed"
-    else
-      record SKIP "$name" "$tool not installed${install:-; roster tools: scripts/check.sh --install}"
-    fi
+    missing "$name" "$tool not installed" "${install:-; roster tools: scripts/check.sh --install}"
     return 1
   done
 }
@@ -174,7 +181,9 @@ repo_files() {
     while IFS= read -r -d '' f; do [ -f "$f" ] && printf '%s\0' "$f"; done
 }
 
-md_files() { mapfile -d '' files < <(repo_files '*.md'); }
+# md_files - fill $markdown with the Markdown files, listed once however many docs checks ask
+markdown=()
+md_files() { [ "${#markdown[@]}" -gt 0 ] || mapfile -d '' markdown < <(repo_files '*.md'); }
 
 node_tools() {
   local bin=.github/node_modules/.bin
@@ -214,16 +223,17 @@ check_lint_imports() {
 check_test() {
   need test python || return
   mkdir -p local # pyproject.toml keeps coverage's data file there
-  local floor
-  floor="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['tool']['coverage']['report']['fail_under'])")"
-  echo "coverage floor: $floor% (pyproject.toml's fail_under, enforced by pytest-cov)"
+  # pytest-cov enforces, and reports, pyproject.toml's fail_under
   run "pytest + coverage" python -m pytest -q --cov --cov-report=term "${pytest_args[@]}"
 }
 
 check_audit() {
   need pip-audit pip-audit || return
+  local -a extra=()
+  read -ra extra <<<"${PIP_AUDIT_ARGS:-}" # whitespace-split, unglobbed
   # Both locks are fully pinned and hashed, so pip-audit checks exactly those versions without resolving.
-  run pip-audit pip-audit --disable-pip --require-hashes -r app/requirements.txt -r requirements-dev.txt --strict
+  run pip-audit pip-audit --disable-pip --require-hashes -r app/requirements.txt -r requirements-dev.txt --strict \
+    "${extra[@]}"
 }
 
 check_shellcheck() {
@@ -242,26 +252,23 @@ check_shfmt() {
 
 check_markdownlint() {
   node_tools || return
-  local -a files
   md_files
-  run markdownlint .github/node_modules/.bin/markdownlint-cli2 "${files[@]}"
+  run markdownlint .github/node_modules/.bin/markdownlint-cli2 "${markdown[@]}"
 }
 
 check_prettier() {
   node_tools || return
-  local -a files
   md_files
-  run prettier .github/node_modules/.bin/prettier --check "${files[@]}"
+  run prettier .github/node_modules/.bin/prettier --check "${markdown[@]}"
 }
 
 check_lychee() {
   need lychee lychee || return
   pin_note lychee
-  local -a files
   md_files
   # relative links and #fragments only; link-check.yml checks external links after merge. Settings both
   # share (accepted codes, excluded paths, retries) are lychee.toml's.
-  run "lychee (offline)" lychee --config lychee.toml --offline --include-fragments --no-progress "${files[@]}"
+  run "lychee (offline)" lychee --config lychee.toml --offline --include-fragments --no-progress "${markdown[@]}"
 }
 
 check_typos() {
@@ -308,11 +315,7 @@ check_hadolint() {
 
 check_compose() {
   if ! docker compose version >/dev/null 2>&1; then
-    if [ "${CI:-}" = true ]; then
-      record FAIL "docker compose config" "docker compose not available"
-    else
-      record SKIP "docker compose config" "docker compose not available"
-    fi
+    missing "docker compose config" "docker compose not available"
     return
   fi
   # config only reads files; nothing starts. Interpolation uses .env.example, like CI; a missing .env
@@ -362,13 +365,14 @@ for sub in "${selected[@]}"; do
     check_hadolint
     check_compose
     ;;
-  ruff | basedpyright | lint-imports | shellcheck | shfmt | markdownlint | prettier | lychee | typos | \
-    docs-drift | actionlint | lint-workflows | zizmor | hadolint | compose)
-    "check_${sub//-/_}"
-    ;;
+  # a single check by name: check_<name>, hyphens as underscores
   *)
-    echo "check.sh: unknown subcommand $sub" >&2
-    usage 2 >&2
+    if declare -F "check_${sub//-/_}" >/dev/null; then
+      "check_${sub//-/_}"
+    else
+      echo "check.sh: unknown subcommand $sub" >&2
+      usage 2 >&2
+    fi
     ;;
   esac
 done

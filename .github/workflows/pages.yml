@@ -77,14 +77,14 @@ jobs:
           mkdir -p _site/badges
           for badge in coverage tests; do
             src="$RUNNER_TEMP/coverage-badge/$badge.json"
-            # only a well-formed shields endpoint gets through; anything else is "not measured"
+            # only a well-formed shields endpoint gets through; anything else is coverage_badges.sh's
+            # "not measured"
             if [ -f "$src" ] && jq -e '.schemaVersion == 1 and (.message | type) == "string"' "$src" >/dev/null 2>&1; then
               cp "$src" "_site/badges/$badge.json"
+              echo "$badge badge: $(jq -r .message "_site/badges/$badge.json")"
             else
-              printf '{"schemaVersion":1,"label":"%s","message":"not measured","color":"lightgrey","cacheSeconds":300}\n' \
-                "$badge" >"_site/badges/$badge.json"
+              .github/scripts/coverage_badges.sh --not-measured _site/badges "$badge"
             fi
-            echo "$badge: $(jq -r .message "_site/badges/$badge.json")"
           done
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
