@@ -22,7 +22,7 @@ from tests.fakedevice import FakeDevice, hierarchy, node
 
 pytestmark = pytest.mark.usefixtures("fast_offline")
 
-V440 = igprofiles.load("v424")
+V424 = igprofiles.load("v424")
 FEED_XML = igprofiles.fixture("v424", "feed_445.xml").read_text()
 
 
@@ -36,25 +36,25 @@ def test_every_selector_key_belongs_to_a_screen_or_is_situational() -> None:
     for name in igprofiles.available():
         keys = set(igprofiles.load(name).selectors)
         assert keys <= placed, f"{name}: place {keys - placed} in igprofiles/screens.py"
-    assert placed <= set(V440.selectors), (
-        f"screens.py names keys no profile has: {placed - set(V440.selectors)}"
+    assert placed <= set(V424.selectors), (
+        f"screens.py names keys no profile has: {placed - set(V424.selectors)}"
     )
 
 
 def test_the_recorded_v445_feed_has_every_required_feed_key() -> None:
-    result = screens.check_screen(FEED_XML, "feed", V440.selectors)
+    result = screens.check_screen(FEED_XML, "feed", V424.selectors)
     assert result.ok and not result.missing_required
     assert {"share_id", "header_desc", "caption_class"} <= set(result.matched)
 
 
 def test_a_moved_resource_id_is_reported_missing() -> None:
     moved = FEED_XML.replace("row_feed_button_share", "row_feed_share_button")
-    assert screens.check_screen(moved, "feed", V440.selectors).missing_required == ["share_id"]
+    assert screens.check_screen(moved, "feed", V424.selectors).missing_required == ["share_id"]
 
 
 def test_a_popup_only_dump_looks_empty() -> None:
     popup = hierarchy(node("context_menu", bounds=(0, 1000, 1080, 1022)))
-    result = screens.check_screen(popup, "feed", V440.selectors)
+    result = screens.check_screen(popup, "feed", V424.selectors)
     assert result.looks_empty and not result.ok
 
 
@@ -86,7 +86,7 @@ def test_key_matching_follows_the_scrapers_comparisons() -> None:
         node(cls="com.instagram.ui.widget.textview.IgTextLayoutView", text="user hi… more"),
     )
     nodes = list(etree.fromstring(xml.encode()).iter("node"))
-    s = V440.selectors
+    s = V424.selectors
     assert screens.key_matches("home_tab_id", s["home_tab_id"], nodes)
     assert not screens.key_matches("profile_tab_id", s["profile_tab_id"], nodes)
     assert screens.key_matches("mute_toggle_desc_prefix", s["mute_toggle_desc_prefix"], nodes)
@@ -153,7 +153,7 @@ def test_a_scrape_run_in_capture_mode_saves_every_screen_it_visits(
         "share_sheet",
         "feed",
     } <= captured
-    reports = new_profile.check_dumps(V440, capture_dir)
+    reports = new_profile.check_dumps(V424, capture_dir)
     feed = [r for r in reports if r.screen == "feed"]
     assert feed and all(r.check.ok for r in feed)
     assert all(r.check.ok for r in reports if not r.failure)
@@ -211,8 +211,8 @@ def test_fork_creates_an_empty_profile_subclassing_the_covering_one(scratch_prof
     assert path == scratch_profiles / "v447"
     profile = igprofiles.load("v447")
     assert (profile.major, profile.own_validated) == (447, ())
-    assert isinstance(profile, type(V440))
-    assert profile.selectors == V440.selectors and profile.selectors is not V440.selectors
+    assert isinstance(profile, type(V424))
+    assert profile.selectors == V424.selectors and profile.selectors is not V424.selectors
     parent = new_profile.parent_of(profile)
     assert parent is not None and parent.name == "v424"
     assert new_profile.covering_profile("447.0.0.34.72").name == "v447"  # it now covers 447
@@ -395,14 +395,14 @@ def test_check_report_flags_drift_popups_and_uncaptured_screens(tmp_path: Path) 
             "003-feed_switch_menu-fail": hierarchy(node("context_menu")),
         },
     )
-    reports = new_profile.check_dumps(V440, dumps)
+    reports = new_profile.check_dumps(V424, dumps)
     assert [(r.screen, r.failure, r.check.ok) for r in reports] == [
         ("feed", False, True),
         ("feed", False, False),
         ("feed_switch_menu", True, False),
     ]
     assert reports[0].parsed.startswith("2 post(s)")
-    text = new_profile.render_report("445.0.0.45.83", V440, reports, None)
+    text = new_profile.render_report("445.0.0.45.83", V424, reports, None)
     assert text.startswith("# Instagram 445.0.0.45.83 check (profile v424)")
     assert "| 002-feed | feed | ⚠ selectors missing | `share_id` |" in text
     assert "almost no Instagram UI" in text and "(failure dump)" in text
@@ -488,7 +488,7 @@ def test_promote_skips_screens_without_a_clean_capture(
         node("android:id/list"), node("row_feed_profile_header"), node("row_feed_button_share")
     )
     reports = new_profile.check_dumps(
-        V440, _dumps(tmp_path, {"001-feed": empty_feed, "002-home_feed-fail": FEED_XML})
+        V424, _dumps(tmp_path, {"001-feed": empty_feed, "002-home_feed-fail": FEED_XML})
     )
     assert new_profile.pick_fixtures(reports) == {}
 

@@ -1,8 +1,8 @@
-# Dev tools. requirements-dev.txt is the hashed lock compiled from this file; it includes the app's
-# requirements at the versions app/requirements.txt locks, so the tests run against what the image ships.
-# Regenerate it after editing here or after app/requirements.txt changes (from the repository root):
+# Dev tools only. requirements-dev.txt is the hashed lock compiled from this file, installed alongside
+# app/requirements.txt; it's constrained to that lock, so a dependency the two share gets the same version.
+# Regenerate it after editing here, or when installing both locks together reports a conflict (from the
+# repository root):
 #   pip-compile --allow-unsafe --generate-hashes --strip-extras requirements-dev.in
--r app/requirements.in
 -c app/requirements.txt
 ruff==0.16.7
 pytest==9.1.1

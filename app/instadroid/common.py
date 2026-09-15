@@ -3,6 +3,7 @@ SQLite row accessors live in shared/sqlrows.py, which the feed server uses too."
 
 import hashlib
 import re
+import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -10,23 +11,11 @@ from typing import Protocol, Self
 from urllib.parse import urlsplit
 
 from shared.sqlrows import SqlValue
+from shared.timestamps import parse_iso
 
 
 def log(*a: object) -> None:
     print(datetime.now().strftime("%H:%M:%S"), *a, flush=True)
-
-
-def parse_iso(value: SqlValue) -> datetime | None:
-    """A stored ISO timestamp as an aware datetime (naive = UTC), or None if missing/malformed.
-    `value` is whatever a sqlite column happened to hold, not necessarily text; anything else counts
-    as malformed."""
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def older_than(value: SqlValue, days: float) -> bool:
@@ -103,3 +92,17 @@ def redact_url(url: str) -> str:
     carry tokens that must never land in the shared container log."""
     parts = urlsplit(url)
     return f"{parts.scheme}://{parts.hostname or ''}{f':{parts.port}' if parts.port else ''}{parts.path}"
+
+
+def send_best_effort(what: str, request: str | urllib.request.Request, timeout: float) -> str | None:
+    """Send one request whose failure mustn't fail the caller (an alert, a reader's refresh webhook):
+    returns a short error, logged as a WARN with the URL redacted, instead of raising. None once sent."""
+    url = request if isinstance(request, str) else request.full_url
+    try:
+        with urlopen()(request, timeout=timeout) as resp:
+            resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        error = f"{what} to {redact_url(url)} failed: {e!r}"
+        log("WARN:", error)
+        return error
+    return None

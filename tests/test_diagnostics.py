@@ -7,7 +7,7 @@ import pytest
 from instadroid import config, db, device, diagnostics
 
 from tests.fakedevice import FakeDevice, Out
-from tests.support import sql_row
+from tests.support import fetch_row, row_values
 
 
 class VersionedDevice(FakeDevice):
@@ -41,7 +41,8 @@ def test_record_run_stores_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         con, "2026-09-11T00:00:00+00:00", "2026-09-11T00:05:00+00:00", 0, None,
         {"ig_version": "445.0.0.45.83", "redroid_image": "img:tag"},
     )  # fmt: skip
-    assert sql_row(con.execute("SELECT ig_version, redroid_image FROM runs")) == ("445.0.0.45.83", "img:tag")
+    row = fetch_row(con.execute("SELECT ig_version, redroid_image FROM runs"))
+    assert row_values(row) == ("445.0.0.45.83", "img:tag")
 
 
 @pytest.fixture

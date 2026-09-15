@@ -3,14 +3,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from instadroid import backup, config, db
+from instadroid import backup, config
 
 
 @pytest.fixture
-def con(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
+def con(con: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
+    """conftest's database, holding one post, with backups under tmp_path."""
     monkeypatch.setattr(config, "BACKUP_DIR", str(tmp_path / "backups"))
-    con = db.db_init()
     con.execute(
         "INSERT INTO posts (id, username, scraped_at) VALUES ('p1', 'someone', '2026-09-14T00:00:00+00:00')"
     )

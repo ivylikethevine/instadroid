@@ -26,7 +26,7 @@ jobs:
           cache: pip
       # The locked dev tools and app requirements, then the project itself (app/ on the path, and the dev
       # commands): basedpyright resolves imports against them.
-      - run: pip install --require-hashes -r requirements-dev.txt && pip install --no-deps -e .
+      - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-deps -e .
       - run: ruff check .
       - run: ruff format --check .
       - run: basedpyright
@@ -45,7 +45,7 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-      - run: pip install --require-hashes -r requirements-dev.txt && pip install --no-deps -e .
+      - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-deps -e .
       # pyproject.toml keeps coverage's data file in local/, which isn't in the checkout.
       - run: mkdir -p local
       - run: python -m pytest -q --cov --cov-report=term --cov-fail-under=90
@@ -64,6 +64,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.14"
+          cache: pip
+      # pip-audit and its dependencies only: with --disable-pip it reads the locks instead of installing them.
       - run: pip install --require-hashes -r requirements-dev.txt
       # Both locks are fully pinned and hashed, so pip-audit checks exactly those versions without resolving.
       - run: pip-audit --disable-pip --require-hashes -r app/requirements.txt -r requirements-dev.txt --strict

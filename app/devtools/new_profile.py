@@ -35,7 +35,7 @@ import re
 import sqlite3
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -50,7 +50,6 @@ from devtools import ROOT, promote_dump
 PROFILES_DIR = ROOT / "app" / "igprofiles"
 DEV_DIR = ROOT / "local" / "data" / "debug" / "profile-dev"  # /debug/profile-dev in the container
 CONTAINER_DEV_DIR = "/debug/profile-dev"
-_VERSION = re.compile(r"^(\d{3})\.\d+\.\d+\.\d+\.\d+$")
 _DUMP = re.compile(r"^(?P<seq>\d{3})-(?P<screen>[a-z_0-9]+?)(?P<fail>-fail)?_hierarchy\.xml$")
 # Screens whose dumps the parsers read, so a fixture of them checks parse output, not just selectors.
 PARSED_SCREENS = ("feed", "home_feed", "following_list")
@@ -68,7 +67,7 @@ MIN_HOST_AVAILABLE_MIB = 2048
 def parse_version(version: str, below_floor: bool = False) -> int:
     """The major version of a full Instagram build ("444.0.0.46.85" -> 444). Raises ValueError for
     anything else, or a major below the supported floor unless `below_floor`."""
-    m = _VERSION.match(version.strip())
+    m = igprofiles.BUILD.fullmatch(version.strip())
     if not m:
         raise ValueError(f"{version!r} is not a full Instagram build like 444.0.0.46.85 (see APKPure)")
     major = int(m.group(1))
@@ -386,32 +385,19 @@ def captured_dumps(dumps: Path) -> list[tuple[Path, str, bool]]:
     return found
 
 
-def _with_profile[T](profile: BaseProfile, fn: Callable[[], T]) -> T:
-    previous = versioning.PROFILE
-    versioning.PROFILE = profile
-    try:
-        return fn()
-    finally:
-        versioning.PROFILE = previous
-
-
-def _parse_summary(xml: str, screen: str) -> str:
+def _parse(xml: str, screen: str) -> tuple[str, int]:
+    """What the parsers find in a dump under the active profile: a summary, and the number of posts,
+    story tray items and following rows. ("", 0) for a screen they don't read."""
     if screen not in PARSED_SCREENS:
-        return ""
+        return "", 0
     found = parsing.parse_screen(xml)
     posts = found["posts"]
-    return (
+    summary = (
         f"{len(posts)} post(s) ({sum(bool(p['caption']) for p in posts)} captioned,"
         f" {sum(bool(p['complete']) for p in posts)} complete), {len(found['story_tray'])} story tray item(s),"
         f" {len(found['following_list'])} following row(s)"
     )
-
-
-def _item_count(xml: str, screen: str) -> int:
-    if screen not in PARSED_SCREENS:
-        return 0
-    found = parsing.parse_screen(xml)
-    return len(found["posts"]) + len(found["story_tray"]) + len(found["following_list"])
+    return summary, len(posts) + len(found["story_tray"]) + len(found["following_list"])
 
 
 def check_dumps(profile: BaseProfile, dumps: Path) -> list[DumpReport]:
@@ -419,12 +405,12 @@ def check_dumps(profile: BaseProfile, dumps: Path) -> list[DumpReport]:
     reports: list[DumpReport] = []
     for path, screen, failure in captured_dumps(dumps):
         xml = path.read_text()
-        parsed = _with_profile(profile, lambda xml=xml, screen=screen: _parse_summary(xml, screen))
-        parsed_parent = (
-            _with_profile(parent, lambda xml=xml, screen=screen: _parse_summary(xml, screen))
-            if parent
-            else ""
-        )
+        with versioning.using(profile):
+            parsed, items = _parse(xml, screen)
+        parsed_parent = ""
+        if parent:
+            with versioning.using(parent):
+                parsed_parent, _ = _parse(xml, screen)
         reports.append(
             DumpReport(
                 path=path,
@@ -433,7 +419,7 @@ def check_dumps(profile: BaseProfile, dumps: Path) -> list[DumpReport]:
                 check=screens.check_screen(xml, screen, profile.selectors),
                 parsed=parsed,
                 parsed_parent=parsed_parent if parsed_parent != parsed else "",
-                items=_with_profile(profile, lambda xml=xml, screen=screen: _item_count(xml, screen)),
+                items=items,
             )
         )
     return reports
@@ -450,23 +436,16 @@ def run_summary(db_path: Path) -> RunSummary | None:
             return None
     if row is None:
         return None
-    columns = set(row.keys())  # an older runs table may not have every column yet
-
-    def text(name: str) -> str | None:
-        return sqlrows.cell_str(row, name) if name in columns else None
-
-    def integer(name: str) -> int | None:
-        return sqlrows.cell_int(row, name) if name in columns else None
-
+    # opt_*: an older runs table may not have every column yet
     return RunSummary(
-        ig_version=text("ig_version"),
-        error=text("error"),
-        warning=text("warning"),
-        new_posts=integer("new_posts") or 0,
-        new_stories=integer("new_stories") or 0,
-        mem_peak_mb=integer("mem_peak_mb"),
-        redroid_image=text("redroid_image"),
-        android_release=text("android_release"),
+        ig_version=sqlrows.opt_str(row, "ig_version"),
+        error=sqlrows.opt_str(row, "error"),
+        warning=sqlrows.opt_str(row, "warning"),
+        new_posts=sqlrows.opt_int(row, "new_posts") or 0,
+        new_stories=sqlrows.opt_int(row, "new_stories") or 0,
+        mem_peak_mb=sqlrows.opt_int(row, "mem_peak_mb"),
+        redroid_image=sqlrows.opt_str(row, "redroid_image"),
+        android_release=sqlrows.opt_str(row, "android_release"),
     )
 
 
@@ -488,7 +467,7 @@ def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], r
             lines.append(f"**The run scraped Instagram {run.ig_version}, not {build}.**")
         lines.append("")
     if not reports:
-        return "\n".join([*lines, "No captured screens. Run `new_profile.py baseline` first.", ""])
+        return "\n".join([*lines, "No captured screens. Run `new-profile baseline` first.", ""])
     lines += ["| Dump | Screen | Result | Missing required keys | Parsed |", "|---|---|---|---|---|"]
     for r in reports:
         if r.check.looks_empty:
@@ -529,7 +508,7 @@ def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], r
     lines += [
         "",
         "A required key missing from every dump of its screen is almost certainly drift: find the new value in",
-        "the dump (resource-id, content-desc or text), then `new_profile.py fork` this build and override that",
+        "the dump (resource-id, content-desc or text), then `new-profile fork` this build and override that",
         "key in the new profile's selectors.py, and check again. The screenshot next to each dump shows what",
         f"was on screen. With nothing missing, `promote` and `validate` record {build} under {profile.name}.",
         "",
@@ -592,24 +571,11 @@ def validation_problems(profile: BaseProfile, build: str, run: RunSummary | None
     major = parse_version(build)
     fixtures = sorted(igprofiles.fixture(profile.name, "").glob(f"*_{major}.expected.json"))
     if not fixtures:
-        problems.append(f"no replay fixtures for {major}: `new_profile.py promote {build}`")
-    for expected in fixtures:
-        name = expected.name.removesuffix(".expected.json")
-        xml = expected.with_name(f"{name}.xml").read_text()
-        parsed = _with_profile(profile, lambda xml=xml: promote_dump.expected(xml))
-        if parsed != promote_dump.load_json(expected.read_text()):
-            problems.append(
-                f"{expected.name} no longer parses as recorded (re-record with promote-dump --update)"
-            )
-        screen = screens.screen_of_fixture(name)
-        if screen in screens.SCREENS:
-            result = screens.check_screen(xml, screen, profile.selectors)
-            if result.missing_required:
-                problems.append(
-                    f"fixture {name}.xml is missing required keys {', '.join(result.missing_required)}"
-                )
+        problems.append(f"no replay fixtures for {major}: `new-profile promote {build}`")
+    for recorded in fixtures:
+        problems += promote_dump.fixture_problems(profile, recorded)
     if run is None:
-        problems.append(f"no baseline run recorded: `new_profile.py baseline {build}`")
+        problems.append(f"no baseline run recorded: `new-profile baseline {build}`")
     else:
         if run.ig_version != build:
             problems.append(f"the latest baseline run scraped Instagram {run.ig_version}, not {build}")
@@ -743,11 +709,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
             case "restore":
                 return restore(opts.yes)
-            case _:
+            case _:  # argparse accepts no other command
                 pass
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
-        return 2
     return 2
 
 

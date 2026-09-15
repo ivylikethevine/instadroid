@@ -21,19 +21,6 @@ def utc(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def parse_dt(value: str | None) -> datetime | None:
-    """Parse a stored ISO timestamp, tolerant of a missing/malformed value and of a naive one
-    (feedgen rejects those) — returns None rather than raising, so one bad row can't 500 the
-    whole feed."""
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-
-
 def cached(request: Request, *parts: EtagPart) -> tuple[str, Response | None]:
     """(ETag over `parts`, a 304 response if the client already has it, else None)."""
     etag = f'"{sha256("|".join(map(str, parts)).encode()).hexdigest()}"'

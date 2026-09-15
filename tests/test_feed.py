@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from shared.timestamps import parse_iso
 
-from tests.feedclient import fresh_feedserver, make_app, write_image
+from tests.feedclient import make_app, write_image
 from tests.support import json_body
 
 
@@ -84,15 +85,7 @@ def test_missing_posts_table_returns_empty_instead_of_500(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # e.g. feed starts before the driver's first db_init() has created the table.
-    db = tmp_path / "posts.sqlite"
-    sqlite3.connect(db).close()  # empty file, no table
-    monkeypatch.setenv("DB_PATH", str(db))
-    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
-    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
-    fresh_feedserver()
-    import feedserver
-
-    client = TestClient(feedserver.app)
+    client = make_app(tmp_path, monkeypatch, seed="")  # an empty file, no table
 
     assert client.get("/instagram.xml").status_code == 200
     assert json_body(client.get("/users")) == []
@@ -104,26 +97,18 @@ def test_etag_changes_when_a_row_is_merged_in_place(tmp_path: Path, monkeypatch:
     # an existing row without changing its scraped_at or the post count — updated_at is what the
     # ETag must key off, or FreshRSS keeps getting a 304 with the stale caption.
     db = tmp_path / "posts.sqlite"
-    monkeypatch.setenv("DB_PATH", str(db))
-    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
-    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
-    con = sqlite3.connect(db)
-    con.execute(
-        "CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT,"
-        " caption TEXT, media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT,"
-        " posted_at TEXT, updated_at TEXT)"
+    client = make_app(
+        tmp_path,
+        monkeypatch,
+        seed="""
+        CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT,
+            caption TEXT, media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT,
+            posted_at TEXT, updated_at TEXT);
+        INSERT INTO posts VALUES ('ABC', 'someone', 'carousel', '2 days ago',
+            'Photo 1 of 2 by Someone, 5 likes', NULL, '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL,
+            '2026-09-08T09:00:00+00:00', '2026-09-08T08:00:00+00:00');
+        """,
     )
-    con.execute(
-        "INSERT INTO posts VALUES ('ABC', 'someone', 'carousel', '2 days ago',"
-        " 'Photo 1 of 2 by Someone, 5 likes', NULL, '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL,"
-        " '2026-09-08T09:00:00+00:00', '2026-09-08T08:00:00+00:00')"
-    )
-    con.commit()
-    con.close()
-    fresh_feedserver()
-    import feedserver
-
-    client = TestClient(feedserver.app)
 
     first = client.get("/instagram.xml")
     assert "Photo 1 of 2 by Someone" in first.text
@@ -147,31 +132,20 @@ def test_etag_changes_when_a_row_is_merged_in_place(tmp_path: Path, monkeypatch:
 def test_feed_renders_extra_carousel_slides_and_avatar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db = tmp_path / "posts.sqlite"
-    monkeypatch.setenv("DB_PATH", str(db))
-    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
-    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
-    con = sqlite3.connect(db)
-    con.execute(
-        "CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,"
-        " media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT)"
+    client = make_app(
+        tmp_path,
+        monkeypatch,
+        seed="""
+        CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,
+            media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT);
+        CREATE TABLE media (post_id TEXT, idx INTEGER, file TEXT);
+        CREATE TABLE accounts (username TEXT PRIMARY KEY, avatar_file TEXT, avatar_updated_at TEXT);
+        INSERT INTO posts VALUES ('C1', 'carouseler', 'carousel', '1 day ago', 'Look at these',
+            'C1.jpg', '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL, '2026-09-08T09:00:00+00:00');
+        INSERT INTO media VALUES ('C1', 1, 'C1_1.jpg'), ('C1', 2, 'C1_2.jpg');
+        INSERT INTO accounts VALUES ('carouseler', 'avatars/carouseler.jpg', '2026-09-08T08:00:00+00:00');
+        """,
     )
-    con.execute("CREATE TABLE media (post_id TEXT, idx INTEGER, file TEXT)")
-    con.execute("CREATE TABLE accounts (username TEXT PRIMARY KEY, avatar_file TEXT, avatar_updated_at TEXT)")
-    con.execute(
-        "INSERT INTO posts VALUES ('C1', 'carouseler', 'carousel', '1 day ago', 'Look at these',"
-        " 'C1.jpg', '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL, '2026-09-08T09:00:00+00:00')"
-    )
-    con.execute("INSERT INTO media VALUES ('C1', 1, 'C1_1.jpg'), ('C1', 2, 'C1_2.jpg')")
-    con.execute(
-        "INSERT INTO accounts VALUES ('carouseler', 'avatars/carouseler.jpg', '2026-09-08T08:00:00+00:00')"
-    )
-    con.commit()
-    con.close()
-    fresh_feedserver()
-    import feedserver
-
-    client = TestClient(feedserver.app)
 
     body = client.get("/instagram.xml").text
     assert "http://feed.test/media/C1.jpg" in body  # cover
@@ -190,26 +164,18 @@ def test_feed_falls_back_to_cover_image_without_media_or_accounts_tables(
 
 def test_etag_changes_when_a_carousel_slide_is_added(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db = tmp_path / "posts.sqlite"
-    monkeypatch.setenv("DB_PATH", str(db))
-    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
-    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
-    con = sqlite3.connect(db)
-    con.execute(
-        "CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,"
-        " media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT, updated_at TEXT)"
+    client = make_app(
+        tmp_path,
+        monkeypatch,
+        seed="""
+        CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,
+            media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT, updated_at TEXT);
+        CREATE TABLE media (post_id TEXT, idx INTEGER, file TEXT);
+        INSERT INTO posts VALUES ('C1', 'someone', 'carousel', '1 day ago', 'cap', 'C1.jpg',
+            '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL, '2026-09-08T09:00:00+00:00',
+            '2026-09-08T08:00:00+00:00');
+        """,
     )
-    con.execute("CREATE TABLE media (post_id TEXT, idx INTEGER, file TEXT)")
-    con.execute(
-        "INSERT INTO posts VALUES ('C1', 'someone', 'carousel', '1 day ago', 'cap', 'C1.jpg',"
-        " '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL, '2026-09-08T09:00:00+00:00',"
-        " '2026-09-08T08:00:00+00:00')"
-    )
-    con.commit()
-    con.close()
-    fresh_feedserver()
-    import feedserver
-
-    client = TestClient(feedserver.app)
 
     first = client.get("/instagram.xml")
     etag = first.headers["etag"]
@@ -247,21 +213,11 @@ def test_etag_changes_when_an_avatar_is_captured(tmp_path: Path, monkeypatch: py
 
 
 def _make_stories_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, TestClient]:
-    db = tmp_path / "posts.sqlite"
-    monkeypatch.setenv("DB_PATH", str(db))
-    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
-    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
-    con = sqlite3.connect(db)
-    con.execute(
-        "CREATE TABLE stories (id TEXT PRIMARY KEY, username TEXT, media_file TEXT, kind TEXT,"
-        " posted_date TEXT, scraped_at TEXT)"
-    )
-    con.commit()
-    con.close()
-    fresh_feedserver()
-    import feedserver
-
-    return db, TestClient(feedserver.app)
+    seed = """
+    CREATE TABLE stories (id TEXT PRIMARY KEY, username TEXT, media_file TEXT, kind TEXT,
+        posted_date TEXT, scraped_at TEXT);
+    """
+    return tmp_path / "posts.sqlite", make_app(tmp_path, monkeypatch, seed)
 
 
 def test_stories_feed_lists_stored_stories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -379,15 +335,7 @@ def test_opml_without_a_posts_table_returns_an_empty_category_instead_of_500(
 ) -> None:
     import xml.etree.ElementTree as ET
 
-    db = tmp_path / "posts.sqlite"
-    sqlite3.connect(db).close()  # empty file, no table
-    monkeypatch.setenv("DB_PATH", str(db))
-    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
-    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
-    fresh_feedserver()
-    import feedserver
-
-    client = TestClient(feedserver.app)
+    client = make_app(tmp_path, monkeypatch, seed="")  # an empty file, no table
 
     r = client.get("/opml")
     assert r.status_code == 200
@@ -407,16 +355,14 @@ def test_opml_conditional_get_returns_304_when_unchanged(
     assert second.status_code == 304
 
 
-def test_dt_handles_naive_and_malformed_timestamps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    make_app(tmp_path, monkeypatch)  # ensures app is importable with env set
-    from feedserver import render
-
-    assert render.parse_dt(None) is None
-    assert render.parse_dt("") is None
-    assert render.parse_dt("not-a-timestamp") is None
-    naive = render.parse_dt("2026-09-08T10:00:00")
+def test_parse_iso_handles_naive_and_malformed_timestamps() -> None:
+    assert parse_iso(None) is None
+    assert parse_iso("") is None
+    assert parse_iso("not-a-timestamp") is None
+    assert parse_iso(1757325600) is None  # not text: malformed
+    naive = parse_iso("2026-09-08T10:00:00")
     assert naive is not None and naive.tzinfo is not None  # naive input gets UTC attached
-    aware = render.parse_dt("2026-09-08T10:00:00+00:00")
+    aware = parse_iso("2026-09-08T10:00:00+00:00")
     assert aware is not None and aware.tzinfo is not None
 
 

@@ -1,7 +1,7 @@
 """One run end to end (scrape_once), connecting to the device, and the poll loop (main) with its startup wait."""
 
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -18,19 +18,17 @@ from instadroid import (
     uidevice,
     versioning,
 )
+from shared import sqlrows
 
 from tests.deviceflows import (
     StopLoop,
     feed_device,
-    row,
-    rows,
-    scalar,
     seed_post,
     stop_after_first_sleep,
     top_card_id,
-    values,
 )
 from tests.fakedevice import FakeDevice
+from tests.support import fetch_row, record_run_ago, row_dict, row_values
 
 pytestmark = pytest.mark.usefixtures("fast_offline")
 
@@ -48,18 +46,22 @@ def test_scrape_once_end_to_end(fast_offline: Path, monkeypatch: pytest.MonkeyPa
 
     assert stats == {
         "new": 2,
-        "new_stories": 1,
-        "link_sheet_failures": 0,
-        "link_clipboard_failures": 0,
-        "warning": None,
-        "filtered_posts": 0,
-        "mem_peak_mb": None,  # the fake device has no cgroup files: the memory guard is off
-        "oom_kills": None,
-        "cards_per_screen": 1.75,  # 2 cards on screen 0, 1 on screen 1 (see the log below)
-        "share_captioned": 1.0,
-        "share_complete": 1.0,
+        "metrics": {
+            "new_stories": 1,
+            "link_sheet_failures": 0,
+            "link_clipboard_failures": 0,
+            "warning": None,
+            "filtered_posts": 0,
+            "mem_peak_mb": None,  # the fake device has no cgroup files: the memory guard is off
+            "oom_kills": None,
+            "cards_per_screen": 1.75,  # 2 cards on screen 0, 1 on screen 1 (see the log below)
+            "share_captioned": 1.0,
+            "share_complete": 1.0,
+        },
     }
-    posts = {r["id"]: r for r in rows(con, "SELECT * FROM posts")}
+    posts = {
+        sqlrows.must_str(r, "id"): row_dict(r) for r in sqlrows.fetch_all(con.execute("SELECT * FROM posts"))
+    }
     assert set(posts) == {"TOP123", "OTHER1", "OLD1"}
     assert posts["TOP123"]["username"] == "someone_nice" and posts["TOP123"]["kind"] == "video"
     assert posts["TOP123"]["url"] == "https://www.instagram.com/reel/TOP123/"
@@ -67,14 +69,21 @@ def test_scrape_once_end_to_end(fast_offline: Path, monkeypatch: pytest.MonkeyPa
     assert posts["OTHER1"]["caption"] == "Second caption"
     assert posts["TOP123"]["ig_version"] == posts["OTHER1"]["ig_version"] == "445.0.0.45.83"
     assert posts["OLD1"]["ig_version"] is None  # seeded before this run; never back-filled
-    slides = values(con, "SELECT idx, file FROM media WHERE post_id='OTHER1' ORDER BY idx")
+    slides = [
+        row_values(r)
+        for r in sqlrows.fetch_all(
+            con.execute("SELECT idx, file FROM media WHERE post_id='OTHER1' ORDER BY idx")
+        )
+    ]
     assert slides == [(1, "OTHER1_1.webp"), (2, "OTHER1_2.webp")]
     for fn in ("TOP123.webp", "OTHER1.webp", "OTHER1_1.webp", "OTHER1_2.webp"):
         assert (media / fn).exists()
         assert (media / fn).read_bytes()[8:12] == b"WEBP"  # the default MEDIA_FORMAT
     assert (media / "avatars" / "other_user.webp").exists()
     assert (media / "avatars" / "old_user.webp").exists()
-    stored_stories = rows(con, "SELECT username, media_file FROM stories")
+    stored_stories = [
+        row_dict(r) for r in sqlrows.fetch_all(con.execute("SELECT username, media_file FROM stories"))
+    ]
     assert [s["username"] for s in stored_stories] == ["alice"]  # bob's viewer never opened, carol was seen
     story_file = stored_stories[0]["media_file"]
     assert isinstance(story_file, str)
@@ -102,14 +111,12 @@ def test_scrape_once_without_permalinks_falls_back_to_hash_ids_and_merges_a_plac
     stats = scrape.scrape_once(d, con)
 
     assert stats["new"] == 1  # the Reel merged into the placeholder instead of being stored twice
-    assert stats["link_sheet_failures"] == 4  # two attempts per card
-    merged = row(con, "SELECT * FROM posts WHERE id='placeholder'")
-    assert merged is not None
+    assert stats["metrics"].get("link_sheet_failures") == 4  # two attempts per card
+    merged = row_dict(fetch_row(con.execute("SELECT * FROM posts WHERE id='placeholder'")))
     assert merged["caption"] == "Top card caption…"
     assert merged["ig_version"] == "445.0.0.45.83"  # the placeholder had none; the merge fills it in
     assert merged["media_file"]
-    other = row(con, "SELECT * FROM posts WHERE username='other_user'")
-    assert other is not None
+    other = row_dict(fetch_row(con.execute("SELECT * FROM posts WHERE username='other_user'")))
     assert other["url"] is None and other["id"] == other["hash"]
 
 
@@ -124,8 +131,7 @@ def test_scrape_once_drops_a_permalink_that_belongs_to_another_account(
 
     scrape.scrape_once(feed_device(), con)
 
-    stored = row(con, "SELECT * FROM posts WHERE username='someone_nice'")
-    assert stored is not None
+    stored = row_dict(fetch_row(con.execute("SELECT * FROM posts WHERE username='someone_nice'")))
     assert stored["url"] is None and stored["id"] != "TOP123"  # stored under its hash, not the stale link
 
 
@@ -139,11 +145,12 @@ def test_scrape_once_treats_an_edited_caption_as_the_same_post(monkeypatch: pyte
 
     stats = scrape.scrape_once(d, con)
 
-    stored = row(con, "SELECT hash FROM posts WHERE id='TOP123'")
-    assert stored is not None
-    assert stored["hash"] == top_card_id(feed_device(start="following"))  # re-keyed to the new caption
+    stored = fetch_row(con.execute("SELECT hash FROM posts WHERE id='TOP123'"))
+    assert sqlrows.cell(stored, "hash") == top_card_id(
+        feed_device(start="following")
+    )  # re-keyed to the new caption
     assert stats["new"] == 1  # only the other card is new
-    assert scalar(con, "SELECT COUNT(*) FROM posts WHERE username='someone_nice'") == 1
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts WHERE username='someone_nice'")) == 1
 
 
 def fake_adb_connect(addr: str, timeout: float | None = None) -> None:
@@ -189,9 +196,9 @@ def test_scrape_once_reports_the_profile_warning(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(
         versioning, "PROFILE_WARNING", "Instagram 999.0.0.1.1 hasn't been validated with profile v424"
     )
-    stats = scrape.scrape_once(feed_device(), db.db_init())
-    assert stats["warning"] is not None
-    assert "Instagram 999.0.0.1.1 hasn't been validated with profile v424" in stats["warning"]
+    warning = scrape.scrape_once(feed_device(), db.db_init())["metrics"].get("warning")
+    assert warning is not None
+    assert "Instagram 999.0.0.1.1 hasn't been validated with profile v424" in warning
 
 
 def test_main_records_a_transient_failure_and_retries_early(
@@ -208,7 +215,7 @@ def test_main_records_a_transient_failure_and_retries_early(
     with pytest.raises(StopLoop):
         scrape.main()
 
-    error = values(sqlite3.connect(fast_offline / "posts.sqlite"), "SELECT error FROM runs")[0][0]
+    error = sqlrows.scalar(sqlite3.connect(fast_offline / "posts.sqlite").execute("SELECT error FROM runs"))
     assert isinstance(error, str) and error.startswith("AdbError")
     assert 2 * 60 <= sleeps[0] <= 3 * 60
 
@@ -218,15 +225,12 @@ def test_main_records_a_successful_run_with_device_versions(
 ) -> None:
     sleeps = stop_after_first_sleep(monkeypatch)
     monkeypatch.setattr(device, "connect_device", feed_device)
-    stats: dict[str, int | str] = {
+    stats: scrape.RunStats = {
         "new": 2,
-        "new_stories": 1,
-        "link_sheet_failures": 1,
-        "link_clipboard_failures": 0,
-        "warning": "w",
+        "metrics": {"new_stories": 1, "link_sheet_failures": 1, "link_clipboard_failures": 0, "warning": "w"},
     }
 
-    def fake_scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> dict[str, int | str]:
+    def fake_scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> scrape.RunStats:
         return stats
 
     monkeypatch.setattr(scrape, "scrape_once", fake_scrape_once)
@@ -235,8 +239,7 @@ def test_main_records_a_successful_run_with_device_versions(
         scrape.main()
 
     con = sqlite3.connect(fast_offline / "posts.sqlite")
-    con.row_factory = sqlite3.Row
-    run = rows(con, "SELECT * FROM runs")[0]
+    run = row_dict(fetch_row(con.execute("SELECT * FROM runs")))
     assert (run["new_posts"], run["new_stories"], run["warning"], run["error"]) == (2, 1, "w", None)
     assert (run["android_release"], run["ig_version"]) == ("13", "445.0.0.45.83")
     assert run["selector_profile"] == "v424"
@@ -244,11 +247,6 @@ def test_main_records_a_successful_run_with_device_versions(
 
 
 # --- startup wait ---------------------------------------------------------------------------------
-
-
-def _record_last_run(con: sqlite3.Connection, minutes_ago: float, error: str | None = None) -> None:
-    finished = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
-    db.record_run(con, finished, finished, 0, error, {})
 
 
 @pytest.fixture
@@ -266,14 +264,14 @@ def test_startup_scrapes_immediately_with_no_recorded_run(poll_window: None) -> 
 
 def test_startup_waits_out_the_rest_of_the_poll_interval(poll_window: None) -> None:
     con = db.db_init()
-    _record_last_run(con, minutes_ago=60)
+    record_run_ago(con, 60)
     wait = scrape._startup_wait_seconds(con)
     assert 1.5 * 3600 - 5 <= wait <= 3.5 * 3600
 
 
 def test_startup_does_not_wait_when_the_last_run_is_old(poll_window: None) -> None:
     con = db.db_init()
-    _record_last_run(con, minutes_ago=5 * 60)
+    record_run_ago(con, 5 * 60)
     assert scrape._startup_wait_seconds(con) == 0
 
 
@@ -289,22 +287,20 @@ def test_startup_after_a_transient_failure_waits_only_for_the_first_retry(
     poll_window: None, error: str
 ) -> None:
     con = db.db_init()
-    _record_last_run(con, minutes_ago=0.5, error=error)
+    record_run_ago(con, 0.5, error=error)
     assert 85 <= scrape._startup_wait_seconds(con) <= 90  # 2 minutes, minus the 30s already passed
 
 
 def test_startup_after_a_non_transient_failure_waits_a_full_interval(poll_window: None) -> None:
     con = db.db_init()
-    _record_last_run(
-        con, minutes_ago=1, error="RuntimeError(\"Instagram wants a human: 'Confirm it's you'\")"
-    )
+    record_run_ago(con, 1, error="RuntimeError(\"Instagram wants a human: 'Confirm it's you'\")")
     assert scrape._startup_wait_seconds(con) >= 2.5 * 3600 - 65
 
 
 def test_scrape_on_startup_skips_the_wait(poll_window: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "SCRAPE_ON_STARTUP", True)
     con = db.db_init()
-    _record_last_run(con, minutes_ago=1)
+    record_run_ago(con, 1)
     assert scrape._startup_wait_seconds(con) == 0
 
 

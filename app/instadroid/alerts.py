@@ -13,11 +13,11 @@ already looks: an entry at the top of /instagram.xml and a line on /status (feed
 """
 
 import sqlite3
-import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
 from shared import sqlrows
+from shared.timestamps import parse_iso
 
 from . import common, config
 from .common import log
@@ -51,8 +51,8 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
         )
     if config.ALERT_NO_POSTS_HOURS > 0:
         cutoff = now - timedelta(hours=config.ALERT_NO_POSTS_HOURS)
-        first_run = common.parse_iso(sqlrows.scalar(con.execute("SELECT MIN(started_at) FROM runs")))
-        newest_post = common.parse_iso(sqlrows.scalar(con.execute("SELECT MAX(scraped_at) FROM posts")))
+        first_run = parse_iso(sqlrows.scalar(con.execute("SELECT MIN(started_at) FROM runs")))
+        newest_post = parse_iso(sqlrows.scalar(con.execute("SELECT MAX(scraped_at) FROM posts")))
         # Only once the scraper has been running for the whole window, so a fresh install is quiet.
         if first_run and first_run < cutoff and (newest_post is None or newest_post < cutoff):
             found[NO_POSTS] = f"no new post stored in {config.ALERT_NO_POSTS_HOURS:g}h"
@@ -76,12 +76,7 @@ def notify(kind: str, message: str, resolved: bool = False) -> str | None:
             "Content-Type": "text/plain; charset=utf-8",
         },
     )
-    try:
-        with common.urlopen()(request, timeout=config.ALERT_TIMEOUT) as resp:
-            resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        error = f"alert to {common.redact_url(config.ALERT_URL)} failed: {e!r}"
-        log("WARN:", error)
+    if error := common.send_best_effort("alert", request, config.ALERT_TIMEOUT):
         return error
     log(f"sent alert: {title}")
     return None

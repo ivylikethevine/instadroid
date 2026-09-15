@@ -1,25 +1,11 @@
-from pathlib import Path
+from devtools.export_openapi import SPEC
 
-import pytest
-from devtools.jsonvalues import as_json
-
-from tests.feedclient import make_app
 from tests.support import json_at, parse_json
 
-SPEC = Path(__file__).resolve().parents[1] / "docs" / "openapi.json"
+# That docs/openapi.json matches the routes is tests/test_scripts_cli.py's `export-openapi --check`.
 
 
-def test_committed_openapi_spec_matches_the_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FEED_TOKEN", raising=False)
-    make_app(tmp_path, monkeypatch)
-    import feedserver
-
-    assert parse_json(SPEC.read_text()) == as_json(feedserver.app.openapi()), (
-        "docs/openapi.json is out of date: run export-openapi"
-    )
-
-
-def test_spec_describes_the_json_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spec_describes_the_json_endpoints() -> None:
     spec = parse_json(SPEC.read_text())
     health = json_at(spec, "paths", "/health", "get", "responses")
     assert json_at(health, "200", "content", "application/json", "schema") == {
