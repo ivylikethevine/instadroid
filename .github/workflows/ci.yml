@@ -40,8 +40,10 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # the paths filter lists a pull request's files through the API
+    # A schedule or dispatch has no diff to filter (the filter step is skipped, its output empty), so it
+    # counts as a change to everything.
     outputs:
-      code: ${{ steps.decide.outputs.code }}
+      code: ${{ steps.filter.outputs.code || 'true' }}
     steps:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
@@ -63,17 +65,6 @@ jobs:
               - '!**/*.md'
               - '!docs/**'
               - '!.github/workflows/**'
-      # A schedule or dispatch has no diff to filter, so it counts as a change to everything.
-      - id: decide
-        env:
-          FILTERED: ${{ steps.filter.outcome == 'success' }}
-          MATCHED: ${{ steps.filter.outputs.code }}
-        run: |
-          if [ "$FILTERED" = true ]; then
-            echo "code=$MATCHED" >>"$GITHUB_OUTPUT"
-          else
-            echo "code=true" >>"$GITHUB_OUTPUT"
-          fi
 
   lint:
     needs: changes
@@ -184,6 +175,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: .github/package-lock.json
       - uses: $/.github/actions/setup-tool
         with:
           tool: lychee

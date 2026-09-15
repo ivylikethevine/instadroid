@@ -2,9 +2,10 @@ name: Publish
 
 # A pushed v* tag releases the app image unattended: gate (signed tag on main, green CI) -> build and push
 # by digest -> scan that digest (fixable HIGH/CRITICAL blocks) -> publish: promote it to its release tags
-# with signed provenance and SBOM attestations -> release: the GitHub Release. Each job needs every job
-# before it, so nothing is promoted unless gate, build and scan all passed. Only the jobs that push, attest
-# or upload take write permissions, each scoped to what it does.
+# with signed provenance and SBOM attestations -> release: the GitHub Release. Each job needs the one
+# before it (and any whose outputs it reads), and a job whose need failed or was skipped is skipped too, so
+# nothing is promoted unless gate, build and scan all passed. Only the jobs that push, attest or upload take
+# write permissions, each scoped to what it does.
 #
 # A manual dispatch is a rehearsal of the same pipeline on the dispatched commit: gate (green CI only),
 # build, smoke test and scan. publish and release run only for a pushed v* tag, so a rehearsal can't
@@ -114,15 +115,17 @@ jobs:
           # pull request's run skips every job and still concludes success. A tag pushed right after a
           # merge waits for that push's run, up to 20 minutes. To rehearse a commit that only has pull
           # request runs, dispatch ci.yml on its branch first.
-          runs="repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA"
+          runs="repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=100"
           full='.workflow_runs[] | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
+          # one listing per round: "<green> <pending>", counted over the full runs
+          counts="[$full] | [map(select(.conclusion == \"success\")), map(select(.status != \"completed\"))] | map(length) | @tsv"
           for _ in $(seq 1 40); do
-            green=$(gh api "$runs&status=success" --jq "[$full] | length")
+            listed=$(gh api "$runs" --jq "$counts")
+            read -r green pending <<<"$listed"
             if [ "$green" -gt 0 ]; then
               echo "ci.yml passed on $SHA"
               exit 0
             fi
-            pending=$(gh api "$runs" --jq "[$full | select(.status != \"completed\")] | length")
             [ "$pending" -gt 0 ] || break
             echo "ci.yml is still running on $SHA; waiting"
             sleep 30
@@ -182,11 +185,11 @@ jobs:
   # base-image repin. An accepted finding goes in .trivyignore, with a reason and an expiry date.
   scan:
     name: scan release image (trivy)
-    needs: [gate, build]
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read # checkout: setup-tool and .trivyignore
+      contents: read # checkout: setup-tool, trivy_scan.sh and .trivyignore
       packages: read # pull the pushed digest
       security-events: write # upload the SARIF to code scanning
     steps:
@@ -205,28 +208,14 @@ jobs:
       - uses: $/.github/actions/setup-tool
         with:
           tool: trivy
-      # One scan as JSON, converted to the table and the SARIF so they can't disagree. trivy exits 1 on a
-      # finding and on a failed scan alike; only a scan that ran writes the report.
+      # One scan as JSON, converted to the table and the SARIF in $RUNNER_TEMP; a scan that didn't run fails
+      # the step, a finding only sets `found` (.github/scripts/trivy_scan.sh, which image-scan.yml shares).
       - id: scan
         name: Scan the pushed digest
         env:
           IMAGE: ${{ needs.build.outputs.image }}
           DIGEST: ${{ needs.build.outputs.digest }}
-        run: |
-          set -uo pipefail
-          rc=0
-          trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
-            --ignorefile .trivyignore --no-progress \
-            --format json --output "$RUNNER_TEMP/trivy.json" "$IMAGE@$DIGEST" || rc=$?
-          if ! jq -e .SchemaVersion "$RUNNER_TEMP/trivy.json" >/dev/null 2>&1; then
-            echo "::error title=trivy::the scan of $IMAGE@$DIGEST did not run (exit $rc)"
-            exit 1
-          fi
-          set -e
-          trivy convert --format table --table-mode detailed --output "$RUNNER_TEMP/trivy.txt" "$RUNNER_TEMP/trivy.json"
-          trivy convert --format sarif --output "$RUNNER_TEMP/trivy.sarif" "$RUNNER_TEMP/trivy.json"
-          cat "$RUNNER_TEMP/trivy.txt"
-          echo "found=$rc" >>"$GITHUB_OUTPUT"
+        run: .github/scripts/trivy_scan.sh "$IMAGE@$DIGEST" "$RUNNER_TEMP"
       - name: Upload the findings to code scanning
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
@@ -252,9 +241,10 @@ jobs:
 
   publish:
     name: promote and tag release image (imagetools + attest)
-    needs: [gate, build, scan]
-    # A pushed v* tag only: this condition is what keeps a dispatch rehearsal from promoting anything.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, scan]
+    # A pushed tag only (push fires on v* tags alone): this condition is what keeps a dispatch rehearsal
+    # from promoting anything.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # The deployment record and the scope for this job's permissions. It has no required reviewer:
@@ -358,9 +348,8 @@ jobs:
 
   release:
     name: create GitHub Release (release notes)
-    needs: [gate, build, scan, publish]
-    # A pushed v* tag only, like publish: a rehearsal never creates a release.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # No `if:` of its own: publish is skipped on a rehearsal, so this is too, and it never creates a release.
+    needs: [gate, build, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

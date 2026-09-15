@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read # setup-tool, advisory-note and .trivyignore
+      contents: read # setup-tool, advisory-note, trivy_scan.sh and .trivyignore
       packages: read # pull the published image
       security-events: write # upload the SARIF to code scanning
     steps:
@@ -76,29 +76,15 @@ jobs:
         with:
           tool: trivy
 
-      # The release gate's flags, so this answers "would :latest still pass publish.yml's scan today". One
-      # JSON scan, converted to the table and the SARIF. trivy exits 1 on a finding and on a failed scan
-      # alike; only a scan that ran writes the report.
+      # The release gate's own script and flags, so this answers "would :latest still pass publish.yml's
+      # scan today". One JSON scan, converted to the table and the SARIF in $RUNNER_TEMP; a scan that didn't
+      # run fails the step, a finding only sets `found`.
       - if: steps.probe.outputs.exists == '1'
         id: scan
         name: Scan for fixable HIGH/CRITICAL vulnerabilities
         env:
           IMAGE: ${{ steps.probe.outputs.image }}
-        run: |
-          set -uo pipefail
-          rc=0
-          trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
-            --ignorefile .trivyignore --no-progress \
-            --format json --output "$RUNNER_TEMP/trivy.json" "$IMAGE" || rc=$?
-          if ! jq -e .SchemaVersion "$RUNNER_TEMP/trivy.json" >/dev/null 2>&1; then
-            echo "::error title=trivy::the scan of $IMAGE did not run (exit $rc)"
-            exit 1
-          fi
-          set -e
-          trivy convert --format table --table-mode detailed --output "$RUNNER_TEMP/trivy.txt" "$RUNNER_TEMP/trivy.json"
-          trivy convert --format sarif --output "$RUNNER_TEMP/trivy.sarif" "$RUNNER_TEMP/trivy.json"
-          cat "$RUNNER_TEMP/trivy.txt"
-          echo "found=$rc" >>"$GITHUB_OUTPUT"
+        run: .github/scripts/trivy_scan.sh "$IMAGE" "$RUNNER_TEMP"
 
       - if: steps.probe.outputs.exists == '1'
         name: Upload the findings to code scanning
