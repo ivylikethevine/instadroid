@@ -37,7 +37,7 @@ if __name__ == "__main__":
         stats, exc = scrape.run_recorded(db.db_init())  # recorded in runs, like a scheduled run
         if exc or stats is None:
             sys.exit(f"run failed: {exc!r}")
-        print(stats["new"], "new posts,", stats["new_stories"], "new stories")
+        print(stats["new"], "new posts,", stats["metrics"].get("new_stories", 0), "new stories")
     elif len(sys.argv) > 1 and sys.argv[1] == "login":
         d = device.connect_device()
         try:

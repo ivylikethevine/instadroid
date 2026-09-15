@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 
 import pytest
-from instadroid import config, scrape
+from instadroid import common, config, scrape
 
 
 def test_disabled_when_freshrss_refresh_url_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -129,4 +129,4 @@ def test_log_and_error_redact_the_query_string_so_the_token_never_prints(
 
 
 def test_redact_url_drops_the_query_string() -> None:
-    assert scrape._redact_url("http://127.0.0.1:8080/i/?a=1&token=secret") == "http://127.0.0.1:8080/i/"
+    assert common.redact_url("http://127.0.0.1:8080/i/?a=1&token=secret") == "http://127.0.0.1:8080/i/"

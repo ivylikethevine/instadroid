@@ -9,24 +9,18 @@ from typing import NoReturn
 
 import pytest
 from fastapi.testclient import TestClient
-from instadroid import config, control, db, scrape
+from instadroid import config, control, scrape
 
 from tests.feedclient import make_app
-from tests.support import json_body, json_object
+from tests.support import json_body, json_object, record_run_ago
 
 
 @pytest.fixture
-def con(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
+def con(con: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
     monkeypatch.setattr(config, "CONTROL_DIR", str(tmp_path))
     monkeypatch.setattr(config, "RUN_NOW_MIN_MINUTES", 30)
     monkeypatch.setattr(config, "CONTROL_POLL_SECONDS", 30)
-    return db.db_init()
-
-
-def _finished(con: sqlite3.Connection, minutes_ago: float) -> None:
-    at = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
-    db.record_run(con, at, at, 0, None, {})
+    return con
 
 
 def test_lock_and_its_expiry(
@@ -47,12 +41,12 @@ def test_lock_and_its_expiry(
 
 def test_scrape_now_waits_for_the_rate_limit(con: sqlite3.Connection, tmp_path: Path) -> None:
     control.request_run_now()
-    _finished(con, 10)
+    record_run_ago(con, 10)
     assert not control.take_run_now(con) and (tmp_path / "scrape-now").exists()  # too soon: kept
-    _finished(con, 45)  # MAX(finished_at) is still 10 minutes ago
+    record_run_ago(con, 45)  # MAX(finished_at) is still 10 minutes ago
     assert not control.take_run_now(con)
     con.execute("DELETE FROM runs")
-    _finished(con, 45)
+    record_run_ago(con, 45)
     assert control.take_run_now(con) and not (tmp_path / "scrape-now").exists()
 
 

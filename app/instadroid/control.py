@@ -11,21 +11,20 @@ so they work from anywhere that can reach it:
 The lock only stops a run from *starting*: one already in progress finishes (stopping it halfway
 would leave sheets open and Instagram resident). A lock older than LOCK_MAX_HOURS counts as forgotten
 and is ignored, with a warning. A scrape-now request is honoured once RUN_NOW_MIN_MINUTES have passed
-since the last run finished, then deleted.
+since the last run finished, then deleted. The file protocol itself is shared/control.py, which the
+feed server uses too.
 """
 
 import sqlite3
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
+from shared import control as files
 from shared import sqlrows
 
-from . import common, config
+from . import config
 from .common import log
-
-LOCK = "manual.lock"
-RUN_NOW = "scrape-now"
 
 
 def _path(name: str) -> Path:
@@ -34,45 +33,30 @@ def _path(name: str) -> Path:
 
 def lock_age(now: float | None = None) -> timedelta | None:
     """How long the lock has been in place, or None when there is none."""
-    try:
-        mtime = _path(LOCK).stat().st_mtime
-    except OSError:
-        return None
-    return timedelta(seconds=max((now or time.time()) - mtime, 0))
+    return files.lock_age(config.CONTROL_DIR, now)
 
 
 def locked(now: float | None = None) -> bool:
     """True while a lock younger than LOCK_MAX_HOURS is in place."""
-    age = lock_age(now)
-    return age is not None and (config.LOCK_MAX_HOURS <= 0 or age < timedelta(hours=config.LOCK_MAX_HOURS))
+    return files.locked(config.CONTROL_DIR, config.LOCK_MAX_HOURS, now)
 
 
 def set_lock(on: bool) -> None:
-    path = _path(LOCK)
-    if on:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
-    else:
-        path.unlink(missing_ok=True)
+    files.set_lock(config.CONTROL_DIR, on)
 
 
 def request_run_now() -> None:
-    path = _path(RUN_NOW)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
+    files.request_run_now(config.CONTROL_DIR)
 
 
 def minutes_since_last_run(con: sqlite3.Connection, now: datetime | None = None) -> float | None:
-    finished = common.parse_iso(sqlrows.scalar(con.execute("SELECT MAX(finished_at) FROM runs")))
-    if finished is None:
-        return None
-    return ((now or datetime.now(UTC)) - finished).total_seconds() / 60
+    return files.minutes_since(sqlrows.scalar(con.execute("SELECT MAX(finished_at) FROM runs")), now)
 
 
 def take_run_now(con: sqlite3.Connection) -> bool:
     """True, deleting the request, when a scrape-now request exists and the last run finished at least
     RUN_NOW_MIN_MINUTES ago. A request that's too early stays for a later check."""
-    path = _path(RUN_NOW)
+    path = _path(files.RUN_NOW)
     if not path.exists():
         return False
     since = minutes_since_last_run(con)
@@ -97,9 +81,11 @@ def wait(con: sqlite3.Connection, seconds: float) -> None:
 def wait_while_locked() -> None:
     """Hold here while the lock is in place, logging once; warn about a lock left long enough to ignore."""
     if locked():
-        log(f"{_path(LOCK)} is in place; holding scheduled runs until it's removed")
+        log(f"{_path(files.LOCK)} is in place; holding scheduled runs until it's removed")
         while locked():
             time.sleep(config.CONTROL_POLL_SECONDS)
         log("lock removed; resuming")
     elif (age := lock_age()) is not None:
-        log(f"WARN: ignoring {_path(LOCK)}: it's {age.total_seconds() / 3600:.1f}h old (LOCK_MAX_HOURS)")
+        log(
+            f"WARN: ignoring {_path(files.LOCK)}: it's {age.total_seconds() / 3600:.1f}h old (LOCK_MAX_HOURS)"
+        )

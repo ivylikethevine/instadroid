@@ -77,8 +77,8 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
         d.press("back")
         device.human_pause(1, 1.5)
         return None
-    diagnostics.capture_screen(d, "story_viewer", xml)
     img = d.screenshot()
+    diagnostics.capture_screen(d, "story_viewer", xml, image=img)
     d.press("back")  # off the device from here on; cropping/saving below never risks the timer
     device.human_pause(1, 1.5)
     root = etree.fromstring(xml.encode())

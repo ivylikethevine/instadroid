@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from devtools import ROOT
 from instadroid import (
     config,
     db,
@@ -13,6 +14,7 @@ from instadroid import (
     parsing,
     scrape,
 )
+from shared import sqlrows
 
 from tests.deviceflows import (
     ACTION_BAR,
@@ -23,11 +25,10 @@ from tests.deviceflows import (
     feed_device_with_following,
     following_screen,
     home_screen,
-    row,
     seed_post,
-    values,
 )
 from tests.fakedevice import FakeDevice, Node, hierarchy, node
+from tests.support import sql_column
 
 pytestmark = pytest.mark.usefixtures("fast_offline")
 
@@ -128,7 +129,7 @@ def test_unknown_feed_mode_falls_back_to_chrono() -> None:
     # every other test in the session.
     result = subprocess.run(
         [sys.executable, "-c", "from instadroid import config; print(config.FEED_MODE)"],
-        cwd=Path(__file__).resolve().parents[1] / "app",
+        cwd=ROOT / "app",
         env={**os.environ, "FEED_MODE": "algorithmic"},
         capture_output=True,
         text=True,
@@ -208,7 +209,7 @@ def test_refresh_following_list_replaces_the_stored_list(
     n = navigation.refresh_following_list(d, con)
 
     assert n == 2
-    assert {r[0] for r in values(con, "SELECT username FROM following")} == {"alice", "bob"}
+    assert set(sql_column(con.execute("SELECT username FROM following"))) == {"alice", "bob"}
 
 
 def test_refresh_following_list_keeps_the_existing_list_on_a_failed_scrape(
@@ -223,7 +224,7 @@ def test_refresh_following_list_keeps_the_existing_list_on_a_failed_scrape(
     n = navigation.refresh_following_list(d, con)
 
     assert n is None
-    assert {r[0] for r in values(con, "SELECT username FROM following")} == {"good_data"}
+    assert set(sql_column(con.execute("SELECT username FROM following"))) == {"good_data"}
 
 
 def test_scrape_once_filters_posts_from_accounts_not_on_the_refreshed_following_list(
@@ -240,13 +241,13 @@ def test_scrape_once_filters_posts_from_accounts_not_on_the_refreshed_following_
 
     stats = scrape.scrape_once(d, con)
 
-    assert {r[0] for r in values(con, "SELECT username FROM following")} == {"someone_nice"}
-    assert stats["filtered_posts"] >= 1
-    posts = values(con, "SELECT username FROM posts")
-    assert any(r[0] == "someone_nice" for r in posts)
-    assert all(r[0] != "other_user" for r in posts)
+    assert set(sql_column(con.execute("SELECT username FROM following"))) == {"someone_nice"}
+    assert stats["metrics"].get("filtered_posts", 0) >= 1
+    posts = sql_column(con.execute("SELECT username FROM posts"))
+    assert "someone_nice" in posts
+    assert "other_user" not in posts
     # A filtered post's account is never upserted -- no avatar work, no accounts-table footprint.
-    assert row(con, "SELECT 1 FROM accounts WHERE username='other_user'") is None
+    assert sqlrows.fetch_one(con.execute("SELECT 1 FROM accounts WHERE username='other_user'")) is None
 
 
 def test_scrape_once_does_not_filter_before_the_first_successful_refresh(
@@ -266,6 +267,6 @@ def test_scrape_once_does_not_filter_before_the_first_successful_refresh(
 
     stats = scrape.scrape_once(d, con)
 
-    assert stats["filtered_posts"] == 0
-    posts = {r[0] for r in values(con, "SELECT username FROM posts")}
+    assert stats["metrics"].get("filtered_posts") == 0
+    posts = set(sql_column(con.execute("SELECT username FROM posts")))
     assert posts == {"someone_nice", "other_user"}  # nothing dropped

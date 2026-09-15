@@ -15,11 +15,9 @@ EMPTY_XML = '<hierarchy><node resource-id="android:id/list" bounds="[0,0][1080,2
 
 
 @pytest.fixture
-def con(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    monkeypatch.setattr(config, "MEDIA_DIR", tmp_path / "media")
+def con(con: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
     monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "debug")
-    return db.db_init()
+    return con
 
 
 class EmptyFeedDevice(FakeDevice):
@@ -81,7 +79,7 @@ def test_empty_screens_reopen_the_feed_once_then_stop_the_run(
     assert d.dumps == 6  # 3 empty screens, reopen, 3 more, stop — not all 25
     assert offline_scrape.open_feed == 2  # the initial open plus exactly one reopen
     assert offline_scrape.dumps == ["last", "empty_feed0", "empty_feed1"]
-    warning = stats["warning"]
+    warning = stats["metrics"].get("warning")
     assert warning is not None
     assert "reopened the feed" in warning
     assert "stopped early" in warning
@@ -99,7 +97,7 @@ def test_empty_screen_guard_can_be_disabled(
 
     assert d.dumps == 5
     assert offline_scrape.open_feed == 1
-    assert stats["warning"] is None
+    assert stats["metrics"].get("warning") is None
 
 
 def test_scrape_stats_report_cards_per_screen_and_shares(
@@ -109,11 +107,11 @@ def test_scrape_stats_report_cards_per_screen_and_shares(
     monkeypatch.setattr(config, "EMPTY_SCREEN_LIMIT", 0)
     d = EmptyFeedDevice()
 
-    stats = scrape.scrape_once(d, con)
+    metrics = scrape.scrape_once(d, con)["metrics"]
 
-    assert stats["cards_per_screen"] == 0.0
-    assert stats["share_captioned"] == 0.0
-    assert stats["share_complete"] == 0.0
+    assert metrics.get("cards_per_screen") == 0.0
+    assert metrics.get("share_captioned") == 0.0
+    assert metrics.get("share_complete") == 0.0
 
 
 def test_scrape_once_flags_selector_drift_against_seeded_baseline(
@@ -135,9 +133,7 @@ def test_scrape_once_flags_selector_drift_against_seeded_baseline(
         )
     d = EmptyFeedDevice()  # every dump parses 0 cards — a stand-in for selectors gone stale
 
-    stats = scrape.scrape_once(d, con)
-
-    warning = stats["warning"]
+    warning = scrape.scrape_once(d, con)["metrics"].get("warning")
     assert warning is not None and "selector drift?" in warning
 
 

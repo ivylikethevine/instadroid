@@ -7,11 +7,12 @@ import sys
 from pathlib import Path
 
 import pytest
+from devtools import ROOT
 from instadroid import config, db, device, diagnostics, install, navigation, scrape
 
 from tests.fakedevice import FakeDevice
 
-SCRAPER = str(Path(__file__).resolve().parents[1] / "app" / "scraper.py")
+SCRAPER = str(ROOT / "app" / "scraper.py")
 
 
 def _run(monkeypatch: pytest.MonkeyPatch, *args: str) -> None:
@@ -45,8 +46,8 @@ def test_profiles_lists_what_each_covers_and_the_default_install(
 def test_once_prints_the_run_and_exits_non_zero_when_it_failed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def good(con: sqlite3.Connection) -> tuple[dict[str, int], None]:
-        return {"new": 2, "new_stories": 1}, None
+    def good(con: sqlite3.Connection) -> tuple[scrape.RunStats, None]:
+        return {"new": 2, "metrics": {"new_stories": 1}}, None
 
     monkeypatch.setattr(scrape, "run_recorded", good)
     _run(monkeypatch, "once")

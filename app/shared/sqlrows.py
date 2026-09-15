@@ -5,8 +5,21 @@ fetch_one()/fetch_all() return sqlite3.Row whatever the connection's row_factory
 typed variants check each value's type as it's read, raising TypeError on a mismatch."""
 
 import sqlite3
+from typing import Protocol
 
 type SqlValue = str | int | float | bytes | None  # what SQLite hands back for a column
+
+
+class _Row(Protocol):
+    """sqlite3.Row indexed by position or name, its items typed as object rather than Any."""
+
+    def __getitem__(self, key: int | str, /) -> object: ...
+
+
+def _item(row: _Row, key: int | str) -> object:
+    """row[key] through sqlite3.Row's own lookup (case-insensitive for a name, done in C): IndexError
+    for a column the row doesn't have."""
+    return row[key]
 
 
 def fetch_one(cur: sqlite3.Cursor) -> sqlite3.Row | None:
@@ -36,17 +49,12 @@ def scalar_int(cur: sqlite3.Cursor) -> int | None:
 
 
 def cell(row: sqlite3.Row, key: int | str) -> SqlValue:
-    """row[key]: a column by position or, like sqlite3.Row itself, by case-insensitive name."""
-    values: tuple[object, ...] = row[:]
-    if isinstance(key, str):
-        names = list(map(str.lower, row.keys()))
-        if key.lower() not in names:
-            raise IndexError("No item with that key")
-        key = names.index(key.lower())
-    value = values[key]
+    """row[key]: a column by position or by case-insensitive name, raising IndexError for one the row
+    doesn't have."""
+    value = _item(row, key)
     if value is None or isinstance(value, str | int | float | bytes):
         return value
-    raise TypeError(f"column {key} holds {type(value).__name__}, not an SQLite value")
+    raise TypeError(f"column {key!r} holds {type(value).__name__}, not an SQLite value")
 
 
 def cell_str(row: sqlite3.Row, key: int | str) -> str | None:
@@ -93,3 +101,19 @@ def has_column(row: sqlite3.Row, name: str) -> bool:
     """Whether the row has a column `name` (case-insensitive, like cell()): False for a row read from a
     table that predates it. `name in row` would check the values instead."""
     return name.lower() in map(str.lower, row.keys())
+
+
+def opt_str(row: sqlite3.Row, name: str) -> str | None:
+    """A TEXT column, or None when it's NULL or the row predates that column (sqlite3.Row has no get)."""
+    try:
+        return cell_str(row, name)
+    except IndexError:
+        return None
+
+
+def opt_int(row: sqlite3.Row, name: str) -> int | None:
+    """An INTEGER column, or None when it's NULL or the row predates that column."""
+    try:
+        return cell_int(row, name)
+    except IndexError:
+        return None

@@ -8,13 +8,14 @@ import pytest
 from instadroid import config, db, parsing, scrape
 from shared import sqlrows
 
-from tests.deviceflows import feed_device
+from tests.deviceflows import feed_device, seed_post
 from tests.fakedevice import FakeDevice
 
 pytestmark = pytest.mark.usefixtures("fast_offline")
 
+NOW = datetime.now(UTC)
 # A day ago: recent enough that retention (RETAIN_DAYS) keeps the rows, older than any update a run makes.
-OLD = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+OLD = (NOW - timedelta(days=1)).isoformat()
 
 
 def _hashes(d: FakeDevice) -> tuple[str, str]:
@@ -24,12 +25,8 @@ def _hashes(d: FakeDevice) -> tuple[str, str]:
 
 
 def _seed_hash_post(con: sqlite3.Connection, h: str, username: str, attempts: int = 0) -> None:
-    con.execute(
-        "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash, url,"
-        " posted_at, updated_at, permalink_attempts) VALUES (?,?,?,?,?,NULL,?,?,NULL,?,?,?)",
-        (h, username, "photo", "x", "a caption", OLD, h, OLD, OLD, attempts),
-    )
-    con.commit()
+    """A post stored under its hash, with no permalink, last updated at OLD."""
+    seed_post(con, h, username, "a caption", 1, now=NOW, permalink_attempts=attempts)
 
 
 def _row(con: sqlite3.Connection, h: str) -> tuple[str, str | None, str, int]:

@@ -3,10 +3,11 @@ hook that lets a profile replace any UI-dependent function."""
 
 import functools
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from typing import Concatenate, TypeIs, overload
 
-from igprofiles import BaseProfile, covering, major_of, version_key
+from igprofiles import BaseProfile, covering, major_of, newest_build
 from igprofiles import select as select_profile
 from igprofiles.base import PatternKey, StrDictKey, StrKey, StrListKey, StrTupleKey
 
@@ -27,6 +28,18 @@ def _set_active(profile: BaseProfile, warning: str | None) -> None:
     namespace = globals()
     namespace["PROFILE"] = profile
     namespace["PROFILE_WARNING"] = warning
+
+
+@contextmanager
+def using(profile: BaseProfile) -> Generator[None]:
+    """Make `profile` the active PROFILE for a block, then put the previous one back: how the profile
+    development tools parse a dump under a profile other than the scraper's."""
+    previous = PROFILE
+    _set_active(profile, PROFILE_WARNING)
+    try:
+        yield
+    finally:
+        _set_active(previous, PROFILE_WARNING)
 
 
 class _ActiveSelectors:
@@ -116,7 +129,7 @@ def activate_profile(installed: str | None) -> None:
             f"IG_PROFILE={profile.name} is set, but Instagram {installed} is covered by {expected or 'no profile'}"
         )
     if installed and installed_major not in {major_of(b) for b in profile.own_validated}:
-        newest = max(profile.own_validated, key=version_key) if profile.own_validated else "none yet"
+        newest = newest_build(profile.name) or "none yet"
         warnings.append(
             f"Instagram {installed} hasn't been validated with profile {profile.name}"
             f" (newest validated: {newest}; see docs/PROFILES.md)"
