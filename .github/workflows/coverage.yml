@@ -115,7 +115,7 @@ jobs:
           path: ${{ runner.temp }}/pr
       # main's runs of this workflow are workflow_run-triggered, hence `event`
       - name: Fetch main's figures
-        uses: $/.github/actions/fetch-latest-artifact
+        uses: ./.github/actions/fetch-latest-artifact
         with:
           workflow: coverage.yml
           artifact-name: coverage-badge

@@ -72,7 +72,7 @@ jobs:
           fi
 
       - if: steps.probe.outputs.exists == '1'
-        uses: $/.github/actions/setup-tool
+        uses: ./.github/actions/setup-tool
         with:
           tool: trivy
 
@@ -94,7 +94,7 @@ jobs:
           category: image-scan-latest
 
       - if: steps.probe.outputs.exists == '1' && steps.scan.outputs.found != '0'
-        uses: $/.github/actions/advisory-note
+        uses: ./.github/actions/advisory-note
         with:
           title: trivy
           warning-body: Fixable HIGH/CRITICAL vulnerabilities in ${{ steps.probe.outputs.image }} - advisory, not blocking
@@ -130,7 +130,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: $/.github/actions/setup-tool
+      - uses: ./.github/actions/setup-tool
         with:
           tool: trivy
 
@@ -150,7 +150,7 @@ jobs:
 
       # An issue, not a pull request: Dependabot already opens the repin PR. The report is the summary and
       # the issue body both, so the two can't disagree.
-      - uses: $/.github/actions/upsert-tracking-issue
+      - uses: ./.github/actions/upsert-tracking-issue
         with:
           label: image-scan
           label-color: D93F0B
