@@ -5,7 +5,7 @@
 # Two sources, because the failures this repo has actually hit split across both:
 #   - `adb logcat -d`: userspace crashes (system_server, providers, package manager) once logd is
 #     up. This is where the appops.xml / idmap / telephony.db / packageinstaller incidents all
-#     showed up (see CLAUDE.md).
+#     showed up (see docs/INCIDENTS.md).
 #   - host `dmesg`: redroid's Android `/init` runs as the container's PID 1 and, being privileged,
 #     writes straight to the host's kernel ring buffer rather than the container's own stdout — so
 #     `docker logs ig-redroid` stays almost empty even during a real startup failure (confirmed:
@@ -57,11 +57,11 @@ declare -a patterns=(
   'There must be exactly one installer'
 )
 declare -a fixes=(
-  'system_server watchdog timeout (e.g. PermissionPolicyService hang) -> full /data/system(_ce|_de) reset; see CLAUDE.md "PermissionPolicyService" incident. /data/data (login session) is untouched by this.'
+  'system_server watchdog timeout (e.g. PermissionPolicyService hang) -> full /data/system(_ce|_de) reset; see docs/INCIDENTS.md (idmap/telephony.db section). /data/data (login session) is untouched by this.'
   'a crash loop, not necessarily the cause -> read the surrounding lines for which process/exception.'
   'stale resource-cache idmap from a prior boot -> ./scripts/reset-resource-cache.sh'
-  "corrupt telephony.db (cross-version /data reuse) -> adb root; am force-stop com.android.phone; mv aside telephony.db/mmssms.db/carrierIdentification.db (+ -journal) under /data/user_de/0/com.android.providers.telephony/databases/, restart. See CLAUDE.md."
-  'corrupt appops.xml (cross-version /data reuse) -> adb root; mv /data/system/appops.xml aside, restart. See CLAUDE.md.'
+  "corrupt telephony.db (cross-version /data reuse) -> adb root; am force-stop com.android.phone; mv aside telephony.db/mmssms.db/carrierIdentification.db (+ -journal) under /data/user_de/0/com.android.providers.telephony/databases/, restart. See docs/INCIDENTS.md."
+  'corrupt appops.xml (cross-version /data reuse) -> adb root; mv /data/system/appops.xml aside, restart. See docs/INCIDENTS.md.'
   'package-restrictions.xml corrupted (e.g. after disabling com.android.packageinstaller, which must never be disabled) -> adb root; mv /data/system/users/0/package-restrictions.xml aside, restart, then re-run scripts/tune-android.sh.'
 )
 

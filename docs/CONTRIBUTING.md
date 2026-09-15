@@ -28,7 +28,17 @@ Never paste `.env`, `FRESHRSS_REFRESH_URL` (it carries a token), or anything fro
 
 ```bash
 python -m venv local/.venv && . local/.venv/bin/activate
-pip install -r scripts/requirements-dev.txt -r app/requirements.txt
+pip install --require-hashes -r requirements-dev.txt   # locked dev tools and app requirements
+pip install --no-deps -e .                              # app/ on the path, and the dev commands
+```
+
+Dependencies are locked with hashes. Edit `app/requirements.in` or `requirements-dev.in`, not the
+`.txt` locks, then regenerate the locks with pip-tools, app first (the dev lock is constrained to
+it), using the command in each lock's header:
+
+```bash
+(cd app && pip-compile --allow-unsafe --generate-hashes --strip-extras requirements.in)
+pip-compile --allow-unsafe --generate-hashes --strip-extras requirements-dev.in
 ```
 
 Before sending a change, run what CI runs:
@@ -36,9 +46,9 @@ Before sending a change, run what CI runs:
 ```bash
 ruff check . && ruff format --check .      # also formats Python code blocks in Markdown
 basedpyright
-PYTHONPATH=app lint-imports               # import boundaries (pyproject.toml)
-pytest -q --cov=app --cov=scripts   # fails under 90% coverage
-shellcheck -S warning scripts/*.sh && shfmt -d scripts/ app/entrypoint.sh
+lint-imports                               # import boundaries (pyproject.toml)
+pytest -q --cov                           # fails under 90% coverage
+shellcheck -S warning scripts/*.sh scripts/ci/*.sh app/entrypoint.sh && shfmt -d scripts/ app/entrypoint.sh
 typos                                     # spelling, everywhere ([tool.typos] in pyproject.toml)
 git ls-files -z '*.md' | xargs -0 npx --yes markdownlint-cli2@0.23.2
 git ls-files -z '*.md' | xargs -0 npx --yes prettier@3.9.6 --check
@@ -46,12 +56,14 @@ git ls-files -z '*.md' | xargs -0 lychee --offline --include-fragments   # relat
 docker compose config -q
 ```
 
-Most device-driving code is tested against `app/tests/fakedevice.py`, a scripted stand-in for a
+Most device-driving code is tested against `tests/fakedevice.py`, a scripted stand-in for a
 device, so the suite needs no emulator and no Instagram account. New behavior should come with tests
-there.
+in `tests/`.
 
 The scraper lives in `app/instadroid/` (the package docstring lists the modules); `app/scraper.py` is
-only the command line. Modules call each other as `device.human_pause(...)` and read settings as
+only the command line. The feed server is `app/feedserver/`, `app/shared/` is the leaf both of them
+import, and `app/devtools/` holds the development commands, which aren't shipped in the image. The
+README's Development section has the full layout. Modules call each other as `device.human_pause(...)` and read settings as
 `config.NAME`, never `from .device import human_pause`, so a test's `monkeypatch.setattr(device,
 "human_pause", ...)` reaches every caller.
 
@@ -59,10 +71,10 @@ only the command line. Modules call each other as `device.human_pause(...)` and 
 
 Everything specific to one Instagram major version lives in its own directory,
 `app/igprofiles/vXYZ/`: selectors, the APK build to install, behavior overrides, and test fixtures.
-The oldest supported version is 440. [NEXT.md](NEXT.md) describes the design and walks through adding
-a version step by step. The short version:
+The oldest supported version is 424. [PROFILES.md](PROFILES.md) describes the design and walks through
+adding a version step by step. The short version:
 
-- **Use `scripts/new_profile.py`** to take a capture-mode baseline run of the build, see which selector
+- **Use `new-profile`** to take a capture-mode baseline run of the build, see which selector
   keys each screen is missing, promote fixtures and record the build as validated. A version that
   changes nothing gets no profile of its own; `fork` creates one only when something drifted.
 - **Change the version's own profile, not shared code.** If 447 renamed a resource-id, fork a `v447`
@@ -73,15 +85,16 @@ a version step by step. The short version:
   `v424`, `tests/test_replay.py` replays every validated version's fixtures, and
   `test_every_profile_meets_the_contract` checks every profile directory automatically.
 - **Fixtures must be synthetic or scrubbed.** A dump from a real feed goes into `vXYZ/fixtures/` only
-  through `scripts/promote_dump.py`, which replaces the usernames, names, places and captions it can
+  through `promote-dump`, which replaces the usernames, names, places and captions it can
   identify, and only after you've read the leftover text it prints.
 
 ## Running against a real device
 
 Parts of this project drive a real redroid container and a real Instagram account. Read
-[CLAUDE.md](../CLAUDE.md) before doing that on your own host. It documents incidents that cost real
-time, including a kernel panic, `/data` corruption from mixing Android versions, and a whole-host
-freeze from a scrape that ran out of memory. In particular:
+[CLAUDE.md](../CLAUDE.md) (the rules) and [INCIDENTS.md](INCIDENTS.md) (the write-ups behind them)
+before doing that on your own host. They cover incidents that cost real time, including a kernel
+panic, `/data` corruption from mixing Android versions, and a whole-host freeze from a scrape that ran
+out of memory. In particular:
 
 - Keep scrape test runs short (`MAX_SCROLLS=5`, `MAX_STORIES_PER_RUN=2`) and check `docker stats`
   headroom first.

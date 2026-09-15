@@ -2,7 +2,7 @@
 
 Strategy: open the chronological "Following" feed, scroll slowly, parse the accessibility tree for post
 cards, store new ones, stop once we hit posts we've already seen. Selectors live in per-Instagram-version
-profiles under igprofiles/ (see docs/NEXT.md).
+profiles under igprofiles/ (see docs/PROFILES.md).
 
     config       settings from the environment (read as config.NAME, so tests can patch them)
     common       logging, timestamps, bounds, hashing

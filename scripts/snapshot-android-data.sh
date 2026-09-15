@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Snapshot redroid's /data volume (local/data/android): the logged-in Instagram session, installed
 # apps and Android's own state, i.e. the expensive thing to lose. Take one before changing the redroid
-# image or replacing Instagram, or before a risky recovery step from CLAUDE.md.
+# image or replacing Instagram, or before a risky recovery step from CLAUDE.md or docs/INCIDENTS.md.
 #
 #   scripts/snapshot-android-data.sh            # writes local/data/backups/android-<utc>.tar.gz
 #   scripts/snapshot-android-data.sh --keep 3   # and keeps only the 3 newest snapshots

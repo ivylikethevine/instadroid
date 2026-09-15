@@ -37,8 +37,14 @@ jobs:
           chmod +x apkeep
       - name: List builds
         run: ./apkeep -l -a com.instagram.android -d apk-pure > versions.txt
+      # check-new-builds only reads igprofiles, which needs nothing beyond typing_extensions, so the
+      # job skips the app's device and server dependencies.
+      - name: Install check-new-builds
+        run: |
+          pip install --no-deps -e .
+          ./scripts/ci/pip-install-locked.sh app/requirements.txt typing-extensions
       - name: Compare with validated builds
-        run: python scripts/check_new_builds.py --versions-file versions.txt > body.md
+        run: check-new-builds --versions-file versions.txt > body.md
       - name: Open or refresh the issue
         env:
           GH_TOKEN: ${{ github.token }}

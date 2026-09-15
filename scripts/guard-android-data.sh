@@ -34,7 +34,7 @@ if [ -n "$current" ] && [ -n "$recorded" ] && [ "$current" != "$recorded" ]; the
 android-data-guard: refusing to start redroid.
   This /data volume was last used by $recorded_image (Android $recorded),
   but the configured image is $image (Android $current).
-  Mixing Android versions on one /data corrupts system state (see CLAUDE.md).
+  Mixing Android versions on one /data corrupts system state (see docs/INCIDENTS.md).
   Either switch the image back, or give the new version its own volume. To reuse this one anyway,
   move local/data/android aside (never delete it: it holds the logged-in session), then delete
   $marker.

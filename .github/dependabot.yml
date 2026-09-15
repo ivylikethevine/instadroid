@@ -4,7 +4,7 @@ updates:
     directory: /app
     schedule: { interval: weekly }
   - package-ecosystem: pip
-    directory: /scripts
+    directory: /
     schedule: { interval: weekly }
   - package-ecosystem: docker
     directory: /app

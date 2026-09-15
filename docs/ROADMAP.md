@@ -10,10 +10,19 @@ Ordered by scope, smallest first.
 
 A config flag, one function, a CI tweak, or docs.
 
-Nothing open. Done: Markdown lint and format checks, a link check (relative links on pull
+- **Dump the card when its media node isn't found**: one Reel card logged "no crop: media node not
+  found" 4 times in a row and was stored with no media file ([run log](RUNLOG.md), 446 validation
+  run). `scrape.py` only logs on that path, so the card's hierarchy has never been seen; call
+  `_dump_debug` there.
+- **Rewrite git history to remove leaked identifiers**: the working tree was scrubbed, but older
+  commits still carry real usernames, captions and places (the list is in [PROFILES.md](PROFILES.md)'s
+  leak scan). `git filter-repo --replace-text` with a replacements file, then a force-push and a
+  fresh clone everywhere. The repository owner's call; not done yet.
+
+Done: Markdown lint and format checks, a link check (relative links on pull
 requests, external links weekly), spell check (typos), container image scanning (Trivy,
-report-only), dependency review on pull requests, shell formatting (shfmt) and import boundaries
-(import-linter). Earlier: credentials from a file, caption hashtag/mention links, optional feed
+report-only), dependency review on pull requests, shell formatting (shfmt), import boundaries
+(import-linter) and hashed dependency locks (pip-compile). Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
 
@@ -21,21 +30,26 @@ spec.
 
 A feature across several parts of the scraper, compose or CI, or repeated real-device work.
 
-- **Locked dependencies**: `app/requirements.txt` uses `>=` ranges, so image builds aren't reproducible and
-  `pip-audit` checks whatever resolves on the day. Lock with hashes (`uv lock`/`uv export`, or
-  `pip-compile --generate-hashes`), install from the lock in the Dockerfile and CI, and let Dependabot
-  update the lock. Also improves Scorecard's Pinned-Dependencies check.
+- **Retry Instagram 446**: 446.0.0.49.77 is in `v424.validated` but has crashed on launch since
+  2026-09-15 (a native `SIGSEGV` in `RenderThread`; [run log](RUNLOG.md)), so `igprofiles.DEFAULT_BUILD`
+  is pinned to 445. Retry it; if it still crashes, drop it from `v424.validated` and update its
+  [`COMPATIBILITY.md`](COMPATIBILITY.md) row. If it works, promote its fixtures too: none have been
+  recorded for 446.
+- **Baseline what hasn't been checked yet**: no capture-mode baseline has covered the own profile,
+  the Following list (`--following`) or the login form, so their required selector keys are unchecked
+  on every build. And 425-439 run with the "hasn't been validated" warning until each gets a
+  `new-profile baseline`/`validate`.
 - **Instagram update path**: install-on-missing is automatic (see README.md's "First-time setup"),
   but an _outdated_ install isn't handled yet — detect the forced "update Instagram" screen (as a
   challenge-style stop) and reuse `install.install_instagram()` (`app/instadroid/install.py`)
-  with a newer validated build (`new_profile.py baseline`/`validate`, or `fork` if it drifted), plus a `scraper.py dump` smoke check, keeping the previous xapk in
+  with a newer validated build (`new-profile baseline`/`validate`, or `fork` if it drifted), plus a `scraper.py dump` smoke check, keeping the previous xapk in
   `APK_CACHE_DIR` for rollback.
 - **OpenSSF Best Practices badge**: Scorecard is wired up (`.github/workflows/scorecard.yml` and the
   README badge). What's left is bestpractices.dev, a manual self-certification questionnaire rather
   than a CI job, plus the Scorecard checks still open: branch protection and fuzzing.
 - **Resource-id check for new Instagram builds in CI**: `.github/workflows/new-builds.yml` already opens
   an issue weekly when APKPure lists a major version newer than every validated build
-  (`scripts/check_new_builds.py`). Still to add: a static resource-id report in that issue.
+  (`check-new-builds`, `app/devtools/check_new_builds.py`). Still to add: a static resource-id report in that issue.
   `aapt2 dump resources` on the new build's base APK (about a second) lists every selector resource id missing from
   it, and the ids added or removed since the newest validated build.
   - A research pass on 2026-09-14 ran this on the cached 443-446 builds. All 18 Instagram resource ids
@@ -51,6 +65,12 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
 
 Open investigations, new capture mechanisms, or changes to the container/process topology.
 
+- **Posts processed twice in one run, and Copy link misses**: in the 446 validation run, 3 of 6 new
+  posts came back on a later screen, failed Copy link three times each, and were merged into the rows
+  stored moments earlier ([run log](RUNLOG.md)). That fits `_post_key()` hashing a truncated caption
+  once and the expanded caption the next time, but it's unconfirmed. Copy link also often leaves the
+  clipboard empty (6 of 8 attempts in the 445 baseline), mostly on cards already back on screen, and
+  a post whose every retry fails is stored under a hash id (README.md's "Known limitations").
 - **Reach the real Following feed without the switcher**: under `gpu_mode=guest` the switcher's
   bottom sheet may not open, and the scraper then falls back to Home — algorithmic, with suggested
   posts mixed in. Investigate a deep link or activity intent that opens Following directly;
@@ -71,7 +91,7 @@ Open investigations, new capture mechanisms, or changes to the container/process
   plus somewhere to store and serve a video file per post, and meaningfully longer dwell time per
   video post (see README.md's "Staying under the radar") — a real cost/benefit call, not just effort.
 - **Replay whole navigation sequences**: the scraper is now split into `app/instadroid/` modules,
-  and single recorded screens replay through the parsers (`scripts/promote_dump.py` scrubs a
+  and single recorded screens replay through the parsers (`promote-dump` scrubs a
   `DEBUG_DIR` dump into `igprofiles/vXYZ/fixtures/`, `tests/test_replay.py` checks it). The device
   flows still run against hand-written `tests/fakedevice.py` screens; recording a real run's
   sequence of dumps and taps, and replaying it through `fakedevice`, would catch navigation drift
@@ -80,21 +100,3 @@ Open investigations, new capture mechanisms, or changes to the container/process
   code natively — no NDK translation, sidestepping the whole "Which Android?" compatibility matrix
   (README.md). Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in
   the kernel).
-- **Device runs for new profiles outside a manual session**, in two parts:
-  - **redroid on a GitHub-hosted runner (untested).** The ubuntu-24.04 runner kernel (Azure) ships
-    `binder_linux` in its extra-modules package, and runners have sudo and 16 GB of RAM, but no public
-    example of redroid in Actions was found, and that package is sometimes missing from the mirrors.
-    A half-day `workflow_dispatch` test would settle it: modprobe binder, boot the image, install the
-    build, launch, dump. If it works, add a logged-out check to that PR: the build installs,
-    launches without crashing under the ARM translation, and shows the login screen. That can't test
-    feed selectors, since logging in from datacenter IPs triggers challenges and puts the account at
-    risk. The free arm64 runners, with official arm64 redroid images, would skip translation entirely
-    but are unvalidated.
-  - **Logged-in baselines, pulled by the host** (not a self-hosted runner: GitHub advises against those
-    on public repos, since fork PRs can target them). A systemd timer polls with a fine-grained token
-    for labelled work, e.g. a `needs-baseline` label. For each item it waits for a gap between polls,
-    runs `docker compose stop app` and `new_profile.py baseline <build> --yes` (whose memory and app
-    checks still apply), always runs `restore` and `docker compose start app` afterwards, and pushes
-    only `report.md` to the draft branch. Dumps and the session never leave the host. The remaining
-    risk is running unattended on the host that froze once (CLAUDE.md).
-  - Fixing selectors, login challenges, reviewing scrubbed fixtures and `validate` stay manual.

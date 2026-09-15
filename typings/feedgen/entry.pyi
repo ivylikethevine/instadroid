@@ -8,7 +8,7 @@ class MediaEntryExtension:
     ) -> None: ...
 
 class FeedEntry:
-    # Added by FeedGenerator.load_extension("media"); declared here because app.py always loads it.
+    # Added by FeedGenerator.load_extension("media"); declared here because feedserver always loads it.
     media: MediaEntryExtension
 
     def id(self, id: str | None = None) -> str: ...
