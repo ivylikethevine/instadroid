@@ -1,13 +1,23 @@
----
-title: Incidents
----
-
 # redroid incidents and findings
 
 Dated write-ups of what went wrong running redroid and the scraper on the maintainer's host, and what
 was measured or learned along the way: symptoms, log lines, root causes and recovery steps. The rules
-that came out of them are kept short in [CLAUDE.md](../CLAUDE.md); the image compatibility history
-is in the README's "Which Android?" and [COMPATIBILITY.md](COMPATIBILITY.md).
+that came out of them are kept short in [CONTRIBUTING.md](CONTRIBUTING.md#running-against-a-real-device)
+and, for agents, [CLAUDE.md](https://github.com/ivylikethevine/instadroid/blob/main/CLAUDE.md); the
+image compatibility history is in [COMPATIBILITY.md](COMPATIBILITY.md).
+
+## Contents
+
+- [Kernel panic from two binder drivers (2026-09-10)](#kernel-panic-from-two-binder-drivers-2026-09-10)
+- [Image compatibility notes](#image-compatibility-notes)
+- [appops.xml corruption from switching redroid image versions (2026-09-10)](#appopsxml-corruption-from-switching-redroid-image-versions-2026-09-10)
+- [More cross-version `/data` corruption: idmap cache and telephony.db (2026-09-11)](#more-cross-version-data-corruption-idmap-cache-and-telephonydb-2026-09-11)
+- [Why `docker logs ig-redroid` stays empty](#why-docker-logs-ig-redroid-stays-empty)
+- [Host GPU mode tried and rejected (2026-09-10)](#host-gpu-mode-tried-and-rejected-2026-09-10)
+- [Memory limits (measured 2026-09-11)](#memory-limits-measured-2026-09-11)
+- [Reducing idle memory: disabling unused AOSP apps (2026-09-11)](#reducing-idle-memory-disabling-unused-aosp-apps-2026-09-11)
+- [Instagram itself never gets reclaimed between polls (2026-09-11)](#instagram-itself-never-gets-reclaimed-between-polls-2026-09-11)
+- [Host freeze during a scrape at the 2g limit (2026-09-14)](#host-freeze-during-a-scrape-at-the-2g-limit-2026-09-14)
 
 ## Kernel panic from two binder drivers (2026-09-10)
 
@@ -23,19 +33,8 @@ host impact every time, including container crashes (see below).
 
 ## Image compatibility notes
 
-- `erstt/redroid:15.0.0_ndk_AVD` (Android 15) failed identically twice: `hwservicemanager`/
-  `servicemanager` fatal within ~3s of boot, host completely unaffected. A generous
-  `mem_limit`/`shm_size` at the time made no difference, ruling out memory as the cause — this is a
-  binder ABI mismatch between that image and this host's kernel binder driver. (The service's
-  `mem_limit`/`shm_size` have since been re-tuned for Android 13's actual measured footprint — see
-  "Memory limits" below — so today's values aren't evidence either way for a future Android-15 retry.)
-- `aureliolo/redroid:14.0.0_amd64_with_gapps` (the only Android-14 redroid image found) boots fine
-  and is host-safe, but ships **no ARM translation at all** — confirmed by both a device-side check
-  (no `libndk_translation.so`/`libhoudini.so`/native-bridge property anywhere) and empirically:
-  launching Instagram crashes the linker outright
-  (`dlopen failed: ... EM_AARCH64 ... instead of EM_X86_64`). Not fixable by config.
-- `abing7k/redroid:a11_ndk_amd` (Android 11, the original image) crashed Instagram at native
-  startup across 3 tested APK versions — separate from and predating the kernel-panic incident.
+The Android 11, 14 and 15 image findings (why each fails, and how that was confirmed) moved to
+[COMPATIBILITY.md](COMPATIBILITY.md#why-android-13), their one home. None of them affected the host.
 
 ## appops.xml corruption from switching redroid image versions (2026-09-10)
 

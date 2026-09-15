@@ -35,8 +35,8 @@ COPY igprofiles ./igprofiles
 # caches the downloaded Instagram APK (see APK_CACHE_DIR in instadroid/config.py).
 RUN mkdir -p /db /media /debug /apk && chown app:app /db /media /debug /apk
 USER 1000
-# The same probe as docker-compose.yml's healthcheck, for the image run on its own: /health answers 503
-# once scraping looks stuck or keeps failing.
+# docker-compose.yml defines no healthcheck, so this one covers the compose service and the image run on
+# its own alike: /health answers 503 once scraping looks stuck or keeps failing.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD ["python", "-c", "import os, urllib.request as u; u.urlopen('http://localhost:' + os.environ.get('FEED_PORT', '8000') + '/health', timeout=3)"]
 CMD ["./entrypoint.sh"]

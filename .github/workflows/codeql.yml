@@ -1,32 +1,74 @@
 name: CodeQL
 
+# Python (the app) and GitHub Actions (the workflows). The actions half overlaps zizmor, which gates
+# ci.yml; CodeQL adds dataflow traces in the Security tab. build-mode none: neither needs a build.
+# On every push to main rather than after green CI: Scorecard's SAST check counts analysed commits. Also
+# on pull requests, weekly (new queries find old code), and on dispatch.
+# Keep the job names "Analyze (python)" and "Analyze (actions)" stable: code scanning and any branch
+# ruleset refer to checks by name, and the ruleset, not this file, decides which checks are required.
 on:
   push:
     branches: [main]
+  # Any base branch: pull requests target dev. Drafts analyse nothing (the jobs' `if`) until ready.
   pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   schedule:
-    - cron: "42 6 * * 3" # weekly
+    - cron: "17 6 * * 2" # weekly
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
+# A newer push to a pull request cancels its in-flight analysis; main never cancels.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  analyze:
+  # Two jobs rather than a matrix, so one language failing can't hide the other's result.
+  analyze-python:
     if: github.event.pull_request.draft != true
     name: Analyze (python)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
-      security-events: write
+      security-events: write # upload the analysis to code scanning
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           languages: python
-      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+          build-mode: none
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           category: "/language:python"
+
+  analyze-actions:
+    if: github.event.pull_request.draft != true
+    name: Analyze (actions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write # upload the analysis to code scanning
+      actions: read # read the workflow definitions being analysed
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          languages: actions
+          build-mode: none
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          category: "/language:actions"

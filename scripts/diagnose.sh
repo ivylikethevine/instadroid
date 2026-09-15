@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Triage a slow/failed redroid boot. Codifies CLAUDE.md's "when redroid boot is slow, adb is stuck
-# offline, or automation is flaky, read logcat before restarting" advice as a single command.
+# Triage a slow/failed redroid boot. Codifies the "when redroid boot is slow, adb is stuck offline, or
+# automation is flaky, read logcat before restarting" advice (docs/CONTRIBUTING.md, running against a
+# real device) as a single command.
 #
 # Two sources, because the failures this repo has actually hit split across both:
 #   - `adb logcat -d`: userspace crashes (system_server, providers, package manager) once logd is
@@ -26,8 +27,8 @@ DMESG_FILE="$OUT_DIR/diagnose-dmesg-$STAMP.txt"
 
 echo "== host dmesg (last 200 lines, redroid/binder-relevant) =="
 if command -v dmesg >/dev/null 2>&1 && dmesg_out="$( (dmesg -T 2>/dev/null || dmesg 2>/dev/null) )"; then
-  echo "$dmesg_out" | tail -n 200 | tee "$DMESG_FILE" \
-    | grep -iE 'binder|redroid|panic|oops|hwservicemanager|servicemanager' || echo "(no matching lines in the tail; full dump saved to $DMESG_FILE)"
+  echo "$dmesg_out" | tail -n 200 | tee "$DMESG_FILE" |
+    grep -iE 'binder|redroid|panic|oops|hwservicemanager|servicemanager' || echo "(no matching lines in the tail; full dump saved to $DMESG_FILE)"
 else
   echo "can't read the kernel ring buffer (dmesg missing, or this user lacks permission — try" \
     "sudo, or 'sudo sysctl kernel.dmesg_restrict=0'); skipping. This is where an early" \

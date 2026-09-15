@@ -1,137 +1,236 @@
 name: CI
 
+# The blocking checks. Every job that has a local equivalent runs it through scripts/check.sh, the same
+# command a contributor runs, so the two can't drift; the job only installs the tools first.
+#
+# Required checks (branch protection): CI result. It's a roll-up over every job below, so it keeps one
+# stable name while jobs are renamed, added, or skipped by the change filter; a skipped job counts as
+# passed, a failed or cancelled one fails it. The individual job names are informational.
+#
+# `changes` skips the Python, shell and Docker jobs when a push or pull request touches only Markdown,
+# docs/, or workflow files. The docs job and the workflow linters (actionlint, zizmor) always run, and
+# the schedule and a manual dispatch always run everything.
 on:
   push:
     branches: [main]
+  # Drafts run nothing (each job's `if`); ready_for_review isn't a default type, and converted_to_draft
+  # starts a run that cancels the draft's in-flight one.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   schedule:
     - cron: "17 6 * * 1" # weekly dependency audit
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
+# A newer push to a pull request cancels its in-flight run. Other events group per commit, so a
+# quick second push to main can't displace a queued run: publish.yml's gate needs a green run on
+# the exact tagged commit.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  lint:
+  changes:
     if: github.event.pull_request.draft != true
-    name: Lint (ruff + basedpyright)
+    name: Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # the paths filter lists a pull request's files through the API
+    outputs:
+      code: ${{ steps.decide.outputs.code }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      # some-with-excludes: a file counts when it matches `**` and none of the negated patterns. Plain
+      # `some` would count a Markdown file too, since `**` matches it.
+      - if: github.event_name == 'push' || github.event_name == 'pull_request'
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          predicate-quantifier: some-with-excludes
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+              - '!.github/workflows/**'
+      # A schedule or dispatch has no diff to filter, so it counts as a change to everything.
+      - id: decide
+        env:
+          FILTERED: ${{ steps.filter.outcome == 'success' }}
+          MATCHED: ${{ steps.filter.outputs.code }}
+        run: |
+          if [ "$FILTERED" = true ]; then
+            echo "code=$MATCHED" >>"$GITHUB_OUTPUT"
+          else
+            echo "code=true" >>"$GITHUB_OUTPUT"
+          fi
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: Lint (ruff + basedpyright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
       # The locked dev tools and app requirements, then the project itself (app/ on the path, and the dev
-      # commands): basedpyright resolves imports against them.
-      - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-deps -e .
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: basedpyright
-      - name: Import boundaries (import-linter)
-        run: lint-imports
+      # commands): basedpyright resolves imports against them. --no-build-isolation builds it with the
+      # locked setuptools instead of fetching an unhashed one.
+      - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-build-isolation --no-deps -e .
+      # ruff check + format, basedpyright, and import-linter's boundaries
+      - run: scripts/check.sh python
 
   test:
-    if: github.event.pull_request.draft != true
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
-      - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-deps -e .
-      # pyproject.toml keeps coverage's data file in local/, which isn't in the checkout.
-      - run: mkdir -p local
-      # The 90% floor is pyproject.toml's [tool.coverage.report] fail_under, which pytest-cov enforces.
-      - run: python -m pytest -q --cov --cov-report=term
-      # The README's coverage badge is published by .github/workflows/pages.yml instead of here —
-      # it re-runs coverage and serves coverage.json from the project's GitHub Pages site, so
-      # publishing it doesn't need a `contents: write` grant or a dedicated orphan branch in CI.
+      - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-build-isolation --no-deps -e .
+      # The floor is pyproject.toml's [tool.coverage.report] fail_under, which pytest-cov enforces. The
+      # README's coverage and test-count badges come from coverage.yml, which pages.yml publishes.
+      - run: scripts/check.sh test
 
   audit:
-    if: github.event.pull_request.draft != true
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
       # pip-audit and its dependencies only: with --disable-pip it reads the locks instead of installing them.
       - run: pip install --require-hashes -r requirements-dev.txt
-      # Both locks are fully pinned and hashed, so pip-audit checks exactly those versions without resolving.
-      - run: pip-audit --disable-pip --require-hashes -r app/requirements.txt -r requirements-dev.txt --strict
+      - run: scripts/check.sh audit
 
   shell:
-    if: github.event.pull_request.draft != true
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Shell scripts (shellcheck)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # shellcheck is preinstalled on GitHub's ubuntu runners; shfmt comes from the pinned dev requirements
-      # and reads its style from .editorconfig.
-      - run: shellcheck -S warning ./scripts/*.sh ./scripts/ci/*.sh app/entrypoint.sh
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      # shellcheck from tools.txt (sha256-verified); .shellcheckrc lets it follow `source` lines.
+      - uses: $/.github/actions/setup-tool
+        with:
+          tool: shellcheck
+      # shfmt comes from the pinned dev requirements and reads its style from .editorconfig.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - run: ./scripts/ci/pip-install-locked.sh requirements-dev.txt shfmt-py
-      - run: shfmt -d scripts/ app/entrypoint.sh
+      - run: ./.github/scripts/pip-install-locked.sh requirements-dev.txt shfmt-py
+      # shellcheck over every tracked script, then shfmt
+      - run: scripts/check.sh shell
 
   docs:
     if: github.event.pull_request.draft != true
     name: Docs (markdownlint + prettier + links + typos)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # check.sh runs `npm ci` in .github: markdownlint-cli2 and prettier, with their whole dependency
+      # tree, from .github/package-lock.json. Both read .markdownlint.yaml and .prettierrc.yaml.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
-      # Both read their settings from .markdownlint.yaml and .prettierrc.yaml; versions pinned here.
-      - run: git ls-files -z '*.md' | xargs -0 npx --yes markdownlint-cli2@0.23.2
-      - run: git ls-files -z '*.md' | xargs -0 npx --yes prettier@3.9.6 --check
-      # Relative links and #fragments only, so a flaky external site can't fail a pull request;
-      # .github/workflows/links.yml checks external links weekly.
-      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+      - uses: $/.github/actions/setup-tool
         with:
-          args: --offline --include-fragments --no-progress './**/*.md'
-          fail: true
-      # Spelling over everything git tracks, configured in pyproject.toml's [tool.typos].
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+          tool: lychee
+      # typos (.typos.toml) from the pinned dev requirements; the same Python runs the docs drift check.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - run: ./scripts/ci/pip-install-locked.sh requirements-dev.txt typos
-      - run: typos
+      - run: ./.github/scripts/pip-install-locked.sh requirements-dev.txt typos
+      # markdownlint, prettier, lychee (lychee.toml) on relative links and #fragments only (so a flaky
+      # external site can't fail a pull request; link-check.yml checks external links after merge and
+      # weekly), typos, and .github/scripts/docs_drift.py (.env.example, Contents blocks, links the site
+      # can't follow)
+      - run: scripts/check.sh docs
 
   docker:
-    if: github.event.pull_request.draft != true
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Docker (hadolint + build + compose config)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       security-events: write # upload the image scan to code scanning
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+      # hadolint and trivy from tools.txt (sha256-verified); hadolint reads .hadolint.yaml.
+      - uses: $/.github/actions/setup-tools
         with:
-          dockerfile: app/Dockerfile
-          failure-threshold: warning
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+          tools: hadolint trivy
+      # Advisory: a finding is a warning and a step summary, never a failed job.
+      - id: hadolint
+        run: scripts/check.sh hadolint
+      - if: steps.hadolint.outputs.hadolint-findings == 'true'
+        uses: $/.github/actions/advisory-note
+        with:
+          title: hadolint
+          warning-body: hadolint has findings in app/Dockerfile - advisory, not blocking
+          heading: hadolint findings in app/Dockerfile
+          body: Advisory only, never blocks a merge. Reproduce with `scripts/check.sh hadolint`.
+          report-file: ${{ runner.temp }}/check-hadolint.txt
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: app
           push: false
@@ -140,34 +239,50 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Image smoke test
-        run: ./scripts/ci/smoke-test.sh instadroid-app:ci
-      # Report-only for now: the base image's Debian packages and the apkeep binary aren't covered by
-      # pip-audit. Findings land in the Security tab (not for fork PRs, whose token can't upload).
-      - name: Scan the image (Trivy)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        run: ./.github/scripts/smoke-test.sh instadroid-app:ci
+      # Advisory here: the blocking scan of the release candidate is publish.yml's `scan` job. This one
+      # shows what a pull request's image carries (the base image's Debian packages and the apkeep
+      # binary, which pip-audit doesn't cover), in the step summary and, from the SARIF, the Security tab
+      # (not for fork PRs, whose token can't upload). Scanned once as JSON, then converted to both
+      # reports; trivy reads the root .trivyignore.
+      - name: Scan the image (Trivy, advisory)
+        id: trivy
+        run: |
+          set -euo pipefail
+          trivy image --format json --output "$RUNNER_TEMP/trivy.json" \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 instadroid-app:ci
+          trivy convert --format sarif --output trivy-image.sarif "$RUNNER_TEMP/trivy.json"
+          trivy convert --format table --output "$RUNNER_TEMP/trivy.txt" "$RUNNER_TEMP/trivy.json"
+          findings="$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$RUNNER_TEMP/trivy.json")"
+          echo "findings=$findings" >>"$GITHUB_OUTPUT"
+          if [ "$findings" = 0 ]; then
+            printf '### Trivy image scan\n\nNo fixable HIGH or CRITICAL findings in the built image.\n' >>"$GITHUB_STEP_SUMMARY"
+          fi
+      - if: steps.trivy.outputs.findings != '0'
+        uses: $/.github/actions/advisory-note
         with:
-          image-ref: instadroid-app:ci
-          format: sarif
-          output: trivy-image.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
-      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+          title: trivy
+          warning-body: Trivy found fixable HIGH/CRITICAL vulnerabilities in the built image - advisory here, blocking at release
+          heading: Trivy image scan
+          body: Fixable HIGH and CRITICAL findings in the built app image. Advisory in CI; publish.yml's scan blocks a release on them.
+          report-file: ${{ runner.temp }}/trivy.txt
+      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
-      - name: Validate compose file
-        run: |
-          cp .env.example .env
-          docker compose config -q
-          docker compose --profile freshrss config -q
+      # `docker compose config`, with and without the freshrss profile, interpolated from .env.example
+      - run: scripts/check.sh compose
 
   dependency-review:
     if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
     name: Dependency review
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
       # Fails a pull request that adds a dependency with a known vulnerability of high severity or worse.
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
@@ -177,15 +292,19 @@ jobs:
     if: github.event.pull_request.draft != true
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read # gitleaks lists the PR's commits via the API when scanning a PR
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -193,31 +312,66 @@ jobs:
     if: github.event.pull_request.draft != true
     name: Workflow lint (actionlint)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # A pinned release, checked against its published checksum before it runs.
-      - run: |
-          curl -fsSL -o actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
-          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
-          tar -xzf actionlint.tar.gz actionlint
-          ./actionlint -color
+      # From tools.txt (sha256-verified): a fork of actionlint that understands the `$/.github/actions/...`
+      # local refs these workflows use, plus the pinned shellcheck it runs over `run:` blocks.
+      - uses: $/.github/actions/setup-tools
+        with:
+          tools: actionlint shellcheck
+      # actionlint, then .github/scripts/lint_workflows.sh's structural rules (timeouts, checkout
+      # credentials, top-level permissions, workflow_run gates, SHA pins); yq and jq are on the runner.
+      - run: scripts/check.sh actionlint lint-workflows
 
   zizmor:
     if: github.event.pull_request.draft != true
     name: Workflow security lint (zizmor)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - run: ./scripts/ci/pip-install-locked.sh requirements-dev.txt zizmor
-      - run: zizmor --min-severity=medium .github/workflows
+      - run: ./.github/scripts/pip-install-locked.sh requirements-dev.txt zizmor
+      # workflows, composite actions and dependabot.yml
+      - run: scripts/check.sh zizmor
         env:
           # Lets zizmor run its online audits (e.g. checking action pins against the real repo)
           # instead of falling back to offline-only checks.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The required check (see the header). always(), so it reports even when a job it needs failed or
+  # was skipped; it fails only on a failure or cancellation.
+  result:
+    if: always()
+    needs: [changes, lint, test, audit, shell, docs, docker, dependency-review, secrets, actionlint, zizmor]
+    name: CI result
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - name: Every job passed or was skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          case " $RESULTS " in
+            *" failure "* | *" cancelled "*)
+              echo "::error::a CI job failed or was cancelled"
+              exit 1
+              ;;
+          esac

@@ -2,7 +2,8 @@
 # Not published anywhere: installing the project (`pip install --no-deps -e .` in the dev venv, after the
 # hashed locks) puts app/ on the path and adds the developer commands below. The image doesn't install it; it copies app/ instead.
 name = "instadroid"
-version = "0"
+# A fixed placeholder, never bumped: the git tag is the version. 0.0.0.dev0 is PEP 440's spelling of 0.0.0-dev.
+version = "0.0.0.dev0"
 requires-python = ">=3.14"
 
 [project.scripts]
@@ -58,7 +59,8 @@ fail_under = 90
 [tool.basedpyright]
 # basedpyright: pyright's strict mode plus reportAny/reportExplicitAny, so no value typed Any anywhere, not even
 # one flowing in from the standard library (sqlite3.Row items, json.loads). Strict everywhere, tests included. The libraries that
-# ship no type information (uiautomator2, adbutils, feedgen) get local stubs in typings/.
+# ship no type information (uiautomator2, adbutils, feedgen) get local stubs in typings/. basedpyright always
+# skips dot-directories, so scripts/check.sh names .github/scripts/*.py on a second run instead.
 include = ["app", "tests"]
 extraPaths = ["app"]
 stubPath = "typings"
@@ -119,12 +121,3 @@ forbidden_modules = [
     "instadroid.install",
     "instadroid.db",
 ]
-
-[tool.typos]
-# crate-ci/typos, over everything git tracks. A deliberate misspelling on one line takes a trailing
-# `spellchecker: disable-line` comment rather than a project-wide allowance.
-default.extend-ignore-re = ["(?Rm)^.*(#|//)\\s*spellchecker:\\s*disable-line$"]
-
-[tool.typos.default.extend-words]
-unparseable = "unparseable" # a common spelling, not a typo
-unexpectly = "unexpectly"   # uiautomator2's own error text ("server quit unexpectly"), matched verbatim

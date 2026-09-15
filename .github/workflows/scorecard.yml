@@ -1,27 +1,51 @@
 name: OpenSSF Scorecard
 
 # Publishes this repository's supply-chain score to the public Scorecard API (the README badge reads
-# it) and its findings to the Security tab. publish_results restricts what this workflow may contain:
-# no top-level env or defaults, and only checkout, scorecard-action, upload-artifact and upload-sarif.
-on:
-  push:
+# it) and its findings to the Security tab. Runs after every green CI run on a push to main, so the score
+# follows main without grading a tree CI rejected; weekly, for score changes no push causes; and on
+# branch protection changes, which move Branch-Protection with no commit. workflow_run is safe here: the
+# job runs only after a green push to main.
+# publish_results restricts what this workflow may contain: no top-level env or defaults, a literal
+# `runs-on`, and only harden-runner, checkout, scorecard-action, upload-artifact and upload-sarif.
+on: # zizmor: ignore[dangerous-triggers]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   schedule:
-    - cron: "23 7 * * 2" # weekly
+    - cron: "41 7 * * 2" # weekly
   branch_protection_rule: {}
   workflow_dispatch: {}
 
 permissions: read-all
 
+# A newer run replaces an in-flight one; the result is recomputed from scratch each time.
+concurrency:
+  group: scorecard
+  cancel-in-progress: true
+
 jobs:
   analysis:
-    name: Scorecard analysis
+    name: supply-chain score (scorecard)
+    # Only a green push to main; the schedule, branch protection changes and a dispatch pass the first
+    # clause.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Job permissions replace the workflow's read-all, so the reads Scorecard needs are restated here.
     permissions:
+      contents: read # checkout, and the repository files Scorecard inspects
+      actions: read # workflow runs, which several Scorecard checks read
       security-events: write # upload the SARIF to code scanning
       id-token: write # publish_results signs the results with the workflow's OIDC identity
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
@@ -29,6 +53,6 @@ jobs:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
-      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           sarif_file: results.sarif

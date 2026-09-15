@@ -1,0 +1,10 @@
+# Accepted fixable HIGH/CRITICAL findings in the app image. Trivy reads this file in publish.yml's release
+# scan, image-scan.yml's scan of the published image, and any scan run from the repository root.
+#
+# Every entry needs a reason and an expiry date: the reason in a comment above it, the date in trivy's
+# exp: field, so an acceptance lapses on its own and the finding blocks again:
+#
+#   # Why it can't be fixed yet, and what will clear it.
+#   CVE-2026-00000 exp:2026-12-31
+#
+# Empty: no finding is accepted today.

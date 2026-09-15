@@ -1,0 +1,10 @@
+# Every text file checks out LF on every platform. Without it, Git for Windows' core.autocrlf=true
+# hands a Windows contributor CRLF shell scripts, which break inside the Linux containers.
+* text=auto eol=lf
+# Never diffed, merged or line-ending converted.
+*.gif binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.apk binary

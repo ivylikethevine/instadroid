@@ -1,0 +1,74 @@
+name: Release note
+
+# A pull request body's `## Release note` section (the pull request template's) is optional: publish.yml's
+# release job builds a release's "What changed" from those sections, through .github/scripts/release_notes.sh,
+# and a pull request without one just adds nothing to it. This check never fails a pull request: a missing or
+# blank section (nothing but the template's comment) is a warning, and the job summary shows the note as the
+# release page would list it. Its own workflow rather than a ci.yml job so that editing the body (the `edited`
+# type) re-runs it without a push.
+#
+# A dev -> main pull request is checked the same way, and its section matters most: squash-merged, it is the
+# only pull request main's history shows, so the release lists its note alone. It carries the notes of the
+# pull requests it brings, as plain sentences (release_notes.sh joins a multi-line note into one bullet).
+#
+# pull_request, not pull_request_target: the body comes from the event payload, nothing is written, and the
+# token stays read-only even for a fork.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+# A newer edit or push replaces the in-flight check.
+concurrency:
+  group: release-note-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: release note (pr body)
+    # Drafts wait for ready_for_review. Dependabot writes its own bodies, never with the section, and a
+    # dependency bump's note would be `none`.
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      # Only for release_notes.sh, whose --check holds the section grammar the release job reads.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts/release_notes.sh
+          sparse-checkout-cone-mode: false
+      # via env, never inline ${{ }} in the run block (zizmor: template-injection). --check fails a missing
+      # heading or a blank section (whitespace and HTML comments only), says which on stderr, and prints the
+      # note as the release page would list it (empty for `none`); here that failure is only a warning.
+      - name: Release note section, if any
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          written=true
+          if ! note="$(printf '%s\n' "$BODY" | bash .github/scripts/release_notes.sh --check)"; then
+            written=false
+            note=""
+            echo "::warning title=release note::no '## Release note' section with something under it, so this pull request adds nothing to the release page; add the template's to list a change"
+          fi
+          {
+            echo "### Release note"
+            echo
+            if [ "$written" = false ]; then
+              echo "No release note: this pull request adds nothing to the release page."
+            elif [ -n "$note" ]; then
+              echo "On the release page:"
+              echo
+              printf '%s\n' "$note"
+            else
+              echo "\`none\`: this pull request adds nothing to the release page."
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
