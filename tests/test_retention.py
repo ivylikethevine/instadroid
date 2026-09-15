@@ -11,9 +11,9 @@ from tests.support import insert_post, sql_column
 
 
 def test_prune_old_posts_deletes_rows_and_media_past_retain_days(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     insert_post(con, media, "old", days_old=45, media_file="old.jpg")
     insert_post(con, media, "new", days_old=1, media_file="new.jpg")
@@ -27,9 +27,9 @@ def test_prune_old_posts_deletes_rows_and_media_past_retain_days(
 
 
 def test_prune_old_posts_disabled_when_retain_days_is_zero(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     insert_post(con, media, "ancient", days_old=9999, media_file="ancient.jpg")
 
@@ -40,9 +40,9 @@ def test_prune_old_posts_disabled_when_retain_days_is_zero(
 
 
 def test_prune_old_posts_removes_orphaned_media_regardless_of_retain_days(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     insert_post(con, media, "kept", days_old=1, media_file="kept.jpg")
     (media / "orphan.jpg").write_bytes(b"x")  # e.g. left behind by an interrupted run
@@ -53,9 +53,9 @@ def test_prune_old_posts_removes_orphaned_media_regardless_of_retain_days(
 
 
 def test_orphan_sweep_covers_both_media_formats(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     insert_post(con, media, "old", days_old=1, media_file="old.jpg")
     insert_post(con, media, "new", days_old=1, media_file="new.webp")
@@ -88,9 +88,9 @@ def _insert_story(
 
 
 def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     _insert_story(con, media, "old", days_old=45, media_file="stories/old.jpg")
     _insert_story(con, media, "fresh", days_old=1, media_file="stories/fresh.jpg")
@@ -104,9 +104,9 @@ def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(
 
 
 def test_prune_expired_stories_noop_when_none_past_retain_days(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     _insert_story(con, media, "fresh", days_old=1, media_file="stories/fresh.jpg")
 
@@ -116,9 +116,9 @@ def test_prune_expired_stories_noop_when_none_past_retain_days(
 
 
 def test_prune_expired_stories_disabled_when_retain_days_is_zero(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     _insert_story(con, media, "ancient", days_old=9999, media_file="ancient.jpg")
 
@@ -129,9 +129,9 @@ def test_prune_expired_stories_disabled_when_retain_days_is_zero(
 
 
 def test_prune_old_posts_also_removes_extra_carousel_media(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 30)
     insert_post(con, media, "old", days_old=45, media_file="old.jpg")
     (media / "old_1.jpg").write_bytes(b"x")
@@ -147,10 +147,10 @@ def test_prune_old_posts_also_removes_extra_carousel_media(
 
 
 def test_prune_old_posts_leaves_avatars_alone(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The orphan sweep globs MEDIA_DIR non-recursively; avatars/ must be structurally immune.
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
     avatars = media / "avatars"
     avatars.mkdir()
@@ -162,9 +162,9 @@ def test_prune_old_posts_leaves_avatars_alone(
 
 
 def test_size_cap_disabled_when_media_max_mb_is_zero(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     monkeypatch.setattr(config, "MEDIA_MAX_MB", 0)
     insert_post(con, media, "a", days_old=1, media_file="a.jpg")
     (media / "a.jpg").write_bytes(b"x" * 500_000)
@@ -175,15 +175,15 @@ def test_size_cap_disabled_when_media_max_mb_is_zero(
 
 
 def test_size_cap_removes_oldest_posts_first_when_over_budget(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     insert_post(con, media, "older", days_old=5, media_file="older.jpg")
     insert_post(con, media, "newer", days_old=1, media_file="newer.jpg")
     (media / "older.jpg").write_bytes(b"x" * 500_000)
     (media / "newer.jpg").write_bytes(b"x" * 10_000)
 
-    baseline = retention._media_and_db_size_mb()
+    baseline = retention._media_and_db_size_mb(con)
     monkeypatch.setattr(config, "MEDIA_MAX_MB", baseline - 0.3)  # reachable only by dropping "older"
 
     retention.prune_old_posts(con)
@@ -195,9 +195,9 @@ def test_size_cap_removes_oldest_posts_first_when_over_budget(
 
 
 def test_size_cap_stops_when_no_posts_remain(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, media = con_and_media
+    media = config.MEDIA_DIR
     monkeypatch.setattr(config, "MEDIA_MAX_MB", 0.0000001)  # unreachable even with zero posts
     insert_post(con, media, "only", days_old=1, media_file="only.jpg")
 

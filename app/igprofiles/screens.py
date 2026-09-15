@@ -115,13 +115,21 @@ def screen_of_fixture(name: str) -> str:
     return re.sub(r"_\d{3}$", "", name)
 
 
+def id_matches(resource_id: str, value: str) -> bool:
+    """Whether a dump node's resource-id is the selector id `value`: its last path segment
+    ("row_feed_button_share" matches "com.instagram.android:id/row_feed_button_share"), or the whole id
+    for a value that is one ("android:id/list"). Every dump-side id comparison goes through this; on the
+    device, uiautomator2's resourceIdMatches regexes do the same job."""
+    return resource_id == value or resource_id.endswith(f"/{value}")
+
+
 def _strings(nodes: list[etree._Element]) -> list[str]:
     return [v for n in nodes for v in (n.get("text"), n.get("content-desc")) if v]
 
 
 def key_matches(key: str, value: SelectorValue, nodes: list[etree._Element]) -> bool | None:
     """Whether selector `key` finds anything among `nodes`, using the same kind of comparison the
-    scraper does: resource-id suffix for *_id(s), class name for caption_class, exact text or
+    scraper does: id_matches() for *_id(s), class name for caption_class, exact text or
     content-desc for strings and lists of strings, a regex match on text/content-desc for patterns.
     None for a value that isn't matched against the screen at all (a dict)."""
     if isinstance(value, dict):
@@ -132,7 +140,7 @@ def key_matches(key: str, value: SelectorValue, nodes: list[etree._Element]) -> 
     values = [value] if isinstance(value, str) else [str(v) for v in value]
     if key.endswith(("_id", "_ids")):
         ids = [n.get("resource-id") or "" for n in nodes]
-        return any(rid == v or rid.endswith(f"/{v}") for rid in ids for v in values)
+        return any(id_matches(rid, v) for rid in ids for v in values)
     if key == "caption_class":
         return any(n.get("class") in values for n in nodes)
     strings = _strings(nodes)

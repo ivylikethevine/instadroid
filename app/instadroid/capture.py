@@ -139,17 +139,13 @@ def permalink_code(url: str) -> str:
 
 
 def media_ext() -> str:
-    return ".webp" if config.MEDIA_FORMAT == "webp" else ".jpg"
+    return config.MEDIA_FORMATS[config.MEDIA_FORMAT][0]
 
 
 def save_media(img: Image.Image, path: Path) -> None:
     """Encode `img` to `path` in MEDIA_FORMAT at MEDIA_QUALITY (the caller picks the extension via
     media_ext())."""
-    img = img.convert("RGB")
-    if config.MEDIA_FORMAT == "webp":
-        img.save(path, "WEBP", quality=config.MEDIA_QUALITY)
-    else:
-        img.save(path, "JPEG", quality=config.MEDIA_QUALITY)
+    img.convert("RGB").save(path, config.MEDIA_FORMATS[config.MEDIA_FORMAT][1], quality=config.MEDIA_QUALITY)
 
 
 @versioned
@@ -163,7 +159,7 @@ def crop_media(
     if not (b := common.parse_bounds(bounds)):
         return None
     x1, y1, x2, y2 = b
-    w, h = d.window_size()
+    _, h = device.window_size(d)
     full = y2 - y1
     y1, y2 = max(y1, clip_top), min(y2, h)  # trim the floating action bar / screen edge
     if full < 200 or (y2 - y1) < 0.4 * full:

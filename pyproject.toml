@@ -12,7 +12,7 @@ check-new-builds = "devtools.check_new_builds:main"
 export-openapi = "devtools.export_openapi:main"
 
 [build-system]
-requires = ["setuptools>=80"]
+requires = ["setuptools>=84"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

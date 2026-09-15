@@ -29,11 +29,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.14"
-      # The same pinned release and checksum as app/Dockerfile.
+      # The pinned release and checksum read from app/Dockerfile's ADD, so bumping it there carries over.
       - name: Install apkeep
         run: |
-          curl -fsSL -o apkeep https://github.com/EFForg/apkeep/releases/download/1.0.0/apkeep-x86_64-unknown-linux-gnu
-          echo "a23579a3ba366d25a6d69848189b983d65662f4ecf4b9e11e16510811659de4e  apkeep" | sha256sum -c -
+          url=$(grep -oE 'https://github\.com/EFForg/apkeep/releases/download/[^ ]+' app/Dockerfile || true)
+          sha=$(grep -oE -- '--checksum=sha256:[0-9a-f]{64}' app/Dockerfile | cut -d: -f2 || true)
+          if [ -z "$url" ] || [ -z "$sha" ]; then
+            echo "couldn't read apkeep's URL and checksum from app/Dockerfile" >&2
+            exit 1
+          fi
+          curl -fsSL -o apkeep "$url"
+          echo "$sha  apkeep" | sha256sum -c -
           chmod +x apkeep
       - name: List builds
         run: ./apkeep -l -a com.instagram.android -d apk-pure > versions.txt

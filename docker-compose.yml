@@ -1,165 +1,115 @@
-# One definition shared by the redroid service and the app's REDROID_IMAGE (recorded per run, shown
-# on /status), so the two can't drift apart.
+# Services, in start order:
+#   init      one-shot, as root: the /data version guard and the app's data directories
+#             (scripts/init-data.sh; `docker compose run --no-deps` skips it)
+#   redroid   the Android device (privileged); ADB on 127.0.0.1:5555
+#   app       the scraper and the feed server, two processes in one container (app/entrypoint.sh)
+#   freshrss  optional reader, only with `--profile freshrss` (docs/FRESHRSS.md)
+#
+# Settings all come from .env, in two kinds (.env.example documents both):
+#   - read by the app itself (credentials, POLL_*, MAX_SCROLLS, ...): passed through `env_file`,
+#     defaults in app/instadroid/config.py;
+#   - read by compose to size containers and the device: the ${NAME:-default} values below.
+# Everything the app writes lives under local/data/.
+#
+# Why the limits are what they are: CLAUDE.md ("Memory") and docs/INCIDENTS.md. Why this redroid
+# image: README.md ("Which Android?") and docs/COMPATIBILITY.md.
+
 x-redroid-image: &redroid_image erstt/redroid:13.0.0_ndk_ChromeOS
 
-# Cap each container's json-file log at 3 x 10MB; unbounded by default.
-x-logging: &logging
+# init and app run the same locally built image, so it's built once.
+x-app-image: &app_image
+  build: ./app
+  image: instadroid-app
+
+x-logging: &logging # json-file, capped at 3 x 10MB per container
   driver: json-file
   options:
     max-size: "10m"
     max-file: "3"
 
 services:
-  # The Android side: a containerised device via redroid. Android 13 + ChromeOS's ARC++ NDK
-  # translation is validated working as of 2026-09-10 (Instagram install/login/scrape all
-  # succeeded) — the earlier Android-11 libndk image crashed Instagram at native startup.
-  # erstt/redroid:15.0.0_ndk_AVD crashed harder: hwservicemanager/servicemanager both fatal within
-  # ~3s of boot, twice, unchanged by generous mem_limit/shm_size (below) — a binder ABI mismatch
-  # with this host (host-safe both times). aureliolo/redroid:14.0.0_amd64_with_gapps boots fine but
-  # ships no ARM translation at all: Instagram's arm64 .so crashes the dynamic linker outright
-  # (EM_AARCH64 vs EM_X86_64, host-safe). erstt/redroid is the only source found with confirmed ARM
-  # translation, and it doesn't publish Android 14. See CLAUDE.md for the careful start/monitor
-  # procedure and README.md's "Which Android?" for the full compatibility history.
+  init:
+    <<: *app_image
+    user: "0:0"
+    restart: "no"
+    logging: *logging
+    entrypoint: ["sh", "/scripts/init-data.sh", *redroid_image]
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./local/data:/data
+
   redroid:
     image: *redroid_image
     container_name: ig-redroid
-    logging: *logging
     privileged: true
+    restart: unless-stopped # back after a host reboot; `docker compose stop`/`down` keeps it down
+    logging: *logging
     depends_on:
-      android-data-guard:
+      init:
         condition: service_completed_successfully
-    # Comes back after a host reboot or crash; `docker compose stop`/`down` keeps it down.
-    restart: unless-stopped
-    # Memory: a live scrape measured 1.98GiB (2026-09-11), and on 2026-09-14 a scrape sat at
-    # 1.7-1.99GiB of the old 2g for its whole run, the kernel OOM-killed 7 Android processes inside
-    # the container, and the host desktop froze until the run was stopped (see docs/INCIDENTS.md). 3g gives
-    # real headroom over that peak. memswap_limit equal to mem_limit means no swap: a container
-    # thrashing swap is exactly the kind of pressure that stalls the whole host. The scraper also
-    # stops a run itself before this ceiling (MEMORY_GUARD_PERCENT in app/instadroid/config.py).
-    # shm_size stays generous: under-provisioning it risks screenshot/graphics-buffer failures that
-    # are much harder to diagnose than an OOM.
+    # No swap (memswap_limit = mem_limit): a container thrashing swap stalls the whole host. Don't lower
+    # the memory limit without remeasuring. shm_size is deliberately generous (screenshot buffers).
     mem_limit: ${REDROID_MEM_LIMIT:-3g}
     memswap_limit: ${REDROID_MEM_LIMIT:-3g}
     shm_size: 1g
-    # CPU: ARM translation, JIT and dex2oat can saturate every core; a cap keeps the host usable.
-    # 4 is half of this host's 8 cores.
     cpus: ${REDROID_CPUS:-4}
-    volumes:
-      - ./local/data/android:/data
     ports:
-      - "127.0.0.1:5555:5555"   # ADB, for scrcpy / manual login from the host
+      - "127.0.0.1:5555:5555" # ADB, for the app, scrcpy and manual adb from the host
+    volumes:
+      - ./local/data/android:/data # never share with a different Android major version (init checks)
     command:
-      - androidboot.redroid_gpu_mode=guest
-      # Raising these makes screenshotted post crops sharper (screen resolution is the ceiling on
-      # crop quality — see MEDIA_QUALITY in .env.example), at the cost of slower boot/more memory.
+      - androidboot.redroid_gpu_mode=guest # =host was tried and rejected (CLAUDE.md)
+      # Screen size: the ceiling on crop sharpness, at the cost of boot time and memory.
       - androidboot.redroid_width=${REDROID_WIDTH:-1080}
       - androidboot.redroid_height=${REDROID_HEIGHT:-2340}
       - androidboot.redroid_dpi=${REDROID_DPI:-420}
       - androidboot.redroid_fps=30
       - androidboot.use_memfd=true
 
-  # One-shot, before redroid: refuses to start it on a /data volume last used by a different Android
-  # major version, which corrupted appops.xml, the idmap cache and telephony.db before (docs/INCIDENTS.md).
-  # The image that last used the volume is recorded in local/data/android.image; see
-  # scripts/guard-android-data.sh for what to do when it refuses. Same image as app, nothing to pull.
-  android-data-guard:
-    build: ./app
-    user: "0:0"
-    restart: "no"
-    logging: *logging
-    entrypoint: ["sh", "/guard.sh", *redroid_image, "/data/android.image"]
-    volumes:
-      - ./scripts/guard-android-data.sh:/guard.sh:ro
-      - ./local/data:/data
-
-  # One-shot: creates the app's bind-mount directories owned by the app user (uid 1000) before app
-  # starts. Without it, Docker creates a missing bind-mount source as root, and the app (USER 1000)
-  # then fails with "sqlite3.OperationalError: unable to open database file". Only a directory still
-  # owned by root is chowned, and never recursively. local/data/android is left alone: redroid runs
-  # as root and Android manages its own permissions inside it. Same image as app, so there's nothing
-  # extra to pull. Note `docker compose run --no-deps app` skips this.
-  init-dirs:
-    build: ./app
-    user: "0:0"
-    restart: "no"
-    logging: *logging
-    entrypoint: ["sh", "-c"]
-    command:
-      - >-
-        for d in db media debug apk; do
-        mkdir -p "/data/$$d";
-        [ "$$(stat -c %u "/data/$$d")" = 0 ] && chown 1000:1000 "/data/$$d";
-        done; true
-    volumes:
-      - ./local/data:/data
-
-  # Single image: the scraper loop and the feed server run as two processes in one container
-  # (see app/entrypoint.sh), so this is the only thing to build/publish alongside redroid.
   app:
-    build: ./app
+    <<: *app_image
     container_name: ig-app
-    # entrypoint.sh exits if either process dies, so this restarts a clean scraper+feed pair.
-    restart: unless-stopped
+    restart: unless-stopped # entrypoint.sh exits if either process dies, so this restarts both
     logging: *logging
     depends_on:
       redroid:
         condition: service_started
-      init-dirs:
-        condition: service_completed_successfully
-    network_mode: host         # so it can reach redroid's ADB port on the host loopback
-    # Every setting (credentials, POLL_*, MAX_SCROLLS, ...) comes from .env; app/instadroid/config.py owns the
-    # defaults and .env.example documents them. DB_PATH, MEDIA_DIR, DEBUG_DIR, APK_CACHE_DIR and
-    # ADB_ADDR already default to the mounts and port below.
+    network_mode: host # reaches redroid's ADB on 127.0.0.1:5555; the feed binds 127.0.0.1:8000
     env_file: .env
     environment:
-      REDROID_IMAGE: *redroid_image   # recorded with each run
-    # Optional: credentials from Docker secrets instead of .env. Create the file (readable by uid
-    # 1000, which the app runs as), uncomment this and the top-level `secrets:` block at the end,
-    # and set IG_PASSWORD_FILE=/run/secrets/ig_password in .env in place of IG_PASSWORD.
-    # secrets: [ig_password]
+      REDROID_IMAGE: *redroid_image # recorded with each run, shown on /status
+    # The app's defaults for DB_PATH, MEDIA_DIR, DEBUG_DIR and APK_CACHE_DIR are these mounts.
     volumes:
       - ./local/data/db:/db
       - ./local/data/media:/media
       - ./local/data/debug:/debug
       - ./local/data/apk:/apk
-    # Measured peak while actively scraping: ~97-125MiB (idle is ~67-97MiB). No swap, same reason
-    # as redroid above.
+    # Peak ~125MiB while scraping. No swap, same reason as redroid.
     mem_limit: 256m
     memswap_limit: 256m
     cpus: 1.5
-    # /health returns 503 once scraping looks stuck or keeps failing (see scraper_health() in
-    # app/feedserver/status.py), so `docker ps` shows "unhealthy". Docker itself doesn't restart unhealthy containers.
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+    # Healthcheck: the image's own (app/Dockerfile), probing /health. Docker only marks the container
+    # unhealthy; it doesn't restart it.
+    # Optional Docker secret instead of IG_PASSWORD in .env: create the file (readable by uid 1000),
+    # uncomment this and the top-level `secrets:` at the end, and set
+    # IG_PASSWORD_FILE=/run/secrets/ig_password in .env.
+    # secrets: [ig_password]
 
-  # Optional: a real FreshRSS to subscribe to this instance's feeds. Off by default — start with
-  # `docker compose --profile freshrss up -d freshrss`. First-run setup (creates the SQLite-backed
-  # instance and a user with an API token) is two one-time commands, see docs/FRESHRSS.md:
-  #   docker compose exec freshrss ./cli/do-install.php --default_user <name> --auth_type form --db-type sqlite
-  #   docker compose exec freshrss ./cli/create-user.php --user <name> --password <pw> --token <token> --no-default-feeds
-  # That token is what FRESHRSS_REFRESH_URL (app service env, read by the scraper) is built from.
   freshrss:
     image: freshrss/freshrss:1.30.0-alpine
     container_name: ig-freshrss
     profiles: [freshrss]
-    logging: *logging
     restart: unless-stopped
-    # Host networking, same reason as the app service above: the feed server binds the host's own
-    # 127.0.0.1:8000 (FEED_HOST default), which a bridged container could not reach, and the
-    # scraper's refresh ping has to reach FreshRSS back over that same loopback. LISTEN below keeps
-    # FreshRSS itself loopback-only despite host networking; the feed is only authenticated when
-    # FEED_TOKEN is set (see docs/FRESHRSS.md) — nothing here should reach the LAN.
+    logging: *logging
+    # Host networking, like app: FreshRSS fetches the feed on 127.0.0.1:8000, and the scraper pings it
+    # back on loopback. LISTEN keeps FreshRSS itself off the LAN.
     network_mode: host
     environment:
       LISTEN: ${FRESHRSS_LISTEN:-127.0.0.1:8080}
       TZ: ${DEVICE_TIMEZONE:-UTC}
-      CRON_MIN: ${FRESHRSS_CRON_MIN:-}   # empty: the scraper pushes instead of FreshRSS polling
-      # Required, not optional: FreshRSS 1.30+ refuses to fetch "internal" hosts as an SSRF guard,
-      # and this feed lives on 127.0.0.1 — without this the subscription silently fetches nothing.
+      CRON_MIN: ${FRESHRSS_CRON_MIN:-} # empty: the scraper pings FreshRSS instead of it polling
+      # Required: FreshRSS 1.30+ refuses to fetch internal hosts (an SSRF guard), so without this the
+      # subscription to 127.0.0.1 silently fetches nothing.
       INTERNAL_HOST_ALLOWLIST: ${FRESHRSS_INTERNAL_HOST_ALLOWLIST:-127.0.0.1:8000 localhost:8000}
     volumes:
       - ./local/data/freshrss/data:/var/www/FreshRSS/data

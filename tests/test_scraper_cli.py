@@ -69,16 +69,16 @@ def test_login_stops_instagram_afterwards_even_when_it_raises(
     def force_stop(d: FakeDevice, package: str) -> None:
         stopped.append(package)
 
-    def logged_in(d: FakeDevice) -> bool:
-        return True
+    def logged_in(d: FakeDevice) -> None:
+        pass
 
-    def challenge(d: FakeDevice) -> bool:
+    def challenge(d: FakeDevice) -> None:
         raise RuntimeError("Instagram wants a human")
 
     monkeypatch.setattr(device, "force_stop", force_stop)
     monkeypatch.setattr(navigation, "ensure_logged_in", logged_in)
     _run(monkeypatch, "login")
-    assert "logged in: True" in capsys.readouterr().out
+    assert "logged in" in capsys.readouterr().out
     monkeypatch.setattr(navigation, "ensure_logged_in", challenge)
     with pytest.raises(RuntimeError):
         _run(monkeypatch, "login")
@@ -134,7 +134,7 @@ def test_compat_lists_run_pairs(monkeypatch: pytest.MonkeyPatch, capsys: pytest.
 def test_lock_unlock_and_scrape_now_write_the_control_files(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    control_dir = Path(config.CONTROL_DIR)
+    control_dir = config.CONTROL_DIR
     _run(monkeypatch, "lock")
     assert (control_dir / "manual.lock").exists() and "locked: True" in capsys.readouterr().out
     _run(monkeypatch, "unlock")

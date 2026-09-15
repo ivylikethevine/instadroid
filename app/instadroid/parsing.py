@@ -5,6 +5,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import NotRequired, TypedDict
 
+from igprofiles.screens import id_matches
 from lxml import etree
 
 from . import common
@@ -94,8 +95,8 @@ def parse_following_list(xml: str) -> list[str]:
     matched, so the "Categories" suggestion cards above the list (own resource-ids: title/subtitle)
     and the "Sorted by ..." header can never be mistaken for a followed account."""
     root = etree.fromstring(xml.encode())
-    suffix = f"id/{SELECTORS['follow_list_username_id']}"
-    rows = (n for n in root.iter("node") if (n.get("resource-id") or "").endswith(suffix))
+    rid = SELECTORS["follow_list_username_id"]
+    rows = (n for n in root.iter("node") if id_matches(n.get("resource-id") or "", rid))
     return [text for n in rows if (text := n.get("text"))]
 
 
@@ -160,16 +161,16 @@ def parse_hierarchy(xml: str) -> list[Post]:
     # The action bar floats over the list; remember where it ends so crops can skip it.
     clip_top = 0
     for n in root.iter("node"):
-        if (n.get("resource-id") or "").endswith(SELECTORS["action_bar_id"]):
+        if id_matches(n.get("resource-id") or "", SELECTORS["action_bar_id"]):
             if b := common.parse_bounds(n.get("bounds")):
                 clip_top = b[3]
             break
     in_list = False
     for n in root.iter("node"):
-        rid = (n.get("resource-id") or "").split("/")[-1]
+        rid = n.get("resource-id") or ""
         desc = n.get("content-desc") or ""
         text = n.get("text") or ""
-        if n.get("resource-id") == SELECTORS["feed_list_id"]:
+        if id_matches(rid, SELECTORS["feed_list_id"]):
             in_list = True
             cur = _new_post("", "", "", "", clip_top)  # provisional: the header-less top card
             cur["headless"] = True
@@ -177,7 +178,7 @@ def parse_hierarchy(xml: str) -> list[Post]:
             continue
         if not in_list:
             continue
-        if rid == SELECTORS["header_id"]:
+        if id_matches(rid, SELECTORS["header_id"]):
             m = SELECTORS["header_desc"].match(desc)
             # A Reel/video card tagged with collaborators ("<user> and N others" — confirmed live
             # 2026-09-11) renders its media node, and the "Reel by ..." alt description that comes
@@ -223,9 +224,9 @@ def parse_hierarchy(xml: str) -> list[Post]:
             continue
         if cur is None:
             continue
-        if cur["bounds"] is None and rid in SELECTORS["media_ids"]:
+        if cur["bounds"] is None and any(id_matches(rid, v) for v in SELECTORS["media_ids"]):
             cur["bounds"] = n.get("bounds")
-        elif cur["share_bounds"] is None and rid == SELECTORS["share_id"]:
+        elif cur["share_bounds"] is None and id_matches(rid, SELECTORS["share_id"]):
             cur["share_bounds"] = n.get("bounds")
             if cur["merged_reel"]:
                 # This layout has no separate caption or timestamp node to wait for (confirmed
@@ -284,7 +285,7 @@ def parse_story_tray(xml: str) -> list[StoryItem]:
     of what's already been captured."""
     root = etree.fromstring(xml.encode())
     tray = next(
-        (n for n in root.iter("node") if (n.get("resource-id") or "").endswith(SELECTORS["story_tray_id"])),
+        (n for n in root.iter("node") if id_matches(n.get("resource-id") or "", SELECTORS["story_tray_id"])),
         None,
     )
     if tray is None:

@@ -1,7 +1,6 @@
 """Selector drift: a run's cards-per-screen compared with a baseline of recent successful runs."""
 
 import sqlite3
-from pathlib import Path
 
 import pytest
 from instadroid import config, db
@@ -10,9 +9,8 @@ from tests.support import record_run_ago
 
 
 def test_selector_drift_flags_a_drop_below_the_baseline(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, _ = con_and_media
     monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     for _ in range(5):
         record_run_ago(con, 0, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
@@ -25,9 +23,8 @@ def test_selector_drift_flags_a_drop_below_the_baseline(
 
 
 def test_selector_drift_silent_when_in_line_with_baseline(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, _ = con_and_media
     monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     for _ in range(5):
         record_run_ago(con, 0, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
@@ -38,9 +35,8 @@ def test_selector_drift_silent_when_in_line_with_baseline(
 
 
 def test_selector_drift_silent_with_too_few_baseline_runs(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, _ = con_and_media
     monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     record_run_ago(con, 0, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
     record_run_ago(con, 0, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
@@ -52,9 +48,8 @@ def test_selector_drift_silent_with_too_few_baseline_runs(
 
 
 def test_selector_drift_ignores_failed_runs_in_the_baseline(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, _ = con_and_media
     monkeypatch.setattr(config, "SELECTOR_DRIFT_MIN_RUNS", 3)
     for _ in range(4):
         record_run_ago(con, 0, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
@@ -68,9 +63,8 @@ def test_selector_drift_ignores_failed_runs_in_the_baseline(
 
 
 def test_selector_drift_disabled_when_baseline_runs_is_zero(
-    con_and_media: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    con, _ = con_and_media
     monkeypatch.setattr(config, "SELECTOR_DRIFT_BASELINE_RUNS", 0)
     for _ in range(5):
         record_run_ago(con, 0, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)

@@ -48,7 +48,8 @@ jobs:
       - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-deps -e .
       # pyproject.toml keeps coverage's data file in local/, which isn't in the checkout.
       - run: mkdir -p local
-      - run: python -m pytest -q --cov --cov-report=term --cov-fail-under=90
+      # The 90% floor is pyproject.toml's [tool.coverage.report] fail_under, which pytest-cov enforces.
+      - run: python -m pytest -q --cov --cov-report=term
       # The README's coverage badge is published by .github/workflows/pages.yml instead of here —
       # it re-runs coverage and serves coverage.json from the project's GitHub Pages site, so
       # publishing it doesn't need a `contents: write` grant or a dedicated orphan branch in CI.
@@ -168,7 +169,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Fails a pull request that adds a dependency with a known vulnerability of high severity or worse.
-      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
 

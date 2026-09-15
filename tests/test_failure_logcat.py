@@ -66,6 +66,23 @@ def test_save_failure_logcat_writes_a_filtered_file(
     text = path.read_text()
     assert text.startswith("# run failed: DeviceNotReady('could not bring")
     assert "FATAL EXCEPTION" in text and "Something: chatter" not in text
+    fixes = diagnostics.CRASH_SIGNATURES
+    assert f"# seen 'WATCHDOG KILLING': {fixes['WATCHDOG KILLING']}" in text  # the fix diagnose.sh prints
+    assert "Idmap" not in text
+
+
+def test_crash_signatures_load_from_the_table_diagnose_sh_reads() -> None:
+    signatures = diagnostics.load_crash_signatures()
+    assert list(signatures)[:2] == ["WATCHDOG KILLING", "FATAL EXCEPTION"]
+    assert "Can't downgrade database" in signatures and "Bad operation #" in signatures
+    assert all(fix for fix in signatures.values())
+    assert "reset-resource-cache.sh" in signatures["Version mismatch in Idmap"]
+
+
+def test_crash_signature_table_skips_comments_and_blank_lines(tmp_path: Path) -> None:
+    table = tmp_path / "signatures.tsv"
+    table.write_text("# signature\tfix\n\nOne thing\tdo this\nBare signature\n")
+    assert diagnostics.load_crash_signatures(table) == {"One thing": "do this", "Bare signature": ""}
 
 
 def test_save_failure_logcat_tolerates_an_unreachable_device(

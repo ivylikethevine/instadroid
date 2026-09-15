@@ -22,7 +22,6 @@ FEED_TOKEN (or FEED_TOKEN_FILE) turns on auth for everything except /health, see
 """
 
 import logging
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -47,7 +46,7 @@ app = FastAPI(
         "`/media/<file>` URLs written into the feeds carry a per-file `sig` instead."
     ),
 )
-Path(settings.MEDIA_DIR).mkdir(parents=True, exist_ok=True)
+settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=settings.MEDIA_DIR), name="media")
 app.middleware("http")(auth.require_token)
 app.include_router(feeds.router)

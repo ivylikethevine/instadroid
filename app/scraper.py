@@ -33,61 +33,65 @@ from instadroid import (
 )
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "once":
-        stats, exc = scrape.run_recorded(db.db_init())  # recorded in runs, like a scheduled run
-        if exc or stats is None:
-            sys.exit(f"run failed: {exc!r}")
-        print(stats["new"], "new posts,", stats["metrics"].get("new_stories", 0), "new stories")
-    elif len(sys.argv) > 1 and sys.argv[1] == "login":
-        d = device.connect_device()
-        try:
-            print("logged in:", navigation.ensure_logged_in(d))
-        finally:
-            device.force_stop(d, config.IG_PKG)  # don't leave ~800MiB resident for whatever runs next
-    elif len(sys.argv) > 1 and sys.argv[1] == "profiles":
-        names = available_profiles()
-        for name, following in zip(names, [*names[1:], None], strict=True):
-            p = load_profile(name)
-            covers = f"{p.major}-{int(following[1:]) - 1}" if following else f"{p.major} and newer"
-            active = " (active)" if p.name == versioning.PROFILE.name else ""
-            validated = ", ".join(sorted(p.own_validated, key=version_key)) or "none yet"
-            print(f"{p.name}{active}  covers Instagram {covers}  {p.notes}\n  validated: {validated}")
-        print("default install:", default_build() or "latest")
-    elif len(sys.argv) > 1 and sys.argv[1] == "install":
-        if len(sys.argv) > 3:
+    match sys.argv[1:]:
+        case ["once", *_]:
+            stats, exc = scrape.run_recorded(db.db_init())  # recorded in runs, like a scheduled run
+            if exc or stats is None:
+                sys.exit(f"run failed: {exc!r}")
+            print(stats["new"], "new posts,", stats["metrics"].get("new_stories", 0), "new stories")
+        case ["login", *_]:
+            d = device.connect_device()
+            try:
+                navigation.ensure_logged_in(d)
+                print("logged in")
+            finally:
+                device.force_stop(d, config.IG_PKG)  # don't leave ~800MiB resident for whatever runs next
+        case ["profiles", *_]:
+            names = available_profiles()
+            for name, following in zip(names, [*names[1:], None], strict=True):
+                p = load_profile(name)
+                covers = f"{p.major}-{int(following[1:]) - 1}" if following else f"{p.major} and newer"
+                active = " (active)" if p.name == versioning.PROFILE.name else ""
+                validated = ", ".join(sorted(p.own_validated, key=version_key)) or "none yet"
+                print(f"{p.name}{active}  covers Instagram {covers}  {p.notes}\n  validated: {validated}")
+            print("default install:", default_build() or "latest")
+        case ["install", *version] if len(version) <= 1:
+            d = device.connect_device()
+            print("installed:", install.install_instagram_version(d, version[0] if version else None))
+        case ["install", *_]:
             print("usage: scraper.py install [VERSION|latest]   (default: igprofiles.DEFAULT_BUILD)")
             sys.exit(1)
-        d = device.connect_device()
-        print("installed:", install.install_instagram_version(d, sys.argv[2] if len(sys.argv) == 3 else None))
-    elif len(sys.argv) > 1 and sys.argv[1] == "dump":
-        d = device.connect_device()
-        diagnostics.dump_debug(d, "manual")
-        print("wrote", config.DEBUG_DIR)
-    elif len(sys.argv) > 1 and sys.argv[1] == "compat":
-        pairs = db.version_pairs(db.db_init())
-        print("redroid image | Instagram | profile | runs (ok, clean) | new posts | last run")
-        for p in pairs:
+        case ["dump", *_]:
+            d = device.connect_device()
+            diagnostics.dump_debug(d, "manual")
+            print("wrote", config.DEBUG_DIR)
+        case ["compat", *_]:
+            pairs = db.version_pairs(db.db_init())
+            print("redroid image | Instagram | profile | runs (ok, clean) | new posts | last run")
+            for p in pairs:
+                print(
+                    f"{p['redroid_image'] or '?'} | {p['ig_version']} | {p['selector_profile'] or '?'}"
+                    f" | {p['runs']} ({p['ok_runs']}, {p['clean_runs']}) | {p['new_posts']} | {p['last_run'][:10]}"
+                )
+            if not pairs:
+                print("(no runs that reached the device yet)")
+        case ["lock" | "unlock" as action, *_]:
+            control.set_lock(action == "lock")
+            print(f"{action}ed:", control.locked())
+        case ["scrape-now", *_]:
+            control.request_run_now()
             print(
-                f"{p['redroid_image'] or '?'} | {p['ig_version']} | {p['selector_profile'] or '?'}"
-                f" | {p['runs']} ({p['ok_runs']}, {p['clean_runs']}) | {p['new_posts']} | {p['last_run'][:10]}"
+                "requested; the poll loop starts a run within",
+                int(config.CONTROL_POLL_SECONDS),
+                "seconds if due",
             )
-        if not pairs:
-            print("(no runs that reached the device yet)")
-    elif len(sys.argv) > 1 and sys.argv[1] in ("lock", "unlock"):
-        control.set_lock(sys.argv[1] == "lock")
-        print(f"{sys.argv[1]}ed:", control.locked())
-    elif len(sys.argv) > 1 and sys.argv[1] == "scrape-now":
-        control.request_run_now()
-        print(
-            "requested; the poll loop starts a run within", int(config.CONTROL_POLL_SECONDS), "seconds if due"
-        )
-    elif len(sys.argv) > 1 and sys.argv[1] == "backup":
-        print("wrote", backup.backup_database(db.db_init(), force=True))
-    elif len(sys.argv) > 1 and sys.argv[1] == "rename":
-        if len(sys.argv) != 4:
+        case ["backup", *_]:
+            print("wrote", backup.backup_database(db.db_init(), force=True))
+        case ["rename", old, new]:
+            n = db.rename_account(db.db_init(), old, new)
+            print(f"moved {n} post(s) from {old!r} to {new!r}")
+        case ["rename", *_]:
             print("usage: scraper.py rename <old_username> <new_username>")
             sys.exit(1)
-        n = db.rename_account(db.db_init(), sys.argv[2], sys.argv[3])
-        print(f"moved {n} post(s) from {sys.argv[2]!r} to {sys.argv[3]!r}")
-    else:
-        scrape.main()
+        case _:
+            scrape.main()

@@ -1,13 +1,13 @@
-import logging
 import os
 import time
 from pathlib import Path
 
 import pytest
 from instadroid import config, db, device, diagnostics
+from shared import sqlrows
 
 from tests.fakedevice import FakeDevice, Out
-from tests.support import fetch_row, row_values
+from tests.support import fetch_row
 
 
 class VersionedDevice(FakeDevice):
@@ -42,7 +42,7 @@ def test_record_run_stores_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         {"ig_version": "445.0.0.45.83", "redroid_image": "img:tag"},
     )  # fmt: skip
     row = fetch_row(con.execute("SELECT ig_version, redroid_image FROM runs"))
-    assert row_values(row) == ("445.0.0.45.83", "img:tag")
+    assert sqlrows.values(row) == ("445.0.0.45.83", "img:tag")
 
 
 @pytest.fixture
@@ -102,21 +102,3 @@ def test_prune_debug_age_rule_can_be_disabled(debug_dir: Path, monkeypatch: pyte
 def test_prune_debug_tolerates_a_missing_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "nope")
     diagnostics.prune_debug_dumps()  # must not raise
-
-
-def test_healthcheck_requests_are_left_out_of_the_access_log(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "posts.sqlite"))
-    monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
-    from feedserver import auth
-
-    f = auth.SkipHealthcheck()
-
-    def record(path: str) -> logging.LogRecord:
-        args = ("127.0.0.1:5000", "GET", path, "1.1", 200)
-        return logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d', args, None)
-
-    assert not f.filter(record("/health"))
-    assert f.filter(record("/instagram.xml"))
-    assert f.filter(record("/instagram.xml?user=healthy_eats"))

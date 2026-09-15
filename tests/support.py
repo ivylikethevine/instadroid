@@ -1,10 +1,11 @@
 """Typed reads of what the tests get back, JSON bodies and SQLite rows (json.loads and sqlite3 both hand
-back Any; the row reads build on shared.sqlrows), and database seeding shared across test modules."""
+back Any; the row reads build on shared.sqlrows), database seeding, and a fake urlopen() response, shared
+across test modules."""
 
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Unpack
+from typing import Self, Unpack
 
 from devtools.jsonvalues import JSON as Json
 from devtools.jsonvalues import loads
@@ -45,14 +46,9 @@ def fetch_row(cur: sqlite3.Cursor) -> sqlite3.Row:
     return row
 
 
-def row_values(row: sqlite3.Row) -> tuple[SqlValue, ...]:
-    """A row as a plain tuple, to compare with one."""
-    return tuple(sqlrows.cell(row, i) for i in range(len(row)))
-
-
 def row_dict(row: sqlite3.Row) -> dict[str, SqlValue]:
     """A row as {column: value}."""
-    return dict(zip(row.keys(), row_values(row), strict=True))
+    return dict(zip(row.keys(), sqlrows.values(row), strict=True))
 
 
 def sql_column(cur: sqlite3.Cursor) -> list[SqlValue]:
@@ -87,3 +83,17 @@ def insert_post(
         (post_id, media_file, ts, ts),
     )
     con.commit()
+
+
+class UrlResponse:
+    """What a monkeypatched urllib.request.urlopen returns: an empty response that is its own context
+    manager (the part of common.UrlResponse the project uses)."""
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return b""

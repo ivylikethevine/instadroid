@@ -56,7 +56,7 @@ def scrape_now() -> ControlState:
     with queries.connection() as con:
         since = files.minutes_since(queries.last_finished(con))
     wait = settings.RUN_NOW_MIN_MINUTES
-    if since is not None and since < wait:
+    if since is not None and not files.run_now_due(since, wait):
         raise HTTPException(
             429, f"the last run finished {since:.0f} min ago; try again in {wait - since:.0f} min"
         )

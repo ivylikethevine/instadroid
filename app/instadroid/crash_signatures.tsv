@@ -1,0 +1,9 @@
+# Crash-loop signatures this project has actually hit on redroid, and the fix for each (docs/INCIDENTS.md).
+# One per line: the literal logcat text, a tab, the fix. Read by instadroid/diagnostics.py (which keeps these
+# lines in a failure logcat) and scripts/diagnose.sh (which prints the fix).
+WATCHDOG KILLING	system_server watchdog timeout (e.g. PermissionPolicyService hang) -> full /data/system(_ce|_de) reset; see docs/INCIDENTS.md (idmap/telephony.db section). /data/data (login session) is untouched by this.
+FATAL EXCEPTION	a crash loop, not necessarily the cause -> read the surrounding lines for which process/exception.
+Version mismatch in Idmap	stale resource-cache idmap from a prior boot -> ./scripts/reset-resource-cache.sh
+Can't downgrade database	corrupt telephony.db (cross-version /data reuse) -> adb root; am force-stop com.android.phone; mv aside telephony.db/mmssms.db/carrierIdentification.db (+ -journal) under /data/user_de/0/com.android.providers.telephony/databases/, restart. See docs/INCIDENTS.md.
+Bad operation #	corrupt appops.xml (cross-version /data reuse) -> adb root; mv /data/system/appops.xml aside, restart. See docs/INCIDENTS.md.
+There must be exactly one installer	package-restrictions.xml corrupted (e.g. after disabling com.android.packageinstaller, which must never be disabled) -> adb root; mv /data/system/users/0/package-restrictions.xml aside, restart, then re-run scripts/tune-android.sh.
