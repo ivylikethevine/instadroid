@@ -17,23 +17,12 @@ feed server uses too.
 
 import sqlite3
 import time
-from datetime import datetime, timedelta
-from pathlib import Path
 
 from shared import control as files
 from shared import sqlrows
 
 from . import config
 from .common import log
-
-
-def _path(name: str) -> Path:
-    return Path(config.CONTROL_DIR) / name
-
-
-def lock_age(now: float | None = None) -> timedelta | None:
-    """How long the lock has been in place, or None when there is none."""
-    return files.lock_age(config.CONTROL_DIR, now)
 
 
 def locked(now: float | None = None) -> bool:
@@ -49,20 +38,16 @@ def request_run_now() -> None:
     files.request_run_now(config.CONTROL_DIR)
 
 
-def minutes_since_last_run(con: sqlite3.Connection, now: datetime | None = None) -> float | None:
-    return files.minutes_since(sqlrows.scalar(con.execute("SELECT MAX(finished_at) FROM runs")), now)
-
-
 def take_run_now(con: sqlite3.Connection) -> bool:
     """True, deleting the request, when a scrape-now request exists and the last run finished at least
     RUN_NOW_MIN_MINUTES ago. A request that's too early stays for a later check."""
-    path = _path(files.RUN_NOW)
-    if not path.exists():
+    if not files.run_now_requested(config.CONTROL_DIR):
         return False
-    since = minutes_since_last_run(con)
-    if since is not None and since < config.RUN_NOW_MIN_MINUTES:
+    # Runs are inserted as they finish, so the newest id is the latest finish (feedserver/queries.py).
+    finished_at = sqlrows.scalar(con.execute("SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1"))
+    if not files.run_now_due(files.minutes_since(finished_at), config.RUN_NOW_MIN_MINUTES):
         return False
-    path.unlink(missing_ok=True)
+    (config.CONTROL_DIR / files.RUN_NOW).unlink(missing_ok=True)
     log("scrape-now requested; starting a run")
     return True
 
@@ -80,12 +65,11 @@ def wait(con: sqlite3.Connection, seconds: float) -> None:
 
 def wait_while_locked() -> None:
     """Hold here while the lock is in place, logging once; warn about a lock left long enough to ignore."""
+    lock = config.CONTROL_DIR / files.LOCK
     if locked():
-        log(f"{_path(files.LOCK)} is in place; holding scheduled runs until it's removed")
+        log(f"{lock} is in place; holding scheduled runs until it's removed")
         while locked():
             time.sleep(config.CONTROL_POLL_SECONDS)
         log("lock removed; resuming")
-    elif (age := lock_age()) is not None:
-        log(
-            f"WARN: ignoring {_path(files.LOCK)}: it's {age.total_seconds() / 3600:.1f}h old (LOCK_MAX_HOURS)"
-        )
+    elif (age := files.lock_age(config.CONTROL_DIR)) is not None:
+        log(f"WARN: ignoring {lock}: it's {age.total_seconds() / 3600:.1f}h old (LOCK_MAX_HOURS)")

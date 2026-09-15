@@ -66,7 +66,7 @@ any host you haven't personally tested it on).
 
 Switching `docker-compose.yml` to a different Android major version against the same
 `local/data/android` volume is what corrupted system state repeatedly here, so compose now refuses:
-a one-shot `android-data-guard` service runs before redroid, records the image in
+the one-shot `init` service runs before redroid, records the image in
 `local/data/android.image`, and fails with instructions when the configured image's Android version
 differs. Give another Android version its own volume instead.
 
@@ -264,7 +264,7 @@ everything else it reconciles. Each run's `/status` page shows how many posts a 
 > **Rule: all Python code must be 100% type annotated and at least 90% covered by tests.** That means
 > app code, scripts and tests alike, with no `Any`, `cast()` or type-checker suppressions. CI enforces
 > both: basedpyright strict (with `reportAny`) and ruff's annotation rules for the first, and
-> `--cov-fail-under=90` over `app/` for the second. A change that lowers either doesn't merge.
+> coverage's `fail_under = 90` over `app/` (pyproject.toml) for the second. A change that lowers either doesn't merge.
 
 ```bash
 python -m venv local/.venv && . local/.venv/bin/activate

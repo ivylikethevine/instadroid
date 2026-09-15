@@ -11,7 +11,7 @@ from instadroid import alerts, config
 from shared.sqlrows import SqlValue
 
 from tests.feedclient import make_app
-from tests.support import record_run_ago, sql_column
+from tests.support import UrlResponse, record_run_ago, sql_column
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
 CHALLENGE = "RuntimeError(\"Instagram wants a human: 'Confirm it's you' screen; see /debug\")"
@@ -36,19 +36,9 @@ def _run(con: sqlite3.Connection, hours_ago: float, error: str | None = None) ->
 def sent(monkeypatch: pytest.MonkeyPatch) -> list[urllib.request.Request]:
     requests: list[urllib.request.Request] = []
 
-    class Response:
-        def __enter__(self) -> Response:
-            return self
-
-        def __exit__(self, *exc: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return b""
-
-    def urlopen(request: urllib.request.Request, timeout: float) -> Response:
+    def urlopen(request: urllib.request.Request, timeout: float) -> UrlResponse:
         requests.append(request)
-        return Response()
+        return UrlResponse()
 
     monkeypatch.setattr(config, "ALERT_URL", "https://ntfy.example/instadroid-topic?auth=secret")
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)

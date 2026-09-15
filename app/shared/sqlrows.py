@@ -57,6 +57,11 @@ def cell(row: sqlite3.Row, key: int | str) -> SqlValue:
     raise TypeError(f"column {key!r} holds {type(value).__name__}, not an SQLite value")
 
 
+def values(row: sqlite3.Row) -> tuple[SqlValue, ...]:
+    """Every value of a row, in column order (what tuple(row) gives)."""
+    return tuple(cell(row, i) for i in range(len(row)))
+
+
 def cell_str(row: sqlite3.Row, key: int | str) -> str | None:
     """A TEXT column (or NULL)."""
     value = cell(row, key)

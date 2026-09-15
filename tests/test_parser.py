@@ -3,6 +3,7 @@ from pathlib import Path
 
 import igprofiles
 import pytest
+from igprofiles.screens import id_matches
 from instadroid import capture, common, config, device, parsing, stories, versioning
 
 FIXTURE = igprofiles.fixture("v424", "feed_445.xml").read_text()
@@ -59,6 +60,13 @@ def test_card_without_caption_or_alt_is_excluded() -> None:
       <node text="2 hours ago" />
     </node></node></hierarchy>"""
     assert parsing.parse_hierarchy(xml) == []
+
+
+def test_resource_ids_match_on_a_whole_id_segment_or_the_full_id() -> None:
+    assert id_matches("com.instagram.android:id/row_feed_button_share", "row_feed_button_share")
+    assert id_matches("android:id/list", "android:id/list")  # a selector holding a full id
+    assert not id_matches("com.instagram.android:id/big_row_feed_button_share", "row_feed_button_share")
+    assert not id_matches("com.instagram.android:id/list", "android:id/list")
 
 
 # A Reel tagged with collaborators ("<user> and N others"), modeled on a real dump captured live

@@ -7,6 +7,7 @@ from html import escape
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+from shared.errors import short_error
 from shared.sqlrows import cell_int, has_column, opt_int, opt_str
 from shared.timestamps import parse_iso
 
@@ -61,13 +62,6 @@ def health() -> Health | JSONResponse:
 
 
 # --- the status page's cells ------------------------------------------------------------------------
-
-
-def short_error(error: str, limit: int = 140) -> str:
-    """First line only, capped: some exceptions (e.g. a uiautomator2 server crash) embed a whole
-    multi-KB Java stack trace in their own str(), which would otherwise blow up this table."""
-    first_line = error.split("\n", 1)[0]
-    return first_line[: limit - 1] + "…" if len(first_line) > limit else first_line
 
 
 def _duration(run: sqlite3.Row) -> str:

@@ -57,7 +57,7 @@ def no_alert_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def control_files_in_tmp(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     """The poll loop's lock and scrape-now files live in a throwaway directory, never /db."""
-    monkeypatch.setattr(config, "CONTROL_DIR", str(tmp_path_factory.mktemp("control")))
+    monkeypatch.setattr(config, "CONTROL_DIR", tmp_path_factory.mktemp("control"))
 
 
 @pytest.fixture(autouse=True)
@@ -94,16 +94,11 @@ def fast_offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def con(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
-    """A fresh database (db_init()) at tmp_path/posts.sqlite, with an empty media directory tmp_path/media.
-    A module needing more settings overrides it: `def con(con: sqlite3.Connection, monkeypatch) -> ...`."""
+    """A fresh database (db_init()) at tmp_path/posts.sqlite, with an empty media directory tmp_path/media
+    (config.MEDIA_DIR). A module needing more settings overrides it:
+    `def con(con: sqlite3.Connection, monkeypatch) -> ...`."""
     media = tmp_path / "media"
     media.mkdir()
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
     monkeypatch.setattr(config, "MEDIA_DIR", media)
     return db.db_init()
-
-
-@pytest.fixture
-def con_and_media(con: sqlite3.Connection, tmp_path: Path) -> tuple[sqlite3.Connection, Path]:
-    """con, with its media directory."""
-    return con, tmp_path / "media"

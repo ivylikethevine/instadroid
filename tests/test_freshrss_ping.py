@@ -8,6 +8,8 @@ import urllib.request
 import pytest
 from instadroid import common, config, scrape
 
+from tests.support import UrlResponse
+
 
 def test_disabled_when_freshrss_refresh_url_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "FRESHRSS_REFRESH_URL", "")
@@ -35,17 +37,6 @@ def test_no_op_when_nothing_new_was_stored(monkeypatch: pytest.MonkeyPatch) -> N
     assert calls == []
 
 
-class _Resp:
-    def __enter__(self) -> _Resp:
-        return self
-
-    def __exit__(self, *a: object) -> bool:
-        return False
-
-    def read(self) -> bytes:
-        return b"OK"
-
-
 def test_fires_on_new_posts_and_appends_ajax_param(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         config, "FRESHRSS_REFRESH_URL", "http://127.0.0.1:8080/i/?c=feed&a=actualize&user=a&token=b"
@@ -53,9 +44,9 @@ def test_fires_on_new_posts_and_appends_ajax_param(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(config, "FRESHRSS_REFRESH_TIMEOUT", 5.0)
     requested: list[tuple[str, float | None]] = []
 
-    def fake_urlopen(url: str, timeout: float | None = None) -> _Resp:
+    def fake_urlopen(url: str, timeout: float | None = None) -> UrlResponse:
         requested.append((url, timeout))
-        return _Resp()
+        return UrlResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     assert scrape._ping_freshrss(2, 0) is None
@@ -69,8 +60,8 @@ def test_fires_on_new_stories_only(monkeypatch: pytest.MonkeyPatch) -> None:
         config, "FRESHRSS_REFRESH_URL", "http://127.0.0.1:8080/i/?c=feed&a=actualize&user=a&token=b"
     )
 
-    def fake_urlopen(url: str, timeout: float | None = None) -> _Resp:
-        return _Resp()
+    def fake_urlopen(url: str, timeout: float | None = None) -> UrlResponse:
+        return UrlResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     assert scrape._ping_freshrss(0, 1) is None
@@ -84,9 +75,9 @@ def test_does_not_duplicate_an_already_present_ajax_param(monkeypatch: pytest.Mo
     )
     requested: list[str] = []
 
-    def fake_urlopen(url: str, timeout: float | None = None) -> _Resp:
+    def fake_urlopen(url: str, timeout: float | None = None) -> UrlResponse:
         requested.append(url)
-        return _Resp()
+        return UrlResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     scrape._ping_freshrss(1, 0)
@@ -99,7 +90,7 @@ def test_connection_error_is_returned_not_raised(monkeypatch: pytest.MonkeyPatch
         config, "FRESHRSS_REFRESH_URL", "http://127.0.0.1:8080/i/?c=feed&a=actualize&user=a&token=b"
     )
 
-    def fake_urlopen(url: str, timeout: float | None = None) -> _Resp:
+    def fake_urlopen(url: str, timeout: float | None = None) -> UrlResponse:
         raise urllib.error.URLError("connection refused")
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -117,7 +108,7 @@ def test_log_and_error_redact_the_query_string_so_the_token_never_prints(
         "http://127.0.0.1:8080/i/?c=feed&a=actualize&user=alice&token=SECRETTOKEN",
     )
 
-    def fake_urlopen(url: str, timeout: float | None = None) -> _Resp:
+    def fake_urlopen(url: str, timeout: float | None = None) -> UrlResponse:
         raise urllib.error.URLError("nope")
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)

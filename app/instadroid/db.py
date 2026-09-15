@@ -142,7 +142,6 @@ def db_init() -> sqlite3.Connection:
             PRIMARY KEY (post_id, idx)
         )"""
     )
-    con.execute("CREATE INDEX IF NOT EXISTS media_post ON media(post_id)")
     con.execute(
         """CREATE TABLE IF NOT EXISTS accounts (
             username TEXT PRIMARY KEY,
@@ -169,10 +168,6 @@ def db_init() -> sqlite3.Connection:
     con.execute("CREATE INDEX IF NOT EXISTS stories_username ON stories(username)")
     con.execute("CREATE INDEX IF NOT EXISTS stories_scraped_at ON stories(scraped_at)")
     con.execute(
-        # The whole table is replaced atomically on every successful refresh (see
-        # navigation.refresh_following_list()) rather than upserted row by row, so an unfollow is reflected
-        # simply by that username's row no longer existing after the next refresh — every row
-        # shares the same updated_at, which also doubles as "when was this list last refreshed."
         # Open failure alerts, one row per kind (see alerts.update()); the feed server shows them.
         """CREATE TABLE IF NOT EXISTS alerts (
             kind TEXT PRIMARY KEY,
@@ -181,6 +176,10 @@ def db_init() -> sqlite3.Connection:
         )"""
     )
     con.execute(
+        # The whole table is replaced atomically on every successful refresh (see
+        # navigation.refresh_following_list()) rather than upserted row by row, so an unfollow is reflected
+        # simply by that username's row no longer existing after the next refresh — every row
+        # shares the same updated_at, which also doubles as "when was this list last refreshed."
         """CREATE TABLE IF NOT EXISTS following (
             username TEXT PRIMARY KEY,
             updated_at TEXT NOT NULL
@@ -352,7 +351,7 @@ def needs_avatar_refresh(con: sqlite3.Connection, username: str) -> bool:
 
 
 def needs_following_refresh(con: sqlite3.Connection) -> bool:
-    """Unlike _needs_avatar_refresh, this is a single global check, not per-account: the whole
+    """Unlike needs_avatar_refresh(), this is a single global check, not per-account: the whole
     Following list is captured (and replaced) in one pass, so there's one "when was this last
     done" timestamp, not one per row. No rows at all means never successfully refreshed."""
     return common.older_than(
@@ -397,8 +396,7 @@ def rename_account(con: sqlite3.Connection, old: str, new: str) -> int:
         )
         con.execute("DELETE FROM following WHERE username=?", (old,))
     con.commit()
-    if dropped_avatar:
-        (config.MEDIA_DIR / dropped_avatar).unlink(missing_ok=True)
+    retention.discard_media(dropped_avatar)
     return moved
 
 
@@ -474,7 +472,13 @@ def _migrate_story_retention(con: sqlite3.Connection) -> None:
         con.execute("ALTER TABLE stories DROP COLUMN expires_at")
 
 
-MIGRATIONS = (_migrate_dedupe, _migrate_accounts, _migrate_story_retention)
+def _migrate_drop_media_post_index(con: sqlite3.Connection) -> None:
+    """Migration 4: drop the media_post index, which duplicated the leftmost column of media's primary
+    key (post_id, idx) and so only cost writes."""
+    con.execute("DROP INDEX IF EXISTS media_post")
+
+
+MIGRATIONS = (_migrate_dedupe, _migrate_accounts, _migrate_story_retention, _migrate_drop_media_post_index)
 
 
 def find_duplicate(

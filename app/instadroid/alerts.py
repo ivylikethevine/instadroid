@@ -17,6 +17,7 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 
 from shared import sqlrows
+from shared.errors import short_error
 from shared.timestamps import parse_iso
 
 from . import common, config
@@ -44,10 +45,10 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
     ]
     latest_error = runs[0] if runs else None
     if latest_error and any(marker in latest_error for marker in _NEEDS_HUMAN):
-        found[LOGIN] = f"finish it in scrcpy: {latest_error.splitlines()[0][:300]}"
+        found[LOGIN] = f"finish it in scrcpy: {short_error(latest_error, 300)}"
     if config.ALERT_FAILED_RUNS > 0 and len(runs) >= config.ALERT_FAILED_RUNS and all(runs):
         found[FAILING] = (
-            f"the last {config.ALERT_FAILED_RUNS} runs failed; latest: {(latest_error or '').splitlines()[0][:300]}"
+            f"the last {config.ALERT_FAILED_RUNS} runs failed; latest: {short_error(latest_error or '', 300)}"
         )
     if config.ALERT_NO_POSTS_HOURS > 0:
         cutoff = now - timedelta(hours=config.ALERT_NO_POSTS_HOURS)

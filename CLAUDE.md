@@ -60,7 +60,7 @@ grant a Bash permission rule.
 Android 15 leftovers in Android 13's `./local/data/android` caused a string of crash loops
 (appops.xml, idmap cache, telephony.db; see `docs/INCIDENTS.md`). If a different Android version
 needs testing again, give it its own volume path (e.g. `./local/data/android-15`). Since 2026-09-14
-compose enforces this: the one-shot `android-data-guard` service (`scripts/guard-android-data.sh`)
+compose enforces this: the one-shot `init` service (`scripts/guard-android-data.sh`)
 records the image that last used the volume in `local/data/android.image`, and redroid won't start
 if the configured image is a different Android major version.
 

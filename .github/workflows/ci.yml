@@ -48,7 +48,8 @@ jobs:
       - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-deps -e .
       # pyproject.toml keeps coverage's data file in local/, which isn't in the checkout.
       - run: mkdir -p local
-      - run: python -m pytest -q --cov --cov-report=term --cov-fail-under=90
+      # The 90% floor is pyproject.toml's [tool.coverage.report] fail_under, which pytest-cov enforces.
+      - run: python -m pytest -q --cov --cov-report=term
       # The README's coverage badge is published by .github/workflows/pages.yml instead of here —
       # it re-runs coverage and serves coverage.json from the project's GitHub Pages site, so
       # publishing it doesn't need a `contents: write` grant or a dedicated orphan branch in CI.

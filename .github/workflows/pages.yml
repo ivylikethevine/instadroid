@@ -32,7 +32,7 @@ jobs:
           cache: pip
       - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-deps -e .
       - run: mkdir -p local # pyproject.toml keeps coverage's data file there
-      - run: python -m pytest -q --cov --cov-report=term --cov-fail-under=90
+      - run: python -m pytest -q --cov --cov-report=term
       - name: Total coverage
         id: coverage
         run: echo "percent=$(python -m coverage report --format=total)" >> "$GITHUB_OUTPUT"
@@ -47,7 +47,9 @@ jobs:
           case "$PERCENT" in
             ''|*[!0-9]*) echo "unexpected coverage value: '$PERCENT'" >&2; exit 1 ;;
           esac
-          if [ "$PERCENT" -ge 90 ]; then color=brightgreen
+          # Bright green from the project's floor, pyproject.toml's [tool.coverage.report] fail_under.
+          floor=$(python -c "import tomllib; print(int(tomllib.load(open('pyproject.toml', 'rb'))['tool']['coverage']['report']['fail_under']))")
+          if [ "$PERCENT" -ge "$floor" ]; then color=brightgreen
           elif [ "$PERCENT" -ge 75 ]; then color=green
           elif [ "$PERCENT" -ge 60 ]; then color=yellow
           else color=red

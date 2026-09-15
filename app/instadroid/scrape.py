@@ -237,8 +237,9 @@ def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.Memo
     config.DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     capture.reset_last_url(d)
     navigation.open_target_feed(d)
-    # Read after opening the feed, not from main()'s snapshot: opening it can install Instagram
-    # (ensure_logged_in's auto-install), which would leave an earlier reading stale or empty.
+    # Read after opening the feed, not from run_recorded()'s snapshot: opening it can install Instagram
+    # (ensure_logged_in's auto-install), which re-reads the version and would leave the snapshot's
+    # stale or empty.
     ig_version = device.instagram_version(d)
     if config.FOLLOWING_REFRESH_DAYS and db.needs_following_refresh(con):
         try:
@@ -329,8 +330,7 @@ def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.Memo
                     avatar = capture.capture_avatar(d, p["header_bounds"], u)
                     if avatar:
                         db.upsert_account(con, u, avatar)
-        touched = False
-        for p in posts:
+        for p in posts:  # at most one card per dump: handling a card breaks out to re-dump
             h = parsing.post_id(p)
             if h in this_run:
                 continue  # still on screen from the previous scroll
@@ -345,7 +345,6 @@ def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.Memo
                 if backfills_left > 0 and _needs_permalink(stored):
                     backfills_left -= 1
                     _backfill_permalink(d, con, stored, h, fail_reasons)
-                    touched = True
                     break  # the share sheet came and went; re-dump before the next card
                 continue
             settle = config.VIDEO_SETTLE_SECONDS if p["kind"] == "video" else 0
@@ -356,7 +355,6 @@ def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.Memo
                 log("no crop: media node not found for card")
             extra_media = capture.capture_carousel(d, p, h) if media and p["kind"] == "carousel" else []
             url = _fetch_permalink(d, h, fail_reasons)
-            touched = True
             if not url and link_failures.get(h, 0) < config.PERMALINK_RETRIES:
                 # The sheet sometimes fails to open; try again on a later screen.
                 link_failures[h] = link_failures.get(h, 0) + 1
@@ -389,15 +387,14 @@ def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.Memo
             else:
                 seen_streak += 1  # merged into a stored duplicate
             break  # the screen may have shifted; re-dump before handling the next card
-        if touched:
-            continue
-        log(f"screen {screens}: {len(posts)} cards, {new} new so far, seen-streak {seen_streak}")
-        if seen_streak >= config.STOP_AFTER_SEEN:
-            log("hit already-seen posts; stopping")
-            break
-        device.human_scroll(d)
-        device.human_pause(config.SCROLL_PAUSE_MIN, config.SCROLL_PAUSE_MAX)
-        screens += 1
+        else:  # nothing left to handle on this screen: scroll on
+            log(f"screen {screens}: {len(posts)} cards, {new} new so far, seen-streak {seen_streak}")
+            if seen_streak >= config.STOP_AFTER_SEEN:
+                log("hit already-seen posts; stopping")
+                break
+            device.human_scroll(d)
+            device.human_pause(config.SCROLL_PAUSE_MIN, config.SCROLL_PAUSE_MAX)
+            screens += 1
     retention.prune_old_posts(con)
     retention.prune_expired_stories(con)
     diagnostics.prune_debug_dumps()  # age-based pruning shouldn't depend on a new dump happening to be taken
