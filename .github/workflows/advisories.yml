@@ -49,16 +49,16 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
+          cache: pip
       # pip-audit from the hashed dev lock, as in ci.yml's audit job. With --disable-pip it reads the locks
-      # instead of installing them.
+      # instead of installing them. npm audit needs no setup-node: it only reads the lock, with the
+      # runner's own npm.
       - run: pip install --require-hashes -r requirements-dev.txt
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22"
 
-      # Each tool exits non-zero on a finding and on a failure alike. pip-audit writes its table only when
-      # it finds something, and npm audit's JSON carries a vulnerability count only when the audit ran, so
-      # a failed audit fails the job instead of opening an issue.
+      # Each tool exits non-zero on a finding and on a failure alike. pip-audit (ci.yml's audit command,
+      # scripts/check.sh audit, with a Markdown report) writes its table only when it finds something, and
+      # npm audit's JSON carries a vulnerability count only when the audit ran, so a failed audit fails the
+      # job instead of opening an issue.
       - id: audit
         name: Audit the locks
         run: |
@@ -70,8 +70,7 @@ jobs:
           echo "regenerated lock ([CONTRIBUTING.md]($contributing))." >>"$report"
 
           rc=0
-          pip-audit --disable-pip --require-hashes -r app/requirements.txt -r requirements-dev.txt \
-            --format markdown --output "$RUNNER_TEMP/pip-audit.md" || rc=$?
+          PIP_AUDIT_ARGS="--format markdown --output $RUNNER_TEMP/pip-audit.md" scripts/check.sh audit || rc=$?
           if [ "$rc" -ne 0 ]; then
             if [ ! -s "$RUNNER_TEMP/pip-audit.md" ]; then
               echo "::error title=pip-audit::the audit did not run (exit $rc)"

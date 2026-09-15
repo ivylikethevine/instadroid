@@ -59,9 +59,10 @@ Nothing else is manual: the pipeline below runs unattended, with no approval ste
 ## What the tag triggers
 
 Pushing a `v*` tag runs `.github/workflows/publish.yml`: **gate → build → scan → publish → release**.
-Each job needs every job before it, so nothing is tagged or released unless the gate, the build and
-the scan all passed. Releases run **unattended**; the checks are release tag protection, so only the
-maintainer can push one, and the jobs themselves:
+Each job needs the one before it, and a job is skipped when one it needs failed or was skipped, so
+nothing is tagged or released unless the gate, the build and the scan all passed. Releases run
+**unattended**; the checks are release tag protection, so only the maintainer can push one, and the
+jobs themselves:
 
 1. **`gate`** refuses to go on unless the tag is `vX.Y.Z` or `vX.Y.Z-<prerelease>`; it's a signed,
    annotated tag that verifies (`git tag -v`) against `.github/allowed_signers`, and still points at
