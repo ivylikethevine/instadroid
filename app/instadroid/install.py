@@ -106,8 +106,8 @@ def install_instagram(d: uidevice.Device, version: str | None = None, downgrade:
 
 
 def install_instagram_version(d: uidevice.Device, version: str | None = None) -> str | None:
-    """`scraper.py install [VERSION]`: put exactly `version` (default: the active profile's
-    apk_version, see _apk_version(); "latest" = newest on APKPure) on the device, replacing whatever
+    """`scraper.py install [VERSION]`: put exactly `version` (default: IG_APK_VERSION, else
+    the default build, see _apk_version(); "latest" = newest on APKPure) on the device, replacing whatever
     is installed, including a newer version. A no-op if that version is already installed. Returns
     the installed versionName.
 

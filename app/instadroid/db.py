@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import ReadOnly, TypedDict, Unpack
 
 from shared import sqlrows
+from shared.timestamps import parse_iso
 
 from . import common, config, device, parsing, retention
 from .common import log
@@ -49,7 +50,7 @@ class StoredPost(TypedDict):
 
 
 class RunMetrics(TypedDict, total=False):
-    """The runs columns a scrape reports besides its new post count (scrape.RunStats)."""
+    """The runs columns a scrape reports besides its new post count (scrape.RunStats's `metrics`)."""
 
     link_sheet_failures: int
     link_clipboard_failures: int
@@ -250,7 +251,8 @@ def record_run(
     **stats: Unpack[RunMetrics],
 ) -> None:
     """Insert one runs row. `snapshot` (see device.device_snapshot()) and `stats` are keyed by runs column
-    name, so a new metric only needs its column in db_init() and a key in scrape._scrape_feed()'s result."""
+    name, so a new metric only needs its column in db_init(), a RunMetrics key, and a value in
+    scrape._scrape_feed()'s `metrics`."""
     row: RunRow = {
         "started_at": started_at,
         "finished_at": finished_at,
@@ -405,7 +407,7 @@ def _safe_parse_posted_at(
 ) -> tuple[datetime | None, int | None]:
     """parsing.parse_posted_at(), tolerant of a malformed/legacy scraped_at that fromisoformat rejects.
     Returns (None, None) instead of raising, so one corrupt row can't abort the whole migration."""
-    now = common.parse_iso(scraped_at_iso)
+    now = parse_iso(scraped_at_iso)
     return (now and posted_date and parsing.parse_posted_at(posted_date, now)) or (None, None)
 
 

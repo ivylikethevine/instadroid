@@ -6,14 +6,14 @@ import igprofiles
 import pytest
 from instadroid import capture, config, db, device, diagnostics, versioning
 
-V440 = igprofiles.load("v424")
+V424 = igprofiles.load("v424")
 
 
 @pytest.fixture(autouse=True)
-def profile_v440(monkeypatch: pytest.MonkeyPatch) -> None:
+def profile_v424(monkeypatch: pytest.MonkeyPatch) -> None:
     """The fake screens were written against Instagram 445, which the root profile v424 covers, so the
     suite as a whole is the v424 regression suite: pin that profile unless a test selects another."""
-    monkeypatch.setattr(versioning, "PROFILE", V440)
+    monkeypatch.setattr(versioning, "PROFILE", V424)
     monkeypatch.setattr(versioning, "PROFILE_WARNING", None)
     # Explicit rather than "": activate_profile() re-resolves the profile on every connect/install, and
     # an empty IG_PROFILE follows the installed version, which a future profile could claim.
@@ -93,12 +93,17 @@ def fast_offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def con_and_media(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[sqlite3.Connection, Path]:
-    """A fresh database (db_init()) and media directory under tmp_path."""
-    db_file = tmp_path / "posts.sqlite"
+def con(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
+    """A fresh database (db_init()) at tmp_path/posts.sqlite, with an empty media directory tmp_path/media.
+    A module needing more settings overrides it: `def con(con: sqlite3.Connection, monkeypatch) -> ...`."""
     media = tmp_path / "media"
     media.mkdir()
-    monkeypatch.setattr(config, "DB_PATH", str(db_file))
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
     monkeypatch.setattr(config, "MEDIA_DIR", media)
-    con = db.db_init()
-    return con, media
+    return db.db_init()
+
+
+@pytest.fixture
+def con_and_media(con: sqlite3.Connection, tmp_path: Path) -> tuple[sqlite3.Connection, Path]:
+    """con, with its media directory."""
+    return con, tmp_path / "media"

@@ -15,8 +15,9 @@ from instadroid import (
     uidevice,
 )
 
-from tests.deviceflows import StopLoop, feed_device, stop_after_first_sleep, values
+from tests.deviceflows import StopLoop, feed_device, stop_after_first_sleep
 from tests.fakedevice import FakeDevice, Out
+from tests.support import fetch_row, row_values
 
 pytestmark = pytest.mark.usefixtures("fast_offline")
 
@@ -119,57 +120,57 @@ def test_memory_guard_stops_the_run_before_the_limit(monkeypatch: pytest.MonkeyP
     d = with_cgroup(
         feed_device(), [cgroup_output(900), cgroup_output(1200), cgroup_output(1500), cgroup_output(2700)]
     )
-    stats = scrape.scrape_once(d, db.db_init())
-    assert stats["warning"] is not None
-    assert "stopped early: redroid memory at 2700 of 3072 MiB (MEMORY_GUARD_PERCENT=85)" in stats["warning"]
-    assert stats.get("mem_peak_mb") == 2700
-    assert stats.get("oom_kills") == 0
+    metrics = scrape.scrape_once(d, db.db_init())["metrics"]
+    warning = metrics.get("warning")
+    assert warning is not None
+    assert "stopped early: redroid memory at 2700 of 3072 MiB (MEMORY_GUARD_PERCENT=85)" in warning
+    assert metrics.get("mem_peak_mb") == 2700
+    assert metrics.get("oom_kills") == 0
 
 
 def test_memory_guard_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MEMORY_GUARD_PERCENT", 0)
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
-    stats = scrape.scrape_once(with_cgroup(feed_device(), [cgroup_output(3000)]), db.db_init())
-    assert not (stats["warning"] or "").startswith("stopped early")
-    assert stats.get("mem_peak_mb") == 3000  # still measured
+    metrics = scrape.scrape_once(with_cgroup(feed_device(), [cgroup_output(3000)]), db.db_init())["metrics"]
+    assert not (metrics.get("warning") or "").startswith("stopped early")
+    assert metrics.get("mem_peak_mb") == 3000  # still measured
 
 
 def test_memory_guard_skips_stories_when_already_over(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
     d = with_cgroup(feed_device(), [cgroup_output(2900)])
-    stats = scrape.scrape_once(d, db.db_init())
-    assert stats["new_stories"] == 0
-    assert stats["warning"] is not None
-    assert "skipped stories: redroid memory at 2900 of 3072 MiB" in stats["warning"]
+    metrics = scrape.scrape_once(d, db.db_init())["metrics"]
+    assert metrics.get("new_stories") == 0
+    warning = metrics.get("warning")
+    assert warning is not None
+    assert "skipped stories: redroid memory at 2900 of 3072 MiB" in warning
 
 
 def test_oom_kills_during_a_run_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
     d = with_cgroup(feed_device(), [cgroup_output(900, oom_kill=7), cgroup_output(1000, oom_kill=9)])
-    stats = scrape.scrape_once(d, db.db_init())
-    assert stats.get("oom_kills") == 2
-    assert stats["warning"] is not None
-    assert "redroid OOM-killed 2 Android process(es)" in stats["warning"]
+    metrics = scrape.scrape_once(d, db.db_init())["metrics"]
+    assert metrics.get("oom_kills") == 2
+    warning = metrics.get("warning")
+    assert warning is not None
+    assert "redroid OOM-killed 2 Android process(es)" in warning
 
 
 def test_main_records_memory_stats(fast_offline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     stop_after_first_sleep(monkeypatch)
     monkeypatch.setattr(device, "connect_device", feed_device)
-    stats: dict[str, int | None] = {
+    stats: scrape.RunStats = {
         "new": 0,
-        "new_stories": 0,
-        "warning": None,
-        "mem_peak_mb": 1843,
-        "oom_kills": 1,
+        "metrics": {"new_stories": 0, "warning": None, "mem_peak_mb": 1843, "oom_kills": 1},
     }
 
-    def fake_scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> dict[str, int | None]:
+    def fake_scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> scrape.RunStats:
         return stats
 
     monkeypatch.setattr(scrape, "scrape_once", fake_scrape_once)
     with pytest.raises(StopLoop):
         scrape.main()
-    stored = values(sqlite3.connect(fast_offline / "posts.sqlite"), "SELECT mem_peak_mb, oom_kills FROM runs")
-    assert stored[0] == (1843, 1)
+    con = sqlite3.connect(fast_offline / "posts.sqlite")
+    assert row_values(fetch_row(con.execute("SELECT mem_peak_mb, oom_kills FROM runs"))) == (1843, 1)

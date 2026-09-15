@@ -1,14 +1,17 @@
-"""Typed reads of what the tests get back: JSON bodies and SQLite rows (json.loads and sqlite3 both hand
-back Any)."""
+"""Typed reads of what the tests get back, JSON bodies and SQLite rows (json.loads and sqlite3 both hand
+back Any; the row reads build on shared.sqlrows), and database seeding shared across test modules."""
 
 import sqlite3
-from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Unpack
 
 from devtools.jsonvalues import JSON as Json
 from devtools.jsonvalues import loads
 from httpx2 import Response
+from instadroid import db
+from shared import sqlrows
+from shared.sqlrows import SqlValue
 
 
 def parse_json(text: str | bytes) -> Json:
@@ -35,42 +38,40 @@ def json_at(value: Json, *path: str) -> Json:
     return value
 
 
-# What sqlite3 hands back for a column (no converters are registered).
-type SqlValue = str | int | float | bytes | None
-
-
-def sql_value(value: object) -> SqlValue:
-    assert value is None or isinstance(value, str | int | float | bytes), value
-    return value
-
-
-def sql_rows(rows: Iterable[Iterable[object]]) -> list[tuple[SqlValue, ...]]:
-    """Every row of a cursor (plain tuples or sqlite3.Row), with each column typed as a sqlite value."""
-    return [tuple(sql_value(v) for v in row) for row in rows]
-
-
-def sql_dict(row: sqlite3.Row) -> dict[str, SqlValue]:
-    """A sqlite3.Row as a column -> value dict."""
-    return dict(zip(row.keys(), sql_rows([row])[0], strict=True))
-
-
-def fetch_row(rows: Iterable[object]) -> sqlite3.Row:
-    """The first row of a cursor whose connection uses sqlite3.Row, which must have one."""
-    row = next(iter(rows), None)
-    assert isinstance(row, sqlite3.Row), row
+def fetch_row(cur: sqlite3.Cursor) -> sqlite3.Row:
+    """The cursor's next row, which must exist."""
+    row = sqlrows.fetch_one(cur)
+    assert row is not None, "the query returned no rows"
     return row
 
 
-def sql_row(rows: Iterable[Iterable[object]]) -> tuple[SqlValue, ...]:
-    """The first row of a cursor, which must have one."""
-    found = sql_rows(rows)
-    assert found, "the query returned no rows"
-    return found[0]
+def row_values(row: sqlite3.Row) -> tuple[SqlValue, ...]:
+    """A row as a plain tuple, to compare with one."""
+    return tuple(sqlrows.cell(row, i) for i in range(len(row)))
 
 
-def sql_column(rows: Iterable[Iterable[object]]) -> list[SqlValue]:
-    """The first column of every row."""
-    return [row[0] for row in sql_rows(rows)]
+def row_dict(row: sqlite3.Row) -> dict[str, SqlValue]:
+    """A row as {column: value}."""
+    return dict(zip(row.keys(), row_values(row), strict=True))
+
+
+def sql_column(cur: sqlite3.Cursor) -> list[SqlValue]:
+    """The first column of every remaining row."""
+    return [sqlrows.cell(row, 0) for row in sqlrows.fetch_all(cur)]
+
+
+def record_run_ago(
+    con: sqlite3.Connection,
+    minutes: float,
+    error: str | None = None,
+    *,
+    now: datetime | None = None,
+    **stats: Unpack[db.RunMetrics],
+) -> None:
+    """A runs row that started and finished `minutes` before `now` (default: the current time), with no
+    device snapshot and no new posts."""
+    at = ((now or datetime.now(UTC)) - timedelta(minutes=minutes)).isoformat()
+    db.record_run(con, at, at, 0, error, {}, **stats)
 
 
 def insert_post(

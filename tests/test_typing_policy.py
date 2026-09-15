@@ -4,9 +4,9 @@ and reports Any values (reportAny). What's left is a suppression comment that si
 itself, or a noqa that switches off the annotation rules, and that's what this test catches."""
 
 import re
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from devtools import ROOT
+
 SOURCES = sorted(
     p
     for top in ("app", "tests", "typings")

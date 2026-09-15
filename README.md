@@ -268,7 +268,7 @@ everything else it reconciles. Each run's `/status` page shows how many posts a 
 
 ```bash
 python -m venv local/.venv && . local/.venv/bin/activate
-pip install --require-hashes -r requirements-dev.txt   # locked dev tools + app requirements
+pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt   # the hashed locks
 pip install --no-deps -e .             # app/ on the path, and the dev commands
 ruff check . && ruff format --check . && basedpyright
 pytest -q                              # parser, feed, and device-flow tests; temp SQLite db
@@ -303,7 +303,7 @@ All Python code, tests included, is fully typed with no `Any`:
   `typings/`.
 
 The feed server's OpenAPI spec is committed as [`docs/openapi.json`](docs/openapi.json) and published
-with the project site. `tests/test_openapi.py` compares it with the routes, so CI fails until the spec
+with the project site. `export-openapi --check` (run by `tests/test_scripts_cli.py`) compares it with the routes, so CI fails until the spec
 is regenerated after a route change.
 
 The device-driving code (login, feed navigation, share sheet, carousels, stories, the scrape loop)

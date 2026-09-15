@@ -2,8 +2,8 @@
 re-import the package under a different environment (tests/feedclient.py)."""
 
 import os
-from pathlib import Path
 
+from shared import control
 from shared.fileenv import env_secret
 
 DB_PATH = os.environ.get("DB_PATH", "/db/posts.sqlite")
@@ -16,7 +16,7 @@ FEED_HOST = os.environ.get("FEED_HOST", "127.0.0.1")
 # carrying it, so a reader's image loads work without exposing the token itself. Empty = no auth.
 FEED_TOKEN = env_secret("FEED_TOKEN")
 MAX_LIMIT = 500
-# The scraper's manual-control files (instadroid/control.py), read from the same environment.
-CONTROL_DIR = Path(os.environ.get("CONTROL_DIR", "") or Path(DB_PATH).parent)
-LOCK_MAX_HOURS = float(os.environ.get("LOCK_MAX_HOURS", "6"))
-RUN_NOW_MIN_MINUTES = float(os.environ.get("RUN_NOW_MIN_MINUTES", "30"))
+# The scraper's manual-control files (shared/control.py), read from the same environment the same way.
+CONTROL_DIR = control.env_control_dir(DB_PATH)
+LOCK_MAX_HOURS = control.env_lock_max_hours()
+RUN_NOW_MIN_MINUTES = control.env_run_now_min_minutes()
