@@ -15,3 +15,8 @@ MD013:
   stern: false
   code_blocks: false
   heading_line_length: 9999
+
+# MD025/single-h1: the docs/ pages carry a Jekyll front-matter `title:` for the
+# site's <title> and an `# H1` for the page itself; only the H1 counts.
+MD025:
+  front_matter_title: ""
