@@ -15,7 +15,9 @@
 #      narrows it to another event (`github.event_name == '<event>'`, no `||`,
 #      and no comparison of event_name against workflow_run)
 #   5. every third-party `uses:` is pinned to a 40-hex commit SHA followed by
-#      a `# vX.Y.Z` comment (local `./`, `$/` and `docker://` refs are exempt)
+#      a `# vX.Y.Z` comment (local `./` and `docker://` refs are exempt; a
+#      `$/` self-repository ref is rejected, as Scorecard reads it as an
+#      unpinned third-party action)
 #   6. every job's first step is step-security/harden-runner with an explicit
 #      egress-policy, audit or block (reusable-workflow calls have no steps
 #      and are exempt; the action's own default is `block`, which with no
@@ -148,7 +150,11 @@ EOF_MSGS
     ref="${BASH_REMATCH[2]}"
     rest="${BASH_REMATCH[3]}"
     case "$ref" in
-    ./* | '$/'* | docker://*) continue ;;
+    ./* | docker://*) continue ;;
+    '$/'*)
+      report "$file:$n" "uses: $ref: use a ./ ref (Scorecard reads \$/ as an unpinned third-party action)"
+      continue
+      ;;
     esac
     if ! [[ "$ref" =~ $_lw_sha_re ]]; then
       report "$file:$n" "uses: $ref is not pinned to a 40-hex commit SHA"

@@ -147,7 +147,7 @@ jobs:
         with:
           persist-credentials: false
       # shellcheck from tools.txt (sha256-verified); .shellcheckrc lets it follow `source` lines.
-      - uses: $/.github/actions/setup-tool
+      - uses: ./.github/actions/setup-tool
         with:
           tool: shellcheck
       # shfmt comes from the pinned dev requirements and reads its style from .editorconfig.
@@ -177,7 +177,7 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: .github/package-lock.json
-      - uses: $/.github/actions/setup-tool
+      - uses: ./.github/actions/setup-tool
         with:
           tool: lychee
       # typos (.typos.toml) from the pinned dev requirements; the same Python runs the docs drift check.
@@ -208,14 +208,14 @@ jobs:
         with:
           persist-credentials: false
       # hadolint and trivy from tools.txt (sha256-verified); hadolint reads .hadolint.yaml.
-      - uses: $/.github/actions/setup-tools
+      - uses: ./.github/actions/setup-tools
         with:
           tools: hadolint trivy
       # Advisory: a finding is a warning and a step summary, never a failed job.
       - id: hadolint
         run: scripts/check.sh hadolint
       - if: steps.hadolint.outputs.hadolint-findings == 'true'
-        uses: $/.github/actions/advisory-note
+        uses: ./.github/actions/advisory-note
         with:
           title: hadolint
           warning-body: hadolint has findings in app/Dockerfile - advisory, not blocking
@@ -252,7 +252,7 @@ jobs:
             printf '### Trivy image scan\n\nNo fixable HIGH or CRITICAL findings in the built image.\n' >>"$GITHUB_STEP_SUMMARY"
           fi
       - if: steps.trivy.outputs.findings != '0'
-        uses: $/.github/actions/advisory-note
+        uses: ./.github/actions/advisory-note
         with:
           title: trivy
           warning-body: Trivy found fixable HIGH/CRITICAL vulnerabilities in the built image - advisory here, blocking at release
@@ -313,9 +313,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # From tools.txt (sha256-verified): a fork of actionlint that understands the `$/.github/actions/...`
-      # local refs these workflows use, plus the pinned shellcheck it runs over `run:` blocks.
-      - uses: $/.github/actions/setup-tools
+      # From tools.txt (sha256-verified): actionlint, plus the pinned shellcheck it runs over `run:` blocks.
+      - uses: ./.github/actions/setup-tools
         with:
           tools: actionlint shellcheck
       # actionlint, then .github/scripts/lint_workflows.sh's structural rules (timeouts, checkout

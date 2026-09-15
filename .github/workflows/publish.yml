@@ -205,7 +205,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # The tools.txt pin, sha256-verified; the vulnerability database is downloaded fresh on every scan.
-      - uses: $/.github/actions/setup-tool
+      - uses: ./.github/actions/setup-tool
         with:
           tool: trivy
       # One scan as JSON, converted to the table and the SARIF in $RUNNER_TEMP; a scan that didn't run fails
