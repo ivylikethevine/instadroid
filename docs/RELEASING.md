@@ -72,7 +72,10 @@ jobs themselves:
    runs don't count. If CI is still running, the gate waits for it, up to 20 minutes.
 2. **`build`** builds the app image with no build cache, so a stale `apt-get upgrade` layer can't
    ship, and pushes it to GHCR **by digest only**, with no tag. BuildKit stores an SBOM and full
-   (`mode=max`) build provenance in the pushed index. It then smoke-tests that exact digest
+   (`mode=max`) build provenance in the pushed index. The standard `org.opencontainers.image.*`
+   metadata (title, description, source, documentation, licenses, version, revision, created) goes
+   in both as image labels and as manifest and index annotations, which GHCR's package page shows;
+   it's set here because `publish` only retags. It then smoke-tests that exact digest
    (`.github/scripts/smoke-test.sh`). A broken build fails here, before anything a user could pull by
    tag exists.
 3. **`scan`** runs Trivy over that digest and **blocks the release on any fixable HIGH or CRITICAL
