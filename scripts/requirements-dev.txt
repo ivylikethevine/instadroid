@@ -7,3 +7,4 @@ basedpyright==1.40.1
 lxml-stubs==0.5.1
 import-linter==2.15
 shfmt-py==4.2.0
+typos==1.50.1

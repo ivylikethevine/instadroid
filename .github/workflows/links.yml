@@ -1,0 +1,27 @@
+name: Links
+
+# External links in the docs, weekly and on demand. Pull requests only check relative links and
+# fragments (ci.yml's docs job), so a site that's briefly down can't block a merge.
+on:
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    name: External links (lychee)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: --include-fragments --no-progress --max-retries 3 './**/*.md'
+          fail: true
+        env:
+          # Authenticated GitHub requests, so github.com links aren't rate-limited.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
