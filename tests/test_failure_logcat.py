@@ -37,7 +37,7 @@ LOGCAT = """\
 
 def test_filter_logcat_keeps_errors_fatals_and_known_signatures(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "LOGCAT_TAIL_LINES", 2000)
-    kept = diagnostics._filter_logcat(LOGCAT)
+    kept: list[str] = diagnostics._filter_logcat(LOGCAT)
     assert [line.split(": ", 1)[0].split()[-1] for line in kept] == [
         "AndroidRuntime",
         "libc",
@@ -59,20 +59,22 @@ def test_save_failure_logcat_writes_a_filtered_file(
         return subprocess.CompletedProcess(cmd, 0, stdout=LOGCAT, stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    path = SAVE_FAILURE_LOGCAT("DeviceNotReady('could not bring com.instagram.android to the foreground')")
+    path: Path | None = SAVE_FAILURE_LOGCAT(
+        "DeviceNotReady('could not bring com.instagram.android to the foreground')"
+    )
     assert path is not None
     assert calls == [["adb", "-s", config.ADB_ADDR, "logcat", "-d", "-v", "threadtime"]]
     assert path.parent == config.DEBUG_DIR and path.name.startswith("logcat_") and path.suffix == ".txt"
-    text = path.read_text()
+    text: str = path.read_text()
     assert text.startswith("# run failed: DeviceNotReady('could not bring")
     assert "FATAL EXCEPTION" in text and "Something: chatter" not in text
-    fixes = diagnostics.CRASH_SIGNATURES
+    fixes: dict[str, str] = diagnostics.CRASH_SIGNATURES
     assert f"# seen 'WATCHDOG KILLING': {fixes['WATCHDOG KILLING']}" in text  # the fix diagnose.sh prints
     assert "Idmap" not in text
 
 
 def test_crash_signatures_load_from_the_table_diagnose_sh_reads() -> None:
-    signatures = diagnostics.load_crash_signatures()
+    signatures: dict[str, str] = diagnostics.load_crash_signatures()
     assert list(signatures)[:2] == ["WATCHDOG KILLING", "FATAL EXCEPTION"]
     assert "Can't downgrade database" in signatures and "Bad operation #" in signatures
     assert all(fix for fix in signatures.values())
@@ -80,7 +82,7 @@ def test_crash_signatures_load_from_the_table_diagnose_sh_reads() -> None:
 
 
 def test_crash_signature_table_skips_comments_and_blank_lines(tmp_path: Path) -> None:
-    table = tmp_path / "signatures.tsv"
+    table: Path = tmp_path / "signatures.tsv"
     table.write_text("# signature\tfix\n\nOne thing\tdo this\nBare signature\n")
     assert diagnostics.load_crash_signatures(table) == {"One thing": "do this", "Bare signature": ""}
 
@@ -95,6 +97,40 @@ def test_save_failure_logcat_tolerates_an_unreachable_device(
     monkeypatch.setattr(subprocess, "run", offline_run)
     assert SAVE_FAILURE_LOGCAT("AdbError('offline')") is None
     assert not list(config.DEBUG_DIR.glob("logcat_*")) if config.DEBUG_DIR.exists() else True
+
+
+def test_save_failure_logcat_tolerates_a_missing_or_hanging_adb(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def missing(cmd: list[str], **kwargs: Unpack[RunOptions]) -> NoReturn:
+        raise FileNotFoundError("adb")
+
+    def hanging(cmd: list[str], **kwargs: Unpack[RunOptions]) -> NoReturn:
+        raise subprocess.TimeoutExpired(cmd, config.LOGCAT_TIMEOUT)
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert SAVE_FAILURE_LOGCAT("AdbError('offline')") is None
+    monkeypatch.setattr(subprocess, "run", hanging)
+    assert SAVE_FAILURE_LOGCAT("AdbError('offline')") is None
+    out: str = capsys.readouterr().out
+    assert "could not read logcat after the failure: FileNotFoundError('adb')" in out
+    assert "could not read logcat after the failure: TimeoutExpired(" in out
+    assert not config.DEBUG_DIR.exists()
+
+
+def test_save_failure_logcat_tolerates_an_unwritable_debug_dir(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    blocker: Path = fast_offline / "blocker"
+    blocker.write_text("a file where DEBUG_DIR's parent should be")
+    monkeypatch.setattr(config, "DEBUG_DIR", blocker / "debug")
+
+    def fake_run(cmd: list[str], **kwargs: Unpack[RunOptions]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 0, stdout=LOGCAT, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert SAVE_FAILURE_LOGCAT("AdbError('offline')") is None
+    assert "WARN: could not write the failure logcat: NotADirectoryError(" in capsys.readouterr().out
 
 
 def test_main_saves_a_logcat_only_for_device_failures(
@@ -122,7 +158,7 @@ def test_failure_logcats_are_pruned_like_other_debug_files(
     monkeypatch.setattr(config, "DEBUG_KEEP", 2)
     config.DEBUG_DIR.mkdir(parents=True)
     for i in range(4):
-        f = config.DEBUG_DIR / f"logcat_2026091{i}T000000Z.txt"
+        f: Path = config.DEBUG_DIR / f"logcat_2026091{i}T000000Z.txt"
         f.write_text("x")
         os.utime(f, (1_800_000_000 + i, 1_800_000_000 + i))
     monkeypatch.setattr(config, "DEBUG_RETAIN_DAYS", 0)

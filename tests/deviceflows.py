@@ -39,7 +39,7 @@ class RunOptions(TypedDict, total=False):
 
 
 def story_button(user: str, index: int, seen: bool, x: int, goto: str | None = None) -> Node:
-    desc = f"{user}'s story, {index} of 3, {'Seen' if seen else 'Unseen'}."
+    desc: str = f"{user}'s story, {index} of 3, {'Seen' if seen else 'Unseen'}."
     return node(cls="android.widget.Button", desc=desc, bounds=(x, 300, x + 180, 480), goto=goto)
 
 
@@ -86,7 +86,7 @@ STORY = hierarchy(
 
 def feed_cards(slide: int = 1, top_share: str = "share_top", other_share: str = "share_other") -> list[Node]:
     """A header-less Reel (header scrolled off) above a full carousel card."""
-    reel_desc = "Reel by Someone Nice, Liked by a_friend and others, 6 comments, August 29"
+    reel_desc: str = "Reel by Someone Nice, Liked by a_friend and others, 6 comments, August 29"
     return [
         node("media_group", bounds=(0, 289, 1080, 900)),
         node("row_feed_photo_imageview", desc=reel_desc, bounds=(0, 289, 1080, 900)),
@@ -115,7 +115,7 @@ def feed_cards(slide: int = 1, top_share: str = "share_top", other_share: str = 
 
 
 def following_screen(cards: list[Node] | None = None, sheet: Node | None = None) -> str:
-    kids = [
+    kids: list[Node] = [
         ACTION_BAR,
         FOLLOWING_TITLE,
         node(
@@ -167,7 +167,7 @@ def feed_device(
     start: str = "home",
     **kw: Unpack[FeedDeviceOptions],
 ) -> FakeDevice:
-    screens = {
+    screens: dict[str, str] = {
         "home": home_screen(),
         "menu": MENU,
         "following": following_screen(feed_cards(1, top_share, other_share)),
@@ -179,7 +179,7 @@ def feed_device(
         "older": following_screen(OLDER_CARDS),
         "story_alice": STORY,
     }
-    back = {
+    back: dict[str, str] = {
         "following": "home",
         "menu": "home",
         "older": "home",
@@ -234,12 +234,12 @@ def feed_device_with_following(
     page has no further scroll entry, simulating "list exhausted." `main_scroll` replaces the main
     feed's own scroll map (default {"following": "older"}) — pass {} to keep a filtering test on
     a single feed screen rather than also scrolling into `older`."""
-    d = feed_device(**kw)
+    d: FakeDevice = feed_device(**kw)
     if main_scroll is not None:
         d.scroll = dict(main_scroll)
     d.screens["profile"] = profile_screen()
     d.back["profile"] = "following"
-    page_names = ["following_list"] + [f"following_list_s{i}" for i in range(2, len(pages) + 1)]
+    page_names: list[str] = ["following_list"] + [f"following_list_s{i}" for i in range(2, len(pages) + 1)]
     for i, (name, usernames) in enumerate(zip(page_names, pages, strict=True)):
         d.screens[name] = following_list_screen(usernames)
         d.back[name] = "profile"
@@ -266,7 +266,7 @@ def seed_post(
 ) -> None:
     """A photo post scraped, posted and last updated `days_ago` days before `now` (default: the current
     time), stored under `pid` with hash `h` (default: `pid`)."""
-    ts = ((now or datetime.now(UTC)) - timedelta(days=days_ago)).isoformat()
+    ts: str = ((now or datetime.now(UTC)) - timedelta(days=days_ago)).isoformat()
     con.execute(
         "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash, url,"
         " posted_at, updated_at, permalink_attempts) VALUES (?,?,?,?,?,NULL,?,?,?,?,?,?)",

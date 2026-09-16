@@ -8,7 +8,7 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Protocol, Self
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 from shared.sqlrows import SqlValue
 from shared.timestamps import parse_iso
@@ -20,7 +20,7 @@ def log(*a: object) -> None:
 
 def older_than(value: SqlValue, days: float) -> bool:
     """True if the stored timestamp is missing, malformed, or more than `days` old."""
-    parsed = parse_iso(value)
+    parsed: datetime | None = parse_iso(value)
     return parsed is None or datetime.now(UTC) - parsed > timedelta(days=days)
 
 
@@ -29,16 +29,25 @@ _BOUNDS = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 
 def parse_bounds(bounds: str | None) -> tuple[int, int, int, int] | None:
     """(x1, y1, x2, y2) from a uiautomator bounds string "[x1,y1][x2,y2]", or None."""
-    m = _BOUNDS.match(bounds or "")
+    m: re.Match[str] | None = _BOUNDS.match(bounds or "")
     if not m:
         return None
+    x1: int
+    y1: int
+    x2: int
+    y2: int
     x1, y1, x2, y2 = map(int, m.groups())
     return x1, y1, x2, y2
 
 
 def bounds_center(bounds: str | None) -> tuple[int, int] | None:
+    b: tuple[int, int, int, int] | None
     if not (b := parse_bounds(bounds)):
         return None
+    x1: int
+    y1: int
+    x2: int
+    y2: int
     x1, y1, x2, y2 = b
     return (x1 + x2) // 2, (y1 + y2) // 2
 
@@ -46,8 +55,13 @@ def bounds_center(bounds: str | None) -> tuple[int, int] | None:
 def bounds_bottom_right(bounds: str | None, inset: int = 10) -> tuple[int, int] | None:
     """Point near a node's bottom-right corner: where a truncated, left-aligned caption's
     trailing "... more" span sits, on its last (and typically fullest) line."""
+    b: tuple[int, int, int, int] | None
     if not (b := parse_bounds(bounds)):
         return None
+    x1: int
+    y1: int
+    x2: int
+    y2: int
     x1, y1, x2, y2 = b
     return max(x1, x2 - inset), max(y1, y2 - inset)
 
@@ -90,19 +104,20 @@ def urlopen() -> UrlOpener:
 def redact_url(url: str) -> str:
     """scheme://host/path only: no credentials in the netloc, no query string. Webhook and refresh URLs
     carry tokens that must never land in the shared container log."""
-    parts = urlsplit(url)
+    parts: SplitResult = urlsplit(url)
     return f"{parts.scheme}://{parts.hostname or ''}{f':{parts.port}' if parts.port else ''}{parts.path}"
 
 
 def send_best_effort(what: str, request: str | urllib.request.Request, timeout: float) -> str | None:
     """Send one request whose failure mustn't fail the caller (an alert, a reader's refresh webhook):
     returns a short error, logged as a WARN with the URL redacted, instead of raising. None once sent."""
-    url = request if isinstance(request, str) else request.full_url
+    url: str = request if isinstance(request, str) else request.full_url
+    resp: UrlResponse
     try:
         with urlopen()(request, timeout=timeout) as resp:
             resp.read()
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        error = f"{what} to {redact_url(url)} failed: {e!r}"
+        error: str = f"{what} to {redact_url(url)} failed: {e!r}"
         log("WARN:", error)
         return error
     return None

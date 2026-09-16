@@ -50,6 +50,8 @@ def test_fires_on_new_posts_and_appends_ajax_param(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     assert scrape._ping_freshrss(2, 0) is None
+    timeout: float | None
+    url: str
     [(url, timeout)] = requested
     assert "ajax=1" in url
     assert timeout == 5.0
@@ -81,6 +83,7 @@ def test_does_not_duplicate_an_already_present_ajax_param(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     scrape._ping_freshrss(1, 0)
+    url: str
     [url] = requested
     assert url.count("ajax=") == 1
 
@@ -94,7 +97,7 @@ def test_connection_error_is_returned_not_raised(monkeypatch: pytest.MonkeyPatch
         raise urllib.error.URLError("connection refused")
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    result = scrape._ping_freshrss(1, 0)
+    result: str | None = scrape._ping_freshrss(1, 0)
     assert result is not None
     assert "connection refused" in result
 
@@ -112,7 +115,7 @@ def test_log_and_error_redact_the_query_string_so_the_token_never_prints(
         raise urllib.error.URLError("nope")
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    result = scrape._ping_freshrss(1, 0)
+    result: str | None = scrape._ping_freshrss(1, 0)
     assert result is not None
     assert "SECRETTOKEN" not in result
     assert "SECRETTOKEN" not in capsys.readouterr().out

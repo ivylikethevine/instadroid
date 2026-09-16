@@ -30,7 +30,7 @@ _ROOT = Path(__file__).parent
 
 def major_of(version: str | None) -> int | None:
     """446 for "446.0.0.49.77"; None when there's no version (not installed) or it's unparseable."""
-    m = re.match(r"(\d+)\.", version or "")
+    m: re.Match[str] | None = re.match(r"(\d+)\.", version or "")
     return int(m.group(1)) if m else None
 
 
@@ -49,7 +49,7 @@ def available() -> list[str]:
     """Profile directory names at or above MIN_MAJOR, ascending: every vXYZ/ with an __init__.py."""
     names: list[str] = []
     for d in _ROOT.iterdir():
-        m = _NAME.match(d.name)
+        m: re.Match[str] | None = _NAME.match(d.name)
         if m and (d / "__init__.py").is_file() and int(m.group(1)) >= MIN_MAJOR:
             names.append(d.name)
     return sorted(names)
@@ -59,7 +59,7 @@ def load(name: str) -> BaseProfile:
     """Import igprofiles/<name>/ and return an instance of its Profile. Raises ValueError for a name
     that isn't a valid, present profile, or a profile whose contents don't match its directory."""
     name = normalize(name)
-    m = _NAME.match(name)
+    m: re.Match[str] | None = _NAME.match(name)
     if not m:
         raise ValueError(f"{name!r} is not a profile name (expected vXYZ, e.g. v{MIN_MAJOR})")
     if int(m.group(1)) < MIN_MAJOR:
@@ -69,12 +69,13 @@ def load(name: str) -> BaseProfile:
     profile_cls: object = getattr(importlib.import_module(f"igprofiles.{name}"), "Profile", None)
     if not (isinstance(profile_cls, type) and issubclass(profile_cls, BaseProfile)):
         raise ValueError(f"igprofiles/{name}/__init__.py must define Profile(BaseProfile)")
-    profile = profile_cls()
-    missing = [a for a in ("major", "selectors") if not hasattr(profile, a)]
+    profile: BaseProfile = profile_cls()
+    missing: list[str] = [a for a in ("major", "selectors") if not hasattr(profile, a)]
     if missing:
         raise ValueError(f"{name} Profile is missing {', '.join(missing)}")
     if profile.name != name:
         raise ValueError(f"igprofiles/{name}/ defines major={profile.major}, expected {int(m.group(1))}")
+    below: list[str]
     if below := [b for b in profile.own_validated if (major_of(b) or 0) < profile.major]:
         raise ValueError(f"{name} lists validated builds below {profile.major}: {', '.join(below)}")
     return profile
@@ -91,8 +92,8 @@ def covering(major: int | None) -> str | None:
 def newest_build(profile: str | None = None) -> str | None:
     """The newest validated build of `profile`, or across every profile: default_build()'s fallback, and
     what check_new_builds.py compares APKPure against. None if nothing is validated."""
-    names = [normalize(profile)] if profile else available()
-    builds = [b for n in names for b in load(n).own_validated]
+    names: list[str] = [normalize(profile)] if profile else available()
+    builds: list[str] = [b for n in names for b in load(n).own_validated]
     return max(builds, key=version_key) if builds else None
 
 
@@ -109,17 +110,19 @@ def select(requested: str = "", installed: str | None = None) -> tuple[BaseProfi
     profile covering the `installed` version, or the newest profile when nothing is installed (or its
     version is unknown). A bad IG_PROFILE, or an installed version below every profile, still returns
     a profile, with a warning, rather than stopping the scraper."""
-    warning = None
+    warning: str | None = None
     if requested.strip():
         try:
             return load(requested), None
         except ValueError as e:
             warning = f"IG_PROFILE={requested!r}: {e}; choosing by installed version instead"
-    names = available()
-    name = covering(major_of(installed))
+    names: list[str] = available()
+    name: str | None = covering(major_of(installed))
     if name is None:
         if major_of(installed) is not None:
-            below = f"Instagram {installed} is older than the oldest profile ({names[0]}); using it anyway"
+            below: str = (
+                f"Instagram {installed} is older than the oldest profile ({names[0]}); using it anyway"
+            )
             warning = f"{warning}; {below}" if warning else below
             name = names[0]
         else:

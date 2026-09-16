@@ -7,17 +7,20 @@ secrets and many official images follow, so a password never has to sit in `.env
 
 import os
 from collections.abc import Mapping
+from typing import TextIO
 
 
 def env_secret(name: str, environ: Mapping[str, str] = os.environ) -> str:
     """The value of `name`, or the contents of the file `name`_FILE points at (one trailing newline
     stripped, since `echo pw > file` adds one). Setting both, or a file that can't be read, raises:
     a misconfigured secret should stop the process with a clear message, not run on an empty one."""
-    path = environ.get(f"{name}_FILE", "")
+    path: str = environ.get(f"{name}_FILE", "")
     if not path:
         return environ.get(name, "")
     if environ.get(name):
         raise RuntimeError(f"both {name} and {name}_FILE are set; use one")
+    f: TextIO
+    value: str
     try:
         with open(path, encoding="utf-8") as f:
             value = f.read()

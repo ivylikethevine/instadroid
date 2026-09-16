@@ -23,6 +23,7 @@ SPEC = ROOT / "docs" / "openapi.json"
 
 def render() -> str:
     """The spec as committed: importing feedserver creates MEDIA_DIR, so point that somewhere harmless."""
+    tmp: str
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["MEDIA_DIR"] = tmp
         os.environ["DB_PATH"] = str(Path(tmp) / "posts.sqlite")
@@ -37,11 +38,11 @@ class Options(argparse.Namespace):
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--check", action="store_true", help="fail instead of writing when the spec differs")
-    spec = render()
+    spec: str = render()
     if parser.parse_args(argv, namespace=Options()).check:
         if not SPEC.exists() or SPEC.read_text() != spec:
             print(f"{SPEC.relative_to(ROOT)} is out of date: run export-openapi")

@@ -214,7 +214,7 @@
     "/control/lock": {
       "post": {
         "summary": "Hold scheduled runs",
-        "description": "Stop the scraper starting runs while the device is driven by hand. A run already going finishes.\nThe lock is ignored once it's LOCK_MAX_HOURS old.",
+        "description": "Stop the scraper starting runs while the device is driven by hand. A run already going finishes.\nThe lock is ignored once it's LOCK_MAX_HOURS old; a hold the scraper raised itself never is.",
         "operationId": "lock_control_lock_post",
         "responses": {
           "200": {
@@ -231,6 +231,7 @@
       },
       "delete": {
         "summary": "Release the lock",
+        "description": "Release the manual lock and any hold: the scraper resumes on its schedule.",
         "operationId": "unlock_control_lock_delete",
         "responses": {
           "200": {
@@ -283,6 +284,17 @@
           "scrape_now": {
             "type": "boolean",
             "title": "Scrape Now"
+          },
+          "hold": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hold"
           }
         },
         "type": "object",

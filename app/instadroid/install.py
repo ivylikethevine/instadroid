@@ -28,7 +28,7 @@ def _run_checked(cmd: list[str], what: str) -> None:
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=config.APK_FETCH_TIMEOUT)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        stderr = getattr(e, "stderr", "") or ""
+        stderr: str = getattr(e, "stderr", "") or ""
         raise DeviceNotReady(f"{what} failed: {e!r}: {stderr[-2000:]}") from e
 
 
@@ -43,11 +43,11 @@ def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
     reinstalls whichever bundle happened to be cached last. "latest" keeps the top-level layout.
     """
     version = _apk_version(version)
-    cache_dir = config.APK_CACHE_DIR / version if version else config.APK_CACHE_DIR
+    cache_dir: Path = config.APK_CACHE_DIR / version if version else config.APK_CACHE_DIR
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cached = _cached_apks(cache_dir)
+    cached: list[Path] = _cached_apks(cache_dir)
     if not cached:
-        spec = f"{config.IG_PKG}@{version}" if version else config.IG_PKG
+        spec: str = f"{config.IG_PKG}@{version}" if version else config.IG_PKG
         log(f"fetching {spec} via apkeep (apk-pure)")
         _run_checked(
             ["apkeep", "-a", spec, "-d", "apk-pure", str(cache_dir)], f"apkeep fetch of {config.IG_PKG}"
@@ -57,8 +57,8 @@ def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
         raise DeviceNotReady(f"apkeep reported success but no {config.IG_PKG} apk was found in {cache_dir}")
     # The base APK (no "config." prefix) has to be install-multiple's first argument; order among
     # the config.*.apk splits themselves doesn't matter to adb.
-    base = [p for p in cached if not p.name.startswith("config.")]
-    splits = [p for p in cached if p.name.startswith("config.")]
+    base: list[Path] = [p for p in cached if not p.name.startswith("config.")]
+    splits: list[Path] = [p for p in cached if p.name.startswith("config.")]
     if not base:
         raise DeviceNotReady(f"no base apk (only config.* splits) found in {cached[0].parent}")
     return base + splits
@@ -69,7 +69,10 @@ def _cached_apks(cache_dir: Path) -> list[Path]:
     downloaded .xapk bundle, unpacked on the spot. Empty when there's nothing to install."""
     # xapk_dir holds nothing but one unpacked Instagram bundle, so every *.apk in it belongs to
     # this install (unlike cache_dir itself, which also holds the .xapk apkeep downloaded).
-    xapk_dir = cache_dir / "xapk"
+    xapk_dir: Path = cache_dir / "xapk"
+    cached: list[Path]
+    xapks: list[Path]
+    zf: zipfile.ZipFile
     if cached := sorted(xapk_dir.glob("*.apk")) or sorted(cache_dir.glob(f"{config.IG_PKG}*.apk")):
         return cached
     if xapks := sorted(cache_dir.glob(f"{config.IG_PKG}*.xapk")):
@@ -88,9 +91,9 @@ def install_instagram(d: uidevice.Device, version: str | None = None, downgrade:
     (device.is_transient()) handles it rather than aborting the whole run. `downgrade` adds `-r -d`,
     replacing an installed newer version in place (allowed because redroid is a userdebug build).
     """
-    apks = _fetch_instagram_apk(version)
-    flags = ["-r", "-d"] if downgrade else []
-    cmd = [
+    apks: list[Path] = _fetch_instagram_apk(version)
+    flags: list[str] = ["-r", "-d"] if downgrade else []
+    cmd: list[str] = [
         "adb",
         "-s",
         config.ADB_ADDR,
@@ -100,7 +103,7 @@ def install_instagram(d: uidevice.Device, version: str | None = None, downgrade:
     ]
     log(f"installing {config.IG_PKG} ({len(apks)} apk(s))")
     _run_checked(cmd, f"adb install of {config.IG_PKG}")
-    installed = device.instagram_version(d, fresh=True)
+    installed: str | None = device.instagram_version(d, fresh=True)
     log(f"installed {config.IG_PKG}", installed or "(version unknown)")
     versioning.activate_profile(installed)  # device.connect_device() activated before this version existed
     return installed
@@ -115,12 +118,12 @@ def install_instagram_version(d: uidevice.Device, version: str | None = None) ->
     Instagram's saved login lives in /data and survives the replace, but an older build may not
     accept data written by a newer one, so a downgrade can still need a fresh login."""
     version = _apk_version(version)
-    current = device.instagram_version(d)
+    current: str | None = device.instagram_version(d)
     if version and current == version:
         log(f"{config.IG_PKG} {current} already installed")
         return current
     log(f"replacing {config.IG_PKG} {current or '(not installed)'} with {version or 'latest'}")
-    installed = install_instagram(d, version, downgrade=True)
+    installed: str | None = install_instagram(d, version, downgrade=True)
     if version and installed != version:
         raise DeviceNotReady(
             f"asked adb to install {config.IG_PKG} {version}, but the device reports {installed}"

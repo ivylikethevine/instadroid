@@ -3,12 +3,15 @@ installed version (igprofiles.select / versioning.activate_profile), the build t
 (install._apk_version), and per-version behavior overrides (@versioned)."""
 
 import inspect
+import re
 import types
 from collections.abc import Callable, Mapping
+from pathlib import Path
 
 import igprofiles
 import pytest
 from igprofiles import BaseProfile, major_of, version_key
+from igprofiles.base import _check_key_groups
 from instadroid import config, install, parsing, versioning
 
 ROOT = igprofiles.load(igprofiles.available()[0])
@@ -26,7 +29,7 @@ def test_major_of(version: str | None, major: int | None) -> None:
 
 
 def test_version_key_orders_builds_numerically() -> None:
-    builds = ["446.0.0.49.77", "440.1.0.46.86", "440.0.0.46.86", "44.9.0.0.0"]
+    builds: list[str] = ["446.0.0.49.77", "440.1.0.46.86", "440.0.0.46.86", "44.9.0.0.0"]
     assert sorted(builds, key=version_key) == [
         "44.9.0.0.0",
         "440.0.0.46.86",
@@ -36,7 +39,7 @@ def test_version_key_orders_builds_numerically() -> None:
 
 
 def test_available_profiles_start_at_the_floor() -> None:
-    names = igprofiles.available()
+    names: list[str] = igprofiles.available()
     assert names == sorted(names)
     assert names[0] == f"v{igprofiles.MIN_MAJOR}"  # the root profile is the supported floor
 
@@ -62,10 +65,10 @@ def test_load_rejects_invalid_names(name: str, error: str) -> None:
 def _fake_profile_dir(
     monkeypatch: pytest.MonkeyPatch, name: str, profile_cls: type[BaseProfile] | None
 ) -> None:
-    real_available = igprofiles.available
+    real_available: Callable[[], list[str]] = igprofiles.available
     monkeypatch.setattr(igprofiles, "available", lambda: sorted({*real_available(), name}))
-    module = types.SimpleNamespace(Profile=profile_cls)
-    real_import = igprofiles.importlib.import_module
+    module: types.SimpleNamespace = types.SimpleNamespace(Profile=profile_cls)
+    real_import: Callable[[str], types.ModuleType] = igprofiles.importlib.import_module
 
     def import_module(mod: str) -> types.SimpleNamespace | types.ModuleType:
         return module if mod == f"igprofiles.{name}" else real_import(mod)
@@ -93,6 +96,38 @@ def test_load_rejects_validated_builds_below_the_profile(monkeypatch: pytest.Mon
         igprofiles.load("v447")
 
 
+def test_load_rejects_a_profile_without_a_major_or_selectors(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Profile(BaseProfile):
+        notes = "declares nothing"
+
+    _fake_profile_dir(monkeypatch, "v447", Profile)
+    with pytest.raises(ValueError, match="v447 Profile is missing major, selectors"):
+        igprofiles.load("v447")
+
+
+def test_a_profile_shows_its_name() -> None:
+    assert repr(ROOT) == "<profile v424>" and ROOT.name == "v424"
+
+
+def test_selector_key_groups_index_their_declared_types() -> None:
+    """The type checker's view of Selectors, confirmed at runtime for one key of each group."""
+    header: str
+    markers: list[str]
+    desc: re.Pattern[str]
+    media: tuple[str, ...]
+    kinds: dict[str, str]
+    header, markers, desc, media, kinds = _check_key_groups(
+        ROOT.selectors, "header_id", "sheet_markers_text", "header_desc", "media_ids", "alt_kind"
+    )
+    assert (header, markers, desc, media, kinds) == (
+        ROOT.selectors["header_id"],
+        ROOT.selectors["sheet_markers_text"],
+        ROOT.selectors["header_desc"],
+        ROOT.selectors["media_ids"],
+        ROOT.selectors["alt_kind"],
+    )
+
+
 def test_load_rejects_a_directory_without_a_profile_class(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_profile_dir(monkeypatch, "v447", None)
     with pytest.raises(ValueError, match=r"must define Profile\(BaseProfile\)"):
@@ -111,13 +146,13 @@ def test_covering_is_the_highest_profile_at_or_below(
 
 
 def test_newest_build_is_the_newest_validated_build_of_any_profile() -> None:
-    every = [b for n in igprofiles.available() for b in igprofiles.load(n).own_validated]
+    every: list[str] = [b for n in igprofiles.available() for b in igprofiles.load(n).own_validated]
     assert igprofiles.newest_build() == max(every, key=version_key)
     assert igprofiles.newest_build("v424") == max(ROOT.own_validated, key=version_key)
 
 
 def test_the_default_build_is_a_validated_build() -> None:
-    every = [b for n in igprofiles.available() for b in igprofiles.load(n).own_validated]
+    every: list[str] = [b for n in igprofiles.available() for b in igprofiles.load(n).own_validated]
     assert igprofiles.DEFAULT_BUILD is None or igprofiles.DEFAULT_BUILD in every
     assert igprofiles.default_build() == (igprofiles.DEFAULT_BUILD or igprofiles.newest_build())
 
@@ -139,6 +174,8 @@ def test_validated_builds_are_not_inherited() -> None:
 
 
 def test_select_follows_the_installed_version_and_ig_profile_overrides_it() -> None:
+    profile: BaseProfile
+    warning: str | None
     profile, warning = igprofiles.select("", "445.0.0.45.83")
     assert (profile.name, warning) == (igprofiles.covering(445), None)
     assert igprofiles.select("", None)[0].name == igprofiles.available()[-1]  # nothing installed: newest
@@ -147,6 +184,8 @@ def test_select_follows_the_installed_version_and_ig_profile_overrides_it() -> N
 
 
 def test_select_warns_and_carries_on_for_a_bad_ig_profile_or_a_too_old_install() -> None:
+    profile: BaseProfile
+    warning: str | None
     profile, warning = igprofiles.select("v999", "445.0.0.45.83")
     assert profile.name == igprofiles.covering(445)
     assert warning is not None and warning.startswith(
@@ -162,9 +201,9 @@ def test_select_warns_and_carries_on_for_a_bad_ig_profile_or_a_too_old_install()
 
 @pytest.mark.parametrize("name", igprofiles.available())
 def test_every_profile_meets_the_contract(name: str) -> None:
-    profile = igprofiles.load(name)
-    names = igprofiles.available()
-    following = names[names.index(name) + 1] if name != names[-1] else None
+    profile: BaseProfile = igprofiles.load(name)
+    names: list[str] = igprofiles.available()
+    following: str | None = names[names.index(name) + 1] if name != names[-1] else None
     assert profile.major >= igprofiles.MIN_MAJOR
     for build in profile.own_validated:  # each validated build is one this profile actually covers
         assert igprofiles.covering(major_of(build)) == name, build
@@ -179,14 +218,14 @@ def _public_methods(class_attrs: Mapping[str, object]) -> set[str]:
 
 
 def _changes(profile: BaseProfile, parent: BaseProfile) -> bool:
-    own_methods = _public_methods(vars(type(profile)))
+    own_methods: set[str] = _public_methods(vars(type(profile)))
     return profile.selectors != parent.selectors or bool(own_methods)
 
 
 @pytest.mark.parametrize("name", igprofiles.available()[1:])
 def test_a_profile_exists_only_where_something_changed(name: str) -> None:
-    profile = igprofiles.load(name)
-    parent_cls = next(
+    profile: BaseProfile = igprofiles.load(name)
+    parent_cls: type[BaseProfile] = next(
         c for c in inspect.getmro(type(profile))[1:] if issubclass(c, BaseProfile) and "major" in vars(c)
     )
     assert _changes(profile, parent_cls()), (
@@ -212,7 +251,7 @@ def test_the_change_check_notices_selectors_and_overrides() -> None:
 
 
 def test_profile_fixtures_live_in_their_profile_directory() -> None:
-    path = igprofiles.fixture("424", "feed_445.xml")
+    path: Path = igprofiles.fixture("424", "feed_445.xml")
     assert path.parts[-3:] == ("v424", "fixtures", "feed_445.xml") and path.is_file()
 
 
@@ -230,8 +269,8 @@ def test_activate_profile_follows_the_installed_version(monkeypatch: pytest.Monk
 def test_activate_profile_warns_about_an_unvalidated_major(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "IG_PROFILE", "")
     versioning.activate_profile("999.0.0.1.1")
-    newest = max(versioning.PROFILE.own_validated, key=version_key)
-    expected = (
+    newest: str = max(versioning.PROFILE.own_validated, key=version_key)
+    expected: str = (
         f"Instagram 999.0.0.1.1 hasn't been validated with profile {versioning.PROFILE.name}"
         f" (newest validated: {newest}; see docs/PROFILES.md)"
     )
@@ -298,9 +337,9 @@ class _WithParserOverride(type(ROOT)):
 def test_a_profile_method_overrides_a_versioned_function_and_receives_the_base(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    baseline = parsing.parse_hierarchy(FEED_XML)
+    baseline: list[parsing.Post] = parsing.parse_hierarchy(FEED_XML)
     monkeypatch.setattr(versioning, "PROFILE", _WithParserOverride())
-    posts = parsing.parse_hierarchy(FEED_XML)
+    posts: list[parsing.Post] = parsing.parse_hierarchy(FEED_XML)
     # The same posts the base implementation finds, each tagged by the override.
     assert posts == [TaggedPost(**p, tagged_by="v424") for p in baseline]
 
@@ -309,7 +348,7 @@ def test_overrides_are_inherited_by_newer_profiles(monkeypatch: pytest.MonkeyPat
     class Newer(_WithParserOverride):
         major = 446
 
-    baseline = parsing.parse_hierarchy(FEED_XML)
+    baseline: list[parsing.Post] = parsing.parse_hierarchy(FEED_XML)
     monkeypatch.setattr(versioning, "PROFILE", Newer())
     assert parsing.parse_hierarchy(FEED_XML) == [TaggedPost(**p, tagged_by="v446") for p in baseline]
 
@@ -336,3 +375,14 @@ def test_a_misnamed_override_is_reported(monkeypatch: pytest.MonkeyPatch) -> Non
         versioning.PROFILE_WARNING
         == "profile v424 defines parse_hierarchies, which match no @versioned function"
     )
+
+
+def test_a_non_callable_profile_attribute_named_after_a_versioned_function_is_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Shadowed(type(ROOT)):
+        parse_hierarchy: str = "a selector string, not an override"
+
+    monkeypatch.setattr(versioning, "PROFILE", Shadowed())
+    with pytest.raises(TypeError, match="v424's parse_hierarchy is not callable"):
+        parsing.parse_hierarchy(FEED_XML)

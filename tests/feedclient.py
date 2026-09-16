@@ -33,11 +33,11 @@ INSERT INTO posts VALUES ('h2', 'other', 'video', 'August 1', '', NULL,
 def make_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed: str = TWO_POSTS) -> TestClient:
     """A fresh feed server over tmp_path/posts.sqlite, created by the SQL script `seed` ("" leaves the
     database an empty file with no tables)."""
-    db = tmp_path / "posts.sqlite"
+    db: Path = tmp_path / "posts.sqlite"
     monkeypatch.setenv("DB_PATH", str(db))
     monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
     monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
-    con = sqlite3.connect(db)
+    con: sqlite3.Connection = sqlite3.connect(db)
     con.executescript(seed)
     con.close()
     fresh_feedserver()

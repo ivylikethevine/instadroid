@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import time
 from pathlib import Path
 
@@ -22,13 +23,16 @@ class VersionedDevice(FakeDevice):
                     "    versionName=445.0.0.45.83\n"
                 )
             return Out("")
-        props = {"getprop ro.build.version.release": "13", "getprop ro.build.version.sdk": "33"}
+        props: dict[str, str] = {
+            "getprop ro.build.version.release": "13",
+            "getprop ro.build.version.sdk": "33",
+        }
         return Out(props.get(cmdargs, ""))
 
 
 def test_device_snapshot_records_instagram_version_and_image(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDROID_IMAGE", "erstt/redroid:13.0.0_ndk_ChromeOS")
-    snapshot = device.device_snapshot(VersionedDevice())
+    snapshot: device.DeviceSnapshot = device.device_snapshot(VersionedDevice())
     assert snapshot.get("android_release") == "13"
     assert snapshot.get("ig_version") == "445.0.0.45.83"
     assert snapshot.get("redroid_image") == "erstt/redroid:13.0.0_ndk_ChromeOS"
@@ -36,18 +40,18 @@ def test_device_snapshot_records_instagram_version_and_image(monkeypatch: pytest
 
 def test_record_run_stores_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    con = db.db_init()
+    con: sqlite3.Connection = db.db_init()
     db.record_run(
         con, "2026-09-11T00:00:00+00:00", "2026-09-11T00:05:00+00:00", 0, None,
         {"ig_version": "445.0.0.45.83", "redroid_image": "img:tag"},
     )  # fmt: skip
-    row = fetch_row(con.execute("SELECT ig_version, redroid_image FROM runs"))
+    row: sqlite3.Row = fetch_row(con.execute("SELECT ig_version, redroid_image FROM runs"))
     assert sqlrows.values(row) == ("445.0.0.45.83", "img:tag")
 
 
 @pytest.fixture
 def debug_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    d = tmp_path / "debug"
+    d: Path = tmp_path / "debug"
     d.mkdir()
     monkeypatch.setattr(config, "DEBUG_DIR", d)
     monkeypatch.setattr(config, "DEBUG_RETAIN_DAYS", 7)
@@ -56,17 +60,17 @@ def debug_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _touch(path: Path, days_old: float = 0.0) -> Path:
     path.write_bytes(b"x")
-    t = time.time() - days_old * 86400
+    t: float = time.time() - days_old * 86400
     os.utime(path, (t, t))
     return path
 
 
 def test_prune_debug_removes_old_loose_artifacts_but_not_other_files(debug_dir: Path) -> None:
-    old_png = _touch(debug_dir / "following_link.png", days_old=10)
-    old_xml = _touch(debug_dir / "feed_menu.xml", days_old=10)
-    fresh_png = _touch(debug_dir / "boot.png", days_old=1)
-    scratch_db = _touch(debug_dir / "test3.sqlite", days_old=30)  # a DB_PATH may point here
-    scratch_dir = debug_dir / "testmedia3"
+    old_png: Path = _touch(debug_dir / "following_link.png", days_old=10)
+    old_xml: Path = _touch(debug_dir / "feed_menu.xml", days_old=10)
+    fresh_png: Path = _touch(debug_dir / "boot.png", days_old=1)
+    scratch_db: Path = _touch(debug_dir / "test3.sqlite", days_old=30)  # a DB_PATH may point here
+    scratch_dir: Path = debug_dir / "testmedia3"
     scratch_dir.mkdir()
 
     diagnostics.prune_debug_dumps()
@@ -94,7 +98,7 @@ def test_prune_debug_still_caps_dump_pairs_by_count(debug_dir: Path, monkeypatch
 
 def test_prune_debug_age_rule_can_be_disabled(debug_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "DEBUG_RETAIN_DAYS", 0)
-    old = _touch(debug_dir / "header.png", days_old=100)
+    old: Path = _touch(debug_dir / "header.png", days_old=100)
     diagnostics.prune_debug_dumps()
     assert old.exists()
 
@@ -102,3 +106,17 @@ def test_prune_debug_age_rule_can_be_disabled(debug_dir: Path, monkeypatch: pyte
 def test_prune_debug_tolerates_a_missing_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "nope")
     diagnostics.prune_debug_dumps()  # must not raise
+
+
+def test_prune_debug_logs_a_file_it_cannot_delete_and_carries_on(
+    debug_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stuck: Path = _touch(debug_dir / "old.png", days_old=10)
+
+    def refuse(self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError(f"{self.name}: owned by another uid")
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    diagnostics.prune_debug_dumps()  # must not raise
+    assert stuck.exists()
+    assert "WARN: could not prune debug file 'old.png': PermissionError(" in capsys.readouterr().out

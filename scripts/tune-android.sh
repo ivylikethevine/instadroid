@@ -3,9 +3,13 @@
 # never uses, to cut CPU/RAM inside the container. Keeps GMS + WebView (Instagram wants them).
 # Also sets the device's timezone from DEVICE_TIMEZONE (read from .env if present, or already
 # exported) — see DEVICE_TIMEZONE in app/instadroid/config.py for why this isn't set by default.
+# The app does the same thing itself on its first connect after each start (instadroid/tune.py,
+# TUNE_ON_CONNECT), so this is for tuning by hand, e.g. after a /data/system reset; the package
+# list is app/instadroid/tune_packages.txt, shared with the app. Run from the repository root.
 # Usage: ./scripts/tune-android.sh [device-serial]   (defaults to the first `adb devices` entry,
 # e.g. redroid's 127.0.0.1:5555)
 set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
 S="${1:-$(adb devices | awk 'NR==2 {print $1}')}"
 A="adb -s $S shell"
 if [ -f .env ]; then
@@ -23,17 +27,6 @@ $A settings put global animator_duration_scale 0
 $A settings put global auto_sync 0 # no Google account syncing
 $A settings put system screen_off_timeout 2147483647
 $A settings put secure location_mode 0
-for p in com.android.vending com.android.chrome com.google.android.youtube \
-  com.google.android.apps.maps com.google.android.gm com.google.android.apps.photos \
-  com.google.android.apps.messaging com.google.android.googlequicksearchbox \
-  com.google.android.apps.wellbeing com.google.android.calendar com.google.android.videos \
-  com.google.android.apps.docs com.google.android.music com.google.android.apps.youtube.music \
-  com.google.android.apps.podcasts com.google.android.apps.nbu.files com.google.android.tts \
-  com.google.android.apps.safetyhub com.google.android.apps.tachyon com.google.android.contacts \
-  com.google.android.dialer com.google.android.apps.wallpaper com.google.android.apps.pixel.weather \
-  com.google.android.projection.gearhead com.google.android.apps.walletnfcrel; do
-  $A pm disable-user --user 0 "$p" >/dev/null 2>&1 && echo "disabled $p"
-done
 # Built-in AOSP apps the scraper's UI automation never touches. Measured on
 # erstt/redroid:13.0.0_ndk_ChromeOS (a fresh /data, nothing installed yet): these sit in Android's
 # "Cached" process tier — normally reclaimed under memory pressure, but this container reports the
@@ -48,11 +41,8 @@ done
 # DO NOT add com.android.packageinstaller: PackageManagerService requires exactly one enabled
 # "installer" app system-wide and hard-crashes system_server at boot without it ("There must be
 # exactly one installer; found []") — see docs/INCIDENTS.md, this took down a whole boot.
-for p in com.android.documentsui com.android.printspooler com.android.bips \
-  com.android.printservice.recommendation com.android.gallery3d com.android.camera2 \
-  com.android.cameraextensions com.android.deskclock com.android.calendar \
-  com.android.providers.calendar com.android.contacts com.android.quicksearchbox \
-  com.android.dynsystem com.android.statementservice com.android.onetimeinitializer \
-  com.android.localtransport com.android.traceur; do
-  $A pm disable-user --user 0 "$p" >/dev/null 2>&1 && echo "disabled $p"
-done
+while read -r p; do
+  case "$p" in '' | '#'*) continue ;; esac
+  # </dev/null: `adb shell` forwards its stdin to the device otherwise, and would swallow the rest of the list
+  $A pm disable-user --user 0 "$p" </dev/null >/dev/null 2>&1 && echo "disabled $p"
+done <app/instadroid/tune_packages.txt

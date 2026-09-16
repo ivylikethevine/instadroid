@@ -26,14 +26,14 @@ def test_version_pairs_summarizes_runs_per_image_and_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    con = db.db_init()
+    con: sqlite3.Connection = db.db_init()
     _run(con, "2026-09-14T10:00:00+00:00", "445.0.0.45.83", new_posts=2)
     _run(con, "2026-09-14T11:00:00+00:00", "446.0.0.49.77", new_posts=1, warning="memory guard")
     _run(con, "2026-09-14T12:00:00+00:00", "446.0.0.49.77", new_posts=6)
     _run(con, "2026-09-14T13:00:00+00:00", "446.0.0.49.77", error="DeviceNotReady")
     _run(con, "2026-09-14T14:00:00+00:00", None, error="adb offline")  # never reached the device
 
-    pairs = [dict(r) for r in db.version_pairs(con)]
+    pairs: list[dict[str, object]] = [dict(r) for r in db.version_pairs(con)]
     assert pairs == [
         {
             "redroid_image": IMAGE,

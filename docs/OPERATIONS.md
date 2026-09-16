@@ -4,6 +4,11 @@ Running the stack day to day: health, restarts, manual control, alerts, memory, 
 and for how long. Setup is in the [README](../README.md#first-time-setup); the
 redroid incidents referred to below are written up in [INCIDENTS.md](INCIDENTS.md).
 
+## Contents
+
+- [Health and restarts](#health-and-restarts)
+- [Storage and retention](#storage-and-retention)
+
 ## Health and restarts
 
 Both services use `restart: unless-stopped`, so they come back after a host reboot or a crash;
@@ -12,7 +17,15 @@ Both services use `restart: unless-stopped`, so they come back after a host rebo
 no run has finished within `POLL_MAX_HOURS` + 30min of the last one (the loop looks stuck), or no
 run has _succeeded_ for 2 × `POLL_MAX_HOURS` + 1h (e.g. a login challenge is waiting for you).
 Docker doesn't restart an unhealthy container by itself. After a long downtime the stack reports
-unhealthy until its first run finishes.
+unhealthy until its first run finishes. redroid has a healthcheck too, on `sys.boot_completed`, so an
+Android that never finishes booting (or crash-looped back into booting) shows as `unhealthy` in
+`docker ps`; it exists for visibility only, and nothing acts on it.
+
+**One report of the whole state**: `docker compose exec app python scraper.py doctor` prints the
+control state, the last five runs with their result and peak memory, the failure backoff and daily
+budget if either is holding runs back, the device over plain adb (boot state, Instagram version and
+whether it's running, redroid's memory) and the logcat crash signatures with their fixes. It never
+launches Instagram or uiautomator2. [SUPPORT.md](SUPPORT.md) asks for its output with a bug report.
 
 **Manual lock and scrape-now**: before driving the device yourself in scrcpy, lock the scraper so a
 scheduled run can't start underneath you, and unlock when done:
@@ -23,11 +36,25 @@ docker compose exec app python scraper.py unlock    # or: rm local/data/db/manua
 docker compose exec app python scraper.py scrape-now
 ```
 
-A run already in progress finishes; a lock older than `LOCK_MAX_HOURS` (default 6) counts as
-forgotten and is ignored with a warning. `scrape-now` starts a run within about 30 seconds, but only
+A run already in progress finishes. The lock holds until you remove it; `LOCK_MAX_HOURS` (default 0) can instead have a lock older than that many hours ignored as forgotten, with a warning. `scrape-now` starts a run within about 30 seconds, but only
 once `RUN_NOW_MIN_MINUTES` (default 30) have passed since the last one. The feed server offers the
 same as `GET /control`, `POST`/`DELETE /control/lock` and `POST /control/scrape-now` (behind
-`FEED_TOKEN` when that's set), and `/status` shows both.
+`FEED_TOKEN` when that's set), and `/status` shows both, with Lock/Unlock and Scrape now buttons
+that call those routes.
+
+**The scraper holds itself when Instagram needs a person.** A run that ends on a challenge
+("confirm it's you", a code), a login form it couldn't recognise or get past, or missing
+credentials writes `local/data/db/needs-human.hold` (the error is its text) and no further run
+starts, not on the schedule, not from `scrape-now`, not after a restart, until you clear it:
+
+```bash
+docker compose exec app python scraper.py unlock    # or: DELETE /control/lock, or rm the file
+```
+
+Unlike the manual lock it never expires. Without it the loop relaunched Instagram, and for a wrong
+password retyped it, every poll interval until someone noticed, which is the kind of repetition that
+gets an account flagged. `/status`, `/control` and the alert below all show the hold and its reason.
+Finish the challenge in scrcpy (or fix the credentials) first, then unlock.
 
 **Failure alerts**: after each run the scraper raises an alert for a login challenge, for
 `ALERT_FAILED_RUNS` (default 3) failed runs in a row, and optionally for no new post in
@@ -43,6 +70,16 @@ challenges and every other error never retry early. After a device failure, the 
 a filtered `adb logcat -d` (error and fatal lines plus the known crash-loop signatures from
 [INCIDENTS.md](INCIDENTS.md), last `LOGCAT_TAIL_LINES`) to `local/data/debug/logcat_<time>.txt`, so
 the log is already on disk before anyone restarts anything.
+
+After consecutive failed runs of any kind, the poll interval doubles per failure (1x, 2x, 4x, ...)
+up to `FAILURE_BACKOFF_MAX_HOURS` (default 24), and a success resets it. So broken selectors or a
+build that crashes on launch cost one Instagram launch a day, not eight. The count comes from the
+runs table, so a restart doesn't reset it; `0` disables the backoff.
+
+On top of that, `MAX_RUNS_PER_DAY` (default 12) caps the runs started in any 24h window, whatever
+starts them: the schedule, retries, `scrape-now`, `scraper.py once` or a restart. At the ceiling the
+loop waits for the oldest run in the window to age out (and `once` refuses, saying when the next is
+allowed). It's the backstop under every other limit; `0` disables it.
 
 Restarting the container doesn't trigger an extra scrape. On startup the scraper looks at the last
 recorded run and waits out whatever's left of a poll interval since it finished (or of the first
@@ -64,13 +101,17 @@ a run warning like `selector drift? cards/screen 0.40 vs 3.80 baseline (10 runs)
 is meant to catch an Instagram UI change (a moved resource-id, a changed card layout) well before a
 run goes fully blank, rather than only noticing once new posts stop arriving. `SELECTOR_DRIFT_BASELINE_RUNS=0` disables it.
 
-Memory: redroid's Android never reclaims memory on its own here, so the scraper manages it. Every
+Memory: redroid's Android never reclaims memory on its own here, so the scraper manages it. On its
+first connect after each start it disables the unused apps in `app/instadroid/tune_packages.txt` (the
+same list `scripts/tune-android.sh` applies by hand), so they never launch at all. Every
 run starts and ends by force-stopping Instagram and a few cached system apps (the end even when the
 run fails), and `scraper.py login` stops Instagram when it's done. During a run the scraper reads
 redroid's container memory through adb before stories and before each screen, and stops early with
 a warning once it reaches `MEMORY_GUARD_PERCENT` (default 85) of the container's limit. Each run
 records its peak (`runs.mem_peak_mb`) and any kernel OOM kills inside redroid (`runs.oom_kills`,
-also a run warning), shown in `/status`'s "Peak mem" column.
+also a run warning), shown in `/status`'s "Peak mem" column. A run also stops early, with the same
+kind of warning, once it has been going `RUN_MAX_MINUTES` (default 30; a normal run takes 5-15), so a
+degraded device can't stretch one run across hours of Instagram use.
 
 Docker keeps at most 3 × 10MB of log per container (the `x-logging` block
 in `docker-compose.yml`), and the healthcheck's own `GET /health` every 30s is left out of the

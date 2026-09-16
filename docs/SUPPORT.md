@@ -17,9 +17,12 @@ issue.
 For anything that goes wrong on the device (a slow or looping boot, adb stuck `offline`, Instagram
 pushed back to the launcher, a run that parses nothing):
 
-- the output of `./scripts/diagnose.sh`, run from the repository root on the host. It checks host
-  `dmesg` and the device's logcat for the crash patterns this project has already hit, and prints
-  the matching fix when one is known;
+- the output of `docker compose exec app python scraper.py doctor`: the control state (a lock or a
+  hold), the last runs, the device as plain adb sees it, and the device's logcat checked for the
+  crash patterns this project has already hit, with the matching fix when one is known. It never
+  drives the device, so it's safe mid-run. `./scripts/diagnose.sh`, run from the repository root on
+  the host, does the logcat part too and also reads the host's `dmesg`, which is the only place an
+  Android that crashed before adb came up leaves a trace;
 - the relevant lines of `docker compose logs app`;
 - the instadroid release or commit, the Instagram build and profile, and the redroid image (all but
   the first are shown on `/status`);

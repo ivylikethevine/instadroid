@@ -13,7 +13,7 @@ def parse_iso(value: SqlValue) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed: datetime = datetime.fromisoformat(value)
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)

@@ -25,7 +25,7 @@ def _set_active(profile: BaseProfile, warning: str | None) -> None:
     """Replace PROFILE and PROFILE_WARNING. They stay plain module attributes, read at call time, so a
     test can monkeypatch them like any other; this is the one place the scraper itself changes them,
     written through the module's namespace because their names mark them as constants to the checker."""
-    namespace = globals()
+    namespace: dict[str, object] = globals()
     namespace["PROFILE"] = profile
     namespace["PROFILE_WARNING"] = warning
 
@@ -34,7 +34,7 @@ def _set_active(profile: BaseProfile, warning: str | None) -> None:
 def using(profile: BaseProfile) -> Generator[None]:
     """Make `profile` the active PROFILE for a block, then put the previous one back: how the profile
     development tools parse a dump under a profile other than the scraper's."""
-    previous = PROFILE
+    previous: BaseProfile = PROFILE
     _set_active(profile, PROFILE_WARNING)
     try:
         yield
@@ -104,7 +104,7 @@ def versioned[**P, R](fn: Callable[P, R]) -> Versioned[P, R]:
 def _unknown_hooks(profile: BaseProfile) -> list[str]:
     """Public methods a profile defines that don't match any @versioned function: almost certainly a
     typo, and otherwise silently never called."""
-    base = set(dir(BaseProfile))
+    base: set[str] = set(dir(BaseProfile))
     return sorted(
         a
         for a in dir(profile)
@@ -121,24 +121,28 @@ def activate_profile(installed: str | None) -> None:
     PROFILE_WARNING for a bad IG_PROFILE, an IG_PROFILE that isn't the one covering the installed
     version, an installed major version no build of which has been validated with its profile, or a
     misnamed override."""
+    profile: BaseProfile
+    select_warning: str | None
     profile, select_warning = select_profile(config.IG_PROFILE, installed)
-    warnings = [select_warning] if select_warning else []
-    installed_major = major_of(installed)
+    warnings: list[str] = [select_warning] if select_warning else []
+    installed_major: int | None = major_of(installed)
+    expected: str | None
     if installed and config.IG_PROFILE and (expected := covering(installed_major)) != profile.name:
         warnings.append(
             f"IG_PROFILE={profile.name} is set, but Instagram {installed} is covered by {expected or 'no profile'}"
         )
     if installed and installed_major not in {major_of(b) for b in profile.own_validated}:
-        newest = newest_build(profile.name) or "none yet"
+        newest: str = newest_build(profile.name) or "none yet"
         warnings.append(
             f"Instagram {installed} hasn't been validated with profile {profile.name}"
             f" (newest validated: {newest}; see docs/PROFILES.md)"
         )
+    unknown: list[str]
     if unknown := _unknown_hooks(profile):
         warnings.append(
             f"profile {profile.name} defines {', '.join(unknown)}, which match no @versioned function"
         )
-    warning = "; ".join(warnings) or None
+    warning: str | None = "; ".join(warnings) or None
     _set_active(profile, warning)
     log(f"profile {profile.name} (installed: {installed or 'none'})")
     if warning:

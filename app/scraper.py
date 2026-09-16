@@ -5,9 +5,12 @@
     profiles                 list the Instagram version profiles, what each covers and has validated
     install [VERSION|latest] install an Instagram build (default: igprofiles.DEFAULT_BUILD)
     dump                     save the current screen's hierarchy + screenshot to DEBUG_DIR
+    doctor                   one report: control state, recent runs, device over plain adb, logcat
+                             crash signatures with their fixes (never drives the device)
     compat                   redroid image / Instagram build pairs this database has run
     backup                   copy the database to BACKUP_DIR now
     lock / unlock            hold scheduled runs while driving the device by hand, then release
+                             (unlock also clears the hold a login challenge raised)
     scrape-now               ask the poll loop to run now (rate-limited, see instadroid/control.py)
     rename OLD NEW           move an account's history to its new username
 
@@ -26,6 +29,7 @@ from instadroid import (
     db,
     device,
     diagnostics,
+    doctor,
     install,
     navigation,
     scrape,
@@ -35,7 +39,14 @@ from instadroid import (
 if __name__ == "__main__":
     match sys.argv[1:]:
         case ["once", *_]:
-            stats, exc = scrape.run_recorded(db.db_init())  # recorded in runs, like a scheduled run
+            con = db.db_init()
+            wait: float
+            if wait := scrape.budget_wait_seconds(con):
+                sys.exit(
+                    f"{config.MAX_RUNS_PER_DAY} runs already started in the last 24h (MAX_RUNS_PER_DAY);"
+                    f" the next is allowed in {wait / 3600:.1f}h. MAX_RUNS_PER_DAY=0 disables the budget."
+                )
+            stats, exc = scrape.run_recorded(con)  # recorded in runs, like a scheduled run
             if exc or stats is None:
                 sys.exit(f"run failed: {exc!r}")
             print(stats["new"], "new posts,", stats["metrics"].get("new_stories", 0), "new stories")
@@ -65,6 +76,8 @@ if __name__ == "__main__":
             d = device.connect_device()
             diagnostics.dump_debug(d, "manual")
             print("wrote", config.DEBUG_DIR)
+        case ["doctor", *_]:
+            print(doctor.report(db.db_init()), end="")
         case ["compat", *_]:
             pairs = db.version_pairs(db.db_init())
             print("redroid image | Instagram | profile | runs (ok, clean) | new posts | last run")

@@ -5,30 +5,32 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
+from httpx2 import Response
 from shared.errors import short_error
 
 from tests.feedclient import make_app
 
 
 def test_status_page_with_no_runs_yet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    client = make_app(tmp_path, monkeypatch)
-    r = client.get("/status")
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    r: Response = client.get("/status")
     assert r.status_code == 200
     assert "No scrape runs recorded yet" in r.text
     assert "no successful run yet" in r.text
 
 
 def test_status_page_shows_latest_ok_run_and_device(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    db = tmp_path / "posts.sqlite"
-    client = make_app(tmp_path, monkeypatch)
-    con = sqlite3.connect(db)
+    db: Path = tmp_path / "posts.sqlite"
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    con: sqlite3.Connection = sqlite3.connect(db)
     con.execute(
         """CREATE TABLE runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
             new_posts INTEGER, error TEXT, android_release TEXT, android_sdk TEXT, device_product TEXT
         )"""
     )
-    now = datetime.now(UTC)
+    now: datetime = datetime.now(UTC)
     con.execute(
         "INSERT INTO runs (started_at, finished_at, new_posts, error, android_release, android_sdk,"
         " device_product) VALUES (?,?,?,?,?,?,?)",
@@ -45,7 +47,7 @@ def test_status_page_shows_latest_ok_run_and_device(tmp_path: Path, monkeypatch:
     con.commit()
     con.close()
 
-    body = client.get("/status").text
+    body: str = client.get("/status").text
     assert "Android 13" in body
     assert "API 33" in body
     assert "redroid_x86_64" in body
@@ -56,9 +58,9 @@ def test_status_page_shows_latest_ok_run_and_device(tmp_path: Path, monkeypatch:
 
 
 def test_status_page_flags_an_error_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    db = tmp_path / "posts.sqlite"
-    client = make_app(tmp_path, monkeypatch)
-    con = sqlite3.connect(db)
+    db: Path = tmp_path / "posts.sqlite"
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    con: sqlite3.Connection = sqlite3.connect(db)
     con.execute(
         """CREATE TABLE runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
@@ -72,18 +74,51 @@ def test_status_page_flags_an_error_run(tmp_path: Path, monkeypatch: pytest.Monk
     con.commit()
     con.close()
 
-    body = client.get("/status").text
+    body: str = client.get("/status").text
     assert "ERROR" in body
     assert "login failed" in body
 
 
+def test_status_page_shows_no_duration_for_unreadable_timestamps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db: Path = tmp_path / "posts.sqlite"
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    con: sqlite3.Connection = sqlite3.connect(db)
+    con.execute(
+        """CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+            new_posts INTEGER, error TEXT, android_release TEXT, android_sdk TEXT, device_product TEXT
+        )"""
+    )
+    con.execute(
+        "INSERT INTO runs (started_at, finished_at, new_posts) VALUES (?,?,?)",
+        ("2026-09-08T08:00:00+00:00", "garbage", 1),  # a hand-edited row
+    )
+    con.commit()
+    con.close()
+
+    body: str = client.get("/status").text
+    assert "finished garbage (—)" in body
+    assert "<td>2026-09-08T08:00:00+00:00</td><td>—</td><td>1</td>" in body
+
+
+def test_status_page_shows_the_manual_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTROL_DIR", str(tmp_path / "control"))
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    assert client.post("/control/lock").status_code == 200
+    body: str = client.get("/status").text
+    assert "Manual lock in place: scheduled runs are held." in body
+    assert "control('DELETE', '/control/lock')\">Unlock</button>" in body
+
+
 def test_short_error_truncates_multiline_stack_traces() -> None:
     assert short_error("RuntimeError('simple')") == "RuntimeError('simple')"
-    multiline = "LaunchUiAutomationError('boom', 'a huge\nmulti-line\njava stack trace')"
-    result = short_error(multiline)
+    multiline: str = "LaunchUiAutomationError('boom', 'a huge\nmulti-line\njava stack trace')"
+    result: str = short_error(multiline)
     assert "\n" not in result
     assert result.startswith("LaunchUiAutomationError")
-    long_one_liner = "x" * 200
+    long_one_liner: str = "x" * 200
     assert short_error(long_one_liner) == "x" * 139 + "…"
     assert short_error(long_one_liner, 300) == long_one_liner
     assert short_error(long_one_liner + "\nmore", None) == long_one_liner
@@ -91,9 +126,9 @@ def test_short_error_truncates_multiline_stack_traces() -> None:
 
 
 def test_status_page_shows_link_failure_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    db = tmp_path / "posts.sqlite"
-    client = make_app(tmp_path, monkeypatch)
-    con = sqlite3.connect(db)
+    db: Path = tmp_path / "posts.sqlite"
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    con: sqlite3.Connection = sqlite3.connect(db)
     con.execute(
         """CREATE TABLE runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
@@ -101,7 +136,7 @@ def test_status_page_shows_link_failure_counts(tmp_path: Path, monkeypatch: pyte
             link_sheet_failures INTEGER, link_clipboard_failures INTEGER
         )"""
     )
-    now = datetime.now(UTC)
+    now: datetime = datetime.now(UTC)
     con.execute(
         "INSERT INTO runs (started_at, finished_at, new_posts, link_sheet_failures, link_clipboard_failures)"
         " VALUES (?,?,?,?,?)",
@@ -110,7 +145,7 @@ def test_status_page_shows_link_failure_counts(tmp_path: Path, monkeypatch: pyte
     con.commit()
     con.close()
 
-    body = client.get("/status").text
+    body: str = client.get("/status").text
     assert "2 sheet / 3 clipboard" in body
 
 
@@ -120,15 +155,15 @@ def test_status_page_shows_latest_ok_run_includes_link_failures_dash_when_absent
     # test_status_page_shows_latest_ok_run_and_device already seeds a runs table from before
     # link_sheet_failures/link_clipboard_failures existed; confirm the page degrades to "—" for it
     # instead of a KeyError, the same defensive shape feedserver already uses for "url"/"place"/etc.
-    client = make_app(tmp_path, monkeypatch)
-    con = sqlite3.connect(tmp_path / "posts.sqlite")
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    con: sqlite3.Connection = sqlite3.connect(tmp_path / "posts.sqlite")
     con.execute(
         """CREATE TABLE runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
             new_posts INTEGER, error TEXT, android_release TEXT, android_sdk TEXT, device_product TEXT
         )"""
     )
-    now = datetime.now(UTC)
+    now: datetime = datetime.now(UTC)
     con.execute(
         "INSERT INTO runs (started_at, finished_at, new_posts) VALUES (?,?,?)",
         ((now - timedelta(minutes=1)).isoformat(), now.isoformat(), 0),
@@ -136,14 +171,14 @@ def test_status_page_shows_latest_ok_run_includes_link_failures_dash_when_absent
     con.commit()
     con.close()
 
-    r = client.get("/status")
+    r: Response = client.get("/status")
     assert r.status_code == 200  # must not raise on a runs row missing the link-failure columns
 
 
 def test_status_page_shows_new_stories_column(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    db = tmp_path / "posts.sqlite"
-    client = make_app(tmp_path, monkeypatch)
-    con = sqlite3.connect(db)
+    db: Path = tmp_path / "posts.sqlite"
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    con: sqlite3.Connection = sqlite3.connect(db)
     con.execute(
         """CREATE TABLE runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
@@ -151,7 +186,7 @@ def test_status_page_shows_new_stories_column(tmp_path: Path, monkeypatch: pytes
             new_stories INTEGER
         )"""
     )
-    now = datetime.now(UTC)
+    now: datetime = datetime.now(UTC)
     con.execute(
         "INSERT INTO runs (started_at, finished_at, new_posts, new_stories) VALUES (?,?,?,?)",
         ((now - timedelta(minutes=1)).isoformat(), now.isoformat(), 0, 4),
@@ -167,7 +202,7 @@ def test_status_page_shows_new_stories_column(tmp_path: Path, monkeypatch: pytes
     con.commit()
     con.close()
 
-    body = client.get("/status").text
+    body: str = client.get("/status").text
     assert "1 story stored" in body
     # the runs table row's own new_stories value, distinct from the currently-active count above
     assert "<td>4</td>" in body

@@ -29,7 +29,7 @@ def _challenge_present(d: uidevice.Device) -> str | None:
 @versioned
 def _dismiss_interstitials(d: uidevice.Device, rounds: int = 4) -> None:
     for _ in range(rounds):
-        btn = device.first(d, text=SELECTORS["dismiss_texts"])
+        btn: uidevice.Selector | None = device.first(d, text=SELECTORS["dismiss_texts"])
         if not btn:
             return
         btn.click()
@@ -44,10 +44,24 @@ def _login_form(d: uidevice.Device) -> tuple[uidevice.Selector, uidevice.Selecto
         d, text=SELECTORS["login_password_hints"]
     ):
         return None
-    edits = d(className="android.widget.EditText")
+    edits: uidevice.Selector = d(className="android.widget.EditText")
     if edits.count < 2:
         return None
     return edits[0], edits[1]
+
+
+def _package_present(d: uidevice.Device) -> bool:
+    """A second opinion before anything is downloaded and installed over what may be a live login:
+    `pm path` lists the installed APKs. `app_list()` goes through uiautomator2's own service, which
+    has answered wrongly while the device was still settling; only when both say it's missing is it."""
+    present: bool
+    try:
+        present = "package:" in (d.shell(["pm", "path", config.IG_PKG]).output or "")
+    except Exception:
+        return False
+    if present:
+        log(f"WARN: app_list() didn't list {config.IG_PKG} but `pm path` does; not reinstalling")
+    return present
 
 
 @versioned
@@ -57,7 +71,7 @@ def ensure_logged_in(d: uidevice.Device) -> None:
     Returns once we are (or became) logged in. Raises RuntimeError on a 2FA/challenge
     screen so the caller can abort and a human can finish it.
     """
-    if config.IG_PKG not in d.app_list():
+    if config.IG_PKG not in d.app_list() and not _package_present(d):
         if not config.IG_AUTO_INSTALL:
             raise RuntimeError(f"{config.IG_PKG} is not installed on the device; adb install it first")
         log(f"{config.IG_PKG} not installed; fetching and installing")
@@ -79,14 +93,15 @@ def ensure_logged_in(d: uidevice.Device) -> None:
         diagnostics.dump_debug(d, "login")
         raise DeviceNotReady(f"could not bring {config.IG_PKG} to the foreground; see {config.DEBUG_DIR}")
     # Stray "Enter your password" style alert from a previous attempt.
-    ok = d(text=SELECTORS["stray_alert_ok_text"])
+    ok: uidevice.Selector = d(text=SELECTORS["stray_alert_ok_text"])
     if ok.exists(timeout=1):
         ok.click()
         device.human_pause()
+    c: str | None
     if c := _challenge_present(d):
         diagnostics.dump_debug(d, "login")
         raise RuntimeError(f"Instagram wants a human: '{c}' screen; see {config.DEBUG_DIR}")
-    existing = d(text=SELECTORS["welcome_existing_profile_text"])
+    existing: uidevice.Selector = d(text=SELECTORS["welcome_existing_profile_text"])
     if existing.exists(timeout=1):
         # Logged-out "Join Instagram" welcome screen (fresh install, or an invalidated session) —
         # neither a login form nor a login_page_marker, so it must be tapped through first or the
@@ -94,7 +109,7 @@ def ensure_logged_in(d: uidevice.Device) -> None:
         log("logged-out welcome screen detected; tapping through to the login form")
         existing.click()
         device.human_pause(1.5, 2.5)
-    form = _login_form(d)
+    form: tuple[uidevice.Selector, uidevice.Selector] | None = _login_form(d)
     if not form:
         if device.first(d, text=SELECTORS["login_page_markers"]):
             diagnostics.dump_debug(d, "login")
@@ -112,6 +127,8 @@ def ensure_logged_in(d: uidevice.Device) -> None:
         diagnostics.dump_debug(d, "login")
         raise RuntimeError("login screen shown but IG_USERNAME/IG_PASSWORD not set")
     diagnostics.capture_screen(d, "login")  # before typing, so no credentials end up in it
+    user_field: uidevice.Selector
+    pw_field: uidevice.Selector
     user_field, pw_field = form
     log("login screen detected; entering credentials as", config.IG_USERNAME)
     user_field.click()
@@ -122,9 +139,9 @@ def ensure_logged_in(d: uidevice.Device) -> None:
     device.human_pause(0.5, 1.2)
     pw_field.set_text(config.IG_PASSWORD)
     device.human_pause(1, 2)
-    btn = device.first(d, description=SELECTORS["login_button_texts"]) or device.first(
-        d, text=SELECTORS["login_button_texts"]
-    )
+    btn: uidevice.Selector | None = device.first(
+        d, description=SELECTORS["login_button_texts"]
+    ) or device.first(d, text=SELECTORS["login_button_texts"])
     if btn:
         btn.click()
     else:
@@ -143,15 +160,19 @@ def ensure_logged_in(d: uidevice.Device) -> None:
 
 @versioned
 def _on_following_feed(d: uidevice.Device) -> bool:
-    t = d(resourceIdMatches=f".*:id/{SELECTORS['following_title_id']}$", text=SELECTORS["following_text"])
+    t: uidevice.Selector = d(
+        resourceIdMatches=f".*:id/{SELECTORS['following_title_id']}$", text=SELECTORS["following_text"]
+    )
     return t.exists(timeout=1)
 
 
 @versioned
 def open_following_feed(d: uidevice.Device) -> bool:
     _prepare_app(d)
+    w: int
+    h: int
     w, h = device.window_size(d)
-    sw = d(description=SELECTORS["feed_switcher_desc"])
+    sw: uidevice.Selector = d(description=SELECTORS["feed_switcher_desc"])
     for attempt in range(4):
         # The action bar hides while scrolled; pull back to the top so we can see where we are.
         for _ in range(12):
@@ -169,7 +190,7 @@ def open_following_feed(d: uidevice.Device) -> bool:
             continue
         if sw.exists(timeout=3):
             try:
-                f = d(text=SELECTORS["following_text"])
+                f: uidevice.Selector = d(text=SELECTORS["following_text"])
                 for tap in range(4):  # taps get swallowed while the app is still warming up
                     sw.click()
                     if f.exists(timeout=5):
@@ -209,7 +230,7 @@ def open_home_feed(d: uidevice.Device) -> bool:
     it doesn't refresh anything, it triggers Android's "tap again to exit" and risks actually
     exiting the app on a second back press soon after. Already being on Home just means done."""
     _prepare_app(d)
-    tab = d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}$")
+    tab: uidevice.Selector = d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}$")
     for attempt in range(4):
         if on_home_feed(d):
             return True
@@ -273,7 +294,7 @@ def open_own_following_list(d: uidevice.Device) -> bool:
     same as open_following_feed()'s own "leave and re-enter so the feed is fresh") and navigate
     back in via the normal tab -> link path, which always starts the list at row 0."""
     _prepare_app(d)
-    tab = d(resourceIdMatches=f".*:id/{SELECTORS['profile_tab_id']}$")
+    tab: uidevice.Selector = d(resourceIdMatches=f".*:id/{SELECTORS['profile_tab_id']}$")
     for attempt in range(4):
         if _on_following_list(d):
             d.press("back")
@@ -288,7 +309,7 @@ def open_own_following_list(d: uidevice.Device) -> bool:
             tab.click()
             device.human_pause(1.5, 2.5)
             diagnostics.capture_screen(d, "profile")
-            link = d(resourceIdMatches=f".*:id/{SELECTORS['following_link_id']}$")
+            link: uidevice.Selector = d(resourceIdMatches=f".*:id/{SELECTORS['following_link_id']}$")
             if not link.exists(timeout=5):
                 log(f"open following list attempt {attempt}: following link not found on profile")
                 diagnostics.dump_debug(d, f"following_list_profile{attempt}")
@@ -315,15 +336,17 @@ def scrape_following_list(d: uidevice.Device) -> list[str] | None:
     certainly a navigation/selector failure, not "this account follows nobody" — so the caller can
     tell the two apart and refuse to replace a possibly-good existing list with an empty one."""
     collected: dict[str, None] = {}  # dict for its insertion-order + O(1) membership
+    screens: int
+    empty_streak: int
     screens = empty_streak = 0
     while screens < config.MAX_FOLLOWING_SCROLLS:
-        xml = d.dump_hierarchy()
+        xml: str = d.dump_hierarchy()
         diagnostics.capture_screen(d, "following_list", xml)
-        names = parsing.parse_following_list(xml)
+        names: list[str] = parsing.parse_following_list(xml)
         if screens == 0 and not names:
             diagnostics.dump_debug(d, "following_list_first", xml=xml)
             log("no usernames parsed on first Following-list screen — selectors probably need updating")
-        new = 0
+        new: int = 0
         for n in names:
             if n not in collected:
                 collected[n] = None
@@ -345,11 +368,11 @@ def refresh_following_list(d: uidevice.Device, con: sqlite3.Connection) -> None:
     db.needs_following_refresh() will keep returning True so the next run tries again."""
     if not open_own_following_list(d):
         return
-    usernames = scrape_following_list(d)
+    usernames: list[str] | None = scrape_following_list(d)
     if not usernames:
         log("WARN: following-list refresh collected nothing; keeping the existing list")
         return
-    now_iso = datetime.now(UTC).isoformat()
+    now_iso: str = datetime.now(UTC).isoformat()
     con.execute("DELETE FROM following")
     con.executemany(
         "INSERT INTO following (username, updated_at) VALUES (?, ?)",

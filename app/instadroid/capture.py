@@ -1,7 +1,9 @@
 """Capturing a post card: expanded caption, permalink via the share sheet, media crops,
 carousel slides, avatars."""
 
+import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 from lxml import etree
@@ -22,25 +24,25 @@ def expand_caption(d: uidevice.Device, p: parsing.Post) -> str:
     with navigation.back_to_feed() before returning."""
     if not p["caption_truncated"] or not p["caption_bounds"]:
         return p["caption"]
-    prefix = p["caption"].rstrip("…").strip()
+    prefix: str = p["caption"].rstrip("…").strip()
     if not prefix:  # nothing distinctive to match the re-read node against; not worth the risk
         return p["caption"]
-    point = common.bounds_bottom_right(p["caption_bounds"])
+    point: tuple[int, int] | None = common.bounds_bottom_right(p["caption_bounds"])
     if not point:
         return p["caption"]
     for _ in range(config.CAPTION_EXPAND_TRIES):
         try:
             d.click(*point)
             device.human_pause(0.4, 0.9)
-            xml = d.dump_hierarchy()
+            xml: str = d.dump_hierarchy()
         except Exception as e:
             log(f"WARN: caption expand tap failed for {p['username']}:", repr(e))
             break
-        root = etree.fromstring(xml.encode())
+        root: etree._Element = etree.fromstring(xml.encode())
         for n in root.iter("node"):
             if n.get("class") != SELECTORS["caption_class"]:
                 continue
-            cleaned = parsing.clean_caption(n.get("text") or "", p["username"])
+            cleaned: str = parsing.clean_caption(n.get("text") or "", p["username"])
             if cleaned.startswith(prefix) and cleaned != p["caption"]:
                 return cleaned
     if not navigation.on_feed(d):
@@ -49,16 +51,54 @@ def expand_caption(d: uidevice.Device, p: parsing.Post) -> str:
     return p["caption"]
 
 
-_last_url = ""  # the last permalink handed out, to spot a clipboard that didn't change
+_last_code = ""  # the shortcode of the last permalink handed out, to spot a clipboard that didn't change
+_dumpsys_noted = False  # the dumpsys notes ("a clip but no link", "failed") are logged once per run each
+_dumpsys_failed = False
 
 
 def reset_last_url(d: uidevice.Device) -> None:
-    """Start a run treating whatever is on the clipboard now as stale."""
-    global _last_url
+    """Start a run treating whatever is on the clipboard now as stale, whichever way it's read."""
+    global _last_code, _dumpsys_noted, _dumpsys_failed
+    _dumpsys_noted = _dumpsys_failed = False
+    current: str = ""
     try:
-        _last_url = d.clipboard or ""
+        current = d.clipboard or ""
     except Exception:
-        _last_url = ""
+        current = ""
+    _last_code = _code_of(current) or _code_of(_clipboard_via_dumpsys(d, 5.0))
+
+
+def _code_of(text: str) -> str:
+    """The shortcode in a clipboard string, or "": what two reads of the same link have in common
+    whether one came back with tracking parameters and a trailing slash and the other trimmed."""
+    m: re.Match[str] | None = SELECTORS["permalink"].match(text)
+    return m.group("code") if m else ""
+
+
+def _clipboard_via_dumpsys(d: uidevice.Device, timeout: float) -> str:
+    """The permalink in the system clipboard as `dumpsys clipboard` (root, over adb) prints it, or "".
+
+    A second opinion for the uiautomator2 read, which comes from its own instrumentation process:
+    Android 10+ only lets the focused app or the default IME read the clipboard, and that read came
+    back empty on 6 of 8 Copy link taps in the 445 baseline (docs/RUNLOG.md). This image's adbd is
+    root, and the service's dump prints the primary clip; whether this Android redacts the text in
+    that dump is what the next real run tells us, so a clip without a link is logged once."""
+    global _dumpsys_noted, _dumpsys_failed
+    try:
+        out: str = d.shell(["dumpsys", "clipboard"], timeout=max(0.5, timeout)).output or ""
+    except Exception as e:
+        if not _dumpsys_failed:
+            _dumpsys_failed = True
+            log("WARN: dumpsys clipboard failed (not retried this run):", repr(e))
+        return ""
+    m: re.Match[str] | None = SELECTORS["permalink"].search(out)
+    if m:
+        return m.group(0)
+    if "ClipData" in out and not _dumpsys_noted:
+        _dumpsys_noted = True
+        first: str = next((line.strip() for line in out.splitlines() if "ClipData" in line), "")
+        log(f"dumpsys clipboard shows a clip but no permalink (redacted?): {first[:120]!r}")
+    return ""
 
 
 @versioned
@@ -74,14 +114,14 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
     if not navigation.close_sheets(d):
         log("WARN: a sheet is stuck open; skipping permalink")
         return None, "sheet"
-    fresh = next(
+    fresh: parsing.Post | None = next(
         (p for p in parsing.parse_hierarchy(d.dump_hierarchy()) if parsing.post_id(p) == post_hash), None
     )
-    point = common.bounds_center(fresh["share_bounds"]) if fresh else None
+    point: tuple[int, int] | None = common.bounds_center(fresh["share_bounds"]) if fresh else None
     if not point:
         log("WARN: card moved before the share tap; no permalink")
         return None, "sheet"
-    link = d(description=SELECTORS["copy_link_desc"])
+    link: uidevice.Selector = d(description=SELECTORS["copy_link_desc"])
     for _tap in range(config.SHARE_TAP_TRIES):  # the first tap is occasionally swallowed by the video overlay
         # Coordinate tap from the fresh dump: element-based clicks on this (non-clickable)
         # ViewGroup are unreliable on video cards.
@@ -100,7 +140,9 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
     # Staleness is caught below by comparing with the last link we handed out.
     device.human_pause(0.8, 1.2)  # let the sheet finish animating
     try:
-        b = link.info.get("bounds") or {}
+        b: Mapping[str, int] = link.info.get("bounds") or {}
+        cx: int
+        cy: int
         cx, cy = (b["left"] + b["right"]) // 2, (b["top"] + b["bottom"]) // 2
     except Exception as e:  # the sheet re-rendered and the node vanished
         log("WARN: Copy link vanished before click:", repr(e))
@@ -110,22 +152,31 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
     d.click(cx, cy)
     # Poll instead of a single fixed-delay read: the clipboard write can lag the tap by more
     # than a beat, and the old one-shot read missed it more often than not.
-    global _last_url
-    url = ""
-    deadline = time.time() + config.CLIPBOARD_TIMEOUT
+    global _last_code
+    url: str = ""
+    deadline: float = time.time() + config.CLIPBOARD_TIMEOUT
     while time.time() < deadline:
         time.sleep(0.4)
+        source: str = "uiautomator2"
         try:
-            candidate = d.clipboard or ""
+            candidate: str = d.clipboard or ""
         except Exception as e:
             log("WARN: clipboard read failed:", repr(e))
-            continue
-        if candidate and candidate != _last_url and SELECTORS["permalink"].match(candidate):
-            url = _last_url = candidate
+            candidate = ""
+        code: str = _code_of(candidate)
+        if not code or code == _last_code:
+            if _dumpsys_failed:
+                continue
+            candidate, source = _clipboard_via_dumpsys(d, deadline - time.time()), "dumpsys"
+            code = _code_of(candidate)
+        if code and code != _last_code:
+            url, _last_code = candidate, code
+            if source == "dumpsys":
+                log("permalink read via dumpsys clipboard (uiautomator2's read was empty or stale)")
             break
     navigation.close_sheets(d)  # sheet usually closes itself after Copy link; make sure
     navigation.back_to_feed(d)
-    m = SELECTORS["permalink"].match(url)
+    m: re.Match[str] | None = SELECTORS["permalink"].match(url)
     if not m:
         log("WARN: clipboard did not contain a permalink:", repr(url[:80]))
         return None, "clipboard"
@@ -134,7 +185,7 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
 
 def permalink_code(url: str) -> str:
     """The shortcode of a permalink fetch_permalink() returned: the id the post is stored under."""
-    m = SELECTORS["permalink"].match(url)
+    m: re.Match[str] | None = SELECTORS["permalink"].match(url)
     return m.group("code") if m else url
 
 
@@ -156,20 +207,27 @@ def crop_media(
     Returns filename or None.
     `settle` delays the shot (e.g. for a video/Reel, so autoplay has started and the initial
     audio-label overlay has faded) before it's taken — still one image, just a better-timed one."""
+    b: tuple[int, int, int, int] | None
     if not (b := common.parse_bounds(bounds)):
         return None
+    x1: int
+    y1: int
+    x2: int
+    y2: int
     x1, y1, x2, y2 = b
+    _: int
+    h: int
     _, h = device.window_size(d)
-    full = y2 - y1
+    full: int = y2 - y1
     y1, y2 = max(y1, clip_top), min(y2, h)  # trim the floating action bar / screen edge
     if full < 200 or (y2 - y1) < 0.4 * full:
         log(f"no crop: media bounds {bounds} mostly off-screen")
         return None
     if settle:
         device.human_pause(settle, settle * 1.4)
-    img = d.screenshot()
+    img: Image.Image = d.screenshot()
     config.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-    fn = f"{pid}{media_ext()}"
+    fn: str = f"{pid}{media_ext()}"
     save_media(img.crop((x1, y1, x2, y2)), config.MEDIA_DIR / fn)
     return fn
 
@@ -181,26 +239,32 @@ def capture_carousel(d: uidevice.Device, p: parsing.Post, pid: str) -> list[str]
     MAX_CAROUSEL_SLIDES), stopping as soon as a swipe doesn't land on the next slide (the swipe was
     read as a vertical scroll instead, or Instagram simply has nothing further) rather than risk
     storing the same slide twice. Returns the extra slides' filenames, in order."""
-    total = min(parsing.carousel_count(p["alt"]), config.MAX_CAROUSEL_SLIDES)
-    b = common.parse_bounds(p["bounds"])
+    total: int = min(parsing.carousel_count(p["alt"]), config.MAX_CAROUSEL_SLIDES)
+    b: tuple[int, int, int, int] | None = common.parse_bounds(p["bounds"])
     if total < 2 or not b:
         return []
+    x1: int
+    y1: int
+    x2: int
+    y2: int
     x1, y1, x2, y2 = b
-    cy = (y1 + y2) // 2
-    inset = max(int((x2 - x1) * 0.1), 1)
-    key = parsing.post_id(p)
+    cy: int = (y1 + y2) // 2
+    inset: int = max(int((x2 - x1) * 0.1), 1)
+    key: str = parsing.post_id(p)
     files: list[str] = []
     for slide in range(2, total + 1):
         d.swipe(x2 - inset, cy, x1 + inset, cy, duration=device.swipe_duration())
         device.human_pause(0.8, 1.6)
-        fresh = next(
+        fresh: parsing.Post | None = next(
             (c for c in parsing.parse_hierarchy(d.dump_hierarchy()) if parsing.post_id(c) == key), None
         )
-        sm = SELECTORS["slide_index"].match(fresh["alt"]) if fresh else None
+        sm: re.Match[str] | None = SELECTORS["slide_index"].match(fresh["alt"]) if fresh else None
         if not fresh or not sm or int(sm.group(1)) != slide:
             log(f"carousel: swipe didn't land on slide {slide}; stopping with {len(files)} extra")
             break
-        fn = crop_media(d, fresh["bounds"] or p["bounds"], f"{pid}_{slide - 1}", p.get("clip_top", 0))
+        fn: str | None = crop_media(
+            d, fresh["bounds"] or p["bounds"], f"{pid}_{slide - 1}", p.get("clip_top", 0)
+        )
         if not fn:
             break
         files.append(fn)
@@ -213,11 +277,16 @@ def _avatar_bounds(header_bounds: str) -> tuple[int, int, int, int] | None:
     ImageView has no addressable node (row_feed_profile_header is a collapsed leaf in the
     accessibility tree), so this crops positionally rather than by resource-id. Needs a live check
     against a real device to confirm the inset actually lands on the avatar."""
+    b: tuple[int, int, int, int] | None
     if not (b := common.parse_bounds(header_bounds)):
         return None
+    x1: int
+    y1: int
+    x2: int
+    y2: int
     x1, y1, x2, y2 = b
-    size = y2 - y1
-    pad = max(size // 8, 1)
+    size: int = y2 - y1
+    pad: int = max(size // 8, 1)
     return x1 + pad, y1 + pad, x1 + pad + (size - 2 * pad), y2 - pad
 
 
@@ -226,14 +295,14 @@ def capture_avatar(d: uidevice.Device, header_bounds: str, username: str) -> str
     """Crop the account's avatar from its own feed header and save it once per account, in its own
     subdirectory so the retention orphan sweep (which only globs MEDIA_DIR's top level) never
     touches it. Returns the path relative to MEDIA_DIR, or None."""
-    box = _avatar_bounds(header_bounds)
-    safe_user = common.safe_filename(username)
+    box: tuple[int, int, int, int] | None = _avatar_bounds(header_bounds)
+    safe_user: str | None = common.safe_filename(username)
     if not box or not safe_user:
         return None
-    avatar_dir = config.MEDIA_DIR / "avatars"
+    avatar_dir: Path = config.MEDIA_DIR / "avatars"
     avatar_dir.mkdir(parents=True, exist_ok=True)
-    img = d.screenshot()
-    fn = f"{safe_user}{media_ext()}"
+    img: Image.Image = d.screenshot()
+    fn: str = f"{safe_user}{media_ext()}"
     save_media(img.crop(box), avatar_dir / fn)
     # The orphan sweep never looks in avatars/, so drop this account's avatar in any other format
     # here (e.g. its old .jpg after switching MEDIA_FORMAT) rather than leaving it behind forever.

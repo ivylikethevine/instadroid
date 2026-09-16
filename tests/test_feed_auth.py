@@ -8,6 +8,7 @@ from typing import TypedDict
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx2 import Response
 
 from tests.feedclient import make_app, write_image
 
@@ -37,8 +38,22 @@ def no_token_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FEED_TOKEN_FILE", raising=False)
 
 
+def test_serving_beyond_localhost_without_a_token_is_warned_about(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("FEED_HOST", "0.0.0.0")
+    with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+        make_app(tmp_path, monkeypatch)
+    assert "FEED_HOST=0.0.0.0 without FEED_TOKEN: every feed and media file is readable" in caplog.text
+    caplog.clear()
+    monkeypatch.setenv("FEED_TOKEN", TOKEN)
+    with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+        make_app(tmp_path, monkeypatch, seed="")  # the database is already seeded
+    assert "without FEED_TOKEN" not in caplog.text
+
+
 def test_without_a_token_everything_stays_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    client = make_app(tmp_path, monkeypatch)
+    client: TestClient = make_app(tmp_path, monkeypatch)
     for path in ("/instagram.xml", "/stories.xml", "/opml", "/users", "/status", "/health"):
         assert client.get(path).status_code == 200, path
     assert "sig=" not in client.get("/instagram.xml").text
@@ -48,8 +63,8 @@ def test_without_a_token_everything_stays_open(tmp_path: Path, monkeypatch: pyte
     "path", ["/instagram.xml", "/stories.xml", "/opml", "/users", "/status", "/openapi.json"]
 )
 def test_every_path_needs_the_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str) -> None:
-    client = _auth_app(tmp_path, monkeypatch)
-    r = client.get(path)
+    client: TestClient = _auth_app(tmp_path, monkeypatch)
+    r: Response = client.get(path)
     assert r.status_code == 401
     assert r.headers["www-authenticate"] == 'Basic realm="instadroid"'  # so a browser prompts
 
@@ -94,13 +109,13 @@ def test_wrong_or_malformed_credentials_are_rejected(
 def test_feed_media_urls_are_signed_and_load_without_the_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client = _auth_app(tmp_path, monkeypatch)
+    client: TestClient = _auth_app(tmp_path, monkeypatch)
     write_image(tmp_path / "media" / "ABC.jpg", (10, 10))
-    body = client.get("/instagram.xml", params={"token": TOKEN}).text
+    body: str = client.get("/instagram.xml", params={"token": TOKEN}).text
     assert TOKEN not in body  # the feed content never carries the token itself
     from feedserver import auth
 
-    sig = auth.media_sig("ABC.jpg")
+    sig: str = auth.media_sig("ABC.jpg")
     assert f"http://feed.test/media/ABC.jpg?sig={sig}" in body
     assert client.get(f"/media/ABC.jpg?sig={sig}").status_code == 200
     assert client.get("/media/ABC.jpg").status_code == 401
@@ -108,7 +123,7 @@ def test_feed_media_urls_are_signed_and_load_without_the_token(
 
 
 def test_a_media_signature_only_opens_its_own_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _auth_app(tmp_path, monkeypatch)
+    client: TestClient = _auth_app(tmp_path, monkeypatch)
     write_image(tmp_path / "media" / "ABC.jpg", (10, 10))
     write_image(tmp_path / "media" / "other.jpg", (10, 10))
     from feedserver import auth
@@ -117,9 +132,11 @@ def test_a_media_signature_only_opens_its_own_file(tmp_path: Path, monkeypatch: 
 
 
 def test_opml_feed_urls_carry_the_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _auth_app(tmp_path, monkeypatch)
-    root = ET.fromstring(client.get("/opml", headers={"Authorization": f"Bearer {TOKEN}"}).text)
-    xml_urls = {o.get("xmlUrl") for o in root.findall("./body/outline/outline")}
+    client: TestClient = _auth_app(tmp_path, monkeypatch)
+    root: ET.Element[str] = ET.fromstring(
+        client.get("/opml", headers={"Authorization": f"Bearer {TOKEN}"}).text
+    )
+    xml_urls: set[str | None] = {o.get("xmlUrl") for o in root.findall("./body/outline/outline")}
     assert xml_urls == {
         f"http://feed.test/instagram.xml?token={TOKEN}",
         f"http://feed.test/stories.xml?token={TOKEN}",
@@ -129,10 +146,10 @@ def test_opml_feed_urls_carry_the_token(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 def test_feed_token_can_come_from_a_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    secret = tmp_path / "feed_token"
+    secret: Path = tmp_path / "feed_token"
     secret.write_text(TOKEN + "\n")
     monkeypatch.setenv("FEED_TOKEN_FILE", str(secret))
-    client = make_app(tmp_path, monkeypatch)
+    client: TestClient = make_app(tmp_path, monkeypatch)
     assert client.get("/instagram.xml").status_code == 401
     assert client.get("/instagram.xml", params={"token": TOKEN}).status_code == 200
 
@@ -144,11 +161,11 @@ def test_access_log_blanks_the_token_and_still_skips_health(
     from feedserver import auth
 
     def record(path: str) -> logging.LogRecord:
-        args = ("127.0.0.1:5000", "GET", path, "1.1", 200)
+        args: tuple[str, str, str, str, int] = ("127.0.0.1:5000", "GET", path, "1.1", 200)
         return logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d', args, None)
 
-    log_filter = auth.SkipHealthcheck()
-    feed = record(f"/instagram.xml?user=a&token={TOKEN}&limit=5")
+    log_filter: auth.SkipHealthcheck = auth.SkipHealthcheck()
+    feed: logging.LogRecord = record(f"/instagram.xml?user=a&token={TOKEN}&limit=5")
     assert log_filter.filter(feed)
     assert TOKEN not in feed.getMessage()
     assert "/instagram.xml?user=a&token=REDACTED&limit=5" in feed.getMessage()

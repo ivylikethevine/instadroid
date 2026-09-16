@@ -11,6 +11,7 @@ new-profile = "devtools.new_profile:main"
 promote-dump = "devtools.promote_dump:main"
 check-new-builds = "devtools.check_new_builds:main"
 export-openapi = "devtools.export_openapi:main"
+local-annotations = "devtools.local_annotations:main"
 
 [build-system]
 requires = ["setuptools>=84"]
@@ -33,7 +34,9 @@ cache-dir = "local/.ruff_cache"
 [tool.ruff.lint]
 # ANN: every function is annotated, tests included, and ANN401 forbids an explicit Any. TID251 bans the
 # typing escape hatches outright (see banned-api below), PGH forbids blanket `# type: ignore`/`# noqa`, and
-# RUF100 flags a `# noqa` that no longer suppresses anything. tests/test_typing_policy.py covers the rest.
+# RUF100 flags a `# noqa` that no longer suppresses anything. Every local variable is annotated where it's
+# first bound: no linter has that rule, so devtools/local_annotations.py is one (`local-annotations`, run by
+# scripts/check.sh's python group and tests/test_typing_policy.py). That test also covers the suppression comments.
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "ANN", "TID251", "PGH", "RUF100"]
 ignore = ["E501"]
 
@@ -53,8 +56,8 @@ data_file = "local/.coverage"
 source = ["app"]
 
 [tool.coverage.report]
-# The project rule (README, Development): at least 90% of all Python code is covered by tests.
-fail_under = 90
+# The project rule (README, Development): at least 95% of all Python code is covered by tests.
+fail_under = 95
 
 [tool.basedpyright]
 # basedpyright: pyright's strict mode plus reportAny/reportExplicitAny, so no value typed Any anywhere, not even

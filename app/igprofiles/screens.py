@@ -13,6 +13,7 @@ Used by devtools/new_profile.py (`check`) and tests/test_replay.py; never touche
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from lxml import etree
@@ -135,15 +136,17 @@ def key_matches(key: str, value: SelectorValue, nodes: list[etree._Element]) -> 
     if isinstance(value, dict):
         return None
     if isinstance(value, re.Pattern):
-        test = value.search if key == "caption_more_suffix" else value.match
+        test: Callable[[str], re.Match[str] | None] = (
+            value.search if key == "caption_more_suffix" else value.match
+        )
         return any(test(s) for s in _strings(nodes))
-    values = [value] if isinstance(value, str) else [str(v) for v in value]
+    values: list[str] = [value] if isinstance(value, str) else [str(v) for v in value]
     if key.endswith(("_id", "_ids")):
-        ids = [n.get("resource-id") or "" for n in nodes]
+        ids: list[str] = [n.get("resource-id") or "" for n in nodes]
         return any(id_matches(rid, v) for rid in ids for v in values)
     if key == "caption_class":
         return any(n.get("class") in values for n in nodes)
-    strings = _strings(nodes)
+    strings: list[str] = _strings(nodes)
     if key.endswith("_prefix"):
         return any(s.startswith(v) for s in strings for v in values)
     return any(s in values for s in strings)
@@ -167,8 +170,8 @@ class ScreenCheck:
         """Nothing expected matched and at most a couple of Instagram resource-ids: not really an
         Instagram screen, e.g. a popup holding focus (seen live: an empty 22px context_menu), the
         launcher, a crash dialog. A small menu that does show its expected text isn't empty."""
-        spec = SCREENS.get(self.screen or "")
-        expected = (*spec.required, *spec.optional) if spec else ()
+        spec: Screen | None = SCREENS.get(self.screen or "")
+        expected: tuple[str, ...] = (*spec.required, *spec.optional) if spec else ()
         return self.instagram_nodes <= 2 and not any(k in self.matched for k in expected)
 
     @property
@@ -179,9 +182,9 @@ class ScreenCheck:
 def check_screen(xml: str, screen: str | None, selectors: Selectors) -> ScreenCheck:
     """Match every selector key against one dump, and sort the expected ones for `screen` (None: no
     expectations, e.g. a manual dump) into matched and missing."""
-    nodes = list(etree.fromstring(xml.encode()).iter("node"))
-    matched = sorted(k for k, v in selectors.items() if key_matches(k, v, nodes))
-    spec = SCREENS.get(screen or "")
+    nodes: list[etree._Element] = list(etree.fromstring(xml.encode()).iter("node"))
+    matched: list[str] = sorted(k for k, v in selectors.items() if key_matches(k, v, nodes))
+    spec: Screen | None = SCREENS.get(screen or "")
     return ScreenCheck(
         screen=screen,
         matched=matched,

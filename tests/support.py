@@ -26,7 +26,7 @@ def json_body(r: Response) -> Json:
 
 def json_object(r: Response) -> dict[str, Json]:
     """A response's JSON body, which must be an object."""
-    body = json_body(r)
+    body: Json = json_body(r)
     assert isinstance(body, dict), body
     return body
 
@@ -41,7 +41,7 @@ def json_at(value: Json, *path: str) -> Json:
 
 def fetch_row(cur: sqlite3.Cursor) -> sqlite3.Row:
     """The cursor's next row, which must exist."""
-    row = sqlrows.fetch_one(cur)
+    row: sqlite3.Row | None = sqlrows.fetch_one(cur)
     assert row is not None, "the query returned no rows"
     return row
 
@@ -66,7 +66,7 @@ def record_run_ago(
 ) -> None:
     """A runs row that started and finished `minutes` before `now` (default: the current time), with no
     device snapshot and no new posts."""
-    at = ((now or datetime.now(UTC)) - timedelta(minutes=minutes)).isoformat()
+    at: str = ((now or datetime.now(UTC)) - timedelta(minutes=minutes)).isoformat()
     db.record_run(con, at, at, 0, error, {}, **stats)
 
 
@@ -74,7 +74,7 @@ def insert_post(
     con: sqlite3.Connection, media_dir: Path, post_id: str, days_old: float, media_file: str | None = None
 ) -> None:
     """A photo post `days_old` days old (scraped and posted then), with its media file written when given."""
-    ts = (datetime.now(UTC) - timedelta(days=days_old)).isoformat()
+    ts: str = (datetime.now(UTC) - timedelta(days=days_old)).isoformat()
     if media_file:
         (media_dir / media_file).write_bytes(b"x")
     con.execute(

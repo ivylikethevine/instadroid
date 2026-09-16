@@ -24,6 +24,7 @@ from pathlib import Path
 
 import igprofiles
 from igprofiles import BaseProfile, screens
+from igprofiles.base import Selectors
 from instadroid import parsing, versioning
 from lxml import etree
 
@@ -44,7 +45,7 @@ def expected(xml: str) -> JSON:
 def write_expected(xml_path: Path, found: parsing.ScreenParse) -> Path:
     """Record what the parsers found in a fixture as its .expected.json. The same text as dumping
     expected(xml): the JSON round trip changes no value json.dumps writes."""
-    out = xml_path.with_suffix(".expected.json")
+    out: Path = xml_path.with_suffix(".expected.json")
     out.write_text(json.dumps(found, indent=1, ensure_ascii=False) + "\n")
     return out
 
@@ -55,15 +56,16 @@ def fixture_problems(profile: BaseProfile, recorded: Path) -> list[str]:
     home_feed_444.xml, ...), it lacks a selector key the scraper needs there beyond what the parsers
     read (see igprofiles/screens.py)."""
     problems: list[str] = []
-    name = recorded.name.removesuffix(".expected.json")
-    xml = recorded.with_name(f"{name}.xml").read_text()
+    name: str = recorded.name.removesuffix(".expected.json")
+    xml: str = recorded.with_name(f"{name}.xml").read_text()
     with versioning.using(profile):
-        parsed = expected(xml)
+        parsed: JSON = expected(xml)
     if parsed != jsonvalues.loads(recorded.read_text()):
         problems.append(
             f"{recorded.name} no longer parses as recorded (re-record with promote-dump --update)"
         )
-    screen = screens.screen_of_fixture(name)
+    screen: str = screens.screen_of_fixture(name)
+    missing: list[str]
     if screen in screens.SCREENS and (
         missing := screens.check_screen(xml, screen, profile.selectors).missing_required
     ):
@@ -73,13 +75,14 @@ def fixture_problems(profile: BaseProfile, recorded: Path) -> list[str]:
 
 def pseudonymize(xml: str) -> str:
     """Replace every account, display name, place and caption the parsers find with a placeholder."""
-    found = parsing.parse_screen(xml)
+    found: parsing.ScreenParse = parsing.parse_screen(xml)
     names: dict[str, str] = {}
 
     def alias(value: str, kind: str) -> None:
         if value and value not in names:
             names[value] = f"{kind}{sum(v.startswith(kind) for v in names.values()) + 1}"
 
+    m: re.Match[str] | None
     for p in found["posts"]:
         alias(p["username"], "user")
         alias(p["place"], "Place ")
@@ -90,8 +93,9 @@ def pseudonymize(xml: str) -> str:
         alias(item["username"], "user")
     for username in found["following_list"]:
         alias(username, "user")
-    root = etree.fromstring(xml.encode())
-    selectors = versioning.PROFILE.selectors
+    root: etree._Element = etree.fromstring(xml.encode())
+    selectors: Selectors = versioning.PROFILE.selectors
+    value: str | None
     for n in root.iter("node"):  # names on screen that no parser returns
         for attr in ("text", "content-desc"):
             value = n.get(attr) or ""
@@ -104,7 +108,9 @@ def pseudonymize(xml: str) -> str:
                 alias(m["user"], "user")
             # "Liked by <someone>", "by <someone>", an @mention, "<someone> and 3 others",
             # "Profile picture of <someone>", "<someone>'s story".
-            handles = [h[1] for h in re.finditer(r"(?:\b(?:Liked by|by|of)\s|@)([\w.]{3,30})\b", value)]
+            handles: list[str] = [
+                h[1] for h in re.finditer(r"(?:\b(?:Liked by|by|of)\s|@)([\w.]{3,30})\b", value)
+            ]
             handles += [h[1] for h in re.finditer(r"^([\w.]{3,30})(?: and \d+ others?$|'s story\b)", value)]
             # A collab post's two authors; both lowercase-initial, so "Search and explore" stays.
             if (m := re.match(r"^([\w.]{3,30}) and ([\w.]{3,30})$", value)) and not (
@@ -125,8 +131,10 @@ def pseudonymize(xml: str) -> str:
             # "Follow <display name>" on a suggested account.
             if (m := re.match(r"^Follow (.+)$", value)) and m.group(1) not in ("back", "Back"):
                 alias(m.group(1), "Display ")
-    ordered = sorted(names, key=len, reverse=True)  # "ab_c" before "ab"
-    pattern = re.compile("|".join(rf"(?<![\w.]){re.escape(v)}(?![\w])" for v in ordered)) if ordered else None
+    ordered: list[str] = sorted(names, key=len, reverse=True)  # "ab_c" before "ab"
+    pattern: re.Pattern[str] | None = (
+        re.compile("|".join(rf"(?<![\w.]){re.escape(v)}(?![\w])" for v in ordered)) if ordered else None
+    )
     for n in root.iter("node"):
         for attr in ("text", "content-desc", "hint"):
             if pattern and (value := n.get(attr)):
@@ -135,8 +143,8 @@ def pseudonymize(xml: str) -> str:
 
 
 def leftover_text(xml: str) -> list[str]:
-    root = etree.fromstring(xml.encode())
-    values = {n.get(a) or "" for n in root.iter("node") for a in ("text", "content-desc", "hint")}
+    root: etree._Element = etree.fromstring(xml.encode())
+    values: set[str] = {n.get(a) or "" for n in root.iter("node") for a in ("text", "content-desc", "hint")}
     return sorted(v for v in values if v and not _CHROME.match(v))
 
 
@@ -165,15 +173,15 @@ class Promoted:
 def promote(dump: Path, profile_name: str, name: str) -> Promoted:
     """Scrub `dump` into igprofiles/<profile>/fixtures/<name>.xml and record what the parsers find in
     it under that profile. Raises ValueError, writing nothing, if scrubbing changed what parses."""
-    raw = dump.read_text()
+    raw: str = dump.read_text()
     with versioning.using(igprofiles.load(profile_name)):
-        clean = pseudonymize(raw)
-        result = parsing.parse_screen(clean)
+        clean: str = pseudonymize(raw)
+        result: parsing.ScreenParse = parsing.parse_screen(clean)
         if shape(result) != shape(parsing.parse_screen(raw)):
             raise ValueError(
                 f"pseudonymizing {dump.name} changed what the parsers find; not writing a fixture"
             )
-    xml_path = igprofiles.fixture(profile_name, f"{name}.xml")
+    xml_path: Path = igprofiles.fixture(profile_name, f"{name}.xml")
     xml_path.parent.mkdir(exist_ok=True)
     xml_path.write_text("<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n" + clean + "\n")
     write_expected(xml_path, result)
@@ -190,7 +198,7 @@ def rerecord(profile_name: str) -> list[Path]:
 
 
 def print_promoted(promoted: Promoted) -> None:
-    result = promoted.result
+    result: parsing.ScreenParse = promoted.result
     print(f"wrote {promoted.xml_path.relative_to(ROOT)} (+ .expected.json):")
     print(
         f"  {len(result['posts'])} post(s), {sum(bool(p['caption']) for p in result['posts'])} with captions;"
@@ -207,15 +215,20 @@ class Options(argparse.Namespace):
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap: argparse.ArgumentParser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--update", action="store_true", help="re-record expectations for existing fixtures")
     ap.add_argument("args", nargs="+", help="DUMP PROFILE NAME, or with --update just PROFILE")
-    opts = ap.parse_args(argv, namespace=Options())
+    opts: Options = ap.parse_args(argv, namespace=Options())
+    profile_name: str
     if opts.update:
         (profile_name,) = opts.args
         for out in rerecord(profile_name):
             print("wrote", out.relative_to(ROOT))
         return
+    dump: str
+    name: str
     dump, profile_name, name = opts.args
     try:
         print_promoted(promote(Path(dump), profile_name, name))
