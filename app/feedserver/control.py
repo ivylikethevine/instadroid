@@ -11,14 +11,16 @@ router = APIRouter()
 
 
 class ControlState(BaseModel):
-    locked: bool  # scheduled runs are held
+    locked: bool  # scheduled runs are held, by the manual lock or by a hold
     scrape_now: bool  # a scrape-now request is waiting for the poll loop
+    hold: str | None = None  # why the scraper holds itself (Instagram needs a person), else None
 
 
 def current_state() -> ControlState:
     return ControlState(
         locked=files.locked(settings.CONTROL_DIR, settings.LOCK_MAX_HOURS),
         scrape_now=files.run_now_requested(settings.CONTROL_DIR),
+        hold=files.hold_reason(settings.CONTROL_DIR),
     )
 
 
@@ -31,13 +33,14 @@ def control_state() -> ControlState:
 @router.post("/control/lock", summary="Hold scheduled runs")
 def lock() -> ControlState:
     """Stop the scraper starting runs while the device is driven by hand. A run already going finishes.
-    The lock is ignored once it's LOCK_MAX_HOURS old."""
+    The lock is ignored once it's LOCK_MAX_HOURS old; a hold the scraper raised itself never is."""
     files.set_lock(settings.CONTROL_DIR, True)
     return current_state()
 
 
 @router.delete("/control/lock", summary="Release the lock")
 def unlock() -> ControlState:
+    """Release the manual lock and any hold: the scraper resumes on its schedule."""
     files.set_lock(settings.CONTROL_DIR, False)
     return current_state()
 

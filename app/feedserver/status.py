@@ -154,7 +154,9 @@ def status_page() -> HTMLResponse:
         for a in alerts
     )
     state = control.current_state()
-    if state.locked:
+    if state.hold is not None:
+        latest_html += f'<p class="err">Held until unlocked, Instagram needs a person: {escape(short_error(state.hold))}</p>'
+    elif state.locked:
         latest_html += '<p class="warn">Manual lock in place: scheduled runs are held.</p>'
     if state.scrape_now:
         latest_html += "<p>A scrape-now request is waiting for the poll loop.</p>"

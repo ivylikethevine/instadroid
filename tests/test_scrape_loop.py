@@ -220,6 +220,58 @@ def test_main_records_a_transient_failure_and_retries_early(
     assert 2 * 60 <= sleeps[0] <= 3 * 60
 
 
+def test_main_counts_earlier_failures_from_the_runs_table(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A restart doesn't reset the backoff: two failed runs already recorded plus this one is three."""
+    sleeps = stop_after_first_sleep(monkeypatch)
+    monkeypatch.setattr(config, "POLL_MIN_H", 3.0)
+    monkeypatch.setattr(config, "POLL_MAX_H", 3.0)
+    monkeypatch.setattr(config, "FAILURE_BACKOFF_MAX_HOURS", 24.0)
+    monkeypatch.setattr(config, "SCRAPE_ON_STARTUP", True)  # the startup wait backs off too; not under test
+    con = db.db_init()
+    record_run_ago(con, 600, "RuntimeError('no posts parsed')")
+    record_run_ago(con, 300, "RuntimeError('no posts parsed')")
+    assert db.consecutive_failures(con) == 2
+    con.close()
+
+    def broken() -> NoReturn:
+        raise RuntimeError("no posts parsed")
+
+    monkeypatch.setattr(device, "connect_device", broken)
+    with pytest.raises(StopLoop):
+        scrape.main()
+    assert sleeps == [12.0 * 3600]  # third failure in a row: 4x the 3h interval
+    assert "3 failed runs in a row; backing off" in capsys.readouterr().out
+
+
+def test_the_daily_budget_holds_the_loop_until_the_oldest_run_ages_out(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sleeps = stop_after_first_sleep(monkeypatch)
+    monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 3)
+    monkeypatch.setattr(config, "SCRAPE_ON_STARTUP", True)
+    con = db.db_init()
+    for minutes in (23 * 60, 12 * 60, 60):
+        record_run_ago(con, minutes)
+    assert scrape.budget_wait_seconds(con) == pytest.approx(3600 + 1, abs=5)  # the 23h-old one ages out in 1h
+    record_run_ago(con, 25 * 60)  # older than a day: not counted
+    assert scrape.budget_wait_seconds(con) == pytest.approx(3600 + 1, abs=5)
+    monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 4)
+    assert scrape.budget_wait_seconds(con) == 0  # under the ceiling
+    monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 3)
+    con.close()
+    connects: list[int] = []
+    monkeypatch.setattr(device, "connect_device", lambda: connects.append(1))
+    with pytest.raises(StopLoop):
+        scrape.main()
+    assert connects == [] and len(sleeps) == 1 and 3590 <= sleeps[0] <= 3610
+    assert "3 runs started in the last 24h (MAX_RUNS_PER_DAY)" in capsys.readouterr().out
+    monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 0)
+    with db.db_init() as con:
+        assert scrape.budget_wait_seconds(con) == 0  # disabled
+
+
 def test_main_records_a_successful_run_with_device_versions(
     fast_offline: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

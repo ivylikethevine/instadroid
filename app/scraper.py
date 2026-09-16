@@ -8,6 +8,7 @@
     compat                   redroid image / Instagram build pairs this database has run
     backup                   copy the database to BACKUP_DIR now
     lock / unlock            hold scheduled runs while driving the device by hand, then release
+                             (unlock also clears the hold a login challenge raised)
     scrape-now               ask the poll loop to run now (rate-limited, see instadroid/control.py)
     rename OLD NEW           move an account's history to its new username
 
@@ -35,7 +36,13 @@ from instadroid import (
 if __name__ == "__main__":
     match sys.argv[1:]:
         case ["once", *_]:
-            stats, exc = scrape.run_recorded(db.db_init())  # recorded in runs, like a scheduled run
+            con = db.db_init()
+            if wait := scrape.budget_wait_seconds(con):
+                sys.exit(
+                    f"{config.MAX_RUNS_PER_DAY} runs already started in the last 24h (MAX_RUNS_PER_DAY);"
+                    f" the next is allowed in {wait / 3600:.1f}h. MAX_RUNS_PER_DAY=0 disables the budget."
+                )
+            stats, exc = scrape.run_recorded(con)  # recorded in runs, like a scheduled run
             if exc or stats is None:
                 sys.exit(f"run failed: {exc!r}")
             print(stats["new"], "new posts,", stats["metrics"].get("new_stories", 0), "new stories")

@@ -11,6 +11,7 @@ from devtools import ROOT
 from instadroid import config, db, device, diagnostics, install, navigation, scrape
 
 from tests.fakedevice import FakeDevice
+from tests.support import record_run_ago
 
 SCRAPER = str(ROOT / "app" / "scraper.py")
 
@@ -59,6 +60,25 @@ def test_once_prints_the_run_and_exits_non_zero_when_it_failed(
     monkeypatch.setattr(scrape, "run_recorded", bad)
     with pytest.raises(SystemExit, match="run failed: RuntimeError"):
         _run(monkeypatch, "once")
+
+
+def test_once_refuses_past_the_daily_run_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 1)
+    with db.db_init() as con:
+        record_run_ago(con, 30)
+    ran: list[int] = []
+
+    def run(con: sqlite3.Connection) -> tuple[scrape.RunStats, None]:
+        ran.append(1)
+        return {"new": 0, "metrics": {}}, None
+
+    monkeypatch.setattr(scrape, "run_recorded", run)
+    with pytest.raises(SystemExit, match="1 runs already started in the last 24h"):
+        _run(monkeypatch, "once")
+    assert ran == []
+    monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 0)
+    _run(monkeypatch, "once")
+    assert ran == [1]
 
 
 def test_login_stops_instagram_afterwards_even_when_it_raises(

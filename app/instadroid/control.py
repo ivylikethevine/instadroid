@@ -13,6 +13,11 @@ would leave sheets open and Instagram resident). A lock older than LOCK_MAX_HOUR
 and is ignored, with a warning. A scrape-now request is honoured once RUN_NOW_MIN_MINUTES have passed
 since the last run finished, then deleted. The file protocol itself is shared/control.py, which the
 feed server uses too.
+
+The scraper also locks itself: a run that ends with Instagram wanting a person (a challenge, a login
+form it couldn't fill or get past, missing credentials) writes needs-human.hold, which holds runs
+exactly like the lock but never expires. Without it the loop would relaunch Instagram, and retype
+the password, every poll interval until someone noticed. `scraper.py unlock` clears it.
 """
 
 import sqlite3
@@ -32,6 +37,16 @@ def locked(now: float | None = None) -> bool:
 
 def set_lock(on: bool) -> None:
     files.set_lock(config.CONTROL_DIR, on)
+
+
+def hold_reason() -> str | None:
+    return files.hold_reason(config.CONTROL_DIR)
+
+
+def set_hold(reason: str) -> None:
+    """Hold every run until `scraper.py unlock`, recording why (the run's error)."""
+    files.set_hold(config.CONTROL_DIR, reason)
+    log(f"holding all runs until `scraper.py unlock` ({config.CONTROL_DIR / files.HOLD}): {reason}")
 
 
 def request_run_now() -> None:
@@ -67,7 +82,10 @@ def wait_while_locked() -> None:
     """Hold here while the lock is in place, logging once; warn about a lock left long enough to ignore."""
     lock = config.CONTROL_DIR / files.LOCK
     if locked():
-        log(f"{lock} is in place; holding scheduled runs until it's removed")
+        if (reason := hold_reason()) is not None:
+            log(f"Instagram needs a person ({reason}); holding all runs until `scraper.py unlock`")
+        else:
+            log(f"{lock} is in place; holding scheduled runs until it's removed")
         while locked():
             time.sleep(config.CONTROL_POLL_SECONDS)
         log("lock removed; resuming")

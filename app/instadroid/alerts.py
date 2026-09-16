@@ -34,6 +34,12 @@ TITLES = {
 _NEEDS_HUMAN = ("wants a human", "login page shown", "login screen shown", "still on login screen")
 
 
+def needs_human(error: str | None) -> bool:
+    """Whether a run's recorded error is one only a person can clear (so the scraper holds itself,
+    see instadroid/control.py, rather than retrying it every poll)."""
+    return error is not None and any(marker in error for marker in _NEEDS_HUMAN)
+
+
 def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str, str]:
     """{kind: message} for every alert condition that holds right now."""
     now = now or datetime.now(UTC)
@@ -44,7 +50,7 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
         for r in sqlrows.fetch_all(con.execute("SELECT error FROM runs ORDER BY id DESC LIMIT ?", (window,)))
     ]
     latest_error = runs[0] if runs else None
-    if latest_error and any(marker in latest_error for marker in _NEEDS_HUMAN):
+    if latest_error is not None and needs_human(latest_error):
         found[LOGIN] = f"finish it in scrcpy: {short_error(latest_error, 300)}"
     if config.ALERT_FAILED_RUNS > 0 and len(runs) >= config.ALERT_FAILED_RUNS and all(runs):
         found[FAILING] = (

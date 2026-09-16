@@ -9,7 +9,7 @@ from typing import NoReturn
 
 import pytest
 from fastapi.testclient import TestClient
-from instadroid import config, control, scrape
+from instadroid import config, control, device, scrape
 
 from tests.feedclient import make_app
 from tests.support import json_body, json_object, record_run_ago
@@ -37,6 +37,77 @@ def test_lock_and_its_expiry(
     assert control.locked()  # 0 = a lock never expires
     control.set_lock(False)
     assert not control.locked()
+
+
+def test_a_hold_never_expires_and_unlock_clears_it(
+    con: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "LOCK_MAX_HOURS", 6)
+    assert control.hold_reason() is None
+    control.set_hold("RuntimeError(\"Instagram wants a human: 'Confirm it's you' screen\")")
+    reason = control.hold_reason()
+    assert control.locked() and reason is not None and "wants a human" in reason
+    old = time.time() - 7 * 24 * 3600
+    os.utime(tmp_path / "needs-human.hold", (old, old))
+    assert control.locked()  # a week old and still holding: no timer resumes it
+    control.set_lock(False)  # unlock is the one way out
+    assert not control.locked() and control.hold_reason() is None
+
+
+def test_a_needs_human_error_holds_all_later_runs(
+    con: sqlite3.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def challenge() -> NoReturn:
+        raise RuntimeError("Instagram wants a human: 'Confirm it's you' screen; see /debug")
+
+    monkeypatch.setattr(device, "connect_device", challenge)
+    stats, exc = scrape.run_recorded(con)
+    assert stats is None and isinstance(exc, RuntimeError)
+    assert control.locked() and (tmp_path / "needs-human.hold").read_text().startswith("RuntimeError(")
+    assert "holding all runs until `scraper.py unlock`" in capsys.readouterr().out
+    # A device failure, by contrast, is retried and never holds.
+    control.set_lock(False)
+
+    def offline() -> NoReturn:
+        raise device.DeviceNotReady("could not bring com.instagram.android to the foreground")
+
+    monkeypatch.setattr(device, "connect_device", offline)
+    scrape.run_recorded(con)
+    assert not control.locked()
+
+
+def test_the_poll_loop_holds_while_held(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    control.set_hold("RuntimeError('still on login screen after submit (wrong password?)')")
+    held: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        held.append(seconds)
+        if len(held) == 2:
+            control.set_lock(False)
+
+    monkeypatch.setattr(time, "sleep", sleep)
+
+    class StopLoop(Exception):
+        pass
+
+    def run_recorded(c: sqlite3.Connection) -> NoReturn:
+        raise StopLoop
+
+    def startup_wait_seconds(c: sqlite3.Connection) -> float:
+        return 0
+
+    monkeypatch.setattr(scrape, "_startup_wait_seconds", startup_wait_seconds)
+    monkeypatch.setattr(scrape, "run_recorded", run_recorded)
+    with pytest.raises(StopLoop):
+        scrape.main()
+    assert held == [30, 30]
+    out = capsys.readouterr().out
+    assert "Instagram needs a person (RuntimeError('still on login screen" in out and "resuming" in out
 
 
 def test_scrape_now_waits_for_the_rate_limit(con: sqlite3.Connection, tmp_path: Path) -> None:
@@ -110,14 +181,26 @@ def _control_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 def test_control_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = _control_app(tmp_path, monkeypatch)
     control_dir = tmp_path / "control"
-    assert json_body(client.post("/control/lock")) == {"locked": True, "scrape_now": False}
+    assert json_body(client.post("/control/lock")) == {"locked": True, "scrape_now": False, "hold": None}
     assert (control_dir / "manual.lock").exists()
     assert client.post("/control/scrape-now").status_code == 409  # locked
-    assert json_body(client.delete("/control/lock")) == {"locked": False, "scrape_now": False}
+    assert json_body(client.delete("/control/lock")) == {"locked": False, "scrape_now": False, "hold": None}
     assert client.post("/control/scrape-now").status_code == 202  # no runs recorded yet
     assert (control_dir / "scrape-now").exists()
-    assert json_body(client.get("/control")) == {"locked": False, "scrape_now": True}
+    assert json_body(client.get("/control")) == {"locked": False, "scrape_now": True, "hold": None}
     assert "scrape-now request is waiting" in client.get("/status").text
+    (control_dir / "scrape-now").unlink()
+    # A hold the scraper raised: reported with its reason, refuses scrape-now, and unlock clears it.
+    (control_dir / "needs-human.hold").write_text("RuntimeError('Instagram wants a human')\n")
+    assert json_body(client.get("/control")) == {
+        "locked": True,
+        "scrape_now": False,
+        "hold": "RuntimeError('Instagram wants a human')",
+    }
+    assert client.post("/control/scrape-now").status_code == 409
+    assert "Held until unlocked, Instagram needs a person" in client.get("/status").text
+    assert json_body(client.delete("/control/lock")) == {"locked": False, "scrape_now": False, "hold": None}
+    assert not (control_dir / "needs-human.hold").exists()
 
     con = sqlite3.connect(tmp_path / "posts.sqlite")
     con.execute(

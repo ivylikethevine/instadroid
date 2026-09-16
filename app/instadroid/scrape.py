@@ -2,7 +2,7 @@
 
 import sqlite3
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
 
@@ -53,19 +53,56 @@ def _startup_wait_seconds(con: sqlite3.Connection, now: datetime | None = None) 
     if error and config.RETRY_DELAYS_MINUTES and error.split("(", 1)[0] in device.transient_error_names():
         interval = config.RETRY_DELAYS_MINUTES[0] * 60
     else:
-        interval = device.sample_duration(config.POLL_MIN_H, config.POLL_MAX_H) * 3600
+        interval = poll_interval_seconds(db.consecutive_failures(con))
     elapsed = ((now or datetime.now(UTC)) - finished).total_seconds()
     return max(0.0, interval - elapsed)
 
 
-def next_sleep_seconds(error: BaseException | None, attempt: int) -> tuple[float, int]:
+def budget_wait_seconds(con: sqlite3.Connection, now: datetime | None = None) -> float:
+    """Seconds until another run is allowed under MAX_RUNS_PER_DAY: 0 when fewer runs than that
+    started in the last 24h (or the budget is off), else the time until the oldest of them is a day
+    old. The last line of defence against every loop at once: nothing that starts a run gets past it."""
+    if config.MAX_RUNS_PER_DAY <= 0:
+        return 0.0
+    now = now or datetime.now(UTC)
+    cutoff = now - timedelta(days=1)
+    starts = [
+        parse_iso(sqlrows.cell(r, 0))
+        for r in sqlrows.fetch_all(
+            con.execute(
+                "SELECT started_at FROM runs WHERE started_at >= ? ORDER BY id", (cutoff.isoformat(),)
+            )
+        )
+    ]
+    starts = [t for t in starts if t is not None and t >= cutoff]
+    if len(starts) < config.MAX_RUNS_PER_DAY:
+        return 0.0
+    return max(0.0, (starts[0] + timedelta(days=1) - now).total_seconds()) + 1
+
+
+def poll_interval_seconds(failures: int = 0) -> float:
+    """A sampled poll interval, widened by the failure backoff: doubled for every consecutive failed
+    run after the first (1x, 2x, 4x, ...) and capped at FAILURE_BACKOFF_MAX_HOURS, so a scraper that
+    fails every run — broken selectors, a build that crashes on launch, a challenge nobody has
+    answered — launches Instagram a few times a day at most instead of every few hours, forever.
+    0 disables the backoff."""
+    seconds = device.sample_duration(config.POLL_MIN_H, config.POLL_MAX_H) * 3600
+    if failures > 1 and config.FAILURE_BACKOFF_MAX_HOURS > 0:
+        cap = max(config.FAILURE_BACKOFF_MAX_HOURS * 3600, seconds)
+        factor = float(1 << min(failures - 1, 16))  # 2, 4, 8, ...; `**` on floats types as Any
+        seconds = min(seconds * factor, cap)
+    return seconds
+
+
+def next_sleep_seconds(error: BaseException | None, attempt: int, failures: int = 0) -> tuple[float, int]:
     """(seconds to sleep before the next run, updated retry count). A transient failure retries
     after RETRY_DELAYS_MINUTES[attempt] (jittered up to +50%) until the list runs out; anything
-    else — success, a non-transient error, retries exhausted — sleeps a normal poll interval."""
+    else — success, a non-transient error, retries exhausted — sleeps a poll interval, widened by
+    the backoff for `failures` consecutive failed runs (poll_interval_seconds())."""
     if error is not None and device.is_transient(error) and attempt < len(config.RETRY_DELAYS_MINUTES):
         minutes = config.RETRY_DELAYS_MINUTES[attempt]
         return device.sample_duration(minutes, minutes * 1.5) * 60, attempt + 1
-    return device.sample_duration(config.POLL_MIN_H, config.POLL_MAX_H) * 3600, 0
+    return poll_interval_seconds(failures), 0
 
 
 class RunStats(TypedDict):
@@ -101,8 +138,9 @@ def scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> RunStats:
     kill count (MemoryGuard) to the stats."""
     device.free_device_memory(d)
     guard = device.MemoryGuard(d)
+    clock = device.RunClock()
     try:
-        stats = _scrape_feed(d, con, guard)
+        stats = _scrape_feed(d, con, guard, clock)
     finally:
         device.free_device_memory(d)
     metrics = stats["metrics"]
@@ -233,7 +271,14 @@ def _rename_media(pid: str, media: str, extra_media: list[str]) -> tuple[str, li
     return names[0], names[1:]
 
 
-def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.MemoryGuard) -> RunStats:
+def _stop_reason(guard: device.MemoryGuard, clock: device.RunClock) -> str | None:
+    """Why the run should stop here, if it should: over the memory guard, or over its time budget."""
+    return guard.exceeded() or clock.exceeded()
+
+
+def _scrape_feed(
+    d: uidevice.Device, con: sqlite3.Connection, guard: device.MemoryGuard, clock: device.RunClock
+) -> RunStats:
     config.DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     capture.reset_last_url(d)
     navigation.open_target_feed(d)
@@ -254,7 +299,7 @@ def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.Memo
             followed = {sqlrows.must_str(r, 0) for r in rows}
     warnings: list[str] = []
     new_stories = 0
-    if reason := guard.exceeded():
+    if reason := _stop_reason(guard, clock):
         log(f"WARN: {reason}; skipping stories")
         warnings.append(f"skipped stories: {reason}")
     else:
@@ -280,7 +325,7 @@ def _scrape_feed(d: uidevice.Device, con: sqlite3.Connection, guard: device.Memo
     # of the followed-accounts filter — this measures parse yield, not post-filter output.
     stat_dumps = stat_cards = stat_captioned = stat_complete = 0
     while screens < config.MAX_SCROLLS:
-        if reason := guard.exceeded():
+        if reason := _stop_reason(guard, clock):
             log(f"WARN: {reason}; stopping the run early")
             warnings.append(f"stopped early: {reason}")
             break
@@ -452,6 +497,8 @@ def run_recorded(con: sqlite3.Connection) -> tuple[RunStats | None, Exception | 
         snapshot["selector_profile"] = versioning.PROFILE.name
     new_posts, metrics = (stats["new"], stats["metrics"]) if stats is not None else (0, db.RunMetrics())
     db.record_run(con, started_at, datetime.now(UTC).isoformat(), new_posts, error, snapshot, **metrics)
+    if alerts.needs_human(error):
+        control.set_hold(error or "")  # no retry until a person has dealt with it
     try:
         alerts.update(con)
     except (OSError, sqlite3.Error) as e:  # alerting must never take the loop down with it
@@ -462,6 +509,7 @@ def run_recorded(con: sqlite3.Connection) -> tuple[RunStats | None, Exception | 
 def main() -> None:
     con = db.db_init()
     attempt = 0  # consecutive transient-failure retries so far
+    failures = db.consecutive_failures(con)  # failed runs in a row, restarts included
     if wait := _startup_wait_seconds(con):
         log(
             f"last run was recent; waiting {wait / 60:.1f}m before the first scrape (SCRAPE_ON_STARTUP=1 skips)"
@@ -469,12 +517,22 @@ def main() -> None:
         control.wait(con, wait)
     while True:
         control.wait_while_locked()
+        if wait := budget_wait_seconds(con):
+            log(
+                f"{config.MAX_RUNS_PER_DAY} runs started in the last 24h (MAX_RUNS_PER_DAY);"
+                f" waiting {wait / 3600:.2f}h before the next"
+            )
+            control.wait(con, wait)
+            continue  # re-check the lock and the budget: a scrape-now may have cut the wait short
         _, exc = run_recorded(con)
-        seconds, attempt = next_sleep_seconds(exc, attempt)
+        failures = failures + 1 if exc else 0
+        seconds, attempt = next_sleep_seconds(exc, attempt, failures)
         if attempt:
             log(
                 f"transient device failure; retry {attempt}/{len(config.RETRY_DELAYS_MINUTES)} in {seconds / 60:.1f}m"
             )
+        elif failures > 1:
+            log(f"{failures} failed runs in a row; backing off, sleeping {seconds / 3600:.2f}h")
         else:
             log(f"sleeping {seconds / 3600:.2f}h")
         control.wait(con, seconds)

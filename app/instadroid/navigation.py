@@ -50,6 +50,19 @@ def _login_form(d: uidevice.Device) -> tuple[uidevice.Selector, uidevice.Selecto
     return edits[0], edits[1]
 
 
+def _package_present(d: uidevice.Device) -> bool:
+    """A second opinion before anything is downloaded and installed over what may be a live login:
+    `pm path` lists the installed APKs. `app_list()` goes through uiautomator2's own service, which
+    has answered wrongly while the device was still settling; only when both say it's missing is it."""
+    try:
+        present = "package:" in (d.shell(["pm", "path", config.IG_PKG]).output or "")
+    except Exception:
+        return False
+    if present:
+        log(f"WARN: app_list() didn't list {config.IG_PKG} but `pm path` does; not reinstalling")
+    return present
+
+
 @versioned
 def ensure_logged_in(d: uidevice.Device) -> None:
     """If the login screen is showing, fill credentials from the environment and log in.
@@ -57,7 +70,7 @@ def ensure_logged_in(d: uidevice.Device) -> None:
     Returns once we are (or became) logged in. Raises RuntimeError on a 2FA/challenge
     screen so the caller can abort and a human can finish it.
     """
-    if config.IG_PKG not in d.app_list():
+    if config.IG_PKG not in d.app_list() and not _package_present(d):
         if not config.IG_AUTO_INSTALL:
             raise RuntimeError(f"{config.IG_PKG} is not installed on the device; adb install it first")
         log(f"{config.IG_PKG} not installed; fetching and installing")

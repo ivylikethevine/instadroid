@@ -16,7 +16,7 @@ from instadroid import (
 )
 
 from tests.deviceflows import RunOptions, home_screen
-from tests.fakedevice import FakeDevice, hierarchy, node
+from tests.fakedevice import IG_PKG, FakeDevice, Out, hierarchy, node
 
 pytestmark = pytest.mark.usefixtures("fast_offline")
 
@@ -95,6 +95,28 @@ def test_login_raises_when_instagram_is_not_installed_and_auto_install_is_off(
     monkeypatch.setattr(config, "IG_AUTO_INSTALL", False)
     with pytest.raises(RuntimeError, match="not installed"):
         navigation.ensure_logged_in(FakeDevice({}, "launcher", installed=()))
+
+
+def test_login_trusts_pm_path_over_an_app_list_that_misses_instagram(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """app_list() saying "missing" alone must not trigger a reinstall over a live login."""
+
+    class Settling(FakeDevice):
+        def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
+            joined = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
+            if joined == f"pm path {IG_PKG}":
+                return Out(f"package:/data/app/{IG_PKG}-1/base.apk")
+            return super().shell(cmdargs, timeout)
+
+    installs: list[str] = []
+
+    def fake_install(d: FakeDevice) -> None:
+        installs.append("x")
+
+    monkeypatch.setattr(install, "install_instagram", fake_install)
+    navigation.ensure_logged_in(Settling({"home": home_screen()}, "launcher", installed=()))
+    assert installs == [] and "not reinstalling" in capsys.readouterr().out
 
 
 def _apk_run(

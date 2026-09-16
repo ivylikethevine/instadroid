@@ -195,6 +195,24 @@ def test_success_and_challenges_sleep_a_normal_poll_interval(
     assert attempt == 0 and seconds >= config.POLL_MIN_H * 3600
 
 
+def test_repeated_failures_widen_the_poll_interval_up_to_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "TIME_DISTRIBUTION", "uniform")
+    monkeypatch.setattr(config, "RETRY_DELAYS_MINUTES", [])
+    monkeypatch.setattr(config, "POLL_MIN_H", 3.0)
+    monkeypatch.setattr(config, "POLL_MAX_H", 3.0)
+    monkeypatch.setattr(config, "FAILURE_BACKOFF_MAX_HOURS", 24.0)
+    err = RuntimeError("no posts parsed")
+    hours = [scrape.next_sleep_seconds(err, 0, n)[0] / 3600 for n in (1, 2, 3, 4, 5, 40)]
+    assert hours == [3.0, 6.0, 12.0, 24.0, 24.0, 24.0]  # 1x, 2x, 4x, then the cap
+    assert scrape.next_sleep_seconds(None, 0, 0)[0] / 3600 == 3.0  # success: back to normal
+    monkeypatch.setattr(config, "FAILURE_BACKOFF_MAX_HOURS", 0)
+    assert scrape.next_sleep_seconds(err, 0, 5)[0] / 3600 == 3.0  # 0 disables
+    # A transient failure still takes the retry ladder first, whatever the failure count.
+    monkeypatch.setattr(config, "RETRY_DELAYS_MINUTES", [2.0])
+    seconds, attempt = scrape.next_sleep_seconds(adbutils.AdbError("offline"), 0, 5)
+    assert attempt == 1 and seconds <= 3 * 60
+
+
 def test_empty_retry_schedule_disables_early_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "RETRY_DELAYS_MINUTES", [])
     _, attempt = scrape.next_sleep_seconds(adbutils.AdbError("offline"), 0)

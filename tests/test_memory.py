@@ -148,6 +148,24 @@ def test_memory_guard_skips_stories_when_already_over(monkeypatch: pytest.Monkey
     assert "skipped stories: redroid memory at 2900 of 3072 MiB" in warning
 
 
+def test_run_time_budget_stops_the_run_early(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "RUN_MAX_MINUTES", 30)
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    ticks = iter([0.0, 10 * 60, 20 * 60, 31 * 60, 40 * 60])  # start, stories check, screen 0, screen 1, ...
+    real = device.RunClock
+
+    def fake_clock() -> device.RunClock:
+        return real(lambda: next(ticks))
+
+    monkeypatch.setattr(device, "RunClock", fake_clock)
+    metrics = scrape.scrape_once(feed_device(), db.db_init())["metrics"]
+    warning = metrics.get("warning")
+    assert warning is not None
+    assert "stopped early: run has taken 31 min (RUN_MAX_MINUTES=30)" in warning
+    monkeypatch.setattr(config, "RUN_MAX_MINUTES", 0)
+    assert real(lambda: 10**9).exceeded() is None  # 0 disables
+
+
 def test_oom_kills_during_a_run_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)

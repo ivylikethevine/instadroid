@@ -268,6 +268,18 @@ def record_run(
     con.commit()
 
 
+def consecutive_failures(con: sqlite3.Connection) -> int:
+    """How many of the most recent runs, counting back from the newest, ended in an error: what the
+    poll loop's failure backoff (scrape.next_sleep_seconds()) is based on, read from the table so a
+    restart doesn't forget it."""
+    n = 0
+    for r in sqlrows.fetch_all(con.execute("SELECT error FROM runs ORDER BY id DESC LIMIT 64")):
+        if sqlrows.cell_str(r, 0) is None:
+            break
+        n += 1
+    return n
+
+
 def version_pairs(con: sqlite3.Connection) -> list[VersionPair]:
     """Every redroid image / Instagram build / profile combination this database has run, with its
     run count, clean runs (no error, no warning), posts stored and last run date: the raw data for

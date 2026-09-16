@@ -306,7 +306,9 @@ and running FreshRSS on the same host.
 
 Both services restart on their own, `/health` turns the container `unhealthy` when scraping looks
 stuck or keeps failing, and `scraper.py lock`/`unlock`/`scrape-now` hold or trigger runs while you
-drive the device yourself. [docs/OPERATIONS.md](docs/OPERATIONS.md) covers that plus failure alerts,
+drive the device yourself. A run that ends on a login challenge holds every later run until you
+`unlock`, so the scraper never retries a login on its own; repeated failures widen the poll
+interval, and `MAX_RUNS_PER_DAY` caps how often Instagram is launched at all. [docs/OPERATIONS.md](docs/OPERATIONS.md) covers that plus failure alerts,
 device-failure retries, the selector-drift canary and memory management.
 
 ### Staying under the radar

@@ -6,7 +6,7 @@ import os
 import random
 import re
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from typing import TypedDict
 from weakref import WeakKeyDictionary
@@ -332,6 +332,24 @@ class MemoryGuard:
         if not m or self.oom_kill_start is None:
             return None
         return max(0, m["oom_kill"] - self.oom_kill_start)
+
+
+class RunClock:
+    """The run's time budget (RUN_MAX_MINUTES), checked alongside MemoryGuard: exceeded() names the
+    overrun once the run has been going longer than that. `clock` is time.monotonic() unless a test
+    supplies its own."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self.clock = clock
+        self.started = clock()
+
+    def exceeded(self) -> str | None:
+        if config.RUN_MAX_MINUTES <= 0:
+            return None
+        minutes = (self.clock() - self.started) / 60
+        if minutes < config.RUN_MAX_MINUTES:
+            return None
+        return f"run has taken {minutes:.0f} min (RUN_MAX_MINUTES={config.RUN_MAX_MINUTES:g})"
 
 
 def free_device_memory(d: uidevice.Device) -> None:

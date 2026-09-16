@@ -138,6 +138,16 @@ FOLLOWING_LIST_EMPTY_LIMIT = int(os.environ.get("FOLLOWING_LIST_EMPTY_LIMIT", "3
 RETRY_DELAYS_MINUTES = [
     float(x) for x in os.environ.get("RETRY_DELAYS_MINUTES", "2,5,15").split(",") if x.strip()
 ]
+# After consecutive failed runs of any kind, the poll interval doubles per failure (1x, 2x, 4x, ...)
+# up to this many hours, so a broken selector set or a build that crashes on launch costs one Instagram
+# launch a day rather than eight; success resets it. Counted from the runs table, so a restart doesn't
+# reset it. Transient failures still get RETRY_DELAYS_MINUTES first. 0 disables the backoff.
+FAILURE_BACKOFF_MAX_HOURS = float(os.environ.get("FAILURE_BACKOFF_MAX_HOURS", "24"))
+# The ceiling on Instagram launches: runs started in any 24h window, counted from the runs table
+# whatever started them (the schedule, retries, scrape-now, `scraper.py once`, restarts). At the
+# ceiling the loop waits for the oldest run in the window to age out. The default leaves room for the
+# schedule (up to ~10 runs a day at POLL_MIN_HOURS=2.5) plus a retry ladder or two. 0 disables.
+MAX_RUNS_PER_DAY = int(os.environ.get("MAX_RUNS_PER_DAY", "12"))
 # 0 (default): on startup, wait out whatever's left of the poll interval since the last recorded run
 # before scraping, so a `docker compose up`, recreate or crash-restart isn't an extra off-schedule
 # scrape (see scrape._startup_wait_seconds()). 1: scrape immediately on every start, the old behavior.
@@ -163,6 +173,10 @@ SELECTOR_DRIFT_THRESHOLD = float(os.environ.get("SELECTOR_DRIFT_THRESHOLD", "0.5
 # against the host's RAM, see docs/INCIDENTS.md), so the scraper has to back off itself: on 2026-09-14 a run
 # at the old 2g limit OOM-killed Android processes and froze the host. 0 disables.
 MEMORY_GUARD_PERCENT = float(os.environ.get("MEMORY_GUARD_PERCENT", "85"))
+# Stop a run early once it has been going this many minutes, checked where the memory guard is (before
+# stories and before every screen), so a degraded device (slow dumps, taps swallowed, every sheet
+# retried) can't stretch one run across hours of Instagram use. A normal run takes 5-15 minutes. 0 disables.
+RUN_MAX_MINUTES = float(os.environ.get("RUN_MAX_MINUTES", "30"))
 # Failure alerts (instadroid/alerts.py). ALERT_URL receives a POST per alert raised or resolved (an ntfy
 # topic URL works as is); it can carry a token, so ALERT_URL_FILE works too. Empty = no push, but open
 # alerts still appear in /instagram.xml and on /status. An alert is raised for a login challenge, for
