@@ -15,7 +15,9 @@ def test_selector_drift_flags_a_drop_below_the_baseline(
     for _ in range(5):
         record_run_ago(con, 0, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
 
-    warning = db.check_selector_drift(con, cards_per_screen=1.0, share_captioned=0.8, share_complete=0.9)
+    warning: str | None = db.check_selector_drift(
+        con, cards_per_screen=1.0, share_captioned=0.8, share_complete=0.9
+    )
 
     assert warning is not None
     assert "cards/screen" in warning
@@ -29,7 +31,9 @@ def test_selector_drift_silent_when_in_line_with_baseline(
     for _ in range(5):
         record_run_ago(con, 0, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
 
-    warning = db.check_selector_drift(con, cards_per_screen=3.6, share_captioned=0.75, share_complete=0.85)
+    warning: str | None = db.check_selector_drift(
+        con, cards_per_screen=3.6, share_captioned=0.75, share_complete=0.85
+    )
 
     assert warning is None
 
@@ -42,7 +46,9 @@ def test_selector_drift_silent_with_too_few_baseline_runs(
     record_run_ago(con, 0, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
 
     # Only 2 prior runs, below SELECTOR_DRIFT_MIN_RUNS — nothing to judge against yet.
-    warning = db.check_selector_drift(con, cards_per_screen=0.0, share_captioned=0.0, share_complete=0.0)
+    warning: str | None = db.check_selector_drift(
+        con, cards_per_screen=0.0, share_captioned=0.0, share_complete=0.0
+    )
 
     assert warning is None
 
@@ -57,7 +63,9 @@ def test_selector_drift_ignores_failed_runs_in_the_baseline(
     # toward, or break, the baseline query.
     record_run_ago(con, 0, error="DeviceNotReady")
 
-    warning = db.check_selector_drift(con, cards_per_screen=3.6, share_captioned=0.75, share_complete=0.85)
+    warning: str | None = db.check_selector_drift(
+        con, cards_per_screen=3.6, share_captioned=0.75, share_complete=0.85
+    )
 
     assert warning is None
 
@@ -69,6 +77,8 @@ def test_selector_drift_disabled_when_baseline_runs_is_zero(
     for _ in range(5):
         record_run_ago(con, 0, cards_per_screen=4.0, share_captioned=0.8, share_complete=0.9)
 
-    warning = db.check_selector_drift(con, cards_per_screen=0.0, share_captioned=0.0, share_complete=0.0)
+    warning: str | None = db.check_selector_drift(
+        con, cards_per_screen=0.0, share_captioned=0.0, share_complete=0.0
+    )
 
     assert warning is None

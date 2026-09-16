@@ -11,7 +11,7 @@ from shared.fileenv import env_secret
 def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
     """The environment variable `name`, trimmed and lowercased, when it's one of `allowed`; otherwise
     `default`, with a warning for a value that isn't."""
-    value = os.environ.get(name, default).strip().lower()
+    value: str = os.environ.get(name, default).strip().lower()
     if value not in allowed:
         print(f"WARN: unknown {name} {value!r}; falling back to {default}", flush=True)
         return default

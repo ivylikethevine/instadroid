@@ -2,6 +2,7 @@
 list, timestamps, and post identity. No device access, so it's what the replay tests exercise."""
 
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import NotRequired, TypedDict
 
@@ -31,18 +32,19 @@ def parse_posted_at(text: str, now: datetime) -> tuple[datetime, int] | None:
     text = text.strip()
     if text == "Yesterday":
         return now - timedelta(days=1), 86400
+    m: re.Match[str] | None
     if m := _RELATIVE_AGO.match(text):
-        unit = m.group(2)
-        seconds = _UNIT_SECONDS[unit]
+        unit: str = m.group(2)
+        seconds: int = _UNIT_SECONDS[unit]
         return now - timedelta(seconds=int(m.group(1)) * seconds), seconds
     if m := _ABSOLUTE_DATE.match(text):
         try:
-            month = datetime.strptime(m.group(1), "%B").month
+            month: int = datetime.strptime(m.group(1), "%B").month
         except ValueError:
             return None
-        year = int(m.group(3)) if m.group(3) else now.year
+        year: int = int(m.group(3)) if m.group(3) else now.year
         try:
-            dt = datetime(year, month, int(m.group(2)), tzinfo=UTC)
+            dt: datetime = datetime(year, month, int(m.group(2)), tzinfo=UTC)
         except ValueError:
             return None
         if not m.group(3) and dt > now:  # bare "Month Day" with no year: assume the past
@@ -76,12 +78,16 @@ def same_post(existing: PostIdentity, candidate: PostIdentity) -> bool:
     then agree, or one side must be a weak/placeholder caption."""
     if existing["username"] != candidate["username"]:
         return False
+    ea: datetime | None
+    ca: datetime | None
     ea, ca = existing.get("posted_at"), candidate.get("posted_at")
     if ea is None or ca is None:
         return False
-    tolerance = max(candidate.get("posted_at_precision") or 0, 3600)
+    tolerance: int = max(candidate.get("posted_at_precision") or 0, 3600)
     if abs((ea - ca).total_seconds()) > tolerance:
         return False
+    ecap: str
+    ccap: str
     ecap, ccap = existing.get("caption") or "", candidate.get("caption") or ""
     if is_weak_caption(ecap) or is_weak_caption(ccap):
         return True
@@ -94,9 +100,12 @@ def parse_following_list(xml: str) -> list[str]:
     appear. Deliberately narrow: only the row's own username TextView (follow_list_username) is
     matched, so the "Categories" suggestion cards above the list (own resource-ids: title/subtitle)
     and the "Sorted by ..." header can never be mistaken for a followed account."""
-    root = etree.fromstring(xml.encode())
-    rid = SELECTORS["follow_list_username_id"]
-    rows = (n for n in root.iter("node") if id_matches(n.get("resource-id") or "", rid))
+    root: etree._Element = etree.fromstring(xml.encode())
+    rid: str = SELECTORS["follow_list_username_id"]
+    rows: Iterator[etree._Element] = (
+        n for n in root.iter("node") if id_matches(n.get("resource-id") or "", rid)
+    )
+    text: str | None
     return [text for n in rows if (text := n.get("text"))]
 
 
@@ -155,21 +164,22 @@ def parse_hierarchy(xml: str) -> list[Post]:
     header belongs to it. Rows that appear before the first header belong to a post whose header
     has already scrolled off the top; we identify that one from its caption ("<user> text") and
     media description instead."""
-    root = etree.fromstring(xml.encode())
+    root: etree._Element = etree.fromstring(xml.encode())
     posts: list[Post] = []
     cur: Post | None = None
     # The action bar floats over the list; remember where it ends so crops can skip it.
-    clip_top = 0
+    clip_top: int = 0
     for n in root.iter("node"):
         if id_matches(n.get("resource-id") or "", SELECTORS["action_bar_id"]):
+            b: tuple[int, int, int, int] | None
             if b := common.parse_bounds(n.get("bounds")):
                 clip_top = b[3]
             break
-    in_list = False
+    in_list: bool = False
     for n in root.iter("node"):
-        rid = n.get("resource-id") or ""
-        desc = n.get("content-desc") or ""
-        text = n.get("text") or ""
+        rid: str = n.get("resource-id") or ""
+        desc: str = n.get("content-desc") or ""
+        text: str = n.get("text") or ""
         if id_matches(rid, SELECTORS["feed_list_id"]):
             in_list = True
             cur = _new_post("", "", "", "", clip_top)  # provisional: the header-less top card
@@ -179,7 +189,7 @@ def parse_hierarchy(xml: str) -> list[Post]:
         if not in_list:
             continue
         if id_matches(rid, SELECTORS["header_id"]):
-            m = SELECTORS["header_desc"].match(desc)
+            m: re.Match[str] | None = SELECTORS["header_desc"].match(desc)
             # A Reel/video card tagged with collaborators ("<user> and N others" — confirmed live
             # 2026-09-11) renders its media node, and the "Reel by ..." alt description that comes
             # with it, *before* its own header — unlike every other card layout, where the header
@@ -283,8 +293,8 @@ def parse_story_tray(xml: str) -> list[StoryItem]:
     "<user>'s story, <index> of <total>, Unseen." — used only to prioritize which accounts to
     open, since the stories table (keyed by a content hash, not this label) is the actual record
     of what's already been captured."""
-    root = etree.fromstring(xml.encode())
-    tray = next(
+    root: etree._Element = etree.fromstring(xml.encode())
+    tray: etree._Element | None = next(
         (n for n in root.iter("node") if id_matches(n.get("resource-id") or "", SELECTORS["story_tray_id"])),
         None,
     )
@@ -296,7 +306,7 @@ def parse_story_tray(xml: str) -> list[StoryItem]:
         # the Button itself so each tray item is matched exactly once.
         if not (n.get("class") or "").endswith("Button"):
             continue
-        m = SELECTORS["story_item_desc"].match(n.get("content-desc") or "")
+        m: re.Match[str] | None = SELECTORS["story_item_desc"].match(n.get("content-desc") or "")
         if not m or int(m.group("index")) == 0:
             continue
         items.append(
@@ -309,11 +319,32 @@ def parse_story_tray(xml: str) -> list[StoryItem]:
     return items
 
 
+# How much of a caption identifies its post. Short enough to sit inside the part Instagram shows
+# before "… more" (two lines, 50-60 characters each at this display size), so the card hashes the
+# same whether it's seen truncated or after capture.expand_caption() expanded it: hashing 200
+# characters had the same post processed twice in one run (docs/RUNLOG.md, the 446 validation run).
+CAPTION_KEY_CHARS = 40
+
+
+def caption_key(caption: str) -> str:
+    """The part of a caption post_id() hashes: its first line, with a truncation marker dropped and
+    whitespace collapsed, cut to CAPTION_KEY_CHARS. The first line only, because Instagram truncates
+    by rendered lines: a caption with an early line break shows just that line before "… more"."""
+    first: str = caption.rstrip("…").split("\n", 1)[0]
+    return " ".join(first.split())[:CAPTION_KEY_CHARS]
+
+
+def alt_key(alt: str) -> str:
+    """The part of a media description post_id() hashes when there's no caption: up to the first
+    comma, digits dropped ("Photo  of  by X"), so the slide index and the like count don't count."""
+    return re.sub(r"\d+", "", alt.split(",")[0])
+
+
 def _post_key(p: Post) -> str:
     """What post_id() hashes. Must not depend on anything that changes while the post sits in the
-    feed: like counts, relative dates, carousel index."""
-    # Caption if there is one, else the media description up to the first comma ("Photo  of  by X").
-    key = p["caption"][:200] if p["caption"] else re.sub(r"\d+", "", p["alt"].split(",")[0])
+    feed: like counts, relative dates, carousel index, whether the caption is truncated. db.py's
+    rehash migration recomputes the same key from stored rows, so change them together."""
+    key: str = caption_key(p["caption"]) if p["caption"] else alt_key(p["alt"])
     # No kind here: a header-less video card has no media description to infer it from.
     return f"{p['username']}|{key}"
 
@@ -327,7 +358,7 @@ def post_id(p: Post) -> str:
 def carousel_count(alt: str) -> int:
     """Parse the slide total from a carousel card's media description ("Photo 1 of 7 by X, 317
     likes, 10 comments"). Returns 1 (not a carousel, or the format drifted) if it can't be parsed."""
-    m = SELECTORS["slide_index"].match(alt or "")
+    m: re.Match[str] | None = SELECTORS["slide_index"].match(alt or "")
     return int(m.group(2)) if m else 1
 
 

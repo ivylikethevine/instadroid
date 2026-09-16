@@ -44,12 +44,12 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
     """{kind: message} for every alert condition that holds right now."""
     now = now or datetime.now(UTC)
     found: dict[str, str] = {}
-    window = max(config.ALERT_FAILED_RUNS, 1)
-    runs = [
+    window: int = max(config.ALERT_FAILED_RUNS, 1)
+    runs: list[str | None] = [
         sqlrows.cell_str(r, 0)
         for r in sqlrows.fetch_all(con.execute("SELECT error FROM runs ORDER BY id DESC LIMIT ?", (window,)))
     ]
-    latest_error = runs[0] if runs else None
+    latest_error: str | None = runs[0] if runs else None
     if latest_error is not None and needs_human(latest_error):
         found[LOGIN] = f"finish it in scrcpy: {short_error(latest_error, 300)}"
     if config.ALERT_FAILED_RUNS > 0 and len(runs) >= config.ALERT_FAILED_RUNS and all(runs):
@@ -57,9 +57,13 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
             f"the last {config.ALERT_FAILED_RUNS} runs failed; latest: {short_error(latest_error or '', 300)}"
         )
     if config.ALERT_NO_POSTS_HOURS > 0:
-        cutoff = now - timedelta(hours=config.ALERT_NO_POSTS_HOURS)
-        first_run = parse_iso(sqlrows.scalar(con.execute("SELECT MIN(started_at) FROM runs")))
-        newest_post = parse_iso(sqlrows.scalar(con.execute("SELECT MAX(scraped_at) FROM posts")))
+        cutoff: datetime = now - timedelta(hours=config.ALERT_NO_POSTS_HOURS)
+        first_run: datetime | None = parse_iso(
+            sqlrows.scalar(con.execute("SELECT MIN(started_at) FROM runs"))
+        )
+        newest_post: datetime | None = parse_iso(
+            sqlrows.scalar(con.execute("SELECT MAX(scraped_at) FROM posts"))
+        )
         # Only once the scraper has been running for the whole window, so a fresh install is quiet.
         if first_run and first_run < cutoff and (newest_post is None or newest_post < cutoff):
             found[NO_POSTS] = f"no new post stored in {config.ALERT_NO_POSTS_HOURS:g}h"
@@ -71,8 +75,8 @@ def notify(kind: str, message: str, resolved: bool = False) -> str | None:
     never logs the URL's query string or credentials. None when disabled or delivered."""
     if not config.ALERT_URL:
         return None
-    title = f"instadroid: {'resolved: ' if resolved else ''}{TITLES[kind]}"
-    request = urllib.request.Request(
+    title: str = f"instadroid: {'resolved: ' if resolved else ''}{TITLES[kind]}"
+    request: urllib.request.Request = urllib.request.Request(
         config.ALERT_URL,
         data=message.encode(),
         method="POST",
@@ -83,6 +87,7 @@ def notify(kind: str, message: str, resolved: bool = False) -> str | None:
             "Content-Type": "text/plain; charset=utf-8",
         },
     )
+    error: str | None
     if error := common.send_best_effort("alert", request, config.ALERT_TIMEOUT):
         return error
     log(f"sent alert: {title}")
@@ -93,8 +98,8 @@ def update(con: sqlite3.Connection, now: datetime | None = None) -> list[str]:
     """Bring the alerts table in line with `conditions()`, announcing each change. Returns the
     delivery errors, if any."""
     now = now or datetime.now(UTC)
-    current = conditions(con, now)
-    open_alerts = {
+    current: dict[str, str] = conditions(con, now)
+    open_alerts: dict[str, str] = {
         sqlrows.must_str(r, "kind"): sqlrows.must_str(r, "message")
         for r in sqlrows.fetch_all(con.execute("SELECT kind, message FROM alerts"))
     }

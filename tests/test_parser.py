@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,12 +11,12 @@ FIXTURE = igprofiles.fixture("v424", "feed_445.xml").read_text()
 
 
 def test_parse_hierarchy_finds_both_cards_and_skips_sponsored() -> None:
-    posts = parsing.parse_hierarchy(FIXTURE)
+    posts: list[parsing.Post] = parsing.parse_hierarchy(FIXTURE)
     assert [p["username"] for p in posts] == ["someone_nice", "other_user"]
 
 
 def test_headless_top_card_is_identified_from_caption_and_media() -> None:
-    top = parsing.parse_hierarchy(FIXTURE)[0]
+    top: parsing.Post = parsing.parse_hierarchy(FIXTURE)[0]
     assert top["headless"] is True
     assert top["kind"] == "video"  # "Reel by ..." maps to video
     assert top["caption"] == "Top card caption…"
@@ -26,7 +27,7 @@ def test_headless_top_card_is_identified_from_caption_and_media() -> None:
 
 
 def test_full_card_fields() -> None:
-    card = parsing.parse_hierarchy(FIXTURE)[1]
+    card: parsing.Post = parsing.parse_hierarchy(FIXTURE)[1]
     assert card["kind"] == "carousel"
     assert card["place"] == "Anytown, Somewhere"
     assert card["posted_date"] == "21 hours ago"
@@ -39,21 +40,21 @@ def test_full_card_fields() -> None:
 
 
 def test_truncated_caption_is_flagged_with_its_bounds() -> None:
-    top = parsing.parse_hierarchy(FIXTURE)[0]
+    top: parsing.Post = parsing.parse_hierarchy(FIXTURE)[0]
     assert top["caption_truncated"] is True  # raw text ended in "… more"
     assert top["caption_bounds"] == "[32,1030][1080,1100]"
 
 
 def test_headless_top_card_has_no_header_bounds() -> None:
     # Its header already scrolled off before this dump; the avatar can't be captured from it.
-    top = parsing.parse_hierarchy(FIXTURE)[0]
+    top: parsing.Post = parsing.parse_hierarchy(FIXTURE)[0]
     assert top["header_bounds"] is None
 
 
 def test_card_without_caption_or_alt_is_excluded() -> None:
     # A header with neither a caption nor a media description can't be identified (post_id()
     # would hash nothing but the username); it should be left out rather than stored empty.
-    xml = """<hierarchy><node><node resource-id="android:id/list">
+    xml: str = """<hierarchy><node><node resource-id="android:id/list">
       <node resource-id="com.instagram.android:id/row_feed_profile_header"
             content-desc="ghostuser posted a photo 2 hours ago" />
       <node resource-id="com.instagram.android:id/row_feed_button_share" bounds="[0,0][1,1]" />
@@ -90,9 +91,9 @@ REEL_COLLAB_FIXTURE = """<hierarchy><node><node resource-id="android:id/list">
 
 
 def test_reel_with_media_before_header_is_identified_not_split_in_two() -> None:
-    posts = parsing.parse_hierarchy(REEL_COLLAB_FIXTURE)
+    posts: list[parsing.Post] = parsing.parse_hierarchy(REEL_COLLAB_FIXTURE)
     assert len(posts) == 1  # not two dead-end entries that both fail the final filter
-    p = posts[0]
+    p: parsing.Post = posts[0]
     assert p["username"] == "showcase.live"
     assert p["kind"] == "video"
     assert p["place"] == "The Venue Downtown"
@@ -106,7 +107,7 @@ def test_reel_with_media_before_header_is_complete_once_share_button_seen() -> N
     # This layout has no caption/timestamp node to wait for -- the share button is the bottom of
     # the card. Without this, the post would never pass scrape_once()'s `if not p["complete"]`
     # gate and would never actually get stored.
-    p = parsing.parse_hierarchy(REEL_COLLAB_FIXTURE)[0]
+    p: parsing.Post = parsing.parse_hierarchy(REEL_COLLAB_FIXTURE)[0]
     assert p["complete"] is True
     assert p["share_bounds"] == "[420,2093][483,2214]"
     assert p["bounds"] == "[0,210][1080,2093]"
@@ -116,7 +117,7 @@ def test_a_genuinely_different_off_screen_card_is_not_merged_into_the_next_heade
     # Control case: an ordinary (non-Reel) card whose header has scrolled off is identified from
     # its own caption before any later header appears -- confirming the merge fix only fires for
     # the narrow headless+no-username+no-caption+no-share_bounds+Reel-alt case, not generally.
-    xml = f"""<hierarchy><node><node resource-id="android:id/list">
+    xml: str = f"""<hierarchy><node><node resource-id="android:id/list">
       <node class="{versioning.SELECTORS["caption_class"]}" text="old_user Old caption" />
       <node resource-id="com.instagram.android:id/row_feed_profile_header"
             content-desc="new_user posted a photo 1 hour ago" bounds="[0,900][1080,1030]" />
@@ -124,16 +125,41 @@ def test_a_genuinely_different_off_screen_card_is_not_merged_into_the_next_heade
       <node resource-id="com.instagram.android:id/row_feed_button_share" bounds="[0,0][1,1]" />
       <node text="1 hour ago" />
     </node></node></hierarchy>"""
-    posts = parsing.parse_hierarchy(xml)
+    posts: list[parsing.Post] = parsing.parse_hierarchy(xml)
     assert [p["username"] for p in posts] == ["old_user", "new_user"]
 
 
+def test_post_id_is_the_same_truncated_and_expanded() -> None:
+    """The bug from the 446 validation run: a card hashed once truncated and again after its caption
+    was expanded, so the same post was processed twice in one run."""
+    truncated: parsing.Post = parsing._new_post("u", "photo", "", "", 0)
+    truncated["caption"], truncated["caption_truncated"] = (
+        "A long first line that Instagram cuts off after two…",
+        True,
+    )
+    expanded: parsing.Post = truncated.copy()
+    expanded["caption"] = (
+        "A long first line that Instagram cuts off after two lines, and then goes on for a while\nSecond line"
+    )
+    assert parsing.post_id(truncated) == parsing.post_id(expanded)
+    # An early line break: only the first line is shown before "… more", and only it counts.
+    short_first: parsing.Post = truncated.copy()
+    short_first["caption"] = "Hi…"
+    full: parsing.Post = truncated.copy()
+    full["caption"] = "Hi\n\nMuch more text below the fold"
+    assert parsing.post_id(short_first) == parsing.post_id(full)
+    other: parsing.Post = truncated.copy()
+    other["caption"] = "A different first line altogether"
+    assert parsing.post_id(other) != parsing.post_id(truncated)
+    assert parsing.caption_key("  Hello   world\nnext  ") == "Hello world"
+
+
 def test_post_id_ignores_counts_dates_and_kind() -> None:
-    base = parsing._new_post("u", "photo", "", "", 0)
+    base: parsing.Post = parsing._new_post("u", "photo", "", "", 0)
     base["alt"] = "Photo 1 of 3 by U, 5 likes, 2 comments"
-    later = base.copy()
+    later: parsing.Post = base.copy()
     later["kind"], later["alt"] = "carousel", "Photo 2 of 3 by U, 9 likes, 4 comments"
-    captioned = base.copy()
+    captioned: parsing.Post = base.copy()
     captioned["caption"] = "hello"
     assert parsing.post_id(base) == parsing.post_id(later)
     assert parsing.post_id(captioned) != parsing.post_id(base)
@@ -155,7 +181,7 @@ def test_post_id_ignores_counts_dates_and_kind() -> None:
     ],
 )
 def test_header_regex(desc: str, expected: tuple[str, str, str | None, str] | None) -> None:
-    m = versioning.SELECTORS["header_desc"].match(desc)
+    m: re.Match[str] | None = versioning.SELECTORS["header_desc"].match(desc)
     if expected is None:
         assert m is None
     else:
@@ -173,9 +199,9 @@ def test_clean_caption_strips_nbsp() -> None:
 
 
 def test_permalink_regex_accepts_reel_and_p_with_tracking_params() -> None:
-    rx = versioning.SELECTORS["permalink"]
-    reel = rx.match("https://www.instagram.com/reel/AbCdEf12345/?stkn=abc")
-    post = rx.match("https://www.instagram.com/p/ZyXwVu98765/")
+    rx: re.Pattern[str] = versioning.SELECTORS["permalink"]
+    reel: re.Match[str] | None = rx.match("https://www.instagram.com/reel/AbCdEf12345/?stkn=abc")
+    post: re.Match[str] | None = rx.match("https://www.instagram.com/p/ZyXwVu98765/")
     assert reel is not None and reel.group("code") == "AbCdEf12345"
     assert post is not None and post.group("type") == "p"
     assert rx.match("https://www.instagram.com/someone/") is None
@@ -201,8 +227,10 @@ def test_parse_posted_at(text: str, expected: datetime, precision: int) -> None:
 
 def test_parse_posted_at_bare_date_rolls_back_a_year_if_in_the_future() -> None:
     # "now" is Sep 8; a bare "December 25" with no year must mean last December, not next.
-    parsed = parsing.parse_posted_at("December 25", NOW)
+    parsed: tuple[datetime, int] | None = parsing.parse_posted_at("December 25", NOW)
     assert parsed is not None
+    dt: datetime
+    _: int
     dt, _ = parsed
     assert dt.year == 2025
 
@@ -215,7 +243,7 @@ def test_parse_posted_at_rejects_unknown_formats() -> None:
 def test_parse_posted_at_leap_day_rollback_into_non_leap_year_does_not_raise() -> None:
     # "now" is a leap year, before Feb 29 has passed: rolling a bare "February 29" back a year
     # lands on a non-leap year, where Feb 29 doesn't exist. Must return None, not raise.
-    leap_year_now = datetime(2028, 1, 15, tzinfo=UTC)
+    leap_year_now: datetime = datetime(2028, 1, 15, tzinfo=UTC)
     assert parsing.parse_posted_at("February 29", leap_year_now) is None
 
 
@@ -287,7 +315,7 @@ STORY_TRAY_FIXTURE = """<hierarchy><node><node resource-id="com.instagram.androi
 
 
 def test_parse_story_tray_skips_own_story_and_dedupes_the_nested_image() -> None:
-    items = parsing.parse_story_tray(STORY_TRAY_FIXTURE)
+    items: list[parsing.StoryItem] = parsing.parse_story_tray(STORY_TRAY_FIXTURE)
     assert [i["username"] for i in items] == ["alice", "bob"]
 
 
@@ -321,8 +349,8 @@ def test_parse_following_list_returns_empty_for_a_screen_with_no_rows() -> None:
 
 
 def test_parse_story_tray_reports_seen_state() -> None:
-    items = parsing.parse_story_tray(STORY_TRAY_FIXTURE)
-    by_user = {i["username"]: i for i in items}
+    items: list[parsing.StoryItem] = parsing.parse_story_tray(STORY_TRAY_FIXTURE)
+    by_user: dict[str, parsing.StoryItem] = {i["username"]: i for i in items}
     assert by_user["alice"]["seen"] is False
     assert by_user["bob"]["seen"] is True
     assert by_user["alice"]["bounds"] == "[294,210][588,555]"
@@ -338,7 +366,7 @@ def test_capture_story_media_returns_none_for_malformed_bounds(
     from PIL import Image
 
     monkeypatch.setattr(config, "MEDIA_DIR", tmp_path)
-    img = Image.new("RGB", (200, 400), "red")
+    img: Image.Image = Image.new("RGB", (200, 400), "red")
 
     assert stories.capture_story_media(img, "not-bounds", 0, "tmp") is None
     assert stories.capture_story_media(img, None, 0, "tmp") is None
@@ -350,7 +378,7 @@ def test_capture_story_media_returns_none_when_clip_leaves_too_little_height(
     from PIL import Image
 
     monkeypatch.setattr(config, "MEDIA_DIR", tmp_path)
-    img = Image.new("RGB", (200, 400), "red")
+    img: Image.Image = Image.new("RGB", (200, 400), "red")
 
     assert stories.capture_story_media(img, "[0,0][100,150]", 0, "tmp") is None
 
@@ -361,9 +389,9 @@ def test_capture_story_media_crops_and_saves_under_a_stories_subdirectory(
     from PIL import Image
 
     monkeypatch.setattr(config, "MEDIA_DIR", tmp_path)
-    img = Image.new("RGB", (200, 400), "red")
+    img: Image.Image = Image.new("RGB", (200, 400), "red")
 
-    path = stories.capture_story_media(img, "[0,0][200,400]", 50, "tmpstory")
+    path: Path | None = stories.capture_story_media(img, "[0,0][200,400]", 50, "tmpstory")
 
     assert path == tmp_path / "stories" / "tmpstory.webp"
     assert path is not None and path.exists()
@@ -389,8 +417,12 @@ def test_safe_filename_rejects_unsafe_input(bad: str) -> None:
 
 
 def test_avatar_bounds_crops_a_square_inside_the_header() -> None:
-    box = capture._avatar_bounds("[0,1150][1080,1287]")
+    box: tuple[int, int, int, int] | None = capture._avatar_bounds("[0,1150][1080,1287]")
     assert box is not None
+    x1: int
+    y1: int
+    x2: int
+    y2: int
     x1, y1, x2, y2 = box
     assert 0 < x1 < x2 <= 1080
     assert 1150 < y1 < y2 <= 1287
@@ -429,14 +461,14 @@ def test_in_quiet_hours_uses_device_timezone(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_sample_duration_uniform_stays_within_bounds() -> None:
     for _ in range(200):
-        v = device.sample_duration(1.0, 3.0)
+        v: float = device.sample_duration(1.0, 3.0)
         assert 1.0 <= v <= 3.0
 
 
 def test_sample_duration_lognormal_stays_within_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "TIME_DISTRIBUTION", "lognormal")
     for _ in range(200):
-        v = device.sample_duration(1.0, 3.0)
+        v: float = device.sample_duration(1.0, 3.0)
         assert 1.0 <= v <= 3.0
 
 
@@ -447,11 +479,11 @@ def test_sample_duration_daynight_widens_the_top_of_the_range_during_quiet_hours
     monkeypatch.setattr(config, "DEVICE_TIMEZONE", "")
     monkeypatch.setattr(config, "DAYNIGHT_QUIET_START", 0)
     monkeypatch.setattr(config, "DAYNIGHT_QUIET_END", 6)
-    quiet = datetime(2026, 1, 1, 3, tzinfo=UTC)
-    awake = datetime(2026, 1, 1, 14, tzinfo=UTC)
+    quiet: datetime = datetime(2026, 1, 1, 3, tzinfo=UTC)
+    awake: datetime = datetime(2026, 1, 1, 14, tzinfo=UTC)
 
-    quiet_draws = [device.sample_duration(1.0, 3.0, now=quiet) for _ in range(300)]
-    awake_draws = [device.sample_duration(1.0, 3.0, now=awake) for _ in range(300)]
+    quiet_draws: list[float] = [device.sample_duration(1.0, 3.0, now=quiet) for _ in range(300)]
+    awake_draws: list[float] = [device.sample_duration(1.0, 3.0, now=awake) for _ in range(300)]
 
     assert all(1.0 <= v <= 5.0 for v in quiet_draws)  # effective_hi = hi + (hi - lo) = 5.0
     assert all(1.0 <= v <= 3.0 for v in awake_draws)  # unwidened outside quiet hours

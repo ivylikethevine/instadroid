@@ -18,7 +18,7 @@ SCRAPER = str(ROOT / "app" / "scraper.py")
 
 def _run(monkeypatch: pytest.MonkeyPatch, *args: str) -> None:
     monkeypatch.setattr(sys, "argv", ["scraper.py", *args])
-    _ = runpy.run_path(SCRAPER, run_name="__main__")
+    _: dict[str, object] = runpy.run_path(SCRAPER, run_name="__main__")
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +26,7 @@ def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDevice:
     """A scratch database and debug directory, and a fake device for whatever connects."""
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
     monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "debug")
-    fake = FakeDevice({"home": ""}, "home")
+    fake: FakeDevice = FakeDevice({"home": ""}, "home")
 
     def connect() -> FakeDevice:
         return fake
@@ -39,7 +39,7 @@ def test_profiles_lists_what_each_covers_and_the_default_install(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _run(monkeypatch, "profiles")
-    out = capsys.readouterr().out
+    out: str = capsys.readouterr().out
     assert "v424" in out and "covers Instagram 424 and newer" in out
     assert "validated: 424.0.0.49.64, 440.1.0.46.86" in out and "default install: 445.0.0.45.83" in out
 
@@ -64,6 +64,7 @@ def test_once_prints_the_run_and_exits_non_zero_when_it_failed(
 
 def test_once_refuses_past_the_daily_run_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 1)
+    con: sqlite3.Connection
     with db.db_init() as con:
         record_run_ago(con, 30)
     ran: list[int] = []
@@ -139,7 +140,7 @@ def test_dump_saves_the_current_screen(
 def test_compat_lists_run_pairs(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     _run(monkeypatch, "compat")
     assert "(no runs that reached the device yet)" in capsys.readouterr().out
-    con = db.db_init()
+    con: sqlite3.Connection = db.db_init()
     snapshot: device.DeviceSnapshot = {
         "ig_version": "446.0.0.49.77",
         "redroid_image": "erstt/redroid:13",
@@ -154,7 +155,7 @@ def test_compat_lists_run_pairs(monkeypatch: pytest.MonkeyPatch, capsys: pytest.
 def test_lock_unlock_and_scrape_now_write_the_control_files(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    control_dir = config.CONTROL_DIR
+    control_dir: Path = config.CONTROL_DIR
     _run(monkeypatch, "lock")
     assert (control_dir / "manual.lock").exists() and "locked: True" in capsys.readouterr().out
     _run(monkeypatch, "unlock")
@@ -174,7 +175,7 @@ def test_backup_writes_a_copy_now(
 def test_rename_moves_history_and_checks_its_arguments(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    con = db.db_init()
+    con: sqlite3.Connection = db.db_init()
     con.execute(
         "INSERT INTO posts (id, username, scraped_at) VALUES ('p1', 'old_name', '2026-09-14T00:00:00+00:00')"
     )

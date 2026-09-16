@@ -37,10 +37,13 @@ def media_sig(file: str) -> str:
 
 
 def authorized(request: Request) -> bool:
-    token = settings.FEED_TOKEN
+    token: str = settings.FEED_TOKEN
     if not token or request.url.path in OPEN_PATHS:
         return True
-    presented = [request.query_params.get("token", "")]
+    presented: list[str] = [request.query_params.get("token", "")]
+    scheme: str
+    _: str
+    credentials: str
     scheme, _, credentials = request.headers.get("authorization", "").partition(" ")
     if scheme.lower() == "bearer":
         presented.append(credentials.strip())
@@ -48,7 +51,7 @@ def authorized(request: Request) -> bool:
         with suppress(ValueError):  # binascii.Error and UnicodeDecodeError are both ValueErrors
             presented.append(b64decode(credentials.strip(), validate=True).decode().partition(":")[2])
     if request.url.path.startswith("/media/"):
-        file = request.url.path.removeprefix("/media/")
+        file: str = request.url.path.removeprefix("/media/")
         if hmac.compare_digest(request.query_params.get("sig", ""), media_sig(file)):
             return True
     return any(p and hmac.compare_digest(p.encode(), token.encode()) for p in presented)
@@ -58,10 +61,10 @@ def cross_site(request: Request) -> bool:
     """A state-changing request a browser sent on another site's behalf: it carries an Origin that isn't
     this server's. Browsers always send Origin on cross-site POST/DELETE; curl and scripts send none. So a
     web page can't lock the scraper or trigger runs through a loopback server with no token."""
-    origin = request.headers.get("origin")
+    origin: str | None = request.headers.get("origin")
     if request.method in ("GET", "HEAD", "OPTIONS") or not origin:
         return False
-    own = {settings.PUBLIC_URL, f"{request.url.scheme}://{request.url.netloc}"}
+    own: set[str] = {settings.PUBLIC_URL, f"{request.url.scheme}://{request.url.netloc}"}
     return origin.rstrip("/") not in own
 
 

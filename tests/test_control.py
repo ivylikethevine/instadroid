@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import NoReturn
 
 import pytest
+from devtools.jsonvalues import JSON
 from fastapi.testclient import TestClient
+from httpx2 import Response
 from instadroid import config, control, device, scrape
 
 from tests.feedclient import make_app
@@ -30,7 +32,7 @@ def test_lock_and_its_expiry(
     assert not control.locked()
     control.set_lock(True)
     assert control.locked() and (tmp_path / "manual.lock").exists()
-    old = time.time() - 7 * 3600
+    old: float = time.time() - 7 * 3600
     os.utime(tmp_path / "manual.lock", (old, old))
     assert not control.locked()  # forgotten: ignored
     monkeypatch.setattr(config, "LOCK_MAX_HOURS", 0)
@@ -45,9 +47,9 @@ def test_a_hold_never_expires_and_unlock_clears_it(
     monkeypatch.setattr(config, "LOCK_MAX_HOURS", 6)
     assert control.hold_reason() is None
     control.set_hold("RuntimeError(\"Instagram wants a human: 'Confirm it's you' screen\")")
-    reason = control.hold_reason()
+    reason: str | None = control.hold_reason()
     assert control.locked() and reason is not None and "wants a human" in reason
-    old = time.time() - 7 * 24 * 3600
+    old: float = time.time() - 7 * 24 * 3600
     os.utime(tmp_path / "needs-human.hold", (old, old))
     assert control.locked()  # a week old and still holding: no timer resumes it
     control.set_lock(False)  # unlock is the one way out
@@ -64,6 +66,8 @@ def test_a_needs_human_error_holds_all_later_runs(
         raise RuntimeError("Instagram wants a human: 'Confirm it's you' screen; see /debug")
 
     monkeypatch.setattr(device, "connect_device", challenge)
+    stats: scrape.RunStats | None
+    exc: Exception | None
     stats, exc = scrape.run_recorded(con)
     assert stats is None and isinstance(exc, RuntimeError)
     assert control.locked() and (tmp_path / "needs-human.hold").read_text().startswith("RuntimeError(")
@@ -106,7 +110,7 @@ def test_the_poll_loop_holds_while_held(
     with pytest.raises(StopLoop):
         scrape.main()
     assert held == [30, 30]
-    out = capsys.readouterr().out
+    out: str = capsys.readouterr().out
     assert "Instagram needs a person (RuntimeError('still on login screen" in out and "resuming" in out
 
 
@@ -168,7 +172,7 @@ def test_the_poll_loop_holds_while_locked(
     with pytest.raises(StopLoop):
         scrape.main()
     assert held == [30, 30, 30] and started == [1]  # held three polls, then ran
-    out = capsys.readouterr().out
+    out: str = capsys.readouterr().out
     assert "holding scheduled runs" in out and "lock removed; resuming" in out
 
 
@@ -179,8 +183,8 @@ def _control_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 
 def test_control_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _control_app(tmp_path, monkeypatch)
-    control_dir = tmp_path / "control"
+    client: TestClient = _control_app(tmp_path, monkeypatch)
+    control_dir: Path = tmp_path / "control"
     assert json_body(client.post("/control/lock")) == {"locked": True, "scrape_now": False, "hold": None}
     assert (control_dir / "manual.lock").exists()
     assert client.post("/control/scrape-now").status_code == 409  # locked
@@ -202,22 +206,22 @@ def test_control_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert json_body(client.delete("/control/lock")) == {"locked": False, "scrape_now": False, "hold": None}
     assert not (control_dir / "needs-human.hold").exists()
 
-    con = sqlite3.connect(tmp_path / "posts.sqlite")
+    con: sqlite3.Connection = sqlite3.connect(tmp_path / "posts.sqlite")
     con.execute(
         "CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at TEXT, finished_at TEXT, new_posts INTEGER, error TEXT)"
     )
-    recent = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    recent: str = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
     con.execute("INSERT INTO runs (started_at, finished_at, new_posts) VALUES (?, ?, 0)", (recent, recent))
     con.commit()
     con.close()
-    r = client.post("/control/scrape-now")
-    detail = json_object(r)["detail"]
+    r: Response = client.post("/control/scrape-now")
+    detail: JSON = json_object(r)["detail"]
     assert r.status_code == 429 and isinstance(detail, str) and "25" in detail  # 30 - 5 minutes to go
 
 
 def test_control_endpoints_need_the_feed_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FEED_TOKEN", "t0ken")
-    client = _control_app(tmp_path, monkeypatch)
+    client: TestClient = _control_app(tmp_path, monkeypatch)
     assert client.post("/control/lock").status_code == 401
     assert client.post("/control/lock", headers={"Authorization": "Bearer t0ken"}).status_code == 200
 
@@ -225,7 +229,7 @@ def test_control_endpoints_need_the_feed_token(tmp_path: Path, monkeypatch: pyte
 def test_a_cross_site_browser_request_cannot_change_anything(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client = _control_app(tmp_path, monkeypatch)
+    client: TestClient = _control_app(tmp_path, monkeypatch)
     assert client.post("/control/lock", headers={"Origin": "https://evil.example"}).status_code == 403
     assert not (tmp_path / "control" / "manual.lock").exists()
     assert (

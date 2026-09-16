@@ -31,6 +31,7 @@ Everything a baseline produces goes to local/data/debug/profile-dev/<major>/, ne
 
 import argparse
 import inspect
+import io
 import re
 import sqlite3
 import subprocess
@@ -67,10 +68,10 @@ MIN_HOST_AVAILABLE_MIB = 2048
 def parse_version(version: str, below_floor: bool = False) -> int:
     """The major version of a full Instagram build ("444.0.0.46.85" -> 444). Raises ValueError for
     anything else, or a major below the supported floor unless `below_floor`."""
-    m = igprofiles.BUILD.fullmatch(version.strip())
+    m: re.Match[str] | None = igprofiles.BUILD.fullmatch(version.strip())
     if not m:
         raise ValueError(f"{version!r} is not a full Instagram build like 444.0.0.46.85 (see APKPure)")
-    major = int(m.group(1))
+    major: int = int(m.group(1))
     if major < igprofiles.MIN_MAJOR and not below_floor:
         raise ValueError(f"Instagram {major} is below the supported floor ({igprofiles.MIN_MAJOR})")
     return major
@@ -81,8 +82,8 @@ def covering_profile(build: str, below_floor: bool = False) -> BaseProfile:
     `below_floor`, a build older than every profile runs under the lowest one, which is how the
     scraper itself treats it; that's for evaluating whether the floor could move, and only baseline
     and check accept it."""
-    major = parse_version(build, below_floor)
-    name = igprofiles.covering(major) or (igprofiles.available()[0] if below_floor else None)
+    major: int = parse_version(build, below_floor)
+    name: str | None = igprofiles.covering(major) or (igprofiles.available()[0] if below_floor else None)
     if name is None:
         raise ValueError(f"no profile covers Instagram {major}: the oldest is {igprofiles.available()[0]}")
     return igprofiles.load(name)
@@ -90,7 +91,8 @@ def covering_profile(build: str, below_floor: bool = False) -> BaseProfile:
 
 def render_profile(major: int, parent: str, today: date) -> dict[str, str]:
     """The files of a new profile package for `major`, inheriting everything from `parent`."""
-    parent_major = parent[1:]
+    parent_major: str = parent[1:]
+    init: str
     init = f'''"""Instagram {major} onward: forked from {parent} by devtools/new_profile.py on {today.isoformat()}.
 
 Holds only what Instagram {major} changed relative to {parent}: selector keys in selectors.py, behavior as
@@ -108,7 +110,7 @@ class Profile(Profile{parent_major}):
     validated = ()
     notes = "forked from {parent}"
 '''
-    selectors = f'''"""Selectors for Instagram {major} onward.
+    selectors: str = f'''"""Selectors for Instagram {major} onward.
 
 {parent}'s, with the keys {major} changed overridden, e.g.
 `SELECTORS: Selectors = {{**SELECTORS_{parent_major}, "share_id": "..."}}`.
@@ -126,16 +128,17 @@ def fork(build: str, root: Path = PROFILES_DIR, today: date | None = None) -> Pa
     """Create igprofiles/v<major>/ for `build`, subclassing the profile that covers it now. Only for a
     build whose `check` found drift. Refuses when that profile has already validated builds at or above
     this major: the fork would take them over without anyone checking they still work."""
-    major = parse_version(build)
-    parent = covering_profile(build)
+    major: int = parse_version(build)
+    parent: BaseProfile = covering_profile(build)
     if parent.major == major:
         raise ValueError(f"{parent.name} already exists; change it directly")
+    later: list[str]
     if later := [b for b in parent.own_validated if (igprofiles.major_of(b) or 0) >= major]:
         raise ValueError(
             f"{parent.name} has validated builds at or above {major} ({', '.join(later)}), which a v{major} fork"
             f" would take over. If {major} really differs from them, the change point is later: see docs/PROFILES.md"
         )
-    target = root / f"v{major}"
+    target: Path = root / f"v{major}"
     if target.exists():
         raise ValueError(f"{target} already exists")
     target.mkdir(parents=True)
@@ -165,7 +168,7 @@ def baseline_env(
     """Container environment for a baseline: automatic profile selection, capture mode, a scratch
     database and media directory, the run caps, and no FreshRSS ping (nothing it stores belongs in the
     real feed)."""
-    base = f"{CONTAINER_DEV_DIR}/{parse_version(build, below_floor=True)}"
+    base: str = f"{CONTAINER_DEV_DIR}/{parse_version(build, below_floor=True)}"
     return {
         "IG_PROFILE": "",  # whichever profile covers the build, whatever .env forces
         "IG_APK_VERSION": "",
@@ -183,7 +186,7 @@ def baseline_env(
 def compose_run(args: Sequence[str], env: dict[str, str], root: Path = ROOT) -> list[str]:
     """`docker compose run` for the app service with this working tree's app/ mounted over the image's,
     so the profile being developed (and any selector edit) is what runs, without a rebuild."""
-    cmd = ["docker", "compose", "--project-directory", str(root), "run", "--rm", "--no-deps"]
+    cmd: list[str] = ["docker", "compose", "--project-directory", str(root), "run", "--rm", "--no-deps"]
     cmd += ["-v", f"{root / 'app'}:/app:ro"]
     for key, value in env.items():
         cmd += ["-e", f"{key}={value}"]
@@ -195,15 +198,19 @@ _UNITS = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "kB": 1000, "MB":
 
 def parse_mem_usage(text: str) -> tuple[int, int]:
     """(used, limit) bytes from `docker stats`' MemUsage column, e.g. "1.03GiB / 3GiB"."""
-    sizes = [(m[1], m[2]) for m in re.finditer(r"([\d.]+)\s*([KMG]?i?B|kB|MB|GB)", text)]
+    sizes: list[tuple[str, str]] = [
+        (m[1], m[2]) for m in re.finditer(r"([\d.]+)\s*([KMG]?i?B|kB|MB|GB)", text)
+    ]
     if len(sizes) != 2:
         raise ValueError(f"unrecognized docker stats memory usage {text!r}")
+    used: int
+    limit: int
     used, limit = (int(float(n) * _UNITS[u]) for n, u in sizes)
     return used, limit
 
 
 def host_available_mib(meminfo: str) -> int:
-    m = re.search(r"^MemAvailable:\s+(\d+) kB", meminfo, re.M)
+    m: re.Match[str] | None = re.search(r"^MemAvailable:\s+(\d+) kB", meminfo, re.M)
     return int(m.group(1)) // 1024 if m else 0
 
 
@@ -229,6 +236,8 @@ def preflight_problems(state: HostState, memory: bool = True) -> list[str]:
     if not memory:
         return problems
     if state.redroid_mem:
+        used: int
+        limit: int
         used, limit = parse_mem_usage(state.redroid_mem)
         if limit and used * 100 > limit * MAX_START_PERCENT:
             problems.append(
@@ -256,7 +265,8 @@ def read_host_state() -> HostState:
     def running(container: str) -> bool:
         return _output(["docker", "inspect", "-f", "{{.State.Running}}", container]) == "true"
 
-    redroid = running("ig-redroid")
+    redroid: bool = running("ig-redroid")
+    meminfo: str
     try:
         meminfo = Path("/proc/meminfo").read_text()
     except OSError:
@@ -274,6 +284,8 @@ def read_host_state() -> HostState:
 def _run_logged(cmd: Sequence[str], log_path: Path) -> int:
     """Run `cmd` from the repo root, streaming its output to the terminal and appending it to log_path."""
     print("$", " ".join(cmd), flush=True)
+    log: io.TextIOWrapper
+    proc: subprocess.Popen[str]
     with (
         log_path.open("a") as log,
         subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as proc,
@@ -299,14 +311,15 @@ def baseline(
     yes: bool = False,
     below_floor: bool = False,
 ) -> int:
-    profile = covering_profile(build, below_floor)
+    profile: BaseProfile = covering_profile(build, below_floor)
+    problems: list[str]
     if problems := preflight_problems(read_host_state()):
         print("Not starting the baseline run:")
         for p in problems:
             print("  -", p)
         return 1
-    out = dev_dir(build)
-    steps = (
+    out: Path = dev_dir(build)
+    steps: str = (
         f"install Instagram {build} (replacing what is installed, a downgrade included), then "
         if install
         else ""
@@ -321,12 +334,12 @@ def baseline(
         return 1
     for sub in ("dumps", "media"):
         (out / sub).mkdir(parents=True, exist_ok=True)
-    env = baseline_env(build, scrolls, stories, following)
-    log_path = out / "baseline.log"
+    env: dict[str, str] = baseline_env(build, scrolls, stories, following)
+    log_path: Path = out / "baseline.log"
     if install and _run_logged(compose_run(["install", build], env), log_path):
         print(f"install failed; see {log_path.relative_to(ROOT)}. Is {build} still on APKPure?")
         return 1
-    code = _run_logged(compose_run(["once"], env), log_path)
+    code: int = _run_logged(compose_run(["once"], env), log_path)
     print(f"\nrun {'failed' if code else 'finished'}; checking what was captured\n")
     check(build, below_floor=below_floor)
     print(
@@ -337,16 +350,17 @@ def baseline(
 
 
 def restore(yes: bool = False) -> int:
-    build = igprofiles.default_build()
+    build: str | None = igprofiles.default_build()
     if build is None:
         print("Not restoring: no default build and none validated")
         return 1
+    problems: list[str]
     if problems := preflight_problems(read_host_state(), memory=False):
         print("Not restoring:", *problems, sep="\n  - ")
         return 1
     if not yes and not _confirm(f"Install Instagram {build} on the device?"):
         return 1
-    env = {"IG_PROFILE": "", "IG_APK_VERSION": ""}
+    env: dict[str, str] = {"IG_PROFILE": "", "IG_APK_VERSION": ""}
     return subprocess.run(compose_run(["install", build], env), cwd=ROOT).returncode
 
 
@@ -379,6 +393,7 @@ class RunSummary:
 def captured_dumps(dumps: Path) -> list[tuple[Path, str, bool]]:
     """(path, screen, failure) for every capture in `dumps`, in capture order."""
     found: list[tuple[Path, str, bool]] = []
+    parts: tuple[str, bool] | None
     for path in sorted(dumps.glob(f"*{diagnostics.HIERARCHY_SUFFIX}")) if dumps.is_dir() else []:
         if parts := diagnostics.parse_dump_name(path.name):
             found.append((path, *parts))
@@ -390,9 +405,9 @@ def _parse(xml: str, screen: str) -> tuple[str, int]:
     story tray items and following rows. ("", 0) for a screen they don't read."""
     if screen not in PARSED_SCREENS:
         return "", 0
-    found = parsing.parse_screen(xml)
-    posts = found["posts"]
-    summary = (
+    found: parsing.ScreenParse = parsing.parse_screen(xml)
+    posts: list[parsing.ParsedPost] = found["posts"]
+    summary: str = (
         f"{len(posts)} post(s) ({sum(bool(p['caption']) for p in posts)} captioned,"
         f" {sum(bool(p['complete']) for p in posts)} complete), {len(found['story_tray'])} story tray item(s),"
         f" {len(found['following_list'])} following row(s)"
@@ -401,13 +416,16 @@ def _parse(xml: str, screen: str) -> tuple[str, int]:
 
 
 def check_dumps(profile: BaseProfile, dumps: Path) -> list[DumpReport]:
-    parent = parent_of(profile)
+    parent: BaseProfile | None = parent_of(profile)
     reports: list[DumpReport] = []
+    parsed: str
+    items: int
+    _: int
     for path, screen, failure in captured_dumps(dumps):
-        xml = path.read_text()
+        xml: str = path.read_text()
         with versioning.using(profile):
             parsed, items = _parse(xml, screen)
-        parsed_parent = ""
+        parsed_parent: str = ""
         if parent:
             with versioning.using(parent):
                 parsed_parent, _ = _parse(xml, screen)
@@ -429,6 +447,8 @@ def run_summary(db_path: Path) -> RunSummary | None:
     """The latest run recorded in a baseline's scratch database, or None."""
     if not db_path.exists():
         return None
+    con: sqlite3.Connection
+    row: sqlite3.Row | None
     with sqlite3.connect(db_path) as con:
         try:
             row = sqlrows.fetch_one(con.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1"))
@@ -450,13 +470,13 @@ def run_summary(db_path: Path) -> RunSummary | None:
 
 
 def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], run: RunSummary | None) -> str:
-    parent = parent_of(profile)
-    lines = [
+    parent: BaseProfile | None = parent_of(profile)
+    lines: list[str] = [
         f"# Instagram {build} check (profile {profile.name}{', parent ' + parent.name if parent else ''})",
         "",
     ]
     if run:
-        status = f"error: `{short_error(run.error, None)}`" if run.error else "no error"
+        status: str = f"error: `{short_error(run.error, None)}`" if run.error else "no error"
         lines += [
             f"Latest baseline run: Instagram {run.ig_version or '?'}, {status}, {run.new_posts} new post(s),"
             f" {run.new_stories} new stor(ies), peak {run.mem_peak_mb or '?'} MiB.",
@@ -469,6 +489,7 @@ def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], r
     if not reports:
         return "\n".join([*lines, "No captured screens. Run `new-profile baseline` first.", ""])
     lines += ["| Dump | Screen | Result | Missing required keys | Parsed |", "|---|---|---|---|---|"]
+    result: str
     for r in reports:
         if r.check.looks_empty:
             result = "⚠ almost no Instagram UI (a popup holding focus, the launcher, a crash dialog?)"
@@ -478,10 +499,10 @@ def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], r
             result = "ok"
         if r.failure:
             result += " (failure dump)"
-        parsed = r.parsed + (
+        parsed: str = r.parsed + (
             f"; under {parent.name}: {r.parsed_parent}" if parent and r.parsed_parent else ""
         )
-        missing = ", ".join(f"`{k}`" for k in r.check.missing_required) or "—"
+        missing: str = ", ".join(f"`{k}`" for k in r.check.missing_required) or "—"
         lines.append(
             f"| {r.path.name.removesuffix(diagnostics.HIERARCHY_SUFFIX)} | {r.screen} | {result} | {missing} | {parsed or '—'} |"
         )
@@ -492,18 +513,18 @@ def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], r
     lines.append("## By screen")
     lines.append("")
     for screen, spec in screens.SCREENS.items():
-        got = [r for r in by_screen.get(screen, []) if not r.check.looks_empty]
+        got: list[DumpReport] = [r for r in by_screen.get(screen, []) if not r.check.looks_empty]
         if not got:
             lines.append(f"- **{screen}**: not captured ({spec.description}), so its keys are unchecked.")
             continue
-        never = [k for k in spec.required if all(k in r.check.missing_required for r in got)]
-        sometimes = [k for k in spec.optional if all(k in r.check.missing_optional for r in got)]
-        verdict = (
+        never: list[str] = [k for k in spec.required if all(k in r.check.missing_required for r in got)]
+        sometimes: list[str] = [k for k in spec.optional if all(k in r.check.missing_optional for r in got)]
+        verdict: str = (
             f"required keys never matched: {', '.join(f'`{k}`' for k in never)}"
             if never
             else "all required keys matched"
         )
-        note = f"; optional, not seen: {', '.join(sometimes)}" if sometimes else ""
+        note: str = f"; optional, not seen: {', '.join(sometimes)}" if sometimes else ""
         lines.append(f"- **{screen}** ({len(got)} dump(s)): {verdict}{note}")
     lines += [
         "",
@@ -518,10 +539,10 @@ def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], r
 
 def check(build: str, dumps: Path | None = None, below_floor: bool = False) -> bool:
     """Print and save the report; True when every captured screen has its required keys."""
-    profile = covering_profile(build, below_floor)
-    out = dev_dir(build)
-    reports = check_dumps(profile, dumps or out / "dumps")
-    text = render_report(build, profile, reports, run_summary(out / "posts.sqlite"))
+    profile: BaseProfile = covering_profile(build, below_floor)
+    out: Path = dev_dir(build)
+    reports: list[DumpReport] = check_dumps(profile, dumps or out / "dumps")
+    text: str = render_report(build, profile, reports, run_summary(out / "posts.sqlite"))
     print(text)
     if out.is_dir():
         (out / "report.md").write_text(text)
@@ -547,9 +568,9 @@ def pick_fixtures(reports: list[DumpReport], wanted: Sequence[str] = PARSED_SCRE
 def promote(build: str, wanted: Sequence[str] = PARSED_SCREENS) -> int:
     """Scrub the best capture of each wanted screen into the covering profile's fixtures, named
     <screen>_<major> so every validated version keeps its own."""
-    profile = covering_profile(build)
-    major = parse_version(build)
-    picked = pick_fixtures(check_dumps(profile, dev_dir(build) / "dumps"), wanted)
+    profile: BaseProfile = covering_profile(build)
+    major: int = parse_version(build)
+    picked: dict[str, Path] = pick_fixtures(check_dumps(profile, dev_dir(build) / "dumps"), wanted)
     for screen in wanted:
         if screen not in picked:
             print(f"- {screen}: no clean capture to promote")
@@ -568,8 +589,8 @@ def promote(build: str, wanted: Sequence[str] = PARSED_SCREENS) -> int:
 def validation_problems(profile: BaseProfile, build: str, run: RunSummary | None) -> list[str]:
     """What still stands between `build` and validated with `profile`."""
     problems: list[str] = []
-    major = parse_version(build)
-    fixtures = sorted(igprofiles.fixture(profile.name, "").glob(f"*_{major}.expected.json"))
+    major: int = parse_version(build)
+    fixtures: list[Path] = sorted(igprofiles.fixture(profile.name, "").glob(f"*_{major}.expected.json"))
     if not fixtures:
         problems.append(f"no replay fixtures for {major}: `new-profile promote {build}`")
     for recorded in fixtures:
@@ -592,11 +613,12 @@ _VALIDATED = re.compile(r"^    validated = \((?P<body>[^)]*)\)\n", re.M)
 def add_validated(init: Path, build: str) -> None:
     """Add `build` to the `validated` tuple in a profile's __init__.py (one build per line, oldest
     first), or give the class one after its `selectors` line."""
-    text = init.read_text()
-    m = _VALIDATED.search(text)
-    builds = {b[1] for b in re.finditer(r'"([^"]+)"', m["body"])} if m else set[str]()
-    lines = "".join(f'        "{b}",\n' for b in sorted(builds | {build}, key=version_key))
-    block = f"    validated = (\n{lines}    )\n"
+    text: str = init.read_text()
+    m: re.Match[str] | None = _VALIDATED.search(text)
+    builds: set[str] = {b[1] for b in re.finditer(r'"([^"]+)"', m["body"])} if m else set[str]()
+    lines: str = "".join(f'        "{b}",\n' for b in sorted(builds | {build}, key=version_key))
+    block: str = f"    validated = (\n{lines}    )\n"
+    selectors: re.Match[str] | None
     if m:
         text = text[: m.start()] + block + text[m.end() :]
     elif selectors := re.search(r"^    selectors = .*\n", text, re.M):
@@ -607,11 +629,12 @@ def add_validated(init: Path, build: str) -> None:
 
 
 def validate(build: str) -> int:
-    profile = covering_profile(build)
+    profile: BaseProfile = covering_profile(build)
     if build in profile.own_validated:
         print(f"Instagram {build} is already validated with {profile.name}")
         return 0
-    run = run_summary(dev_dir(build) / "posts.sqlite")
+    run: RunSummary | None = run_summary(dev_dir(build) / "posts.sqlite")
+    problems: list[str]
     if problems := validation_problems(profile, build, run):
         print(f"Instagram {build} can't be marked validated with {profile.name} yet:")
         for p in problems:
@@ -647,8 +670,12 @@ class Options(argparse.Namespace):
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = ap.add_subparsers(dest="command", required=True)
+    ap: argparse.ArgumentParser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    sub: argparse._SubParsersAction[argparse.ArgumentParser] = ap.add_subparsers(
+        dest="command", required=True
+    )
 
     def floor_option(p: argparse.ArgumentParser) -> None:
         p.add_argument(
@@ -663,7 +690,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.add_argument("--following", action="store_true", help="also visit the Following list")
         p.add_argument("--yes", action="store_true", help="don't ask before driving the device")
 
-    p = sub.add_parser("baseline", help="install the build, capped run, capture screens")
+    p: argparse.ArgumentParser = sub.add_parser(
+        "baseline", help="install the build, capped run, capture screens"
+    )
     p.add_argument("build")
     p.add_argument("--no-install", action="store_true", help="the build is already installed")
     run_options(p)
@@ -682,7 +711,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = sub.add_parser("restore", help="install the default build again")
     p.add_argument("--yes", action="store_true")
 
-    opts = ap.parse_args(argv, namespace=Options())
+    opts: Options = ap.parse_args(argv, namespace=Options())
     try:
         match opts.command:
             case "baseline":
@@ -702,7 +731,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "validate":
                 return validate(opts.build)
             case "fork":
-                path = fork(opts.build)
+                path: Path = fork(opts.build)
                 print(
                     f"created {path.relative_to(ROOT)}; override what drifted, then `check {opts.build}` again"
                 )

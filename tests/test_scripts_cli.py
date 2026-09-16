@@ -24,7 +24,7 @@ def test_export_openapi_writes_and_detects_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("FEED_TOKEN", raising=False)
-    spec = tmp_path / "docs" / "openapi.json"
+    spec: Path = tmp_path / "docs" / "openapi.json"
     spec.parent.mkdir()
     monkeypatch.setattr(export_openapi, "ROOT", tmp_path)
     monkeypatch.setattr(export_openapi, "SPEC", spec)
@@ -42,8 +42,8 @@ def test_export_openapi_writes_and_detects_drift(
 def test_check_new_builds_prints_an_issue_only_for_newer_majors(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    listing = tmp_path / "versions.txt"
-    argv = ["--versions-file", str(listing)]
+    listing: Path = tmp_path / "versions.txt"
+    argv: list[str] = ["--versions-file", str(listing)]
     listing.write_text("440.1.0.46.86, 999.0.0.1.2\n")
     assert check_new_builds.main(argv) == 0
     assert "| 999 | `999.0.0.1.2` |" in capsys.readouterr().out
@@ -54,7 +54,7 @@ def test_check_new_builds_prints_an_issue_only_for_newer_majors(
 def test_check_new_builds_fails_on_a_listing_without_builds(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    listing = tmp_path / "versions.txt"
+    listing: Path = tmp_path / "versions.txt"
     listing.write_text("error: apkpure unreachable\n")
     assert check_new_builds.main(["--versions-file", str(listing)]) == 1
     assert "did apkeep fail?" in capsys.readouterr().err
@@ -82,7 +82,7 @@ def test_promote_dump_main_promotes_and_rerecords(
     monkeypatch.setattr(promote_dump, "ROOT", tmp_path)
     promote_dump.main([str(FEED_445), "v424", "feed_445"])
     assert written == [(FEED_445, "v424", "feed_445")]
-    out = capsys.readouterr().out
+    out: str = capsys.readouterr().out
     assert "0 post(s)" in out and "left over" in out
     promote_dump.main(["--update", "v424"])
     assert "wrote app/igprofiles/v424/fixtures/feed_445.expected.json" in capsys.readouterr().out
@@ -101,7 +101,7 @@ def test_promote_dump_main_exits_with_the_scrubbing_error(monkeypatch: pytest.Mo
 
 
 def _host(**changes: bool | str | int) -> new_profile.HostState:
-    state = new_profile.HostState(
+    state: new_profile.HostState = new_profile.HostState(
         redroid_running=True, app_running=False, redroid_mem="1.0GiB / 3GiB", host_available_mib=8000
     )
     for key, value in changes.items():
@@ -110,7 +110,7 @@ def _host(**changes: bool | str | int) -> new_profile.HostState:
 
 
 def test_read_host_state_asks_docker_and_proc(monkeypatch: pytest.MonkeyPatch) -> None:
-    answers = {"ig-redroid": "true", "ig-app": "false"}
+    answers: dict[str, str] = {"ig-redroid": "true", "ig-app": "false"}
 
     def output(cmd: Sequence[str]) -> str:
         if cmd[1] == "inspect":
@@ -118,7 +118,7 @@ def test_read_host_state_asks_docker_and_proc(monkeypatch: pytest.MonkeyPatch) -
         return "1.2GiB / 3GiB"
 
     monkeypatch.setattr(new_profile, "_output", output)
-    state = new_profile.read_host_state()
+    state: new_profile.HostState = new_profile.read_host_state()
     assert (state.redroid_running, state.app_running, state.redroid_mem) == (True, False, "1.2GiB / 3GiB")
     assert state.host_available_mib > 0
 
@@ -131,7 +131,7 @@ def test_output_is_empty_when_the_command_cannot_run() -> None:
 def test_run_logged_streams_and_appends_to_the_log(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    log = tmp_path / "baseline.log"
+    log: Path = tmp_path / "baseline.log"
     assert new_profile._run_logged(["sh", "-c", "echo one; echo two"], log) == 0
     assert "one\ntwo" in capsys.readouterr().out
     assert log.read_text().endswith("one\ntwo\n") and log.read_text().startswith("$ sh -c")

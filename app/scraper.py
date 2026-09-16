@@ -37,6 +37,7 @@ if __name__ == "__main__":
     match sys.argv[1:]:
         case ["once", *_]:
             con = db.db_init()
+            wait: float
             if wait := scrape.budget_wait_seconds(con):
                 sys.exit(
                     f"{config.MAX_RUNS_PER_DAY} runs already started in the last 24h (MAX_RUNS_PER_DAY);"

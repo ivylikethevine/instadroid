@@ -41,7 +41,7 @@ def env_run_now_min_minutes(environ: Mapping[str, str] = os.environ) -> float:
 def lock_age(control_dir: str | Path, now: float | None = None) -> timedelta | None:
     """How long the lock has been in place, or None when there is none."""
     try:
-        mtime = (Path(control_dir) / LOCK).stat().st_mtime
+        mtime: float = (Path(control_dir) / LOCK).stat().st_mtime
     except OSError:
         return None
     return timedelta(seconds=max((now or time.time()) - mtime, 0))
@@ -52,14 +52,14 @@ def locked(control_dir: str | Path, max_hours: float, now: float | None = None) 
     (which has no age limit) is."""
     if hold_reason(control_dir) is not None:
         return True
-    age = lock_age(control_dir, now)
+    age: timedelta | None = lock_age(control_dir, now)
     return age is not None and (max_hours <= 0 or age < timedelta(hours=max_hours))
 
 
 def set_lock(control_dir: str | Path, on: bool) -> None:
     """Put the manual lock in place, or release it. Releasing also clears a hold: unlocking is the
     one way a person says "I've dealt with it"."""
-    path = Path(control_dir) / LOCK
+    path: Path = Path(control_dir) / LOCK
     if on:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
@@ -78,13 +78,13 @@ def hold_reason(control_dir: str | Path) -> str | None:
 
 def set_hold(control_dir: str | Path, reason: str) -> None:
     """Hold every run until a person unlocks: unlike the manual lock, this never expires."""
-    path = Path(control_dir) / HOLD
+    path: Path = Path(control_dir) / HOLD
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(reason + "\n")
 
 
 def request_run_now(control_dir: str | Path) -> None:
-    path = Path(control_dir) / RUN_NOW
+    path: Path = Path(control_dir) / RUN_NOW
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
 
@@ -95,7 +95,7 @@ def run_now_requested(control_dir: str | Path) -> bool:
 
 def minutes_since(finished_at: SqlValue, now: datetime | None = None) -> float | None:
     """Minutes since the stored timestamp `finished_at` (the last run's), or None when it's missing."""
-    finished = parse_iso(finished_at)
+    finished: datetime | None = parse_iso(finished_at)
     if finished is None:
         return None
     return ((now or datetime.now(UTC)) - finished).total_seconds() / 60

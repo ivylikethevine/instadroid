@@ -97,7 +97,7 @@ def con(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
     """A fresh database (db_init()) at tmp_path/posts.sqlite, with an empty media directory tmp_path/media
     (config.MEDIA_DIR). A module needing more settings overrides it:
     `def con(con: sqlite3.Connection, monkeypatch) -> ...`."""
-    media = tmp_path / "media"
+    media: Path = tmp_path / "media"
     media.mkdir()
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
     monkeypatch.setattr(config, "MEDIA_DIR", media)

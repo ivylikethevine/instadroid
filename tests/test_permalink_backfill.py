@@ -20,6 +20,8 @@ OLD = (NOW - timedelta(days=1)).isoformat()
 
 def _hashes(d: FakeDevice) -> tuple[str, str]:
     """The hash ids of the two cards on the fake Following screen: the Reel, then the carousel."""
+    other: parsing.Post
+    top: parsing.Post
     top, other = parsing.parse_hierarchy(d.screens["following"])
     return parsing.post_id(top), parsing.post_id(other)
 
@@ -30,7 +32,7 @@ def _seed_hash_post(con: sqlite3.Connection, h: str, username: str, attempts: in
 
 
 def _row(con: sqlite3.Connection, h: str) -> tuple[str, str | None, str, int]:
-    found = sqlrows.fetch_one(
+    found: sqlite3.Row | None = sqlrows.fetch_one(
         con.execute("SELECT id, url, updated_at, permalink_attempts FROM posts WHERE hash=?", (h,))
     )
     assert found is not None
@@ -52,19 +54,25 @@ def quiet_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_a_stored_post_without_a_permalink_gets_one_and_keeps_its_id(quiet_run: None) -> None:
-    con = db.db_init()
-    d = feed_device()
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = feed_device()
+    other: str
+    top: str
     top, other = _hashes(d)
     _seed_hash_post(con, top, "someone_nice")
     _seed_hash_post(con, other, "other_user")
 
-    stats = scrape.scrape_once(d, con)
+    stats: scrape.RunStats = scrape.scrape_once(d, con)
 
     assert stats["new"] == 0
     for h, url in (
         (top, "https://www.instagram.com/reel/TOP123/"),
         (other, "https://www.instagram.com/p/OTHER1/"),
     ):
+        attempts: int
+        post_id: str
+        stored_url: str | None
+        updated_at: str
         post_id, stored_url, updated_at, attempts = _row(con, h)
         assert post_id == h  # the Atom entry id is derived from it, so it never changes
         assert stored_url == url
@@ -74,13 +82,15 @@ def test_a_stored_post_without_a_permalink_gets_one_and_keeps_its_id(quiet_run: 
 
 def test_backfill_attempts_per_run_are_capped(quiet_run: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "PERMALINK_BACKFILL_PER_RUN", 1)
-    con = db.db_init()
-    d = feed_device()
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = feed_device()
+    other: str
+    top: str
     top, other = _hashes(d)
     _seed_hash_post(con, top, "someone_nice")
     _seed_hash_post(con, other, "other_user")
     scrape.scrape_once(d, con)
-    urls = [_row(con, h)[1] for h in (top, other)]
+    urls: list[str | None] = [_row(con, h)[1] for h in (top, other)]
     assert sum(url is not None for url in urls) == 1
 
 
@@ -88,8 +98,12 @@ def test_a_failed_copy_counts_and_a_post_is_not_retried_forever(
     quiet_run: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "PERMALINK_BACKFILL_TRIES", 2)
-    con = db.db_init()
-    d = feed_device(top_share="share_noclip")  # the Reel's Copy link copies nothing; the carousel's works
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = feed_device(
+        top_share="share_noclip"
+    )  # the Reel's Copy link copies nothing; the carousel's works
+    other: str
+    top: str
     top, other = _hashes(d)
     _seed_hash_post(con, top, "someone_nice")
     _seed_hash_post(con, other, "other_user", attempts=2)  # already tried as often as allowed
@@ -102,8 +116,10 @@ def test_a_failed_copy_counts_and_a_post_is_not_retried_forever(
 
 
 def test_a_shortcode_already_stored_elsewhere_is_not_taken(quiet_run: None) -> None:
-    con = db.db_init()
-    d = feed_device()
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = feed_device()
+    other: str
+    top: str
     top, other = _hashes(d)
     _seed_hash_post(con, top, "someone_nice")
     con.execute(
@@ -118,8 +134,10 @@ def test_a_shortcode_already_stored_elsewhere_is_not_taken(quiet_run: None) -> N
 
 def test_zero_per_run_disables_backfilling(quiet_run: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "PERMALINK_BACKFILL_PER_RUN", 0)
-    con = db.db_init()
-    d = feed_device()
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = feed_device()
+    other: str
+    top: str
     top, other = _hashes(d)
     _seed_hash_post(con, top, "someone_nice")
     _seed_hash_post(con, other, "other_user")
@@ -131,15 +149,17 @@ def test_zero_per_run_disables_backfilling(quiet_run: None, monkeypatch: pytest.
 def test_the_attempts_column_is_added_to_an_existing_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / "old.sqlite"
+    path: Path = tmp_path / "old.sqlite"
     monkeypatch.setattr(config, "DB_PATH", str(path))
-    old = sqlite3.connect(path)
+    old: sqlite3.Connection = sqlite3.connect(path)
     old.execute(
         "CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,"
         " caption TEXT, media_file TEXT, scraped_at TEXT NOT NULL)"
     )
     old.commit()
     old.close()
-    con = db.db_init()
-    columns = {sqlrows.must_str(row, 1) for row in sqlrows.fetch_all(con.execute("PRAGMA table_info(posts)"))}
+    con: sqlite3.Connection = db.db_init()
+    columns: set[str] = {
+        sqlrows.must_str(row, 1) for row in sqlrows.fetch_all(con.execute("PRAGMA table_info(posts)"))
+    }
     assert "permalink_attempts" in columns

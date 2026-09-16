@@ -40,7 +40,7 @@ def node(
     """One hierarchy node. A bare `rid` is expanded to Instagram's "<pkg>:id/<rid>" form."""
     if rid and ":" not in rid:
         rid = f"{IG_PKG}:id/{rid}"
-    attrs = {
+    attrs: dict[str, str] = {
         "class": cls,
         "package": IG_PKG,
         "resource-id": rid,
@@ -53,11 +53,13 @@ def node(
 
 
 def hierarchy(*children: Node) -> str:
-    root = etree.Element("hierarchy", rotation="0")
+    root: etree._Element = etree.Element("hierarchy", rotation="0")
 
     def add(parent: etree._Element, n: Node) -> None:
+        attrs: dict[str, str]
+        kids: list[Node]
         attrs, kids = n
-        el = etree.SubElement(parent, "node", attrs)
+        el: etree._Element = etree.SubElement(parent, "node", attrs)
         for kid in kids:
             add(el, kid)
 
@@ -75,6 +77,10 @@ def _bounds(n: etree._Element) -> tuple[int, int, int, int]:
 
 
 def _area(n: etree._Element) -> int:
+    x1: int
+    x2: int
+    y1: int
+    y2: int
     x1, y1, x2, y2 = _bounds(n)
     return (x2 - x1) * (y2 - y1)
 
@@ -103,7 +109,7 @@ class FakeSelector:
         return [n for n in self._dev.nodes() if all(_matches(n, k, v) for k, v in self._kw.items())]
 
     def _nodes(self) -> list[etree._Element]:
-        found = self._all()
+        found: list[etree._Element] = self._all()
         return found if self._index is None else found[self._index : self._index + 1]
 
     def exists(self, timeout: float = 0) -> bool:
@@ -117,7 +123,7 @@ class FakeSelector:
         return FakeSelector(self._dev, self._kw, instance)
 
     def click(self, timeout: float | None = None) -> None:
-        found = self._nodes()
+        found: list[etree._Element] = self._nodes()
         if not found:
             raise LookupError(f"no node matches {self._kw}")
         self._dev.tap(found[0])
@@ -127,9 +133,13 @@ class FakeSelector:
 
     @property
     def info(self) -> dict[str, dict[str, int]]:
-        found = self._nodes()
+        found: list[etree._Element] = self._nodes()
         if not found:
             raise LookupError(f"no node matches {self._kw}")
+        x1: int
+        x2: int
+        y1: int
+        y2: int
         x1, y1, x2, y2 = _bounds(found[0])
         return {"bounds": {"left": x1, "top": y1, "right": x2, "bottom": y2}}
 
@@ -195,7 +205,7 @@ class FakeDevice:
 
     def screenshot(self) -> Image.Image:
         # A solid colour per screen: crops of different screens hash differently, same screen alike.
-        c = zlib.crc32(self.screen.encode())
+        c: int = zlib.crc32(self.screen.encode())
         return Image.new("RGB", (WIDTH, HEIGHT), (c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF))
 
     def window_size(self) -> tuple[int, int]:
@@ -222,7 +232,7 @@ class FakeDevice:
             self._go(self.launch_screen)
 
     def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
-        joined = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
+        joined: str = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
         self.shell_calls.extend(joined.split("; "))  # one entry per command, as the device's sh runs them
         if "resolve-activity" in joined:
             return Out(f"priority=0 preferredOrder=0\n{IG_PKG}/com.instagram.mainactivity.LauncherActivity")
@@ -249,13 +259,19 @@ class FakeDevice:
     def click(self, x: int, y: int) -> None:
         """Coordinate tap: the smallest node under the point that does something, else the smallest."""
         self.taps.append((x, y))
-        hits = [n for n in self.nodes() if _contains(n, x, y)]
-        actionable = [n for n in hits if n.get("goto") is not None or n.get("clip") is not None]
-        pool = actionable or hits
+        hits: list[etree._Element] = [n for n in self.nodes() if _contains(n, x, y)]
+        actionable: list[etree._Element] = [
+            n for n in hits if n.get("goto") is not None or n.get("clip") is not None
+        ]
+        pool: list[etree._Element] = actionable or hits
         if pool:
             self.tap(min(pool, key=_area))
 
 
 def _contains(n: etree._Element, x: int, y: int) -> bool:
+    x1: int
+    x2: int
+    y1: int
+    y2: int
     x1, y1, x2, y2 = _bounds(n)
     return x1 <= x <= x2 and y1 <= y <= y2

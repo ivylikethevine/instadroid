@@ -8,7 +8,7 @@ from typing import Protocol, TypedDict
 
 from igprofiles.screens import id_matches
 from lxml import etree
-from PIL import Image, ImageStat
+from PIL import Image, ImageFile, ImageStat
 from shared import sqlrows
 
 from . import capture, common, config, device, diagnostics, navigation, parsing, uidevice
@@ -30,15 +30,20 @@ def capture_story_media(
     here — into MEDIA_DIR/stories. clip_top skips the username/timestamp header overlay so the
     saved image doesn't bake in text that changes hour to hour (that text would otherwise make the
     same still-active story hash differently across runs — see scrape_stories())."""
+    b: tuple[int, int, int, int] | None
     if not (b := common.parse_bounds(media_bounds)):
         return None
+    x1: int
+    y1: int
+    x2: int
+    y2: int
     x1, y1, x2, y2 = b
     y1 = max(y1, clip_top)
     if (y2 - y1) < 200:
         return None
-    stories_dir = config.MEDIA_DIR / "stories"
+    stories_dir: Path = config.MEDIA_DIR / "stories"
     stories_dir.mkdir(parents=True, exist_ok=True)
-    path = stories_dir / f"{tmp_name}{capture.media_ext()}"
+    path: Path = stories_dir / f"{tmp_name}{capture.media_ext()}"
     capture.save_media(img.crop((x1, y1, x2, y2)), path)
     return path
 
@@ -62,7 +67,7 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
 
     Returns {username, posted_date, path} or None if the story didn't open, closed before the
     screenshot, or nothing could be cropped."""
-    point = common.bounds_center(item["bounds"])
+    point: tuple[int, int] | None = common.bounds_center(item["bounds"])
     if not point:
         return None
     d.click(*point)
@@ -71,8 +76,10 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
         d.press("back")
         device.human_pause(1, 1.5)
         return None
-    xml = d.dump_hierarchy()
-    nodes = [(n.get("resource-id") or "", n) for n in etree.fromstring(xml.encode()).iter("node")]
+    xml: str = d.dump_hierarchy()
+    nodes: list[tuple[str, etree._Element]] = [
+        (n.get("resource-id") or "", n) for n in etree.fromstring(xml.encode()).iter("node")
+    ]
     # exists() can win a race against a fast auto-exit. Parsing here is milliseconds, off the device.
     if not any(id_matches(rid, SELECTORS["story_viewer_id"]) for rid, _ in nodes):
         log(f"WARN: story for {item['username']} closed before it could be read; dump saved")
@@ -80,21 +87,24 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
         d.press("back")
         device.human_pause(1, 1.5)
         return None
-    img = d.screenshot()
+    img: Image.Image = d.screenshot()
     diagnostics.capture_screen(d, "story_viewer", xml, image=img)
     d.press("back")  # off the device from here on; cropping/saving below never risks the timer
     device.human_pause(1, 1.5)
+    media_bounds: str | None
+    clip_top: int | None
     media_bounds = clip_top = None
-    posted_date = ""
+    posted_date: str = ""
     for rid, n in nodes:
         if id_matches(rid, SELECTORS["story_media_id"]) and media_bounds is None:
             media_bounds = n.get("bounds")
         elif id_matches(rid, SELECTORS["story_shadow_id"]) and clip_top is None:
+            b: tuple[int, int, int, int] | None
             if b := common.parse_bounds(n.get("bounds")):
                 clip_top = b[3]
         elif id_matches(rid, SELECTORS["story_timestamp_id"]) and not posted_date:
             posted_date = n.get("text") or ""
-    path = capture_story_media(
+    path: Path | None = capture_story_media(
         img, media_bounds, clip_top or 0, f"tmp_{item['username']}_{int(time.time() * 1000)}"
     )
     return {"username": item["username"], "posted_date": posted_date, "path": path} if path else None
@@ -116,10 +126,10 @@ def scrape_stories(d: uidevice.Device, con: sqlite3.Connection) -> int:
         log("WARN: could not reach the Home feed for stories; skipping this run")
         diagnostics.capture_screen(d, "home_feed", failure=True)
         return 0
-    tray_xml = d.dump_hierarchy()
+    tray_xml: str = d.dump_hierarchy()
     diagnostics.capture_screen(d, "home_feed", tray_xml)
-    items = [i for i in parsing.parse_story_tray(tray_xml) if not i["seen"]]
-    new = 0
+    items: list[parsing.StoryItem] = [i for i in parsing.parse_story_tray(tray_xml) if not i["seen"]]
+    new: int = 0
     for item in items[: config.MAX_STORIES_PER_RUN]:
         if not navigation.on_home_feed(d):
             # A prior story's own auto-exit can eject the app entirely (see capture_story()); tapping
@@ -134,19 +144,22 @@ def scrape_stories(d: uidevice.Device, con: sqlite3.Connection) -> int:
             else:
                 log("WARN: could not recover the Home feed; stopping story capture for this run")
                 break
-        captured = capture_story(d, item)
+        captured: CapturedStory | None = capture_story(d, item)
         if not captured:
             continue
+        path: Path
+        username: str
         path, username = captured["path"], captured["username"]
+        img: ImageFile.ImageFile
         with Image.open(path) as img:
-            blank = _is_blank_frame(img)
-            phash = _dhash(img)
+            blank: bool = _is_blank_frame(img)
+            phash: str = _dhash(img)
         if blank or _find_story_duplicate(con, username, phash):
             log(f"story for {username}: {'blank frame' if blank else 'already stored'}; discarding")
             path.unlink(missing_ok=True)
             continue
-        digest = common.digest(path.read_bytes())
-        cur = con.execute(
+        digest: str = common.digest(path.read_bytes())
+        cur: sqlite3.Cursor = con.execute(
             "INSERT OR IGNORE INTO stories (id, username, media_file, kind, posted_date, scraped_at, phash)"
             " VALUES (?,?,?,?,?,?,?)",
             (
@@ -189,8 +202,8 @@ def _resized(img: _Resizable, size: tuple[int, int]) -> Image.Image:
 
 def _dhash(img: Image.Image) -> str:
     """64-bit difference hash: survives re-encoding and small overlays, unlike a byte hash."""
-    px = _resized(img.convert("L"), (9, 8)).tobytes()
-    bits = 0
+    px: bytes = _resized(img.convert("L"), (9, 8)).tobytes()
+    bits: int = 0
     for i in range(72):
         if i % 9 != 8:
             bits = bits << 1 | (px[i] > px[i + 1])
@@ -199,15 +212,15 @@ def _dhash(img: Image.Image) -> str:
 
 def _is_blank_frame(img: Image.Image) -> bool:
     """A near-black crop: the viewer's loading/transition frame, not the story itself."""
-    stat = ImageStat.Stat(img.convert("L"))
+    stat: ImageStat.Stat = ImageStat.Stat(img.convert("L"))
     return stat.mean[0] < 8 and stat.stddev[0] < 4
 
 
 def _find_story_duplicate(con: sqlite3.Connection, username: str, phash: str) -> bool:
     """True if this account has a story stored in the last day (a story's lifetime) that looks the
     same. The byte hash alone missed these: every capture re-encodes a fresh screenshot."""
-    cutoff = (datetime.now(UTC) - timedelta(days=1)).isoformat()
-    rows = sqlrows.fetch_all(
+    cutoff: str = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    rows: list[sqlite3.Row] = sqlrows.fetch_all(
         con.execute(
             "SELECT phash FROM stories WHERE username=? AND scraped_at > ? AND phash IS NOT NULL",
             (username, cutoff),

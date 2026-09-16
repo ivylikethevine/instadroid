@@ -13,7 +13,7 @@ def test_dump_debug_does_not_raise_on_a_write_failure(
 ) -> None:
     # e.g. a stale file left owned by a different uid from a `docker exec -u root` session, or
     # here: DEBUG_DIR itself can't be created because something else already occupies that path.
-    blocked = tmp_path / "debug"
+    blocked: Path = tmp_path / "debug"
     blocked.write_text("not a directory")
     monkeypatch.setattr(config, "DEBUG_DIR", blocked)
 
@@ -34,7 +34,7 @@ def test_launch_app_falls_back_to_monkey_launch_without_recursing_forever() -> N
         def app_start(self, package_name: str, activity: str | None = None, stop: bool = False) -> None:
             self.app_start_calls.append((package_name, activity, stop))
 
-    d = NoResolveDevice()
+    d: NoResolveDevice = NoResolveDevice()
     device.launch_app(d)  # must not raise RecursionError
     assert d.app_start_calls == [(config.IG_PKG, None, False)]
 
@@ -47,7 +47,7 @@ def test_device_snapshot_tolerates_shell_failures() -> None:
         def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
             raise RuntimeError("adb not connected")
 
-    snapshot = device.device_snapshot(BrokenDevice())
+    snapshot: device.DeviceSnapshot = device.device_snapshot(BrokenDevice())
     assert snapshot == {
         "android_release": None,
         "android_sdk": None,

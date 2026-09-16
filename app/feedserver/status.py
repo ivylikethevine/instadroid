@@ -29,13 +29,17 @@ def scraper_health(con: sqlite3.Connection, now: datetime | None = None) -> tupl
     progress fits comfortably inside that slack). FAILING: no *successful* run for two full poll
     cycles plus an hour, e.g. a login challenge nobody has answered yet. No runs at all is healthy —
     the scraper may simply be on its first one."""
+    last_finished: str | None
+    last_ok: str | None
+    first_started: str | None
     last_finished, last_ok, first_started = queries.run_times(con)
     now = now or datetime.now(UTC)
-    finished = parse_iso(last_finished)
+    finished: datetime | None = parse_iso(last_finished)
+    hours: float
     if finished and now - finished > timedelta(hours=settings.POLL_MAX_HOURS + 0.5):
         hours = (now - finished).total_seconds() / 3600
         return "OVERDUE", f"no scrape run has finished in {hours:.1f}h"
-    reference = parse_iso(last_ok) or parse_iso(first_started)
+    reference: datetime | None = parse_iso(last_ok) or parse_iso(first_started)
     if reference and now - reference > timedelta(hours=2 * settings.POLL_MAX_HOURS + 1):
         hours = (now - reference).total_seconds() / 3600
         return "FAILING", f"no successful scrape run in {hours:.1f}h"
@@ -52,8 +56,11 @@ def scraper_health(con: sqlite3.Connection, now: datetime | None = None) -> tupl
 def health() -> Health | JSONResponse:
     """`ok` unless no run has finished for too long or none has succeeded for too long (then 503,
     with a `reason`). Never needs the feed token."""
+    con: sqlite3.Connection
+    label: str
+    reason: str
     with queries.connection() as con:
-        count = queries.post_count(con)
+        count: int = queries.post_count(con)
         label, reason = scraper_health(con)
     if label:
         # 503 so the compose healthcheck (which only checks for a 2xx) marks the container unhealthy.
@@ -65,9 +72,13 @@ def health() -> Health | JSONResponse:
 
 
 def _duration(run: sqlite3.Row) -> str:
+    start: datetime | None
+    end: datetime | None
     start, end = parse_iso(text(run, "started_at")), parse_iso(text(run, "finished_at"))
     if not start or not end:
         return "—"
+    m: int
+    s: int
     m, s = divmod(int((end - start).total_seconds()), 60)
     return f"{m}m {s}s" if m else f"{s}s"
 
@@ -87,6 +98,8 @@ def _run_count(run: sqlite3.Row, col: str) -> str:
 def _run_memory(run: sqlite3.Row) -> str:
     """redroid's peak memory during a run ("1843 MiB"), plus its OOM kills when there were any, or
     "—" when it wasn't measured (the cgroup wasn't readable, or a row from before these columns)."""
+    peak: int | None
+    ooms: int | None
     peak, ooms = opt_int(run, "mem_peak_mb"), opt_int(run, "oom_kills")
     if peak is None:
         return "—"
@@ -95,8 +108,10 @@ def _run_memory(run: sqlite3.Row) -> str:
 
 def _run_result(run: sqlite3.Row) -> tuple[str, str]:
     """(css class, text) for a run's Result cell: its error, else its warning, else "ok"."""
+    error: str | None
     if error := text(run, "error"):
         return "err", short_error(error)
+    warning: str | None
     if warning := opt_str(run, "warning"):
         return "warn", f"warn: {short_error(warning)}"
     return "", "ok"
@@ -105,17 +120,25 @@ def _run_result(run: sqlite3.Row) -> tuple[str, str]:
 @router.get("/status", response_class=HTMLResponse, summary="Status page")
 def status_page() -> HTMLResponse:
     """A plain-HTML page of recent runs, the device, and per-account totals."""
+    con: sqlite3.Connection
+    health_label: str
+    health_reason: str
     with queries.connection() as con:
-        users = queries.user_counts(con)
-        stories_count = queries.stories_stats(con)[0]
-        runs = queries.recent_runs(con)
-        device = queries.latest_device(con)
-        alerts = queries.open_alerts(con)
+        users: list[sqlite3.Row] = queries.user_counts(con)
+        stories_count: int = queries.stories_stats(con)[0]
+        runs: list[sqlite3.Row] = queries.recent_runs(con)
+        device: sqlite3.Row | None = queries.latest_device(con)
+        alerts: list[sqlite3.Row] = queries.open_alerts(con)
         health_label, health_reason = scraper_health(con)  # same verdict /health gives the healthcheck
-    total = sum(cell_int(u, "n") or 0 for u in users)
-    latest = runs[0] if runs else None
+    total: int = sum(cell_int(u, "n") or 0 for u in users)
+    latest: sqlite3.Row | None = runs[0] if runs else None
 
-    device_line = "no successful run yet"
+    device_line: str = "no successful run yet"
+    sdk: str | None
+    product: str | None
+    ig: str | None
+    profile: str | None
+    image: str | None
     if device:
         device_line = f"Android {escape(text(device, 'android_release') or '?')}"
         if sdk := text(device, "android_sdk"):
@@ -129,12 +152,15 @@ def status_page() -> HTMLResponse:
         if image := opt_str(device, "redroid_image"):
             device_line += f" · {escape(image)}"
 
+    latest_html: str
+    status_word: str
+    status_class: str
     if not latest:
         latest_html = "<p>No scrape runs recorded yet.</p>"
     else:
-        warning = opt_str(latest, "warning")
-        error = text(latest, "error")
-        new_posts = cell_int(latest, "new_posts")
+        warning: str | None = opt_str(latest, "warning")
+        error: str | None = text(latest, "error")
+        new_posts: int | None = cell_int(latest, "new_posts")
         if error or health_label:
             status_word, status_class = ("ERROR" if error else health_label), "bad"
         elif warning:
@@ -153,7 +179,7 @@ def status_page() -> HTMLResponse:
         f'<p class="err">Alert since {escape(string(a, "raised_at")[:16])}: {escape(string(a, "message"))}</p>'
         for a in alerts
     )
-    state = control.current_state()
+    state: control.ControlState = control.current_state()
     if state.hold is not None:
         latest_html += f'<p class="err">Held until unlocked, Instagram needs a person: {escape(short_error(state.hold))}</p>'
     elif state.locked:
@@ -162,14 +188,16 @@ def status_page() -> HTMLResponse:
         latest_html += "<p>A scrape-now request is waiting for the poll loop.</p>"
 
     def _result_cell(r: sqlite3.Row) -> str:
+        css: str
+        cell_text: str
         css, cell_text = _run_result(r)
         return f'<td class="{css}">{escape(cell_text)}</td>'
 
     def _new_posts_cell(r: sqlite3.Row) -> str:
-        new_posts = cell_int(r, "new_posts")
+        new_posts: int | None = cell_int(r, "new_posts")
         return f"<td>{new_posts if new_posts is not None else '—'}</td>"
 
-    runs_rows = "".join(
+    runs_rows: str = "".join(
         f"<tr><td>{escape(string(r, 'started_at'))}</td><td>{_duration(r)}</td>"
         f"{_new_posts_cell(r)}"
         f"<td>{escape(_run_count(r, 'new_stories'))}</td>"
@@ -180,13 +208,13 @@ def status_page() -> HTMLResponse:
         f"{_result_cell(r)}</tr>"
         for r in runs
     )
-    users_rows = "".join(
+    users_rows: str = "".join(
         f"<tr><td>{escape(string(u, 'username'))}</td><td>{string(u, 'n')}</td>"
         f"<td>{escape(text(u, 'latest') or '—')}</td></tr>"
         for u in users
     )
 
-    html = f"""<!doctype html>
+    html: str = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta http-equiv="refresh" content="60">
 <title>Instadroid status</title>
 <style>

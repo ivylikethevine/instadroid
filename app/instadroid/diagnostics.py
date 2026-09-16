@@ -3,6 +3,7 @@
 import re
 import subprocess
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,9 +27,11 @@ def prune_debug_dumps() -> None:
     that can't be removed is logged and skipped, never raised."""
     try:
         doomed: list[Path] = []
-        hierarchies = sorted(config.DEBUG_DIR.glob(f"*{HIERARCHY_SUFFIX}"), key=lambda p: p.stat().st_mtime)
+        hierarchies: list[Path] = sorted(
+            config.DEBUG_DIR.glob(f"*{HIERARCHY_SUFFIX}"), key=lambda p: p.stat().st_mtime
+        )
         for old in hierarchies[: -config.DEBUG_KEEP]:
-            stem = old.name.removesuffix(HIERARCHY_SUFFIX)
+            stem: str = old.name.removesuffix(HIERARCHY_SUFFIX)
             doomed += [
                 old,
                 config.DEBUG_DIR / f"{stem}{SCREENSHOT_SUFFIX}",
@@ -38,7 +41,7 @@ def prune_debug_dumps() -> None:
             : -config.DEBUG_KEEP
         ]
         if config.DEBUG_RETAIN_DAYS > 0:
-            cutoff = time.time() - config.DEBUG_RETAIN_DAYS * 86400
+            cutoff: float = time.time() - config.DEBUG_RETAIN_DAYS * 86400
             doomed += [
                 f
                 for f in config.DEBUG_DIR.iterdir()
@@ -60,7 +63,7 @@ CRASH_SIGNATURES_FILE = Path(__file__).with_name("crash_signatures.tsv")
 def load_crash_signatures(path: Path = CRASH_SIGNATURES_FILE) -> dict[str, str]:
     """{logcat text: fix} for the crash-loop signatures this project has actually hit, from the
     tab-separated table scripts/diagnose.sh reads too. Blank and `#` lines are skipped."""
-    rows = (
+    rows: Iterator[list[str]] = (
         line.split("\t", 1) for line in path.read_text().splitlines() if line and not line.startswith("#")
     )
     return {row[0]: row[1] if len(row) > 1 else "" for row in rows}
@@ -81,7 +84,7 @@ def _filter_logcat(text: str) -> list[str]:
     LOGCAT_TAIL_LINES of them."""
     kept: list[str] = []
     for line in text.splitlines():
-        m = _LOGCAT_PRIORITY.match(line)
+        m: re.Match[str] | None = _LOGCAT_PRIORITY.match(line)
         if (m and m.group(1) in "EF") or _LOGCAT_SIGNATURES.search(line):
             kept.append(line)
     return kept[-config.LOGCAT_TAIL_LINES :] if config.LOGCAT_TAIL_LINES > 0 else kept
@@ -93,7 +96,7 @@ def save_failure_logcat(error: str) -> Path | None:
     rather than the uiautomator2 connection, which is often exactly what failed. Best-effort: a device
     too far gone for adb just gets a log line."""
     try:
-        out = subprocess.run(
+        out: subprocess.CompletedProcess[str] = subprocess.run(
             ["adb", "-s", config.ADB_ADDR, "logcat", "-d", "-v", "threadtime"],
             capture_output=True,
             text=True,
@@ -106,9 +109,9 @@ def save_failure_logcat(error: str) -> Path | None:
     if out.returncode != 0 or not out.stdout.strip():
         log("WARN: could not read logcat after the failure:", (out.stderr or "no output").strip()[:200])
         return None
-    lines = _filter_logcat(out.stdout)
-    path = config.DEBUG_DIR / f"logcat_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.txt"
-    header = [
+    lines: list[str] = _filter_logcat(out.stdout)
+    path: Path = config.DEBUG_DIR / f"logcat_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.txt"
+    header: list[str] = [
         f"# run failed: {error.splitlines()[0][:500] if error else '?'}",
         f"# adb logcat -d: error/fatal lines and known crash signatures, last {len(lines)} kept",
         *(
@@ -145,7 +148,7 @@ def dump_stem(seq: int, screen: str, failure: bool) -> str:
 def parse_dump_name(filename: str) -> tuple[str, bool] | None:
     """(screen, failure) from a profile capture's hierarchy file name (dump_stem() + HIERARCHY_SUFFIX),
     or None for any other file."""
-    m = _CAPTURE_NAME.match(filename)
+    m: re.Match[str] | None = _CAPTURE_NAME.match(filename)
     return (m["screen"], bool(m["fail"])) if m else None
 
 
@@ -158,7 +161,7 @@ def dump_debug(d: uidevice.Device, name: str, xml: str | None = None) -> None:
     is also kept in PROFILE_CAPTURE_DIR, since these are exactly the screens a new profile breaks on."""
     try:
         xml = xml if xml is not None else d.dump_hierarchy()
-        image = d.screenshot()
+        image: Image.Image = d.screenshot()
         _write_pair(config.DEBUG_DIR, name, xml, image)
         prune_debug_dumps()
     except OSError as e:
@@ -181,12 +184,12 @@ def capture_screen(
     to skip the device round-trip. A no-op otherwise, and never raises: capturing must not change a run."""
     if not config.PROFILE_CAPTURE_DIR:
         return
-    count = _captured.get(screen, 0)
+    count: int = _captured.get(screen, 0)
     if not failure and count >= config.CAPTURE_PER_SCREEN:
         return
     _captured[screen] = count + 1
-    seq = sum(_captured.values())
-    stem = dump_stem(seq, screen, failure)
+    seq: int = sum(_captured.values())
+    stem: str = dump_stem(seq, screen, failure)
     try:
         _write_pair(
             Path(config.PROFILE_CAPTURE_DIR),

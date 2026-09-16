@@ -1,6 +1,8 @@
 """/control: the manual lock and scrape-now requests, as files the scraper's poll loop reads
 (shared/control.py, instadroid/control.py)."""
 
+import sqlite3
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from shared import control as files
@@ -56,9 +58,11 @@ def scrape_now() -> ControlState:
     Refused while locked, and within RUN_NOW_MIN_MINUTES of the last run finishing."""
     if current_state().locked:
         raise HTTPException(409, "the manual lock is in place; release it first")
+    con: sqlite3.Connection
     with queries.connection() as con:
-        since = files.minutes_since(queries.last_finished(con))
-    wait = settings.RUN_NOW_MIN_MINUTES
+        since: float | None = files.minutes_since(queries.last_finished(con))
+    wait: float = settings.RUN_NOW_MIN_MINUTES
+
     if since is not None and not files.run_now_due(since, wait):
         raise HTTPException(
             429, f"the last run finished {since:.0f} min ago; try again in {wait - since:.0f} min"

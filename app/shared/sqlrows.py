@@ -38,20 +38,20 @@ def fetch_all(cur: sqlite3.Cursor) -> list[sqlite3.Row]:
 
 def scalar(cur: sqlite3.Cursor) -> SqlValue:
     """The first column of the cursor's next row (e.g. a SELECT MAX(...)), or None when there is no row."""
-    row = fetch_one(cur)
+    row: sqlite3.Row | None = fetch_one(cur)
     return cell(row, 0) if row is not None else None
 
 
 def scalar_int(cur: sqlite3.Cursor) -> int | None:
     """scalar() of an integer result (a COUNT, a PRAGMA), or None when there is no row."""
-    row = fetch_one(cur)
+    row: sqlite3.Row | None = fetch_one(cur)
     return cell_int(row, 0) if row is not None else None
 
 
 def cell(row: sqlite3.Row, key: int | str) -> SqlValue:
     """row[key]: a column by position or by case-insensitive name, raising IndexError for one the row
     doesn't have."""
-    value = _item(row, key)
+    value: object = _item(row, key)
     if value is None or isinstance(value, str | int | float | bytes):
         return value
     raise TypeError(f"column {key!r} holds {type(value).__name__}, not an SQLite value")
@@ -64,7 +64,7 @@ def values(row: sqlite3.Row) -> tuple[SqlValue, ...]:
 
 def cell_str(row: sqlite3.Row, key: int | str) -> str | None:
     """A TEXT column (or NULL)."""
-    value = cell(row, key)
+    value: SqlValue = cell(row, key)
     if value is None or isinstance(value, str):
         return value
     raise TypeError(f"column {key!r} holds {type(value).__name__}, not text")
@@ -72,7 +72,7 @@ def cell_str(row: sqlite3.Row, key: int | str) -> str | None:
 
 def cell_int(row: sqlite3.Row, key: int | str) -> int | None:
     """An INTEGER column (or NULL)."""
-    value = cell(row, key)
+    value: SqlValue = cell(row, key)
     if value is None or isinstance(value, int):
         return value
     raise TypeError(f"column {key!r} holds {type(value).__name__}, not an integer")
@@ -80,7 +80,7 @@ def cell_int(row: sqlite3.Row, key: int | str) -> int | None:
 
 def cell_float(row: sqlite3.Row, key: int | str) -> float | None:
     """A REAL column (or NULL); an integer, which SQLite may hand back for one, passes through as is."""
-    value = cell(row, key)
+    value: SqlValue = cell(row, key)
     if value is None or isinstance(value, int | float):
         return value
     raise TypeError(f"column {key!r} holds {type(value).__name__}, not a number")
@@ -88,7 +88,7 @@ def cell_float(row: sqlite3.Row, key: int | str) -> float | None:
 
 def must_str(row: sqlite3.Row, key: int | str) -> str:
     """A NOT NULL TEXT column."""
-    value = cell_str(row, key)
+    value: str | None = cell_str(row, key)
     if value is None:
         raise TypeError(f"column {key!r} is NULL")
     return value
@@ -96,7 +96,7 @@ def must_str(row: sqlite3.Row, key: int | str) -> str:
 
 def must_int(row: sqlite3.Row, key: int | str) -> int:
     """An integer result that can't be NULL (a COUNT, a SUM over at least one row)."""
-    value = cell_int(row, key)
+    value: int | None = cell_int(row, key)
     if value is None:
         raise TypeError(f"column {key!r} is NULL")
     return value

@@ -65,7 +65,7 @@ scripts/check.sh --lint      # every static check, no tests
 scripts/check.sh shell typos # only those groups or checks; `scripts/check.sh --help` lists them
 ```
 
-The groups mirror CI's jobs: `python` (ruff, basedpyright, `lint-imports`), `test` (pytest with
+The groups mirror CI's jobs: `python` (ruff, basedpyright, `lint-imports`, `local-annotations`), `test` (pytest with
 coverage, failing under the floor), `audit` (`pip-audit`), `shell` (shellcheck, shfmt), `docs`
 (markdownlint, prettier, lychee on relative links, typos, and the docs drift check), `workflows`
 (actionlint, `.github/scripts/lint_workflows.sh`, zizmor) and `docker` (hadolint, advisory, and
@@ -93,12 +93,17 @@ reaches every caller.
 ## Typing and coverage
 
 > **Rule: all Python code must be 100% type annotated and at least 90% covered by tests.** That means
-> app code, scripts and tests alike, with no `Any`, `cast()` or type-checker suppressions. CI enforces
-> both: basedpyright strict (with `reportAny`) and ruff's annotation rules for the first, and
-> coverage's `fail_under = 90` over `app/` (`pyproject.toml`) for the second. A change that lowers
-> either doesn't merge.
+> app code, scripts and tests alike, every function signature and every local variable, with no
+> `Any`, `cast()` or type-checker suppressions. CI enforces both: basedpyright strict (with
+> `reportAny`), ruff's annotation rules and `local-annotations` for the first, and coverage's
+> `fail_under = 90` over `app/` (`pyproject.toml`) for the second. A change that lowers either
+> doesn't merge.
 
 - ruff's `ANN` rules require an annotation on every function and ban an explicit `Any`;
+- `local-annotations` (`app/devtools/local_annotations.py`, which spells out the rule) requires an
+  annotation on every local variable where it's first bound, including tuple unpacking, `:=` and
+  `with ... as` (declare the name on the line before); `for` targets and comprehension variables,
+  which Python can't annotate, are exempt;
 - basedpyright checks `app/` and `tests/` in strict mode with `reportAny`, so no
   value typed `Any` gets through, not even one returned by the standard library;
 - libraries that ship no type information (uiautomator2, adbutils, feedgen) get local stubs in
@@ -157,7 +162,8 @@ dispatch. Each job with a local equivalent runs `scripts/check.sh` with its grou
 - a `changes` job first: when a push or pull request touches only Markdown, `docs/` or workflow
   files, the Python, shell and Docker jobs are skipped. The docs job and the workflow linters always
   run, and the schedule and a dispatch run everything;
-- ruff, basedpyright and import-linter (`lint-imports`), and the test suite with coverage;
+- ruff, basedpyright, import-linter (`lint-imports`) and the local-variable annotation rule
+  (`local-annotations`), and the test suite with coverage;
 - `pip-audit` on the hashed dependency locks, and GitHub's dependency review on pull requests, which
   fails on a new dependency with a high-severity advisory;
 - shellcheck and shfmt on the shell scripts;

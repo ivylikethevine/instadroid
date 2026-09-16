@@ -10,7 +10,7 @@ def test_plain_variable_when_no_file_is_set() -> None:
 
 
 def test_file_contents_win_with_one_trailing_newline_stripped(tmp_path: Path) -> None:
-    secret = tmp_path / "pw"
+    secret: Path = tmp_path / "pw"
     secret.write_text("  hunter2 \n\n")  # only the last newline is `echo`'s; the rest is the value
     assert env_secret("IG_PASSWORD", {"IG_PASSWORD_FILE": str(secret)}) == "  hunter2 \n"
     secret.write_text("hunter2\r\n")
@@ -22,7 +22,7 @@ def test_an_empty_file_variable_is_ignored() -> None:
 
 
 def test_both_set_is_an_error(tmp_path: Path) -> None:
-    secret = tmp_path / "pw"
+    secret: Path = tmp_path / "pw"
     secret.write_text("hunter2")
     with pytest.raises(RuntimeError, match="both IG_PASSWORD and IG_PASSWORD_FILE"):
         env_secret("IG_PASSWORD", {"IG_PASSWORD": "x", "IG_PASSWORD_FILE": str(secret)})

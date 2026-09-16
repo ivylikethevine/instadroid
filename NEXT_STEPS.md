@@ -85,3 +85,4 @@ they land; the longer-term ideas stay in [docs/ROADMAP.md](docs/ROADMAP.md).
 - 2026-09-15: Phase 1 item 5, `LOCK_MAX_HOURS` defaults to 0.
 - 2026-09-15: Phase 1 item 6, `pm path` confirms Instagram is missing before an auto-install.
 - 2026-09-15: Phase 1 item 7, a visibility-only redroid healthcheck (not yet seen against a running container).
+- 2026-09-16: Phase 2 item 1, post identity keyed on the caption's first 40 characters, with a rehash migration.

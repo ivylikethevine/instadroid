@@ -22,6 +22,8 @@ the password, every poll interval until someone noticed. `scraper.py unlock` cle
 
 import sqlite3
 import time
+from datetime import timedelta
+from pathlib import Path
 
 from shared import control as files
 from shared import sqlrows
@@ -59,7 +61,9 @@ def take_run_now(con: sqlite3.Connection) -> bool:
     if not files.run_now_requested(config.CONTROL_DIR):
         return False
     # Runs are inserted as they finish, so the newest id is the latest finish (feedserver/queries.py).
-    finished_at = sqlrows.scalar(con.execute("SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1"))
+    finished_at: sqlrows.SqlValue = sqlrows.scalar(
+        con.execute("SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1")
+    )
     if not files.run_now_due(files.minutes_since(finished_at), config.RUN_NOW_MIN_MINUTES):
         return False
     (config.CONTROL_DIR / files.RUN_NOW).unlink(missing_ok=True)
@@ -69,19 +73,21 @@ def take_run_now(con: sqlite3.Connection) -> bool:
 
 def wait(con: sqlite3.Connection, seconds: float) -> None:
     """Sleep up to `seconds`, in CONTROL_POLL_SECONDS steps, returning early for a scrape-now request."""
-    remaining = seconds
+    remaining: float = seconds
     while remaining > 0:
         if take_run_now(con):
             return
-        step = min(remaining, config.CONTROL_POLL_SECONDS)
+        step: float = min(remaining, config.CONTROL_POLL_SECONDS)
         time.sleep(step)
         remaining -= step
 
 
 def wait_while_locked() -> None:
     """Hold here while the lock is in place, logging once; warn about a lock left long enough to ignore."""
-    lock = config.CONTROL_DIR / files.LOCK
+    lock: Path = config.CONTROL_DIR / files.LOCK
+    age: timedelta | None
     if locked():
+        reason: str | None
         if (reason := hold_reason()) is not None:
             log(f"Instagram needs a person ({reason}); holding all runs until `scraper.py unlock`")
         else:
