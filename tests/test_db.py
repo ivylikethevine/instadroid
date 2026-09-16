@@ -3,7 +3,7 @@
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TypedDict, Unpack
+from typing import NoReturn, TypedDict, Unpack
 
 import pytest
 from instadroid import config, db, parsing
@@ -165,6 +165,158 @@ def test_db_init_migration_merges_legacy_duplicate_rows(
     assert len(posts) == 1
     assert posts[0]["caption"] == "Attendance check! see you there"
     assert posts[0]["media_file"] == "weakhash.jpg"  # the only crop that exists is kept
+
+
+def _legacy_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
+    """A pre-migration database (no posted_at/updated_at columns) at config.DB_PATH, open for seeding."""
+    media: Path = tmp_path / "media"
+    media.mkdir()
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
+    monkeypatch.setattr(config, "MEDIA_DIR", media)
+    con: sqlite3.Connection = sqlite3.connect(tmp_path / "posts.sqlite")
+    con.execute(
+        """CREATE TABLE posts (
+            id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT,
+            caption TEXT, media_file TEXT, scraped_at TEXT NOT NULL,
+            hash TEXT, url TEXT, place TEXT
+        )"""
+    )
+    return con
+
+
+def test_db_init_migration_skips_a_row_it_already_merged_away(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The permalink row is scraped first, so the merge keeps its id and deletes the hash-id duplicate;
+    # when the loop then reaches the duplicate's id, the row is gone and is skipped, not crashed on.
+    con: sqlite3.Connection = _legacy_db(tmp_path, monkeypatch)
+    now: datetime = datetime.now(UTC)
+    con.execute(
+        "INSERT INTO posts VALUES ('ABC','club','photo','3 days ago','Same caption',NULL,?,"
+        "'h1','https://www.instagram.com/p/ABC/',NULL)",
+        ((now - timedelta(minutes=1)).isoformat(),),
+    )
+    con.execute(
+        "INSERT INTO posts VALUES ('h2','club','photo','3 days ago','Same caption',NULL,?,'h2',NULL,NULL)",
+        (now.isoformat(),),
+    )
+    con.commit()
+    con.close()
+
+    con = db.db_init()
+
+    assert sql_column(con.execute("SELECT id FROM posts")) == ["ABC"]
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+
+
+def test_db_init_migration_skips_a_row_the_merge_raises_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    con: sqlite3.Connection = _legacy_db(tmp_path, monkeypatch)
+    con.execute(
+        "INSERT INTO posts VALUES ('odd','u','photo','2 days ago','cap',NULL,?,'odd',NULL,NULL)",
+        (datetime.now(UTC).isoformat(),),
+    )
+    con.commit()
+    con.close()
+
+    def unexpected(
+        con: sqlite3.Connection,
+        username: str,
+        posted_at: datetime | None,
+        posted_at_prec: int | None,
+        caption: str | None,
+        exclude_id: str | None = None,
+    ) -> NoReturn:
+        raise RuntimeError("something this row does that nothing anticipated")
+
+    monkeypatch.setattr(db, "find_duplicate", unexpected)
+    con = db.db_init()
+
+    assert sql_column(con.execute("SELECT id FROM posts")) == ["odd"]
+    assert "WARN: dedupe migration skipped row 'odd': RuntimeError(" in capsys.readouterr().out
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+
+
+def test_accounts_backfill_skips_a_username_the_insert_rejects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
+    con: sqlite3.Connection = db.db_init()
+    now: str = datetime.now(UTC).isoformat()
+    con.execute("INSERT INTO posts (id, username, scraped_at) VALUES ('p1', 'fine', ?)", (now,))
+    con.execute("INSERT INTO posts (id, username, scraped_at) VALUES ('p2', 'cursed', ?)", (now,))
+    con.execute(
+        "CREATE TRIGGER no_cursed BEFORE INSERT ON accounts WHEN NEW.username = 'cursed'"
+        " BEGIN SELECT RAISE(ABORT, 'no such account'); END"
+    )
+    con.execute("PRAGMA user_version = 1")  # back to before the accounts backfill
+    con.commit()
+    con.close()
+
+    con = db.db_init()
+
+    assert sql_column(con.execute("SELECT username FROM accounts ORDER BY username")) == ["fine"]
+    assert "WARN: accounts backfill skipped 'cursed': IntegrityError(" in capsys.readouterr().out
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+
+
+def test_migration_drops_the_stories_expiry_column(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
+    con: sqlite3.Connection = db.db_init()
+    con.execute("ALTER TABLE stories ADD COLUMN expires_at TEXT")  # what db_init() created before v3
+    con.execute("CREATE INDEX stories_expires_at ON stories(expires_at)")
+    con.execute("PRAGMA user_version = 2")
+    con.commit()
+    con.close()
+
+    con = db.db_init()
+
+    columns: list[SqlValue] = sql_column(con.execute("SELECT name FROM pragma_table_info('stories')"))
+    assert "expires_at" not in columns
+    assert not sql_column(con.execute("SELECT name FROM sqlite_master WHERE name='stories_expires_at'"))
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+
+
+@pytest.mark.parametrize(
+    ("stored_media", "kept", "dropped"),
+    [(None, "h2.jpg", None), ("h1.jpg", "h1.jpg", "h2.jpg"), ("h2.jpg", "h2.jpg", None)],
+)
+def test_merge_keeps_the_stored_crop_and_drops_a_second_one(
+    con: sqlite3.Connection, stored_media: str | None, kept: str, dropped: str | None
+) -> None:
+    now: str = datetime.now(UTC).isoformat()
+    con.execute(
+        "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash,"
+        " posted_at, updated_at) VALUES ('h1','u','carousel','3 days ago','Real caption',?,?,'h1',?,?)",
+        (stored_media, now, now, now),
+    )
+    con.commit()
+    existing: sqlite3.Row = fetch_row(con.execute("SELECT * FROM posts WHERE id='h1'"))
+    merged: db.StoredPost
+    media_to_drop: str | None
+    merged, media_to_drop = db.merged_fields(existing, _candidate(media_file="h2.jpg"), datetime.now(UTC))
+    assert (merged["media_file"], media_to_drop) == (kept, dropped)
+
+
+def test_write_merged_replaces_a_hash_id_row_with_the_permalink_one(con: sqlite3.Connection) -> None:
+    now: str = datetime.now(UTC).isoformat()
+    con.execute(
+        "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash,"
+        " posted_at, updated_at) VALUES ('h1','u','carousel','3 days ago','Real caption',NULL,?,'h1',?,?)",
+        (now, now, now),
+    )
+    con.commit()
+    existing: sqlite3.Row = fetch_row(con.execute("SELECT * FROM posts WHERE id='h1'"))
+    merged: db.StoredPost
+    _: str | None
+    merged, _ = db.merged_fields(
+        existing, _candidate(id="ABC", url="https://www.instagram.com/p/ABC/"), datetime.now(UTC)
+    )
+    assert merged["id"] == "ABC"  # a permalink id wins over a hash id
+    db.write_merged(con, "h1", merged)
+    con.commit()
+    assert sql_column(con.execute("SELECT id FROM posts")) == ["ABC"]
 
 
 def test_record_run_writes_a_row(con: sqlite3.Connection) -> None:

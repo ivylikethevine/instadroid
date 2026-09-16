@@ -1,3 +1,4 @@
+import random
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -492,3 +493,32 @@ def test_sample_duration_daynight_widens_the_top_of_the_range_during_quiet_hours
 
 def test_sample_duration_handles_hi_equal_to_lo() -> None:
     assert device.sample_duration(2.0, 2.0) == 2.0
+
+
+def test_sample_duration_clips_after_repeated_out_of_range_draws(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "TIME_DISTRIBUTION", "lognormal")
+    draws: list[float] = []
+
+    def far_out(mu: float, sigma: float) -> float:
+        draws.append(mu)
+        return 1000.0
+
+    monkeypatch.setattr(random, "lognormvariate", far_out)
+    assert device.sample_duration(1.0, 3.0) == 3.0 and len(draws) == 8  # resampled 8 times, then clipped
+
+
+def test_bounds_helpers_reject_malformed_bounds() -> None:
+    assert common.bounds_center("[0,0][10,20]") == (5, 10)
+    assert common.bounds_bottom_right("[0,0][100,200]") == (90, 190)
+    assert common.bounds_center("nope") is None and common.bounds_bottom_right(None) is None
+
+
+@pytest.mark.parametrize("text", ["Someday 5", "February 30", "April 31, 2024"])
+def test_parse_posted_at_rejects_impossible_dates(text: str) -> None:
+    assert parsing.parse_posted_at(text, NOW) is None
+
+
+def test_same_post_needs_a_time_on_both_sides() -> None:
+    dated: parsing.PostIdentity = {"username": "u", "caption": "", "posted_at": NOW}
+    undated: parsing.PostIdentity = {"username": "u", "caption": "", "posted_at": None}
+    assert parsing.same_post(dated, undated) is False and parsing.same_post(undated, dated) is False

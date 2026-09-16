@@ -68,10 +68,11 @@ body:
   - type: textarea
     id: diagnose
     attributes:
-      label: "`scripts/diagnose.sh` output"
+      label: "`scraper.py doctor` / `scripts/diagnose.sh` output"
       description: >-
-        Run `./scripts/diagnose.sh` from the repository root on the host, and paste what it prints.
-        It checks host `dmesg` and the device's logcat for the known crash patterns.
+        Run `docker compose exec app python scraper.py doctor` and paste what it prints (the control
+        state, recent runs, the device and the logcat crash patterns). If the device never came up,
+        `./scripts/diagnose.sh` from the repository root on the host adds the host `dmesg` check.
       render: text
     validations:
       required: true

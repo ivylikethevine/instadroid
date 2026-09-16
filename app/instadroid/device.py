@@ -16,7 +16,7 @@ import adbutils
 import uiautomator2 as u2
 from uiautomator2.exceptions import DeviceError as U2DeviceError
 
-from . import config, uidevice, versioning
+from . import config, tune, uidevice, versioning
 from .common import log
 from .versioning import versioned
 
@@ -123,9 +123,11 @@ def device_snapshot(d: uidevice.Device) -> DeviceSnapshot:
 def connect_device() -> uidevice.Device:
     log("connecting to", config.ADB_ADDR)
     adbutils.adb.connect(config.ADB_ADDR, timeout=30)
+    tune.wait_for_boot(config.ADB_ADDR, config.BOOT_WAIT_SECONDS)
     d: uidevice.Device = u2.connect(config.ADB_ADDR)
     d.implicitly_wait(10)
     log("device:", d.info.get("productName"), window_size(d))
+    tune.tune_device(d)  # once per process; a no-op on an already-tuned device
     versioning.activate_profile(instagram_version(d))
     return d
 
@@ -280,16 +282,24 @@ def _redroid_memory(d: uidevice.Device) -> MemoryReading | None:
     kernel reclaims that cache before it ever OOM-kills, so counting it stopped a run at "2756 of
     3072 MiB" while the real usage was ~2.3GiB (2026-09-14)."""
     try:
-        out: str = d.shell(
-            [
-                "cat",
-                "/sys/fs/cgroup/memory.current",
-                "/sys/fs/cgroup/memory.max",
-                "/sys/fs/cgroup/memory.events",
-                "/sys/fs/cgroup/memory.stat",
-            ]
-        ).output
-        lines: list[str] = (out or "").split()
+        return parse_memory(d.shell(["cat", *MEMORY_FILES]).output or "")
+    except Exception:
+        return None
+
+
+MEMORY_FILES = (
+    "/sys/fs/cgroup/memory.current",
+    "/sys/fs/cgroup/memory.max",
+    "/sys/fs/cgroup/memory.events",
+    "/sys/fs/cgroup/memory.stat",
+)
+
+
+def parse_memory(out: str) -> MemoryReading | None:
+    """The reading in `cat MEMORY_FILES` output (the guard's and `scraper.py doctor`'s one accounting),
+    or None when it isn't cgroup v2 output."""
+    try:
+        lines: list[str] = out.split()
         usage: int
         limit: str
         usage, limit = int(lines[0]), lines[1]
@@ -300,7 +310,7 @@ def _redroid_memory(d: uidevice.Device) -> MemoryReading | None:
             "max": None if limit == "max" else int(limit),
             "oom_kill": int(stats.get("oom_kill", 0)),
         }
-    except Exception:
+    except IndexError, ValueError:
         return None
 
 

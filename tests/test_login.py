@@ -286,3 +286,79 @@ def test_an_app_that_dies_right_after_launch_is_not_logged_in() -> None:
     with pytest.raises(device.DeviceNotReady, match="left the foreground right after launch") as exc:
         navigation.ensure_logged_in(d)
     assert device.is_transient(exc.value)  # retried, with a logcat saved, like any device failure
+
+
+def test_login_page_with_too_few_fields_is_not_recognised_as_a_form(fast_offline: Path) -> None:
+    # The hints are there but only one EditText is: the Compose form is still building, or changed shape.
+    half_form: str = hierarchy(
+        node(cls="android.widget.TextView", text="Password", bounds=(0, 700, 1080, 740)),
+        node(cls="android.widget.EditText", bounds=(0, 750, 1080, 850)),
+        node(cls="android.widget.TextView", text="Forgot password?", bounds=(0, 1100, 1080, 1150)),
+    )
+    with pytest.raises(RuntimeError, match="form not recognised"):
+        navigation.ensure_logged_in(FakeDevice({"login": half_form}, "login"))
+    assert (fast_offline / "debug" / "login_hierarchy.xml").exists()
+
+
+def test_login_submits_with_enter_when_no_login_button_is_found() -> None:
+    class EnterSubmits(FakeDevice):
+        def press(self, key: str) -> None:
+            super().press(key)
+            if key == "enter":
+                self._go("home")
+
+    buttonless: str = hierarchy(
+        node(cls="android.widget.TextView", text="Password", bounds=(0, 700, 1080, 740)),
+        node(cls="android.widget.EditText", bounds=(0, 600, 1080, 700)),
+        node(cls="android.widget.EditText", bounds=(0, 750, 1080, 850)),
+    )
+    d: EnterSubmits = EnterSubmits({"login": buttonless, "home": home_screen()}, "login")
+    navigation.ensure_logged_in(d)
+    assert d.typed == [(0, "me"), (1, "hunter2")]
+    assert d.presses == ["enter"] and d.screen == "home"
+
+
+def test_a_failing_pm_path_counts_as_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Flaky(FakeDevice):
+        def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
+            joined: str = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
+            if joined == f"pm path {IG_PKG}":
+                raise OSError("adb shell: closed")
+            return super().shell(cmdargs, timeout)
+
+    monkeypatch.setattr(config, "IG_AUTO_INSTALL", False)
+    with pytest.raises(RuntimeError, match="not installed"):
+        navigation.ensure_logged_in(Flaky({}, "launcher", installed=()))
+
+
+def test_an_install_that_leaves_instagram_missing_is_a_transient_device_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def install_nothing(d: FakeDevice) -> None:
+        pass  # adb reported success, yet the package never shows up
+
+    monkeypatch.setattr(install, "install_instagram", install_nothing)
+    exc: pytest.ExceptionInfo[device.DeviceNotReady]
+    with pytest.raises(device.DeviceNotReady, match="still not present after install") as exc:
+        navigation.ensure_logged_in(FakeDevice({}, "launcher", installed=()))
+    assert device.is_transient(exc.value)
+
+
+# --- install: an APK cache nothing can be installed from ------------------------------------------
+
+
+def test_fetch_raises_transiently_when_apkeep_leaves_nothing_behind(monkeypatch: pytest.MonkeyPatch) -> None:
+    def silent_apkeep(cmd: list[str], **kwargs: Unpack[RunOptions]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", silent_apkeep)
+    with pytest.raises(device.DeviceNotReady, match="apkeep reported success but no"):
+        install._fetch_instagram_apk()
+
+
+def test_fetch_raises_transiently_when_the_cache_holds_only_splits() -> None:
+    xapk_dir: Path = config.APK_CACHE_DIR / "xapk"
+    xapk_dir.mkdir(parents=True)
+    (xapk_dir / "config.arm64_v8a.apk").write_bytes(b"split")  # the base apk is missing
+    with pytest.raises(device.DeviceNotReady, match="no base apk"):
+        install._fetch_instagram_apk()

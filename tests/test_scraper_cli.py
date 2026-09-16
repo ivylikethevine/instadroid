@@ -3,13 +3,16 @@ the installer replaced so nothing reaches a real device."""
 
 import runpy
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
+from typing import Unpack
 
 import pytest
 from devtools import ROOT
 from instadroid import config, db, device, diagnostics, install, navigation, scrape
 
+from tests.deviceflows import RunOptions
 from tests.fakedevice import FakeDevice
 from tests.support import record_run_ago
 
@@ -135,6 +138,23 @@ def test_dump_saves_the_current_screen(
     monkeypatch.setattr(diagnostics, "dump_debug", dump_debug)
     _run(monkeypatch, "dump")
     assert dumps == ["manual"] and "wrote" in capsys.readouterr().out
+
+
+def test_doctor_prints_the_report_over_plain_adb(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[list[str]] = []
+
+    def offline_run(cmd: list[str], **kwargs: Unpack[RunOptions]) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error: device offline")
+
+    monkeypatch.setattr(subprocess, "run", offline_run)  # the report's only route to the device
+    _run(monkeypatch, "doctor")
+    out: str = capsys.readouterr().out
+    assert "\ninstadroid doctor " in out and "no runs recorded yet" in out  # after db_init's migration log
+    assert f"adb can't reach {config.ADB_ADDR} (no answer)" in out
+    assert calls[0] == ["adb", "-s", config.ADB_ADDR, "get-state"]
 
 
 def test_compat_lists_run_pairs(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

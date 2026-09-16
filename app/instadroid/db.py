@@ -511,8 +511,11 @@ def _migrate_rehash(con: sqlite3.Connection) -> None:
     rows: list[sqlite3.Row] = sqlrows.fetch_all(con.execute("SELECT id, username, caption FROM posts"))
     changed: int = 0
     for r in rows:
-        rid: str = sqlrows.must_str(r, "id")
-        username: str = sqlrows.must_str(r, "username")
+        rid: str | None = sqlrows.cell_str(r, "id")
+        username: str | None = sqlrows.cell_str(r, "username")
+        if rid is None or username is None:  # a corrupt legacy row must not block every later start
+            log(f"WARN: rehash migration skipped a row without an id or username: {rid!r}")
+            continue
         caption: str = sqlrows.cell_str(r, "caption") or ""
         key: str = (
             parsing.alt_key(caption) if parsing.is_weak_caption(caption) else parsing.caption_key(caption)

@@ -79,6 +79,39 @@ def test_status_page_flags_an_error_run(tmp_path: Path, monkeypatch: pytest.Monk
     assert "login failed" in body
 
 
+def test_status_page_shows_no_duration_for_unreadable_timestamps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db: Path = tmp_path / "posts.sqlite"
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    con: sqlite3.Connection = sqlite3.connect(db)
+    con.execute(
+        """CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+            new_posts INTEGER, error TEXT, android_release TEXT, android_sdk TEXT, device_product TEXT
+        )"""
+    )
+    con.execute(
+        "INSERT INTO runs (started_at, finished_at, new_posts) VALUES (?,?,?)",
+        ("2026-09-08T08:00:00+00:00", "garbage", 1),  # a hand-edited row
+    )
+    con.commit()
+    con.close()
+
+    body: str = client.get("/status").text
+    assert "finished garbage (—)" in body
+    assert "<td>2026-09-08T08:00:00+00:00</td><td>—</td><td>1</td>" in body
+
+
+def test_status_page_shows_the_manual_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTROL_DIR", str(tmp_path / "control"))
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    assert client.post("/control/lock").status_code == 200
+    body: str = client.get("/status").text
+    assert "Manual lock in place: scheduled runs are held." in body
+    assert "control('DELETE', '/control/lock')\">Unlock</button>" in body
+
+
 def test_short_error_truncates_multiline_stack_traces() -> None:
     assert short_error("RuntimeError('simple')") == "RuntimeError('simple')"
     multiline: str = "LaunchUiAutomationError('boom', 'a huge\nmulti-line\njava stack trace')"

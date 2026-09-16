@@ -106,3 +106,17 @@ def test_prune_debug_age_rule_can_be_disabled(debug_dir: Path, monkeypatch: pyte
 def test_prune_debug_tolerates_a_missing_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "nope")
     diagnostics.prune_debug_dumps()  # must not raise
+
+
+def test_prune_debug_logs_a_file_it_cannot_delete_and_carries_on(
+    debug_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stuck: Path = _touch(debug_dir / "old.png", days_old=10)
+
+    def refuse(self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError(f"{self.name}: owned by another uid")
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    diagnostics.prune_debug_dumps()  # must not raise
+    assert stuck.exists()
+    assert "WARN: could not prune debug file 'old.png': PermissionError(" in capsys.readouterr().out

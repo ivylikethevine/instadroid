@@ -186,6 +186,19 @@ def status_page() -> HTMLResponse:
         latest_html += '<p class="warn">Manual lock in place: scheduled runs are held.</p>'
     if state.scrape_now:
         latest_html += "<p>A scrape-now request is waiting for the poll loop.</p>"
+    # The same three actions as `scraper.py lock`/`unlock`/`scrape-now`, through the /control routes
+    # (feedserver/control.py). A same-origin fetch sends the browser's basic-auth credentials, and the
+    # token from a ?token= page URL is forwarded too, so the buttons work however /status was reached.
+    latest_html += (
+        "<p>"
+        + (
+            "<button onclick=\"control('DELETE', '/control/lock')\">Unlock</button> "
+            if state.locked
+            else "<button onclick=\"control('POST', '/control/lock')\">Lock</button> "
+        )
+        + "<button onclick=\"control('POST', '/control/scrape-now')\">Scrape now</button>"
+        "</p>"
+    )
 
     def _result_cell(r: sqlite3.Row) -> str:
         css: str
@@ -229,7 +242,18 @@ td, th {{ text-align: left; padding: 0.25rem 0.6rem; border-bottom: 1px solid #d
 .badge.warn {{ background: #fff3cd; color: #664d03; }}
 .err {{ color: #842029; }}
 .warn {{ color: #664d03; }}
-</style></head>
+button {{ font: inherit; padding: 0.2rem 0.7rem; }}
+</style>
+<script>
+async function control(method, path) {{
+  const r = await fetch(path + location.search, {{ method, credentials: "same-origin" }});
+  if (r.ok) {{ location.reload(); return; }}
+  const body = await r.text();
+  let detail = body;
+  try {{ detail = JSON.parse(body).detail || body; }} catch (e) {{}}
+  alert(r.status + ": " + (detail || r.statusText));
+}}
+</script></head>
 <body>
 <h1>Instadroid status</h1>
 <p>{device_line}</p>

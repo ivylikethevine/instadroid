@@ -10,6 +10,8 @@ profiles under igprofiles/ (see docs/PROFILES.md).
     device       uiautomator2 connection, launch, timing/gestures, memory housekeeping
     install      apkeep fetch + adb install
     diagnostics  debug dumps and failure logcats
+    doctor       `scraper.py doctor`: one report of runs, control state, device and logcat signatures
+    tune         the boot wait and device tuning on the first connect after a start
     parsing      pure parsing of hierarchy dumps (what the replay tests exercise)
     db           schema, numbered migrations, runs, accounts, duplicate merging
     backup       consistent copies of the database

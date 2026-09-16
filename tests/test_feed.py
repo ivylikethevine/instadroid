@@ -400,6 +400,36 @@ def test_feed_image_without_a_file_on_disk_has_no_dimensions(
     assert '<media:thumbnail url="http://feed.test/media/ABC.jpg"/>' in body
 
 
+def test_feed_image_that_is_not_an_image_has_no_dimensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    (tmp_path / "media").mkdir(exist_ok=True)
+    (tmp_path / "media" / "ABC.jpg").write_bytes(b"not a jpeg at all")  # truncated by a crash mid-write
+    body: str = (
+        client.get("/instagram.xml").text.replace("&quot;", '"').replace("&gt;", ">").replace("&lt;", "<")
+    )
+    assert '<img src="http://feed.test/media/ABC.jpg" alt="" />' in body
+    assert '<media:thumbnail url="http://feed.test/media/ABC.jpg"/>' in body
+
+
+POSTED_AT_ONLY = """
+CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,
+    media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT);
+INSERT INTO posts VALUES ('h3', 'someone', 'photo', NULL, 'No relative date', NULL,
+    '2026-09-08T08:00:00+00:00', 'h3', NULL, NULL, '2026-09-07T09:30:00+00:00');
+"""
+
+
+def test_feed_entry_dates_a_post_from_posted_at_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client: TestClient = make_app(tmp_path, monkeypatch, seed=POSTED_AT_ONLY)
+    body: str = client.get("/instagram.xml").text.replace("&lt;", "<").replace("&gt;", ">")
+    assert "<small>Posted 2026-09-07 09:30 UTC · saved 2026-09-08 08:00 UTC · " in body
+    assert "<published>2026-09-07T09:30:00+00:00</published>" in body
+
+
 def test_video_titles_get_a_play_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
     body: str = client.get("/instagram.xml").text

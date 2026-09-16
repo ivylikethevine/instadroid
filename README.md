@@ -106,18 +106,19 @@ follow before running redroid on a host you haven't personally tested it on.
 
 ```bash
 cp .env.example .env                 # fill in IG_USERNAME / IG_PASSWORD (or IG_PASSWORD_FILE)
-docker compose pull redroid
-docker compose up -d redroid
-adb connect 127.0.0.1:5555
-adb -s 127.0.0.1:5555 wait-for-device shell 'while ! pm list packages >/dev/null 2>&1; do sleep 2; done'
-./scripts/tune-android.sh 127.0.0.1:5555     # animations off, sync/location off, unused Google/AOSP
-                                              # apps disabled (cuts idle memory), + DEVICE_TIMEZONE
-                                              # from .env if set (see "Staying under the radar")
-
-docker compose up -d --build
+docker compose pull                  # a bad image tag fails here, cheaply
+docker compose up -d --build         # redroid boots (1-9 min; `docker ps` shows it healthy once it has)
 docker compose exec app python scraper.py login      # types the .env credentials into the login form
 docker compose exec app python scraper.py once        # first scrape, watch the output
 ```
+
+On its first connect after each app start (a restart of redroid alone doesn't count; run
+`scripts/tune-android.sh` then, or restart the app) the app waits for Android to finish booting and
+tunes the device: animations, sync and location off, the screen never sleeping, `DEVICE_TIMEZONE` from `.env`
+if set (see "Staying under the radar"), and the unused Google/AOSP apps in
+`app/instadroid/tune_packages.txt` disabled so they never sit resident (cuts idle memory). It's
+idempotent, one adb round trip; `TUNE_ON_CONNECT=0` skips it, and `scripts/tune-android.sh` does the
+same by hand, e.g. after a `/data/system` reset.
 
 The password doesn't have to live in `.env`: `IG_PASSWORD_FILE` (and `IG_USERNAME_FILE`) read the value
 from a file instead, such as a Docker secret mounted at `/run/secrets/` — `docker-compose.yml` has a
@@ -156,8 +157,8 @@ docker compose exec app python scraper.py install 444.0.0.46.85
 The saved login lives in `/data` and survives the replace, but an older Instagram may not accept
 data written by a newer one, so a downgrade can still need a fresh login.
 
-`tune-android.sh` disables a curated list of unused system apps to cut idle memory. One package must
-never be added to that list: `com.android.packageinstaller`. Disabling it crash-loops
+The device tuning disables a curated list of unused system apps (`app/instadroid/tune_packages.txt`)
+to cut idle memory. One package must never be added to that list: `com.android.packageinstaller`. Disabling it crash-loops
 `system_server` on every later cold boot; [docs/INCIDENTS.md](docs/INCIDENTS.md) has the measurement,
 the log line, and the recovery.
 
@@ -321,8 +322,8 @@ device-failure retries, the selector-drift canary and memory management.
   `DAYNIGHT_QUIET_START`..`DAYNIGHT_QUIET_END` local hours (default 0–6). `daynight` is a cheap
   extra layer: a metronome that's merely slow is still a metronome, whereas real usage thins out
   overnight.
-- `DEVICE_TIMEZONE` (e.g. `America/Los_Angeles`) is applied to the device by `tune-android.sh`
-  (takes effect immediately, no reboot) and defines "local" for `daynight`. It's empty by default
+- `DEVICE_TIMEZONE` (e.g. `America/Los_Angeles`) is applied to the device by the first-connect tuning
+  (or `tune-android.sh`; takes effect immediately, no reboot) and defines "local" for `daynight`. It's empty by default
   on purpose: a timezone that doesn't match the network egress may be a worse signal than the
   device's default GMT.
 - `MAX_SCROLLS` 25 is roughly 10–15 posts per run on this feed layout (each new post costs a
@@ -343,7 +344,7 @@ covers duplicate merging, `MEDIA_MAX_MB`, debug-dump retention, and snapshotting
 
 ## Building and testing
 
-All Python code is 100% type annotated and at least 90% covered by tests, and CI enforces both.
+All Python code is 100% type annotated and at least 95% covered by tests, and CI enforces both.
 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) has the development setup, the checks to run before a
 pull request (`scripts/check.sh`, the same commands CI runs) and what CI runs; [docs/TESTING.md](docs/TESTING.md) has the test tiers, fixtures and
 coverage. The device-driving code is tested against a scripted fake device, so the suite needs no

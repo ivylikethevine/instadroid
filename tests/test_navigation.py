@@ -15,6 +15,7 @@ from instadroid import (
     parsing,
     scrape,
 )
+from lxml import etree
 from shared import sqlrows
 from shared.sqlrows import SqlValue
 
@@ -27,9 +28,10 @@ from tests.deviceflows import (
     feed_device_with_following,
     following_screen,
     home_screen,
+    profile_screen,
     seed_post,
 )
-from tests.fakedevice import FakeDevice, Node, hierarchy, node
+from tests.fakedevice import FakeDevice, FakeSelector, Node, hierarchy, node
 from tests.support import sql_column
 
 pytestmark = pytest.mark.usefixtures("fast_offline")
@@ -274,3 +276,189 @@ def test_scrape_once_does_not_filter_before_the_first_successful_refresh(
     assert stats["metrics"].get("filtered_posts") == 0
     posts: set[SqlValue] = set(sql_column(con.execute("SELECT username FROM posts")))
     assert posts == {"someone_nice", "other_user"}  # nothing dropped
+
+
+# --- the retry and give-up branches -------------------------------------------------------------
+
+
+def test_on_target_feed_is_false_when_no_feed_is_showing_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    d: FakeDevice = FakeDevice({"blank": hierarchy()}, "blank")
+    for mode in ("home", "chrono"):
+        monkeypatch.setattr(config, "FEED_MODE", mode)
+        assert navigation.on_target_feed(d) is False
+
+
+def test_open_following_feed_retries_when_the_following_entry_leads_nowhere(
+    fast_offline: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The menu's Following entry drops back onto the plain Home feed (no Following title) every time:
+    # each attempt gives the screen its cold-start grace, logs, and the run finally gives up.
+    menu: str = hierarchy(
+        node(cls="android.widget.TextView", text="Following", bounds=(0, 1800, 1080, 1900), goto="home")
+    )
+    d: FakeDevice = FakeDevice({"home": home_screen(), "menu": menu}, "home", back={"menu": "home"})
+    assert navigation.open_following_feed(d) is False
+    assert capsys.readouterr().out.count("clicked Following but title not found") == 4
+    assert (fast_offline / "debug" / "feed_switch_hierarchy.xml").exists()
+
+
+def test_open_following_feed_retries_after_a_switcher_tap_that_fails_mid_scroll(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class Scrolling(FakeDevice):
+        """The header scrolls away between the switcher's exists() and its click(), once."""
+
+        failed: bool = False
+
+        def tap(self, n: etree._Element) -> None:
+            if n.get("content-desc") == "Instagram Home Feed" and not self.failed:
+                self.failed = True
+                raise LookupError("node gone")
+            super().tap(n)
+
+    d: Scrolling = Scrolling(
+        {"home": home_screen(), "menu": MENU, "following": following_screen()},
+        "home",
+        back={"menu": "home", "following": "home"},
+    )
+    assert navigation.open_following_feed(d) is True
+    assert "feed switcher click failed" in capsys.readouterr().out
+    assert d.history[-2:] == ["menu", "following"]
+
+
+class FlickeringTabBar(FakeDevice):
+    """A Home feed whose bottom tab bar is mid-transition: on_home_feed()'s own check (the id without
+    a `$` anchor) finds nothing for the first `hidden` looks, while open_home_feed()'s tab selector
+    still sees the tab to tap -- the only way its tap-and-wait branch is reached, since both look for
+    the same node. `failing_taps` makes that many Home-tab taps raise, as a node that scrolled away."""
+
+    def __init__(self, hidden: int, failing_taps: int = 0) -> None:
+        super().__init__({"home": home_feed_screen()}, "home")
+        self.hidden: int = hidden
+        self.failing_taps: int = failing_taps
+
+    def __call__(self, **kwargs: str | list[str]) -> FakeSelector:
+        if kwargs.get("resourceIdMatches") == ".*:id/feed_tab" and self.hidden > 0:
+            self.hidden -= 1
+            return FakeSelector(self, {"resourceIdMatches": "never-matches"})
+        return super().__call__(**kwargs)
+
+    def tap(self, n: etree._Element) -> None:
+        if (n.get("resource-id") or "").endswith("/feed_tab") and self.failing_taps > 0:
+            self.failing_taps -= 1
+            raise LookupError("tab bar gone")
+        super().tap(n)
+
+
+def test_open_home_feed_taps_the_home_tab_and_waits_for_the_feed(capsys: pytest.CaptureFixture[str]) -> None:
+    # Hidden for the first look and the six post-tap looks of attempt 0; attempt 1 then finds it.
+    d: FlickeringTabBar = FlickeringTabBar(hidden=7)
+    assert navigation.open_home_feed(d) is True
+    assert "tapped Home tab but feed not found" in capsys.readouterr().out
+    assert len(d.taps) == 0 and d.presses == []  # a selector tap, never a back press
+    d = FlickeringTabBar(hidden=3)  # the feed builds during the post-tap wait: done within attempt 0
+    assert navigation.open_home_feed(d) is True
+    assert "tapped Home tab but feed not found" not in capsys.readouterr().out
+
+
+def test_open_home_feed_retries_after_a_home_tab_tap_that_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    d: FlickeringTabBar = FlickeringTabBar(hidden=1, failing_taps=1)
+    assert navigation.open_home_feed(d) is True
+    assert "home tab click failed" in capsys.readouterr().out
+    assert d.failing_taps == 0
+
+
+def test_open_home_feed_gives_up_with_a_dump_when_the_feed_never_appears(fast_offline: Path) -> None:
+    d: FlickeringTabBar = FlickeringTabBar(hidden=100)
+    assert navigation.open_home_feed(d) is False
+    assert (fast_offline / "debug" / "home_feed_open_hierarchy.xml").exists()
+
+
+def test_open_own_following_list_backs_out_of_a_screen_without_the_tab_bar(fast_offline: Path) -> None:
+    d: FakeDevice = feed_device_with_following([["alice"]], start="menu")  # the switcher menu: no tabs
+    assert navigation.open_own_following_list(d) is True
+    assert d.presses[0] == "back"
+    assert d.history[-3:] == ["home", "profile", "following_list"]
+
+
+def test_open_own_following_list_gives_up_when_the_profile_has_no_following_link(
+    fast_offline: Path,
+) -> None:
+    d: FakeDevice = feed_device_with_following([["alice"]], start="following")
+    d.screens["profile"] = hierarchy(ACTION_BAR)  # profile loaded without its counters
+    assert navigation.open_own_following_list(d) is False
+    assert (fast_offline / "debug" / "following_list_profile0_hierarchy.xml").exists()
+    assert (fast_offline / "debug" / "following_list_open_hierarchy.xml").exists()
+    assert d.history.count("profile") == 4  # tried every attempt, backing out of the profile each time
+
+
+def test_open_own_following_list_gives_up_when_the_link_tap_opens_nothing(
+    fast_offline: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d: FakeDevice = feed_device_with_following([["alice"]], start="following")
+    d.screens["profile"] = profile_screen(following_goto="")  # the tap is swallowed
+    assert navigation.open_own_following_list(d) is False
+    assert "list screen not detected after tap" in capsys.readouterr().out
+    assert "following_list" not in d.history
+
+
+def test_open_own_following_list_retries_after_a_profile_tab_tap_that_fails(
+    fast_offline: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Shifting(FakeDevice):
+        failed: bool = False
+
+        def tap(self, n: etree._Element) -> None:
+            if n.get("content-desc") == "Profile" and not self.failed:
+                self.failed = True
+                raise LookupError("node gone")
+            super().tap(n)
+
+    base: FakeDevice = feed_device_with_following([["alice"]], start="following")
+    d: Shifting = Shifting(base.screens, "following", back=base.back, scroll=base.scroll)
+    assert navigation.open_own_following_list(d) is True
+    assert "following-list navigation click failed" in capsys.readouterr().out
+    assert d.screen == "following_list"
+
+
+def test_refresh_following_list_leaves_the_stored_list_alone_when_navigation_fails(
+    fast_offline: Path,
+) -> None:
+    con: sqlite3.Connection = db.db_init()
+    con.execute("INSERT INTO following (username, updated_at) VALUES ('good_data', '2020-01-01')")
+    con.commit()
+    d: FakeDevice = feed_device_with_following([["alice"]], start="following")
+    d.screens["profile"] = hierarchy(ACTION_BAR)  # never reaches the list
+
+    navigation.refresh_following_list(d, con)
+
+    assert set(sql_column(con.execute("SELECT username FROM following"))) == {"good_data"}
+    assert "following_list" not in d.history
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [node(cls="android.widget.TextView", text="Write a message…", bounds=(0, 2240, 1080, 2330)),
+     node(desc="New group", bounds=(0, 2240, 1080, 2330))],
+)  # fmt: skip
+def test_close_sheets_recognises_a_share_sheet_by_its_marker_text_or_description(marker: Node) -> None:
+    d: FakeDevice = FakeDevice(
+        {"sheet": following_screen(sheet=marker), "following": following_screen()},
+        "sheet",
+        back={"sheet": "following"},
+    )
+    assert navigation.close_sheets(d) is True
+    assert d.presses == ["back"] and d.screen == "following"
+
+
+def test_back_to_feed_backs_out_of_a_profile_opened_by_a_tap() -> None:
+    screens: dict[str, str] = {
+        "profile": hierarchy(node(text="Edit profile")),
+        "following": following_screen(),
+    }
+    d: FakeDevice = FakeDevice(screens, "profile", back={"profile": "following"})
+    assert navigation.back_to_feed(d) is True
+    assert d.presses == ["back"] and d.screen == "following"
+    d = FakeDevice(screens, "profile", back={"profile": "following"})
+    assert navigation.back_to_feed(d, tries=1) is True  # the last back is trusted without a re-check
+    assert d.presses == ["back"]

@@ -1,6 +1,7 @@
 """Capturing a post or story: permalinks through the share sheet, expanded captions, media formats, story dedupe."""
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from PIL import Image, ImageDraw, ImageFile, ImageOps
 from shared import sqlrows
 
 from tests.deviceflows import CAPTION, TOP_URL, feed_device, following_screen, top_card_id
-from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, Node, node
+from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, FakeSelector, Node, Out, hierarchy, node
 
 pytestmark = pytest.mark.usefixtures("fast_offline")
 
@@ -37,11 +38,58 @@ def test_fetch_permalink_reports_a_clipboard_that_never_updates() -> None:
     assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
 
 
+def _dumpsys(d: FakeDevice, monkeypatch: pytest.MonkeyPatch, clip: str) -> None:
+    """Make `d` answer `dumpsys clipboard` with `clip`, everything else as before."""
+    real: Callable[[str | list[str], float], Out] = d.shell
+
+    def shell(cmdargs: str | list[str], timeout: float = 60) -> Out:
+        joined: str = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
+        return Out(clip) if joined == "dumpsys clipboard" else real(cmdargs, timeout)
+
+    monkeypatch.setattr(d, "shell", shell)
+
+
+def test_fetch_permalink_falls_back_to_dumpsys_clipboard(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """uiautomator2's read is empty (the Android 10+ background-clipboard restriction), but the root
+    `dumpsys clipboard` dump shows the link."""
+    d: FakeDevice = feed_device(top_share="share_noclip", start="following")
+    _dumpsys(
+        d,
+        monkeypatch,
+        '  mPrimaryClip=ClipData { text/plain "" {T:https://www.instagram.com/p/DUMP1/?igsh=x} }',
+    )
+    assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/p/DUMP1/", None)
+    assert "permalink read via dumpsys clipboard" in capsys.readouterr().out
+
+
+def test_fetch_permalink_notes_a_redacted_dumpsys_clip_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d: FakeDevice = feed_device(top_share="share_noclip", start="following")
+    _dumpsys(d, monkeypatch, "  mPrimaryClip=ClipData { text/plain {T:<redacted>} }")
+    capture.reset_last_url(d)
+    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
+    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
+    assert capsys.readouterr().out.count("shows a clip but no permalink") == 1
+
+
 def test_fetch_permalink_ignores_the_previous_posts_link_left_in_the_clipboard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(capture, "_last_url", TOP_URL)
+    monkeypatch.setattr(capture, "_last_code", capture.permalink_code(TOP_URL))
     d: FakeDevice = feed_device(start="following")
+    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
+
+
+def test_the_same_link_read_raw_and_trimmed_is_still_the_same_link() -> None:
+    """Copy link yields TOP_URL (tracking parameters, trailing slash); the previous run left the trimmed
+    form on the clipboard. They share a shortcode, so the new read is stale, not a fresh permalink."""
+    d: FakeDevice = feed_device(start="following")
+    d.clipboard = "https://www.instagram.com/reel/TOP123/"
+    capture.reset_last_url(d)
+    assert capture._last_code == "TOP123"
     assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
 
 
@@ -182,3 +230,176 @@ def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file(
     assert header is not None
     assert capture.capture_avatar(d, header, "old_user") == "avatars/old_user.webp"
     assert sorted(f.name for f in avatars.iterdir()) == ["old_user.webp"]
+
+
+# --- a device that misbehaves mid-capture ---------------------------------------------------------
+
+
+def _no_clipboard(d: FakeDevice) -> str | None:
+    raise RuntimeError("clipboard service unavailable")
+
+
+def _drop_clipboard(d: FakeDevice, value: str | None) -> None:
+    pass  # the Copy link tap still writes; only the read is broken
+
+
+def test_a_clipboard_that_cannot_be_read_is_treated_as_empty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d: FakeDevice = feed_device(start="following")
+    monkeypatch.setattr(FakeDevice, "clipboard", property(_no_clipboard, _drop_clipboard), raising=False)
+    monkeypatch.setattr(capture, "_last_code", "LEFTOVER")
+    capture.reset_last_url(d)
+    assert capture._last_code == ""  # nothing to compare against: the first link read counts as fresh
+    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
+    assert "clipboard read failed" in capsys.readouterr().out
+    assert d.screen == "following"
+
+
+def test_fetch_permalink_survives_a_dumpsys_clipboard_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(capture, "_dumpsys_failed", False)  # run state, normally reset by reset_last_url()
+    d: FakeDevice = feed_device(top_share="share_noclip", start="following")
+    real: Callable[[str | list[str], float], Out] = d.shell
+
+    def shell(cmdargs: str | list[str], timeout: float = 60) -> Out:
+        joined: str = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
+        if joined == "dumpsys clipboard":
+            raise RuntimeError("dumpsys: service not found")
+        return real(cmdargs, timeout)
+
+    monkeypatch.setattr(d, "shell", shell)
+    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
+    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
+    assert capsys.readouterr().out.count("dumpsys clipboard failed") == 1  # not retried this run
+
+
+class _VanishingSelector(FakeSelector):
+    @property
+    def info(self) -> dict[str, dict[str, int]]:
+        raise LookupError("node vanished")
+
+
+class _VanishingSheetDevice(FakeDevice):
+    """The share sheet opens, but its Copy link node is gone by the time its bounds are read."""
+
+    def __call__(self, **kwargs: str | list[str]) -> FakeSelector:
+        if kwargs.get("description") == "Copy link":
+            return _VanishingSelector(self, kwargs)
+        return super().__call__(**kwargs)
+
+
+def test_fetch_permalink_reports_a_sheet_whose_copy_link_vanishes(capsys: pytest.CaptureFixture[str]) -> None:
+    base: FakeDevice = feed_device(start="following")
+    d: _VanishingSheetDevice = _VanishingSheetDevice(
+        base.screens, "following", back=base.back, scroll=base.scroll, hswipe=base.hswipe
+    )
+    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "sheet")
+    assert d.screen == "following"  # the sheet was closed and the feed recovered
+    assert "Copy link vanished" in capsys.readouterr().out
+
+
+def _truncated_post(d: FakeDevice) -> parsing.Post:
+    p: parsing.Post = parsing.parse_hierarchy(d.dump_hierarchy())[0]
+    assert p["caption_truncated"] is True
+    return p
+
+
+def test_expand_caption_gives_up_without_a_distinctive_prefix_or_a_usable_point() -> None:
+    d: FakeDevice = FakeDevice(
+        {"following": following_screen(_caption_card("someone_nice Short start… more", goto="expanded"))},
+        "following",
+    )
+    p: parsing.Post = _truncated_post(d)
+    p["caption"] = "…"  # nothing left to recognise the re-read caption node by
+    assert capture.expand_caption(d, p) == "…"
+    p = _truncated_post(d)
+    p["caption_bounds"] = "not bounds"
+    assert capture.expand_caption(d, p) == "Short start…"
+    assert d.taps == []  # neither case risked a tap
+
+
+def test_expand_caption_falls_back_when_the_tap_itself_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    class NoTapDevice(FakeDevice):
+        def click(self, x: int, y: int) -> None:
+            raise RuntimeError("uiautomator jsonrpc unreachable")
+
+    d: NoTapDevice = NoTapDevice(
+        {"following": following_screen(_caption_card("someone_nice Short start… more"))}, "following"
+    )
+    assert capture.expand_caption(d, _truncated_post(d)) == "Short start…"
+    assert "caption expand tap failed" in capsys.readouterr().out
+
+
+def test_expand_caption_recovers_the_feed_when_the_tap_opens_another_screen(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    d: FakeDevice = FakeDevice(
+        {
+            "following": following_screen(_caption_card("someone_nice Short start… more", goto="profile")),
+            "profile": hierarchy(
+                node(cls="android.widget.TextView", text="someone_nice", bounds=(0, 0, 1080, 200))
+            ),
+        },
+        "following",
+        back={"profile": "following"},
+    )
+    assert capture.expand_caption(d, _truncated_post(d)) == "Short start…"
+    assert d.screen == "following" and "recovering" in capsys.readouterr().out
+
+
+def test_crop_media_skips_unparseable_or_mostly_off_screen_bounds(capsys: pytest.CaptureFixture[str]) -> None:
+    d: FakeDevice = feed_device(start="following")
+    assert capture.crop_media(d, None, "x") is None
+    assert capture.crop_media(d, "[0,2300][1080,2900]", "x") is None  # 40 of 600px on screen
+    assert capture.crop_media(d, "[0,0][1080,150]", "x") is None  # too short to be a post image
+    assert capsys.readouterr().out.count("mostly off-screen") == 2
+    assert not (config.MEDIA_DIR / "x.webp").exists()
+
+
+def _carousel_card(slide: int, media_bounds: tuple[int, int, int, int]) -> list[Node]:
+    return [
+        node(
+            "row_feed_profile_header",
+            desc="other_user posted a carousel 21 hours ago",
+            bounds=(0, 300, 1080, 437),
+        ),
+        node(
+            "carousel_media_group",
+            bounds=media_bounds,
+            children=[
+                node(
+                    "carousel_image",
+                    desc=f"Photo {slide} of 3 by Other User, 317 likes, 10 comments",
+                    bounds=media_bounds,
+                )
+            ],
+        ),
+        node("row_feed_button_share", bounds=(390, 2000, 453, 2121)),
+        node(cls=CAPTION, text="other_user Second caption", bounds=(32, 2130, 1080, 2200)),
+    ]
+
+
+def test_capture_carousel_stops_at_a_slide_that_cannot_be_cropped() -> None:
+    d: FakeDevice = FakeDevice(
+        {
+            "following": following_screen(_carousel_card(1, (0, 437, 1080, 1150))),
+            "slide2": following_screen(_carousel_card(2, (0, 2200, 1080, 2913))),  # scrolled nearly off
+            "slide3": following_screen(_carousel_card(3, (0, 437, 1080, 1150))),
+        },
+        "following",
+        hswipe={"following": "slide2", "slide2": "slide3"},
+    )
+    p: parsing.Post = parsing.parse_hierarchy(d.dump_hierarchy())[0]
+    assert capture.capture_carousel(d, p, "OTHER1") == []
+    assert len(d.swipes) == 1  # never swiped on to slide 3
+
+
+def test_capture_avatar_refuses_an_unsafe_username_or_bad_bounds() -> None:
+    d: FakeDevice = feed_device(start="older")
+    header: str | None = parsing.parse_hierarchy(d.screens["older"])[0]["header_bounds"]
+    assert header is not None
+    assert capture.capture_avatar(d, header, "../etc/passwd") is None
+    assert capture.capture_avatar(d, "garbage", "old_user") is None
+    assert not (config.MEDIA_DIR / "avatars").exists()

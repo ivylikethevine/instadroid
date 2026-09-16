@@ -164,7 +164,7 @@ def dump_debug(d: uidevice.Device, name: str, xml: str | None = None) -> None:
         image: Image.Image = d.screenshot()
         _write_pair(config.DEBUG_DIR, name, xml, image)
         prune_debug_dumps()
-    except OSError as e:
+    except Exception as e:  # a device round trip can fail too (uiautomator2 RPC/HTTP), same verdict
         log(f"WARN: could not write debug dump {name!r}:", repr(e))
         return
     capture_screen(d, screen_of_dump(name) or name, xml, failure=True, image=image)

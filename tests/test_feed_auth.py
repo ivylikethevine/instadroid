@@ -38,6 +38,20 @@ def no_token_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FEED_TOKEN_FILE", raising=False)
 
 
+def test_serving_beyond_localhost_without_a_token_is_warned_about(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("FEED_HOST", "0.0.0.0")
+    with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+        make_app(tmp_path, monkeypatch)
+    assert "FEED_HOST=0.0.0.0 without FEED_TOKEN: every feed and media file is readable" in caplog.text
+    caplog.clear()
+    monkeypatch.setenv("FEED_TOKEN", TOKEN)
+    with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+        make_app(tmp_path, monkeypatch, seed="")  # the database is already seeded
+    assert "without FEED_TOKEN" not in caplog.text
+
+
 def test_without_a_token_everything_stays_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
     for path in ("/instagram.xml", "/stories.xml", "/opml", "/users", "/status", "/health"):

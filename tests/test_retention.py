@@ -205,3 +205,31 @@ def test_size_cap_stops_when_no_posts_remain(
     retention.prune_old_posts(con)  # must terminate rather than spin
 
     assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 0
+
+
+def test_size_cap_counts_a_media_file_that_is_already_gone_as_empty(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media: Path = config.MEDIA_DIR
+    insert_post(con, media, "gone", days_old=3, media_file="gone.jpg")
+    (media / "gone.jpg").unlink()  # e.g. removed by hand between runs
+    insert_post(con, media, "big", days_old=1, media_file="big.jpg")
+    (media / "big.jpg").write_bytes(b"x" * 500_000)
+    baseline: float = retention._media_and_db_size_mb(con)
+    monkeypatch.setattr(config, "MEDIA_MAX_MB", baseline - 0.3)
+
+    retention.prune_old_posts(con)  # "gone" frees nothing, so "big" has to go too
+
+    assert sql_column(con.execute("SELECT id FROM posts")) == []
+
+
+def test_size_cap_leaves_everything_alone_while_under_budget(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media: Path = config.MEDIA_DIR
+    monkeypatch.setattr(config, "MEDIA_MAX_MB", 10_000)
+    insert_post(con, media, "a", days_old=1, media_file="a.jpg")
+
+    retention.prune_old_posts(con)
+
+    assert sql_column(con.execute("SELECT id FROM posts")) == ["a"] and (media / "a.jpg").exists()

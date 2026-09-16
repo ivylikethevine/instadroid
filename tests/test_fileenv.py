@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from instadroid import config
 from shared.fileenv import env_secret
 
 
@@ -31,3 +32,15 @@ def test_both_set_is_an_error(tmp_path: Path) -> None:
 def test_an_unreadable_file_is_an_error_not_an_empty_secret(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="IG_PASSWORD_FILE=.*can't be read"):
         env_secret("IG_PASSWORD", {"IG_PASSWORD_FILE": str(tmp_path / "missing")})
+
+
+def test_a_choice_setting_falls_back_to_its_default_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("IG_TEST_CHOICE", " Chrono ")
+    assert config._choice("IG_TEST_CHOICE", "following", ("following", "chrono")) == "chrono"
+    monkeypatch.setenv("IG_TEST_CHOICE", "sideways")
+    assert config._choice("IG_TEST_CHOICE", "following", ("following", "chrono")) == "following"
+    assert "WARN: unknown IG_TEST_CHOICE 'sideways'; falling back to following" in capsys.readouterr().out
+    monkeypatch.delenv("IG_TEST_CHOICE")
+    assert config._choice("IG_TEST_CHOICE", "following", ("following", "chrono")) == "following"

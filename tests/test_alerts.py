@@ -144,3 +144,15 @@ def test_open_alerts_lead_the_feed_and_show_on_status(
     assert (
         "Alert since 2026-09-14T12:00: finish it in scrcpy: &lt;challenge&gt;" in client.get("/status").text
     )
+
+
+def test_an_open_alert_whose_message_changes_is_updated_quietly(
+    con: sqlite3.Connection, sent: list[urllib.request.Request]
+) -> None:
+    _run(con, 2, CHALLENGE)
+    alerts.update(con, NOW)
+    _run(con, 1, "RuntimeError(\"Instagram wants a human: 'Enter the code' screen\")")  # a later challenge
+    assert alerts.update(con, NOW) == []
+    assert len(sent) == 1  # the same alert is still open: no second notification
+    messages: list[SqlValue] = sql_column(con.execute("SELECT message FROM alerts"))
+    assert len(messages) == 1 and isinstance(messages[0], str) and "Enter the code" in messages[0]

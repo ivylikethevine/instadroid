@@ -5,6 +5,8 @@
     profiles                 list the Instagram version profiles, what each covers and has validated
     install [VERSION|latest] install an Instagram build (default: igprofiles.DEFAULT_BUILD)
     dump                     save the current screen's hierarchy + screenshot to DEBUG_DIR
+    doctor                   one report: control state, recent runs, device over plain adb, logcat
+                             crash signatures with their fixes (never drives the device)
     compat                   redroid image / Instagram build pairs this database has run
     backup                   copy the database to BACKUP_DIR now
     lock / unlock            hold scheduled runs while driving the device by hand, then release
@@ -27,6 +29,7 @@ from instadroid import (
     db,
     device,
     diagnostics,
+    doctor,
     install,
     navigation,
     scrape,
@@ -73,6 +76,8 @@ if __name__ == "__main__":
             d = device.connect_device()
             diagnostics.dump_debug(d, "manual")
             print("wrote", config.DEBUG_DIR)
+        case ["doctor", *_]:
+            print(doctor.report(db.db_init()), end="")
         case ["compat", *_]:
             pairs = db.version_pairs(db.db_init())
             print("redroid image | Instagram | profile | runs (ok, clean) | new posts | last run")

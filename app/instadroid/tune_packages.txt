@@ -1,0 +1,56 @@
+# Packages the device tuning disables (`pm disable-user --user 0`): apps the scraper never touches that
+# would otherwise sit resident in this container, where lmkd never reclaims anything (CLAUDE.md, "Memory";
+# docs/INCIDENTS.md, "Reducing idle memory"). One home for two readers: instadroid/tune.py (on the app's
+# first connect) and scripts/tune-android.sh (by hand). One per line; blank and # lines are skipped.
+#
+# Never add com.android.packageinstaller: PackageManagerService needs exactly one enabled installer and
+# crash-loops system_server on the next cold boot without it (docs/INCIDENTS.md). Left enabled on purpose:
+# com.android.settings, com.android.provision / com.android.managedprovisioning (setup flows that may have
+# to run again after a /data/system reset), and anything telephony/Bluetooth/secure-element-related.
+# Test any change here against a full cold restart, not just the booted instance you disabled it on.
+
+# Google apps
+com.android.vending
+com.android.chrome
+com.google.android.youtube
+com.google.android.apps.maps
+com.google.android.gm
+com.google.android.apps.photos
+com.google.android.apps.messaging
+com.google.android.googlequicksearchbox
+com.google.android.apps.wellbeing
+com.google.android.calendar
+com.google.android.videos
+com.google.android.apps.docs
+com.google.android.music
+com.google.android.apps.youtube.music
+com.google.android.apps.podcasts
+com.google.android.apps.nbu.files
+com.google.android.tts
+com.google.android.apps.safetyhub
+com.google.android.apps.tachyon
+com.google.android.contacts
+com.google.android.dialer
+com.google.android.apps.wallpaper
+com.google.android.apps.pixel.weather
+com.google.android.projection.gearhead
+com.google.android.apps.walletnfcrel
+
+# AOSP apps in the cached tier
+com.android.documentsui
+com.android.printspooler
+com.android.bips
+com.android.printservice.recommendation
+com.android.gallery3d
+com.android.camera2
+com.android.cameraextensions
+com.android.deskclock
+com.android.calendar
+com.android.providers.calendar
+com.android.contacts
+com.android.quicksearchbox
+com.android.dynsystem
+com.android.statementservice
+com.android.onetimeinitializer
+com.android.localtransport
+com.android.traceur

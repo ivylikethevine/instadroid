@@ -123,7 +123,8 @@ Before a risky recovery step, stop redroid and snapshot `/data` with
 cgroup limit, so `lmkd` never trips, and cached apps and a closed-but-running Instagram stay
 resident. So it's done explicitly:
 
-- `scripts/tune-android.sh` `pm disable-user`s 16 unused AOSP/Google apps. Deliberately left enabled:
+- The first-connect tuning (`app/instadroid/tune.py`, the list in `tune_packages.txt`, and
+  `scripts/tune-android.sh` by hand) `pm disable-user`s the unused AOSP/Google apps. Deliberately left enabled:
   `com.android.settings`, `com.android.provision`/`com.android.managedprovisioning` (may need to run
   after a `/data/system` reset), and anything telephony/Bluetooth/secure-element-related.
 - `scrape_once()` (`app/instadroid/scrape.py`) force-stops Instagram and the cached apps at the start

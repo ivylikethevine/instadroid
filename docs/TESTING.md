@@ -32,7 +32,7 @@ navigation, share sheet, carousels, stories, the scrape loop) runs against `test
 feed server against FastAPI's test client (`tests/feedclient.py`), and every database is a temporary
 SQLite file.
 
-**The coverage floor is 90%**, `fail_under` in `pyproject.toml`'s `[tool.coverage.report]`, measured
+**The coverage floor is 95%**, `fail_under` in `pyproject.toml`'s `[tool.coverage.report]`, measured
 over `app/`. pytest-cov enforces it, so a run under the floor fails. The README's coverage badge is
 the figure from the latest green push to `main`, measured by `.github/workflows/coverage.yml` and
 served by `pages.yml`; the badge turns bright green at that same `fail_under`.

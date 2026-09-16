@@ -1,5 +1,6 @@
+import pytest
 from devtools.export_openapi import SPEC
-from devtools.jsonvalues import JSON
+from devtools.jsonvalues import JSON, as_json
 
 from tests.support import json_at, parse_json
 
@@ -19,3 +20,9 @@ def test_spec_describes_the_json_endpoints() -> None:
     assert users == {"type": "array", "items": {"type": "string"}, "title": "Response Users Users Get"}
     content: JSON = json_at(spec, "paths", "/instagram.xml", "get", "responses", "200", "content")
     assert isinstance(content, dict) and "application/atom+xml" in content
+
+
+def test_as_json_rejects_what_json_cannot_hold() -> None:
+    assert as_json({1: [True, None, 2.5, "s"]}) == {"1": [True, None, 2.5, "s"]}
+    with pytest.raises(TypeError, match="not a JSON value"):
+        as_json({"path": SPEC})

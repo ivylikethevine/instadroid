@@ -66,6 +66,11 @@ IG_PKG = "com.instagram.android"
 # docs/INCIDENTS.md, where Instagram's package registration was orphaned but the app itself wasn't touched.
 # 0/false/empty falls back to the original behavior: raise and require a manual `adb install`.
 IG_AUTO_INSTALL = os.environ.get("IG_AUTO_INSTALL", "1").strip().lower() not in ("0", "false", "")
+# On the first connect after a start, wait for Android to finish booting (up to BOOT_WAIT_SECONDS) and
+# tune the device the way scripts/tune-android.sh does (instadroid/tune.py): idempotent, one adb round
+# trip. 0/false skips the tuning; the boot wait always runs.
+TUNE_ON_CONNECT = os.environ.get("TUNE_ON_CONNECT", "1").strip().lower() not in ("0", "false", "")
+BOOT_WAIT_SECONDS = float(os.environ.get("BOOT_WAIT_SECONDS", "600"))
 # Force one Instagram version profile: a directory under igprofiles/ ("v424", or just "424"). Empty (the
 # default) = the highest profile at or below the installed Instagram version, chosen on every connect.
 # Profiles exist only where Instagram changed something. See docs/PROFILES.md.

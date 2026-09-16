@@ -417,7 +417,10 @@ def _scrape_feed(
                 d, p["bounds"], h, p.get("clip_top", 0), settle=settle
             )  # before any sheet opens
             if not media and not p["bounds"]:
-                log("no crop: media node not found for card")
+                # Seen 4 times in a row on one Reel card in the 446 validation run, stored with no media,
+                # and never with a dump to show what the card looked like (docs/ROADMAP.md).
+                log("no crop: media node not found for card; dump saved")
+                diagnostics.dump_debug(d, "no_media_node", xml=xml)
             extra_media: list[str] = (
                 capture.capture_carousel(d, p, h) if media and p["kind"] == "carousel" else []
             )

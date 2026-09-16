@@ -1,5 +1,6 @@
 """Device helpers that tolerate a misbehaving device: launching, snapshots, debug dumps."""
 
+import time
 from pathlib import Path
 
 import pytest
@@ -55,3 +56,20 @@ def test_device_snapshot_tolerates_shell_failures() -> None:
         "ig_version": None,
         "redroid_image": None,
     }
+
+
+def test_instagram_version_is_read_once_per_connection() -> None:
+    d: FakeDevice = FakeDevice({}, "launcher")
+    assert device.instagram_version(d) == "445.0.0.45.83"
+    assert device.instagram_version(d) == "445.0.0.45.83"
+    assert d.shell_calls.count(f"dumpsys package {config.IG_PKG}") == 1  # the big dump ran once
+    d.ig_version = "446.0.0.49.77"
+    assert device.instagram_version(d) == "445.0.0.45.83"  # still the remembered reading
+    assert device.instagram_version(d, fresh=True) == "446.0.0.49.77"  # what install.py asks for
+
+
+def test_human_pause_sleeps_for_the_sampled_duration(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    device.human_pause(0.25, 0.25)
+    assert sleeps == [0.25]

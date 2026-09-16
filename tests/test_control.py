@@ -192,7 +192,10 @@ def test_control_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert client.post("/control/scrape-now").status_code == 202  # no runs recorded yet
     assert (control_dir / "scrape-now").exists()
     assert json_body(client.get("/control")) == {"locked": False, "scrape_now": True, "hold": None}
-    assert "scrape-now request is waiting" in client.get("/status").text
+    status: str = client.get("/status").text
+    assert "scrape-now request is waiting" in status
+    assert "control('POST', '/control/lock')\">Lock</button>" in status and ">Scrape now</button>" in status
+    assert "async function control(method, path)" in status
     (control_dir / "scrape-now").unlink()
     # A hold the scraper raised: reported with its reason, refuses scrape-now, and unlock clears it.
     (control_dir / "needs-human.hold").write_text("RuntimeError('Instagram wants a human')\n")
@@ -202,7 +205,9 @@ def test_control_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         "hold": "RuntimeError('Instagram wants a human')",
     }
     assert client.post("/control/scrape-now").status_code == 409
-    assert "Held until unlocked, Instagram needs a person" in client.get("/status").text
+    status = client.get("/status").text
+    assert "Held until unlocked, Instagram needs a person" in status
+    assert "control('DELETE', '/control/lock')\">Unlock</button>" in status  # held counts as locked
     assert json_body(client.delete("/control/lock")) == {"locked": False, "scrape_now": False, "hold": None}
     assert not (control_dir / "needs-human.hold").exists()
 
@@ -238,3 +243,21 @@ def test_a_cross_site_browser_request_cannot_change_anything(
     assert (
         client.get("/control", headers={"Origin": "https://evil.example"}).status_code == 200
     )  # reads are fine
+
+
+def test_the_poll_loop_ignores_a_forgotten_lock_with_a_warning(
+    con: sqlite3.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(config, "LOCK_MAX_HOURS", 6)
+    control.set_lock(True)
+    old: float = time.time() - 7 * 3600
+    os.utime(tmp_path / "manual.lock", (old, old))
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    control.wait_while_locked()
+    assert sleeps == []  # never held
+    out: str = capsys.readouterr().out
+    assert "WARN: ignoring" in out and "7.0h old (LOCK_MAX_HOURS)" in out

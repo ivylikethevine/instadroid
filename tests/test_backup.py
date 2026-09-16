@@ -55,3 +55,13 @@ def test_zero_hours_disables_automatic_backups(
     monkeypatch.setattr(config, "BACKUP_EVERY_HOURS", 0)
     assert backup.backup_database(con, now=NOW) is None
     assert backup.backup_database(con, force=True, now=NOW) is not None
+
+
+def test_backups_ignore_files_that_are_not_timestamped_backups(con: sqlite3.Connection) -> None:
+    directory: Path = Path(config.BACKUP_DIR)
+    directory.mkdir()
+    (directory / "posts-manual-copy.sqlite").write_bytes(b"")  # e.g. copied there by hand
+    assert backup.backups() == []
+    taken: Path | None = backup.backup_database(con, force=True, now=NOW)
+    assert backup.backups() == [taken]
+    assert (directory / "posts-manual-copy.sqlite").exists()  # never pruned as an "old backup"

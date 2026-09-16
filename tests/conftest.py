@@ -4,7 +4,7 @@ from pathlib import Path
 
 import igprofiles
 import pytest
-from instadroid import capture, config, db, device, diagnostics, versioning
+from instadroid import capture, config, db, device, diagnostics, tune, versioning
 
 V424 = igprofiles.load("v424")
 
@@ -19,6 +19,19 @@ def profile_v424(monkeypatch: pytest.MonkeyPatch) -> None:
     # an empty IG_PROFILE follows the installed version, which a future profile could claim.
     monkeypatch.setattr(config, "IG_PROFILE", "v424")
     monkeypatch.setattr(config, "IG_APK_VERSION", "")
+
+
+@pytest.fixture(autouse=True)
+def no_real_boot_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """connect_device() polls the real `adb` binary for sys.boot_completed and then tunes the device;
+    neither may reach a live redroid from the suite. The tuning stays testable through the fake
+    device's shell (tests/test_tune.py resets `_tuned`)."""
+
+    def booted(addr: str, timeout: float) -> bool:
+        return True
+
+    monkeypatch.setattr(tune, "wait_for_boot", booted)
+    monkeypatch.setattr(tune, "_tuned", True)
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +100,7 @@ def fast_offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(time, "sleep", no_sleep)
     monkeypatch.setattr(config, "IG_USERNAME", "me")
     monkeypatch.setattr(config, "IG_PASSWORD", "hunter2")
-    monkeypatch.setattr(capture, "_last_url", "")
+    monkeypatch.setattr(capture, "_last_code", "")
     monkeypatch.setattr(config, "CLIPBOARD_TIMEOUT", 0.01)
     return tmp_path
 

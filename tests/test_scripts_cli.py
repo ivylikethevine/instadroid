@@ -1,15 +1,47 @@
 """The developer tools' command-line entry points (app/devtools/): export_openapi, check_new_builds, promote_dump and
 new_profile's subcommands, with anything that would touch docker or a device replaced."""
 
+import runpy
 import subprocess
+import sys
+import types
 from collections.abc import Sequence
 from pathlib import Path
 
 import igprofiles
 import pytest
-from devtools import check_new_builds, export_openapi, new_profile, promote_dump
+from devtools import check_new_builds, export_openapi, local_annotations, new_profile, promote_dump
 
 FEED_445 = igprofiles.fixture("v424", "feed_445.xml")
+
+
+@pytest.mark.parametrize(
+    ("module", "argument", "output"),
+    [
+        (new_profile, "--help", "usage: "),
+        (promote_dump, "--help", "usage: "),
+        (check_new_builds, "--help", "usage: "),
+        (export_openapi, "--help", "usage: "),
+        (local_annotations, local_annotations.__file__, "total 0 in 1 file(s)\n"),
+    ],
+    ids=["new_profile", "promote_dump", "check_new_builds", "export_openapi", "local_annotations"],
+)
+def test_each_tool_runs_as_a_script(
+    module: types.ModuleType,
+    argument: str,
+    output: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Run as `python -m devtools.<tool> ...`, the `__main__` block hands the command line to main() and
+    exits with its return code (--help exits 0 from argparse; the annotation checker takes files, not options)."""
+    monkeypatch.delenv("FEED_TOKEN", raising=False)
+    monkeypatch.setattr(sys, "argv", [module.__name__, argument])
+    exit_info: pytest.ExceptionInfo[SystemExit]
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(module.__file__), run_name="__main__")
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.startswith(output)
 
 
 # --- export_openapi -----------------------------------------------------------------------------

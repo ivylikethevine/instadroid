@@ -51,16 +51,54 @@ def expand_caption(d: uidevice.Device, p: parsing.Post) -> str:
     return p["caption"]
 
 
-_last_url = ""  # the last permalink handed out, to spot a clipboard that didn't change
+_last_code = ""  # the shortcode of the last permalink handed out, to spot a clipboard that didn't change
+_dumpsys_noted = False  # the dumpsys notes ("a clip but no link", "failed") are logged once per run each
+_dumpsys_failed = False
 
 
 def reset_last_url(d: uidevice.Device) -> None:
-    """Start a run treating whatever is on the clipboard now as stale."""
-    global _last_url
+    """Start a run treating whatever is on the clipboard now as stale, whichever way it's read."""
+    global _last_code, _dumpsys_noted, _dumpsys_failed
+    _dumpsys_noted = _dumpsys_failed = False
+    current: str = ""
     try:
-        _last_url = d.clipboard or ""
+        current = d.clipboard or ""
     except Exception:
-        _last_url = ""
+        current = ""
+    _last_code = _code_of(current) or _code_of(_clipboard_via_dumpsys(d, 5.0))
+
+
+def _code_of(text: str) -> str:
+    """The shortcode in a clipboard string, or "": what two reads of the same link have in common
+    whether one came back with tracking parameters and a trailing slash and the other trimmed."""
+    m: re.Match[str] | None = SELECTORS["permalink"].match(text)
+    return m.group("code") if m else ""
+
+
+def _clipboard_via_dumpsys(d: uidevice.Device, timeout: float) -> str:
+    """The permalink in the system clipboard as `dumpsys clipboard` (root, over adb) prints it, or "".
+
+    A second opinion for the uiautomator2 read, which comes from its own instrumentation process:
+    Android 10+ only lets the focused app or the default IME read the clipboard, and that read came
+    back empty on 6 of 8 Copy link taps in the 445 baseline (docs/RUNLOG.md). This image's adbd is
+    root, and the service's dump prints the primary clip; whether this Android redacts the text in
+    that dump is what the next real run tells us, so a clip without a link is logged once."""
+    global _dumpsys_noted, _dumpsys_failed
+    try:
+        out: str = d.shell(["dumpsys", "clipboard"], timeout=max(0.5, timeout)).output or ""
+    except Exception as e:
+        if not _dumpsys_failed:
+            _dumpsys_failed = True
+            log("WARN: dumpsys clipboard failed (not retried this run):", repr(e))
+        return ""
+    m: re.Match[str] | None = SELECTORS["permalink"].search(out)
+    if m:
+        return m.group(0)
+    if "ClipData" in out and not _dumpsys_noted:
+        _dumpsys_noted = True
+        first: str = next((line.strip() for line in out.splitlines() if "ClipData" in line), "")
+        log(f"dumpsys clipboard shows a clip but no permalink (redacted?): {first[:120]!r}")
+    return ""
 
 
 @versioned
@@ -114,18 +152,27 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
     d.click(cx, cy)
     # Poll instead of a single fixed-delay read: the clipboard write can lag the tap by more
     # than a beat, and the old one-shot read missed it more often than not.
-    global _last_url
+    global _last_code
     url: str = ""
     deadline: float = time.time() + config.CLIPBOARD_TIMEOUT
     while time.time() < deadline:
         time.sleep(0.4)
+        source: str = "uiautomator2"
         try:
             candidate: str = d.clipboard or ""
         except Exception as e:
             log("WARN: clipboard read failed:", repr(e))
-            continue
-        if candidate and candidate != _last_url and SELECTORS["permalink"].match(candidate):
-            url = _last_url = candidate
+            candidate = ""
+        code: str = _code_of(candidate)
+        if not code or code == _last_code:
+            if _dumpsys_failed:
+                continue
+            candidate, source = _clipboard_via_dumpsys(d, deadline - time.time()), "dumpsys"
+            code = _code_of(candidate)
+        if code and code != _last_code:
+            url, _last_code = candidate, code
+            if source == "dumpsys":
+                log("permalink read via dumpsys clipboard (uiautomator2's read was empty or stale)")
             break
     navigation.close_sheets(d)  # sheet usually closes itself after Copy link; make sure
     navigation.back_to_feed(d)

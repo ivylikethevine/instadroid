@@ -86,3 +86,15 @@ they land; the longer-term ideas stay in [docs/ROADMAP.md](docs/ROADMAP.md).
 - 2026-09-15: Phase 1 item 6, `pm path` confirms Instagram is missing before an auto-install.
 - 2026-09-15: Phase 1 item 7, a visibility-only redroid healthcheck (not yet seen against a running container).
 - 2026-09-16: Phase 2 item 1, post identity keyed on the caption's first 40 characters, with a rehash migration.
+- 2026-09-16: Phase 2 item 2, prepared: `fetch_permalink()` falls back to `dumpsys clipboard` over root adb
+  and logs which source worked, or that the dump is redacted. The next real run decides it.
+- 2026-09-16: Phase 2 item 3, a `no_media_node` debug dump on the "media node not found" path.
+- 2026-09-16: Phase 3 item 2, `scraper.py doctor`.
+- 2026-09-16: Phase 3 item 3, `.env.example` split into "Start here" and "Advanced".
+- 2026-09-16: Phase 3 item 4, Lock/Unlock and Scrape now buttons on `/status`.
+- 2026-09-16: Phase 1 item 7 verified live: the redroid healthcheck fails while booting and turns healthy
+  about 20 seconds in.
+- 2026-09-16: Phase 3 item 1, the boot wait and device tuning on the app's first connect
+  (`instadroid/tune.py`, `TUNE_ON_CONNECT`, `BOOT_WAIT_SECONDS`), the package list shared with
+  `scripts/tune-android.sh`. Tested live on a fresh `/data`: 18 packages disabled, and a cold restart
+  booted clean with none of the known crash signatures in logcat.

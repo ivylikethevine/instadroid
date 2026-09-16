@@ -4,6 +4,11 @@ Running the stack day to day: health, restarts, manual control, alerts, memory, 
 and for how long. Setup is in the [README](../README.md#first-time-setup); the
 redroid incidents referred to below are written up in [INCIDENTS.md](INCIDENTS.md).
 
+## Contents
+
+- [Health and restarts](#health-and-restarts)
+- [Storage and retention](#storage-and-retention)
+
 ## Health and restarts
 
 Both services use `restart: unless-stopped`, so they come back after a host reboot or a crash;
@@ -15,6 +20,12 @@ Docker doesn't restart an unhealthy container by itself. After a long downtime t
 unhealthy until its first run finishes. redroid has a healthcheck too, on `sys.boot_completed`, so an
 Android that never finishes booting (or crash-looped back into booting) shows as `unhealthy` in
 `docker ps`; it exists for visibility only, and nothing acts on it.
+
+**One report of the whole state**: `docker compose exec app python scraper.py doctor` prints the
+control state, the last five runs with their result and peak memory, the failure backoff and daily
+budget if either is holding runs back, the device over plain adb (boot state, Instagram version and
+whether it's running, redroid's memory) and the logcat crash signatures with their fixes. It never
+launches Instagram or uiautomator2. [SUPPORT.md](SUPPORT.md) asks for its output with a bug report.
 
 **Manual lock and scrape-now**: before driving the device yourself in scrcpy, lock the scraper so a
 scheduled run can't start underneath you, and unlock when done:
@@ -28,7 +39,8 @@ docker compose exec app python scraper.py scrape-now
 A run already in progress finishes. The lock holds until you remove it; `LOCK_MAX_HOURS` (default 0) can instead have a lock older than that many hours ignored as forgotten, with a warning. `scrape-now` starts a run within about 30 seconds, but only
 once `RUN_NOW_MIN_MINUTES` (default 30) have passed since the last one. The feed server offers the
 same as `GET /control`, `POST`/`DELETE /control/lock` and `POST /control/scrape-now` (behind
-`FEED_TOKEN` when that's set), and `/status` shows both.
+`FEED_TOKEN` when that's set), and `/status` shows both, with Lock/Unlock and Scrape now buttons
+that call those routes.
 
 **The scraper holds itself when Instagram needs a person.** A run that ends on a challenge
 ("confirm it's you", a code), a login form it couldn't recognise or get past, or missing
@@ -89,7 +101,9 @@ a run warning like `selector drift? cards/screen 0.40 vs 3.80 baseline (10 runs)
 is meant to catch an Instagram UI change (a moved resource-id, a changed card layout) well before a
 run goes fully blank, rather than only noticing once new posts stop arriving. `SELECTOR_DRIFT_BASELINE_RUNS=0` disables it.
 
-Memory: redroid's Android never reclaims memory on its own here, so the scraper manages it. Every
+Memory: redroid's Android never reclaims memory on its own here, so the scraper manages it. On its
+first connect after each start it disables the unused apps in `app/instadroid/tune_packages.txt` (the
+same list `scripts/tune-android.sh` applies by hand), so they never launch at all. Every
 run starts and ends by force-stopping Instagram and a few cached system apps (the end even when the
 run fails), and `scraper.py login` stops Instagram when it's done. During a run the scraper reads
 redroid's container memory through adb before stories and before each screen, and stops early with

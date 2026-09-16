@@ -3,6 +3,7 @@ installed version (igprofiles.select / versioning.activate_profile), the build t
 (install._apk_version), and per-version behavior overrides (@versioned)."""
 
 import inspect
+import re
 import types
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 import igprofiles
 import pytest
 from igprofiles import BaseProfile, major_of, version_key
+from igprofiles.base import _check_key_groups
 from instadroid import config, install, parsing, versioning
 
 ROOT = igprofiles.load(igprofiles.available()[0])
@@ -92,6 +94,38 @@ def test_load_rejects_validated_builds_below_the_profile(monkeypatch: pytest.Mon
     _fake_profile_dir(monkeypatch, "v447", Profile)
     with pytest.raises(ValueError, match="validated builds below 447: 446.0.0.49.77"):
         igprofiles.load("v447")
+
+
+def test_load_rejects_a_profile_without_a_major_or_selectors(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Profile(BaseProfile):
+        notes = "declares nothing"
+
+    _fake_profile_dir(monkeypatch, "v447", Profile)
+    with pytest.raises(ValueError, match="v447 Profile is missing major, selectors"):
+        igprofiles.load("v447")
+
+
+def test_a_profile_shows_its_name() -> None:
+    assert repr(ROOT) == "<profile v424>" and ROOT.name == "v424"
+
+
+def test_selector_key_groups_index_their_declared_types() -> None:
+    """The type checker's view of Selectors, confirmed at runtime for one key of each group."""
+    header: str
+    markers: list[str]
+    desc: re.Pattern[str]
+    media: tuple[str, ...]
+    kinds: dict[str, str]
+    header, markers, desc, media, kinds = _check_key_groups(
+        ROOT.selectors, "header_id", "sheet_markers_text", "header_desc", "media_ids", "alt_kind"
+    )
+    assert (header, markers, desc, media, kinds) == (
+        ROOT.selectors["header_id"],
+        ROOT.selectors["sheet_markers_text"],
+        ROOT.selectors["header_desc"],
+        ROOT.selectors["media_ids"],
+        ROOT.selectors["alt_kind"],
+    )
 
 
 def test_load_rejects_a_directory_without_a_profile_class(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -341,3 +375,14 @@ def test_a_misnamed_override_is_reported(monkeypatch: pytest.MonkeyPatch) -> Non
         versioning.PROFILE_WARNING
         == "profile v424 defines parse_hierarchies, which match no @versioned function"
     )
+
+
+def test_a_non_callable_profile_attribute_named_after_a_versioned_function_is_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Shadowed(type(ROOT)):
+        parse_hierarchy: str = "a selector string, not an override"
+
+    monkeypatch.setattr(versioning, "PROFILE", Shadowed())
+    with pytest.raises(TypeError, match="v424's parse_hierarchy is not callable"):
+        parsing.parse_hierarchy(FEED_XML)

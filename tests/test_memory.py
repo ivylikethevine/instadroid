@@ -199,3 +199,14 @@ def test_main_records_memory_stats(fast_offline: Path, monkeypatch: pytest.Monke
         scrape.main()
     con: sqlite3.Connection = sqlite3.connect(fast_offline / "posts.sqlite")
     assert sqlrows.values(fetch_row(con.execute("SELECT mem_peak_mb, oom_kills FROM runs"))) == (1843, 1)
+
+
+def test_redroid_memory_is_off_when_the_cgroup_read_itself_fails() -> None:
+    class NoShell(FakeDevice):
+        def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
+            raise RuntimeError("adb: device offline")
+
+    d: NoShell = NoShell({}, "launcher")
+    assert device._redroid_memory(d) is None
+    guard: device.MemoryGuard = device.MemoryGuard(d)
+    assert guard.exceeded() is None and guard.peak_mb() is None and guard.oom_kills() is None

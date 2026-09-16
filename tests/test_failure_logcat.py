@@ -99,6 +99,40 @@ def test_save_failure_logcat_tolerates_an_unreachable_device(
     assert not list(config.DEBUG_DIR.glob("logcat_*")) if config.DEBUG_DIR.exists() else True
 
 
+def test_save_failure_logcat_tolerates_a_missing_or_hanging_adb(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def missing(cmd: list[str], **kwargs: Unpack[RunOptions]) -> NoReturn:
+        raise FileNotFoundError("adb")
+
+    def hanging(cmd: list[str], **kwargs: Unpack[RunOptions]) -> NoReturn:
+        raise subprocess.TimeoutExpired(cmd, config.LOGCAT_TIMEOUT)
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert SAVE_FAILURE_LOGCAT("AdbError('offline')") is None
+    monkeypatch.setattr(subprocess, "run", hanging)
+    assert SAVE_FAILURE_LOGCAT("AdbError('offline')") is None
+    out: str = capsys.readouterr().out
+    assert "could not read logcat after the failure: FileNotFoundError('adb')" in out
+    assert "could not read logcat after the failure: TimeoutExpired(" in out
+    assert not config.DEBUG_DIR.exists()
+
+
+def test_save_failure_logcat_tolerates_an_unwritable_debug_dir(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    blocker: Path = fast_offline / "blocker"
+    blocker.write_text("a file where DEBUG_DIR's parent should be")
+    monkeypatch.setattr(config, "DEBUG_DIR", blocker / "debug")
+
+    def fake_run(cmd: list[str], **kwargs: Unpack[RunOptions]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 0, stdout=LOGCAT, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert SAVE_FAILURE_LOGCAT("AdbError('offline')") is None
+    assert "WARN: could not write the failure logcat: NotADirectoryError(" in capsys.readouterr().out
+
+
 def test_main_saves_a_logcat_only_for_device_failures(
     fast_offline: Path, monkeypatch: pytest.MonkeyPatch, no_real_logcat: list[str]
 ) -> None:
