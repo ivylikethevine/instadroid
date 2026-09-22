@@ -1,15 +1,17 @@
 name: Pages
 
-# The project site: the repository's Markdown built by Jekyll from the root (_config.yml; README.md is
-# the home page), plus badges/coverage.json and badges/tests.json, the shields.io endpoints the README's
-# badges read (https://ivylikethevine.github.io/instadroid/badges/coverage.json). Nothing is measured
-# here: the badge files are coverage.yml's `coverage-badge` artifact from its newest green run on main.
+# The project site: the repository's Markdown built by Jekyll from the root
+# (_config.yml; README.md is the home page), plus badges/coverage.json and
+# badges/tests.json, the shields.io endpoints the README's badges read. Nothing
+# is measured here: the badge files are coverage.yml's `coverage-badge`
+# artifact from its newest green run on main. Needs Settings > Pages > Source
+# set to GitHub Actions.
 #
-# Triggers: Coverage finishing on main (a green push to main has been measured, so the badges move);
-# a push to main that changes the site's own sources, which needs no new measurement; and dispatch.
-# workflow_run is safe here: the build job refuses a Coverage run that failed or came from a pull
-# request, checks out the default branch, and reads the badge through an API query for main's newest
-# green workflow_run-triggered Coverage run rather than the triggering run's payload.
+# Triggers: Coverage finishing on main (the badges move), a push to main that
+# changes the site's own sources, and dispatch. workflow_run is safe here: the
+# build refuses a Coverage run that failed or came from a pull request, checks
+# out the default branch, and reads the badges through an API query for main's
+# newest green Coverage run rather than the triggering run's payload.
 on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     workflows: [Coverage]
@@ -17,21 +19,23 @@ on: # zizmor: ignore[dangerous-triggers]
     branches: [main]
   push:
     branches: [main]
-    paths: [README.md, "docs/**", _config.yml]
-  workflow_dispatch: {}
+    paths: [README.md, "docs/**", _config.yml, .github/workflows/pages.yml]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# One deploy at a time, never cancelled: cancelling mid-deploy can leave Pages half-updated. A newer
-# run waits for the running one, and replaces any older run still pending.
+# One deploy at a time, never cancelled: cancelling mid-deploy can leave Pages
+# half-updated. A newer run waits, and replaces any older run still pending.
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build (Jekyll + badges)
+    name: build (jekyll)
+    # a pull_request Coverage run never publishes: a fork's `main` would pass
+    # the branch filter
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -44,19 +48,30 @@ jobs:
     steps:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          # the checkout, the API, the artifacts, and the theme tarball
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            codeload.github.com:443
+            release-assets.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
       - uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1.0.13
         with:
           source: .
           destination: ./_site
 
-      # coverage.yml's main runs are workflow_run-triggered, hence `event`. A missing or expired
-      # artifact isn't a failed deploy: the fallback below publishes "not measured" instead.
+      # coverage.yml's main runs are workflow_run-triggered, hence `event`. A
+      # missing or expired artifact isn't a failed deploy: the badges read
+      # "not measured" instead.
       - name: Fetch the newest coverage figures
         uses: ./.github/actions/fetch-latest-artifact
         with:
@@ -71,19 +86,19 @@ jobs:
       - name: Write the badge endpoints into the site
         run: |
           set -euo pipefail
-          # jekyll-build-pages is a container action running as root, so the _site it creates isn't
-          # writable by the runner user until it's handed back.
+          # jekyll-build-pages is a container action running as root, so _site
+          # comes back root-owned
           sudo chown -R "$(id -u):$(id -g)" _site
           mkdir -p _site/badges
           for badge in coverage tests; do
             src="$RUNNER_TEMP/coverage-badge/$badge.json"
-            # only a well-formed shields endpoint gets through; anything else is coverage_badges.sh's
-            # "not measured"
+            # only a well-formed shields endpoint gets through
             if [ -f "$src" ] && jq -e '.schemaVersion == 1 and (.message | type) == "string"' "$src" >/dev/null 2>&1; then
               cp "$src" "_site/badges/$badge.json"
               echo "$badge badge: $(jq -r .message "_site/badges/$badge.json")"
             else
-              .github/scripts/coverage_badges.sh --not-measured _site/badges "$badge"
+              printf '{"schemaVersion":1,"label":"%s","message":"not measured","color":"inactive","cacheSeconds":300}\n' \
+                "$badge" >"_site/badges/$badge.json"
             fi
           done
 
@@ -91,20 +106,28 @@ jobs:
         with:
           path: _site
 
+  # split from the build so the write scopes live on the one job that needs them
   deploy:
-    name: Deploy to GitHub Pages
+    name: deploy
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      pages: write # to deploy to Pages
-      id-token: write # to verify the deployment originated from this workflow run
+      pages: write # deploy the site
+      id-token: write # prove the deployment came from this run
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
-          egress-policy: audit
-      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
-        id: deployment
+          egress-policy: block
+          # deploy-pages also reaches run-actions-N-azure-REGION hosts (the OIDC
+          # token and the artifact), whose shard rotates - hence the wildcard
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            *.actions.githubusercontent.com:443
+
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

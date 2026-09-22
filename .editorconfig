@@ -1,5 +1,4 @@
 # https://editorconfig.org
-# shfmt reads this file too: shell scripts get the [*] indent and shfmt's defaults otherwise.
 root = true
 
 [*]
@@ -10,6 +9,6 @@ trim_trailing_whitespace = true
 indent_style = space
 indent_size = 2
 
-# ruff format's indent (pyproject.toml).
-[*.py]
+# ruff format's indent, which pyproject.toml follows too
+[{*.py,*.pyi,pyproject.toml}]
 indent_size = 4

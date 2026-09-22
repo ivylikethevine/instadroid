@@ -1,15 +1,20 @@
 name: Image scan
 
-# Two advisory trivy scans; neither blocks anything (publish.yml's scan job is the release gate).
-# - pins: the digest-pinned images this repo builds on (app/Dockerfile's python base, docker-compose.yml's
-#   redroid and freshrss). Dependabot repins on release, not on severity, so this scans each pinned digest
-#   and what its tag points at now, and keeps one tracking issue open only while a repin verifiably closes
-#   fixable HIGH/CRITICAL findings (state machine: .github/scripts/scan_pinned_images.sh's header).
-# - trivy: the published ghcr.io image's :latest, which goes stale between releases as advisories land;
-#   findings go to code scanning and a warning.
-# Runs after every green CI run on a push to main and weekly, since upstream rebuilds and new advisories land
-# with no push here; never per pull request. workflow_run is safe: the jobs run only after a green push to
-# main.
+# Advisory trivy scans; nothing here blocks a merge.
+# - trivy: the published image's :latest, which goes stale between releases as
+#   advisories land; findings go to code scanning (category image-scan-<name>)
+#   and a warning. publish.yml's scan job is the release gate.
+# - pins: app/Dockerfile's python base and docker-compose.yml's redroid and
+#   freshrss images. Dependabot repins on release, not on severity, so this
+#   scans each pinned digest and what its tag points at now, and keeps one
+#   tracking issue open only while a repin verifiably closes fixable
+#   HIGH/CRITICAL findings (--ignore-unfixed; state machine:
+#   .github/scripts/scan_pinned_images.sh's header).
+#
+# Runs after every green CI run on a push to main, weekly (upstream rebuilds
+# and advisories land with no push here), and on dispatch; never per PR.
+# workflow_run is safe: the jobs run only after a green push to main and check
+# out the default branch.
 on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     workflows: [CI]
@@ -17,21 +22,21 @@ on: # zizmor: ignore[dangerous-triggers]
     branches: [main]
   schedule:
     - cron: "37 6 * * 3"
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# Queue rather than cancel: a run cancelled mid-upsert can leave the tracking issue half-written or open a
-# duplicate.
+# Queue rather than cancel: a run cancelled mid-upsert can leave the tracking
+# issue half-written or open a duplicate.
 concurrency:
   group: image-scan
   cancel-in-progress: false
 
 jobs:
   trivy:
-    name: published image (trivy, advisory)
-    # Only a green push to main; the schedule and a manual dispatch pass the first clause.
+    name: published ${{ matrix.name }} image (trivy, advisory)
+    # only a green push to main; the schedule and a dispatch pass the first clause
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -39,16 +44,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read # setup-tool, advisory-note, trivy_scan.sh and .trivyignore
+      contents: read
       packages: read # pull the published image
       security-events: write # upload the SARIF to code scanning
+    # one image's finding must not hide another's
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: instadroid
+            image: ghcr.io/${{ github.repository }}
+            trivyignore: .trivyignore
+    env:
+      IMAGE: ${{ matrix.image }}
     steps:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
+
+      # only the accepted-risk list, the scan script and the local actions
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          sparse-checkout: |
+            ${{ matrix.trivyignore }}
+            .github/scripts/trivy_scan.sh
+            .github/actions/setup-tool/
+            .github/actions/advisory-note/
+          sparse-checkout-cone-mode: false
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -56,13 +79,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Before the first release (or on a fork) there is no :latest: a notice, not a failure.
+      # before the first release (or on a fork) there is no :latest: a notice,
+      # not a failure
       - id: probe
         name: Check that a release image exists
-        env:
-          REPOSITORY: ${{ github.repository }}
         run: |
-          image="ghcr.io/${REPOSITORY,,}:latest"
+          set -euo pipefail
+          image="${IMAGE,,}:latest"
           echo "image=$image" >>"$GITHUB_OUTPUT"
           if docker manifest inspect "$image" >/dev/null 2>&1; then
             echo "exists=1" >>"$GITHUB_OUTPUT"
@@ -76,22 +99,21 @@ jobs:
         with:
           tool: trivy
 
-      # The release gate's own script and flags, so this answers "would :latest still pass publish.yml's
-      # scan today". One JSON scan, converted to the table and the SARIF in $RUNNER_TEMP; a scan that didn't
-      # run fails the step, a finding only sets `found`.
+      # the release gate's own script and flags: would :latest still pass today
       - if: steps.probe.outputs.exists == '1'
         id: scan
         name: Scan for fixable HIGH/CRITICAL vulnerabilities
         env:
-          IMAGE: ${{ steps.probe.outputs.image }}
-        run: .github/scripts/trivy_scan.sh "$IMAGE" "$RUNNER_TEMP"
+          IMAGE_REF: ${{ steps.probe.outputs.image }}
+          TRIVY_IGNOREFILE: ${{ matrix.trivyignore }}
+        run: .github/scripts/trivy_scan.sh "$IMAGE_REF" "$RUNNER_TEMP"
 
       - if: steps.probe.outputs.exists == '1'
         name: Upload the findings to code scanning
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           sarif_file: ${{ runner.temp }}/trivy.sarif
-          category: image-scan-latest
+          category: image-scan-${{ matrix.name }}
 
       - if: steps.probe.outputs.exists == '1' && steps.scan.outputs.found != '0'
         uses: ./.github/actions/advisory-note
@@ -100,19 +122,20 @@ jobs:
           warning-body: Fixable HIGH/CRITICAL vulnerabilities in ${{ steps.probe.outputs.image }} - advisory, not blocking
           heading: Trivy found fixable HIGH/CRITICAL vulnerabilities in the published image
           body: >-
-            In `${{ steps.probe.outputs.image }}`, also in the Security tab under `image-scan-latest`. The
-            next release rebuilds the image with current Debian and Python packages; this job never blocks.
+            In `${{ steps.probe.outputs.image }}`, also in the Security tab under
+            `image-scan-${{ matrix.name }}`. The next release rebuilds the image
+            with current packages; this job never blocks.
           report-file: ${{ runner.temp }}/trivy.txt
 
       - if: steps.probe.outputs.exists == '1' && steps.scan.outputs.found == '0'
         name: Report a clean scan
         env:
-          IMAGE: ${{ steps.probe.outputs.image }}
-        run: echo "trivy - no fixable HIGH/CRITICAL vulnerabilities in $IMAGE" | tee -a "$GITHUB_STEP_SUMMARY"
+          IMAGE_REF: ${{ steps.probe.outputs.image }}
+        run: echo "trivy - no fixable HIGH/CRITICAL vulnerabilities in $IMAGE_REF" | tee -a "$GITHUB_STEP_SUMMARY"
 
   pins:
     name: pinned images (trivy, advisory)
-    # Only a green push to main; the schedule and a manual dispatch pass the first clause.
+    # only a green push to main; the schedule and a dispatch pass the first clause
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -126,6 +149,7 @@ jobs:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -134,9 +158,10 @@ jobs:
         with:
           tool: trivy
 
-      # Advisory: an upstream CVE is no reason to fail anything. The three verdicts (0 clean, 1 a finding
-      # no repin improves, 2 a repin that helps) are captured as an output; anything else (3: the vulnerability
-      # database download failed; 127: no trivy or jq) still fails the job.
+      # The three verdicts (0 clean, 1 a finding no repin improves, 2 a repin
+      # that helps) are captured as an output, not collapsed by
+      # continue-on-error; anything else (3 a failed database download, 127 no
+      # trivy or jq) still fails the job.
       - id: scan
         name: Scan pinned digests and their tags
         env:
@@ -148,8 +173,8 @@ jobs:
           echo "verdict=$rc" >>"$GITHUB_OUTPUT"
           [ "$rc" -le 2 ] || exit "$rc"
 
-      # An issue, not a pull request: Dependabot already opens the repin PR. The report is the summary and
-      # the issue body both, so the two can't disagree.
+      # An issue, not a pull request: dependabot already opens the repin PR. The
+      # report is the summary and the issue body both, so the two can't disagree.
       - uses: ./.github/actions/upsert-tracking-issue
         with:
           label: image-scan

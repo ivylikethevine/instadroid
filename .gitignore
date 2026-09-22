@@ -2,13 +2,13 @@
 # venv and tool caches) lives under local/.
 local/
 
-# Claude Code: .claude/settings.json is shared and tracked; personal overrides, agent worktrees and
-# host-specific agent notes stay local.
+# Claude Code: .claude/settings.json is shared and tracked; personal overrides,
+# agent worktrees and host-specific agent notes stay local.
 .claude/settings.local.json
 .claude/worktrees/
 CLAUDE.local.md
 
-# The Markdown tools' npm install (`npm ci --prefix .github`, from .github/package-lock.json)
+# npm installs of the pinned CI Markdown tools (.github/package.json)
 node_modules/
 
 # Python and build output
