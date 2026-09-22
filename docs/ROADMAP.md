@@ -15,6 +15,11 @@ A config flag, one function, a CI tweak, or docs.
   leak scan). `git filter-repo --replace-text` with a replacements file, then a force-push and a
   fresh clone everywhere. The repository owner's call; not done yet. The maintainer has an offline
   runbook for it, kept outside the repository.
+- **Pin constricter to a released version**: python-constricter isn't on PyPI or tagged yet, so
+  `requirements-dev.in` pins it to a commit's GitHub source archive (hashed), which Dependabot can't
+  move and pip-audit can't audit (`scripts/check.sh`'s `check_audit` drops URL entries from its copy
+  of the dev lock). Once a version is tagged and released, pin `python-constricter==X.Y.Z`, regenerate
+  the lock with its wheel hashes, and remove that filter.
 
 Done: Markdown lint and format checks, a link check (relative links on pull
 requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:

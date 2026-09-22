@@ -238,8 +238,16 @@ check_audit() {
   local -a extra=()
   read -ra extra <<<"${PIP_AUDIT_ARGS:-}" # whitespace-split, unglobbed
   # Both locks are fully pinned and hashed, so pip-audit checks exactly those versions without resolving.
-  run pip-audit pip-audit --disable-pip --require-hashes -r app/requirements.txt -r requirements-dev.txt --strict \
+  # It can't audit a URL requirement (no version to look up), so those entries (python-constricter, until
+  # it's released; docs/ROADMAP.md) are dropped from a copy of the dev lock: the `name @ url` line and
+  # its --hash continuations.
+  local dev_lock
+  dev_lock="$(mktemp)"
+  awk '/^[^ #]+ @ / { skip = 1 } skip { if ($0 !~ /\\$/) skip = 0; next } { print }' \
+    requirements-dev.txt >"$dev_lock"
+  run pip-audit pip-audit --disable-pip --require-hashes -r app/requirements.txt -r "$dev_lock" --strict \
     "${extra[@]}"
+  rm -f "$dev_lock"
 }
 
 check_shellcheck() {
