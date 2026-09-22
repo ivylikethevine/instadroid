@@ -1,0 +1,4 @@
+# asdf pins for local runs of scripts/check.sh. CI tools live in
+# .github/actions/setup-tool/tools.txt; python matches CI's setup-python "3.14".
+python 3.14.7
+yq 4.53.6

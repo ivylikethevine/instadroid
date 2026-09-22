@@ -38,7 +38,7 @@ Never paste `.env`, `FRESHRSS_REFRESH_URL` (it carries a token), or anything fro
 ## Development setup
 
 ```bash
-python -m venv local/.venv && . local/.venv/bin/activate
+python -m venv --prompt droid local/.venv && . local/.venv/bin/activate
 pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt   # the locks
 pip install --no-build-isolation --no-deps -e .   # app/ on the path, and the dev commands
 ```
