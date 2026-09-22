@@ -1,74 +1,99 @@
 name: CodeQL
 
-# Python (the app) and GitHub Actions (the workflows). The actions half overlaps zizmor, which gates
-# ci.yml; CodeQL adds dataflow traces in the Security tab. build-mode none: neither needs a build.
-# On every push to main rather than after green CI: Scorecard's SAST check counts analysed commits. Also
-# on pull requests, weekly (new queries find old code), and on dispatch.
-# Keep the job names "Analyze (python)" and "Analyze (actions)" stable: code scanning and any branch
-# ruleset refer to checks by name, and the ruleset, not this file, decides which checks are required.
+# CodeQL over the languages here it can read: Python and GitHub Actions.
+# The actions half overlaps zizmor on purpose: zizmor is the fast gate in
+# ci.yml, CodeQL the slower dataflow pass whose findings land in the Security
+# tab with a trace, and Scorecard's SAST check counts only this one.
+# build-mode none throughout: nothing needs compiling.
+#
+# Runs on every push to main (not after green CI: Scorecard counts analysed
+# commits), every non-draft PR, weekly for the default-branch baseline code
+# scanning diffs a PR against, and on dispatch. No `paths:` filter: a skipped
+# category leaves code scanning waiting on a result.
 on:
   push:
     branches: [main]
-  # Any base branch: pull requests target dev. Drafts analyse nothing (the jobs' `if`) until ready.
+  # drafts analyse nothing (the jobs' `if`) until ready_for_review
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   schedule:
-    - cron: "17 6 * * 2" # weekly
-  workflow_dispatch: {}
+    - cron: "17 6 * * 2"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer push to a pull request cancels its in-flight analysis; main never cancels.
+# A PR's superseded run is cancelled. Outside a PR the group is per commit, so
+# a quick second merge can't replace the first commit's queued analysis.
 concurrency:
-  group: codeql-${{ github.ref }}
+  group: codeql-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Two jobs rather than a matrix, so one language failing can't hide the other's result.
+  # One job per language rather than a matrix, so one failing can't hide the
+  # other's result.
   analyze-python:
+    name: CodeQL (python)
     if: github.event.pull_request.draft != true
-    name: Analyze (python)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
-      security-events: write # upload the analysis to code scanning
+      security-events: write # the SARIF upload
     steps:
+      # audit: extraction may resolve dependencies from the package index
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           languages: python
           build-mode: none
-      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           category: "/language:python"
 
   analyze-actions:
+    name: CodeQL (actions)
     if: github.event.pull_request.draft != true
-    name: Analyze (actions)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: read
-      security-events: write # upload the analysis to code scanning
-      actions: read # read the workflow definitions being analysed
+      security-events: write # the SARIF upload
+      actions: read # the workflow definitions being analysed
     steps:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          disable-sudo: true
+          # the checkout, the API, the CodeQL bundle, and the cache
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            release-assets.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           languages: actions
           build-mode: none
-      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           category: "/language:actions"

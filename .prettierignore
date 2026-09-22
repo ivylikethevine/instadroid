@@ -1,7 +1,8 @@
-# Paths prettier must never format: runtime data, local Jekyll builds, the generated OpenAPI spec,
-# and untracked per-machine agent notes.
+# Paths prettier must never format: runtime data, local Jekyll builds, the
+# generated OpenAPI spec, and untracked agent notes and worktrees.
 local/
 _site/
 .jekyll-cache/
 docs/openapi.json
 CLAUDE.local.md
+.claude/worktrees/

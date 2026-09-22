@@ -1,13 +1,17 @@
 name: Advisories
 
-# The tracking-issue half of ci.yml's dependency audit. ci.yml's audit job blocks a pull request whose
-# locks carry a known advisory; an advisory published later against locks nobody touched would only turn
-# a scheduled run red. This audits both pip-compile locks (pip-audit) and .github/package-lock.json
-# (npm audit), and keeps one `advisories` issue current: opened on a finding, rewritten while it stands,
-# closed by the run that finds everything clean. It never blocks anything.
-# Runs after every green CI run on a push to main (a merge can bring in an already-published advisory),
-# weekly (advisories land with no push here), and on dispatch. workflow_run is safe here: the job runs only
-# after a green push to main.
+# The tracking-issue half of ci.yml's dependency audit, over both pip-compile
+# locks (pip-audit) and .github/package-lock.json (npm audit). ci.yml's audit
+# job blocks a pull request whose locks carry a known advisory; an advisory
+# published later against locks nobody touched would only turn a scheduled
+# run red. So this keeps one `advisories` issue current: opened on a finding,
+# rewritten while it stands, closed by the run that finds everything clean.
+# It never blocks anything.
+#
+# Runs after every green CI run on a push to main (a merge can bring in an
+# already-published advisory), weekly (advisories land with no push here), and
+# on dispatch. workflow_run is safe here: the job runs only after a green push
+# to main.
 on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     workflows: [CI]
@@ -15,21 +19,21 @@ on: # zizmor: ignore[dangerous-triggers]
     branches: [main]
   schedule:
     - cron: "11 7 * * 1"
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# Queue rather than cancel: a run cancelled mid-upsert can leave the tracking issue half-written or open a
-# duplicate.
+# Queue rather than cancel: a run cancelled mid-upsert can leave the tracking
+# issue half-written or open a duplicate.
 concurrency:
   group: advisories
   cancel-in-progress: false
 
 jobs:
-  audit:
+  advisories:
     name: dependency advisories (pip-audit + npm audit, advisory)
-    # Only a green push to main; the schedule and a manual dispatch pass the first clause.
+    # only a green push to main; the schedule and a dispatch pass the first clause
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -43,22 +47,23 @@ jobs:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
-      # pip-audit from the hashed dev lock, as in ci.yml's audit job. With --disable-pip it reads the locks
-      # instead of installing them. npm audit needs no setup-node: it only reads the lock, with the
-      # runner's own npm.
+      # pip-audit from the hashed dev lock, as in ci.yml's audit job; npm audit
+      # only reads the lock, with the runner's own npm
       - run: pip install --require-hashes -r requirements-dev.txt
 
-      # Each tool exits non-zero on a finding and on a failure alike. pip-audit (ci.yml's audit command,
-      # scripts/check.sh audit, with a Markdown report) writes its table only when it finds something, and
-      # npm audit's JSON carries a vulnerability count only when the audit ran, so a failed audit fails the
-      # job instead of opening an issue.
+      # Each tool exits non-zero on a finding and on a failure alike. pip-audit
+      # (scripts/check.sh audit) writes its table only when it finds something,
+      # and npm audit's JSON carries a vulnerability count only when the audit
+      # ran, so a failed audit fails the job instead of opening an issue.
       - id: audit
         name: Audit the locks
         run: |
@@ -66,7 +71,7 @@ jobs:
           report="$RUNNER_TEMP/advisories.md"
           found=0
           contributing="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/main/docs/CONTRIBUTING.md#development-setup"
-          echo "Known advisories affect locked dependencies. The fix is usually the Dependabot bump, or a" >"$report"
+          echo "Known advisories affect locked dependencies. The fix is usually the Dependabot bump or a" >"$report"
           echo "regenerated lock ([CONTRIBUTING.md]($contributing))." >>"$report"
 
           rc=0
@@ -82,6 +87,7 @@ jobs:
               echo "### Python locks (pip-audit)"
               echo
               echo "\`app/requirements.txt\` and \`requirements-dev.txt\`:"
+              echo
               cat "$RUNNER_TEMP/pip-audit.md"
             } >>"$report"
           fi

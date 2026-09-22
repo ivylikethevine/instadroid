@@ -19,10 +19,11 @@ on: # zizmor: ignore[dangerous-triggers]
     workflows: [CI]
     types: [completed]
     branches: [main]
+  # drafts skip, same as ci.yml; docs-only changes can't move either figure
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore: ["**/*.md", "docs/**"]
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -35,7 +36,7 @@ concurrency:
 
 jobs:
   coverage:
-    name: Measure (pytest + coverage)
+    name: coverage (pytest)
     # a dispatch; a green push to main; or a same-repo, non-draft pull request
     if: >-
       github.event_name == 'workflow_dispatch' ||
@@ -87,7 +88,7 @@ jobs:
   # code; the checkout is only for the local fetch-latest-artifact action. continue-on-error: a comment
   # that can't be posted (a read-only token, e.g. Dependabot's) never fails the run.
   comment:
-    name: Coverage comment
+    name: coverage (comment)
     needs: coverage
     if: always() && github.event_name == 'pull_request' && needs.coverage.result != 'skipped'
     runs-on: ubuntu-latest
