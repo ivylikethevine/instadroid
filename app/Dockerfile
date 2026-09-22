@@ -1,5 +1,5 @@
 # Pinned by digest (Dependabot's docker updates move it); the tag says which image it is.
-FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
+FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Debian's security fixes land before the python image is rebuilt with them (Trivy flagged sqlite, pcre2,
 # gzip and perl-base), and the scraper and feed server both use the system libsqlite3.
