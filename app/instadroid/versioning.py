@@ -5,7 +5,7 @@ import functools
 import re
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from typing import Concatenate, TypeIs, overload
+from typing import Concatenate, overload
 
 from igprofiles import BaseProfile, covering, major_of, newest_build
 from igprofiles import select as select_profile
@@ -25,9 +25,7 @@ def _set_active(profile: BaseProfile, warning: str | None) -> None:
     """Replace PROFILE and PROFILE_WARNING. They stay plain module attributes, read at call time, so a
     test can monkeypatch them like any other; this is the one place the scraper itself changes them,
     written through the module's namespace because their names mark them as constants to the checker."""
-    namespace: dict[str, object] = globals()
-    namespace["PROFILE"] = profile
-    namespace["PROFILE_WARNING"] = warning
+    globals().update(PROFILE=profile, PROFILE_WARNING=warning)
 
 
 @contextmanager
@@ -62,7 +60,7 @@ class _ActiveSelectors:
         return PROFILE.selectors[key]
 
 
-SELECTORS = _ActiveSelectors()
+SELECTORS: _ActiveSelectors = _ActiveSelectors()
 
 
 class Versioned[**P, R]:
@@ -75,22 +73,16 @@ class Versioned[**P, R]:
         self.name: str = fn.__name__
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
-        override: object = getattr(PROFILE, self.name, None)
+        # A profile attribute named after a @versioned function is its override, which by the profile
+        # contract (igprofiles/base.py) takes the base implementation followed by the function's own
+        # arguments and returns what it does. Profiles are looked up by name at runtime, so being
+        # callable is all that can be checked here.
+        override: Callable[Concatenate[Callable[P, R], P], R] | None = getattr(PROFILE, self.name, None)
         if override is None:
             return self.base(*args, **kwargs)
-        if not _is_override(override, self.base):
+        if not callable(override):
             raise TypeError(f"profile {PROFILE.name}'s {self.name} is not callable")
         return override(self.base, *args, **kwargs)
-
-
-def _is_override[**P, R](
-    override: object, base: Callable[P, R]
-) -> TypeIs[Callable[Concatenate[Callable[P, R], P], R]]:
-    """A profile attribute named after a @versioned function is its override, which by the profile
-    contract (igprofiles/base.py) takes the base implementation followed by the function's own
-    arguments and returns what it does. Profiles are looked up by name at runtime, so being callable is
-    all that can be checked here; `base` only supplies the signature."""
-    return callable(override)
 
 
 def versioned[**P, R](fn: Callable[P, R]) -> Versioned[P, R]:

@@ -37,7 +37,7 @@ if not settings.FEED_TOKEN and settings.FEED_HOST not in ("127.0.0.1", "localhos
         settings.FEED_HOST,
     )
 
-app = FastAPI(
+app: FastAPI = FastAPI(
     title="instadroid",
     summary="Atom feeds of an Instagram Following feed scraped from a real Android app.",
     description=(

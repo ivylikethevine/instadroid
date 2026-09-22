@@ -12,7 +12,7 @@ from httpx2 import Response
 
 from tests.feedclient import make_app, write_image
 
-TOKEN = "s3cret-token"
+TOKEN: str = "s3cret-token"
 
 
 class Credentials(TypedDict, total=False):
@@ -54,6 +54,7 @@ def test_serving_beyond_localhost_without_a_token_is_warned_about(
 
 def test_without_a_token_everything_stays_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
+    path: str
     for path in ("/instagram.xml", "/stories.xml", "/opml", "/users", "/status", "/health"):
         assert client.get(path).status_code == 200, path
     assert "sig=" not in client.get("/instagram.xml").text

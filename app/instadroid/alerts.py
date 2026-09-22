@@ -23,15 +23,22 @@ from shared.timestamps import parse_iso
 from . import common, config
 from .common import log
 
-LOGIN, FAILING, NO_POSTS = "login", "failing", "no_posts"
-TITLES = {
+LOGIN: str = "login"
+FAILING: str = "failing"
+NO_POSTS: str = "no_posts"
+TITLES: dict[str, str] = {
     LOGIN: "Instagram wants a human",
     FAILING: "scrape runs keep failing",
     NO_POSTS: "no new posts",
 }
 # Errors navigation.ensure_logged_in() raises when a person has to step in: a challenge, a login form
 # it couldn't fill or get past, or missing credentials.
-_NEEDS_HUMAN = ("wants a human", "login page shown", "login screen shown", "still on login screen")
+_NEEDS_HUMAN: tuple[str, str, str, str] = (
+    "wants a human",
+    "login page shown",
+    "login screen shown",
+    "still on login screen",
+)
 
 
 def needs_human(error: str | None) -> bool:
@@ -104,6 +111,8 @@ def update(con: sqlite3.Connection, now: datetime | None = None) -> list[str]:
         for r in sqlrows.fetch_all(con.execute("SELECT kind, message FROM alerts"))
     }
     errors: list[str | None] = []
+    kind: str
+    message: str
     for kind, message in current.items():
         if kind not in open_alerts:
             con.execute(

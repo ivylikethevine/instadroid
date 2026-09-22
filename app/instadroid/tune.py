@@ -13,7 +13,7 @@ from pathlib import Path
 from . import config, uidevice
 from .common import log
 
-PACKAGES_FILE = Path(__file__).with_name("tune_packages.txt")
+PACKAGES_FILE: Path = Path(__file__).with_name("tune_packages.txt")
 
 
 def load_packages(path: Path = PACKAGES_FILE) -> list[str]:
@@ -40,7 +40,7 @@ def tune_commands(timezone: str = "", packages: list[str] | None = None) -> list
     return commands
 
 
-_tuned = False  # once per process: the app's first connect after a start
+_tuned: bool = False  # once per process: the app's first connect after a start
 
 
 def tune_device(d: uidevice.Device, *, force: bool = False) -> bool:

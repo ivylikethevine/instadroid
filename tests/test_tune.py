@@ -2,6 +2,7 @@
 
 import subprocess
 import time
+from collections.abc import Callable
 
 import pytest
 from instadroid import config, tune
@@ -9,7 +10,9 @@ from instadroid import config, tune
 from tests.deviceflows import feed_device
 from tests.fakedevice import FakeDevice, Out
 
-REAL_WAIT_FOR_BOOT = tune.wait_for_boot  # conftest's autouse fixture stubs the attribute for the suite
+REAL_WAIT_FOR_BOOT: Callable[[str, float], bool] = (
+    tune.wait_for_boot
+)  # conftest's autouse fixture stubs the attribute for the suite
 
 
 def test_the_package_list_is_the_scripts_list_and_never_the_installer() -> None:

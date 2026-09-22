@@ -20,12 +20,13 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT: Path = Path(__file__).resolve().parents[2]
 
 # A doc longer than this carries a `## Contents` block (CONTRIBUTING's docs conventions).
-CONTENTS_MIN_LINES = 150
+CONTENTS_MIN_LINES: int = 150
 
 
 def _repo_files(*patterns: str) -> list[Path]:
@@ -47,10 +48,10 @@ def _repo_files(*patterns: str) -> list[Path]:
 
 # --- .env.example vs the settings the code reads -------------------------------------------------
 
-_SETTING = re.compile(r"[A-Z][A-Z0-9_]*")
-_SHELL_VAR = re.compile(r"\$\{([A-Z][A-Z0-9_]*)")
-_EXAMPLE_LINE = re.compile(r"^#?([A-Z][A-Z0-9_]*)=", re.MULTILINE)
-_COMPOSE_KEY = re.compile(r"^\s+([A-Z][A-Z0-9_]*):", re.MULTILINE)
+_SETTING: re.Pattern[str] = re.compile(r"[A-Z][A-Z0-9_]*")
+_SHELL_VAR: re.Pattern[str] = re.compile(r"\$\{([A-Z][A-Z0-9_]*)")
+_EXAMPLE_LINE: re.Pattern[str] = re.compile(r"^#?([A-Z][A-Z0-9_]*)=", re.MULTILINE)
+_COMPOSE_KEY: re.Pattern[str] = re.compile(r"^\s+([A-Z][A-Z0-9_]*):", re.MULTILINE)
 
 
 def _captures(pattern: re.Pattern[str], text: str) -> list[str]:
@@ -104,6 +105,8 @@ def _app_settings() -> tuple[set[str], set[str]]:
     ]
     helpers: dict[str, bool] = {}  # helper name -> reads NAME_FILE too
     key: ast.expr | None
+    tree: ast.Module
+    fn: ast.AST
     for tree in trees:
         for fn in ast.walk(tree):
             if not isinstance(fn, ast.FunctionDef) or not fn.args.args:
@@ -117,6 +120,7 @@ def _app_settings() -> tuple[set[str], set[str]]:
                 )
     names: set[str] = set()
     with_file: set[str] = set()
+    node: ast.AST
     for tree in trees:
         for node in ast.walk(tree):
             key = _environ_key(node)
@@ -170,9 +174,9 @@ def env_problems() -> list[str]:
 
 # --- Contents blocks ---------------------------------------------------------------------------
 
-_HEADING = re.compile(r"^(#{2,6})\s+(.+?)\s*#*\s*$")
-_ENTRY = re.compile(r"^(\s*)[-*]\s+\[.*\]\(#([^)\s]+)\)\s*$")
-_FENCE = re.compile(r"^\s*(```|~~~)")
+_HEADING: re.Pattern[str] = re.compile(r"^(#{2,6})\s+(.+?)\s*#*\s*$")
+_ENTRY: re.Pattern[str] = re.compile(r"^(\s*)[-*]\s+\[.*\]\(#([^)\s]+)\)\s*$")
+_FENCE: re.Pattern[str] = re.compile(r"^\s*(```|~~~)")
 
 
 def _anchor(text: str) -> str:
@@ -187,6 +191,8 @@ def _unfenced(lines: list[str]) -> list[tuple[int, str]]:
     """(line number, line) for every line outside a fenced code block."""
     kept: list[tuple[int, str]] = []
     fence: str = ""
+    number: int
+    line: str
     for number, line in enumerate(lines, 1):
         match: re.Match[str] | None = _FENCE.match(line)
         if match:
@@ -210,6 +216,7 @@ def _contents_problems(path: Path) -> list[str]:
     in_contents: bool
     has_contents: bool
     in_contents = has_contents = False
+    line: str
     for _, line in body:
         heading: re.Match[str] | None = _HEADING.match(line)
         if heading:
@@ -249,9 +256,9 @@ def contents_problems() -> list[str]:
 
 # --- links the Pages site can't follow ---------------------------------------------------------
 
-_LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
-_REFERENCE = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s|$)")
-_CODE_SPAN = re.compile(r"`[^`]*`")
+_LINK: re.Pattern[str] = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+_REFERENCE: re.Pattern[str] = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s|$)")
+_CODE_SPAN: re.Pattern[str] = re.compile(r"`[^`]*`")
 
 
 def _site_exclusions() -> tuple[set[str], list[str]]:
@@ -259,6 +266,7 @@ def _site_exclusions() -> tuple[set[str], list[str]]:
     files: set[str] = set()
     dirs: list[str] = []
     inside: bool = False
+    line: str
     for line in (ROOT / "_config.yml").read_text().splitlines():
         if re.match(r"^exclude:\s*$", line):
             inside = True
@@ -280,6 +288,7 @@ def _off_site(rel: str, files: set[str], dirs: list[str]) -> str:
         return "points into a dot-path, which Jekyll never publishes"
     if rel in files:
         return f"points at {rel}, excluded in _config.yml"
+    entry: str
     for entry in dirs:
         if f"{rel}/".startswith(entry):
             return f"points under {entry}, excluded in _config.yml"
@@ -291,6 +300,10 @@ def link_problems() -> list[str]:
     dirs: list[str]
     files, dirs = _site_exclusions()
     problems: list[str] = []
+    path: Path
+    number: int
+    line: str
+    target: str
     for path in _repo_files("*.md"):
         rel_file: str = path.relative_to(ROOT).as_posix()
         if _off_site(rel_file, files, dirs):
@@ -309,7 +322,11 @@ def link_problems() -> list[str]:
     return problems
 
 
-CHECKS = {"env": env_problems, "contents": contents_problems, "links": link_problems}
+CHECKS: dict[str, Callable[[], list[str]]] = {
+    "env": env_problems,
+    "contents": contents_problems,
+    "links": link_problems,
+}
 
 
 def main(argv: list[str]) -> int:
@@ -320,6 +337,8 @@ def main(argv: list[str]) -> int:
         )
         return 2
     failed: int = 0
+    name: str
+    problem: str
     for name in argv or list(CHECKS):
         problems: list[str] = CHECKS[name]()
         for problem in problems:

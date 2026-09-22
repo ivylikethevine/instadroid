@@ -7,8 +7,8 @@ from typing import TypeIs
 
 type JSON = dict[str, JSON] | list[JSON] | str | int | float | bool | None
 
-# json.loads seen as returning `object`, not Any: as_json() then checks what it actually produced.
-_decode: Callable[[str | bytes], object] = json.loads
+# json.loads seen as returning JSON, not Any: what it builds without hooks, and as_json() still checks it.
+_decode: Callable[[str | bytes], JSON] = json.loads
 
 
 def _is_list(value: object) -> TypeIs[list[object]]:

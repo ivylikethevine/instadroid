@@ -20,6 +20,7 @@ def _prepare_app(d: uidevice.Device) -> None:
 
 @versioned
 def _challenge_present(d: uidevice.Device) -> str | None:
+    t: str
     for t in SELECTORS["challenge_texts"]:
         if d(textContains=t).exists(timeout=0.5):
             return t
@@ -80,6 +81,7 @@ def ensure_logged_in(d: uidevice.Device) -> None:
             raise DeviceNotReady(f"{config.IG_PKG} still not present after install")
     device.launch_app(d)
     device.human_pause(4, 6)
+    attempt: int
     for attempt in range(3):
         if device.in_foreground(d):
             break
@@ -173,6 +175,7 @@ def open_following_feed(d: uidevice.Device) -> bool:
     h: int
     w, h = device.window_size(d)
     sw: uidevice.Selector = d(description=SELECTORS["feed_switcher_desc"])
+    attempt: int
     for attempt in range(4):
         # The action bar hides while scrolled; pull back to the top so we can see where we are.
         for _ in range(12):
@@ -191,6 +194,7 @@ def open_following_feed(d: uidevice.Device) -> bool:
         if sw.exists(timeout=3):
             try:
                 f: uidevice.Selector = d(text=SELECTORS["following_text"])
+                tap: int
                 for tap in range(4):  # taps get swallowed while the app is still warming up
                     sw.click()
                     if f.exists(timeout=5):
@@ -231,6 +235,7 @@ def open_home_feed(d: uidevice.Device) -> bool:
     exiting the app on a second back press soon after. Already being on Home just means done."""
     _prepare_app(d)
     tab: uidevice.Selector = d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}$")
+    attempt: int
     for attempt in range(4):
         if on_home_feed(d):
             return True
@@ -295,6 +300,7 @@ def open_own_following_list(d: uidevice.Device) -> bool:
     back in via the normal tab -> link path, which always starts the list at row 0."""
     _prepare_app(d)
     tab: uidevice.Selector = d(resourceIdMatches=f".*:id/{SELECTORS['profile_tab_id']}$")
+    attempt: int
     for attempt in range(4):
         if _on_following_list(d):
             d.press("back")
@@ -347,6 +353,7 @@ def scrape_following_list(d: uidevice.Device) -> list[str] | None:
             diagnostics.dump_debug(d, "following_list_first", xml=xml)
             log("no usernames parsed on first Following-list screen — selectors probably need updating")
         new: int = 0
+        n: str
         for n in names:
             if n not in collected:
                 collected[n] = None
@@ -394,6 +401,7 @@ def _sheet_open(d: uidevice.Device) -> bool:
 @versioned
 def close_sheets(d: uidevice.Device, max_back: int = 2) -> bool:
     """Back out of any open share/bottom sheet without touching its contents."""
+    i: int
     for i in range(max_back):
         if not _sheet_open(d) or not device.in_foreground(d):
             break

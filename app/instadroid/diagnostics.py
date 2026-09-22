@@ -15,14 +15,20 @@ from .common import log
 
 _captured: dict[str, int] = {}  # screen -> pairs saved to PROFILE_CAPTURE_DIR by this process
 # A dump is a `<stem>_hierarchy.xml` + `<stem>_screen.jpg` pair (see _write_pair()).
-HIERARCHY_SUFFIX, SCREENSHOT_SUFFIX = "_hierarchy.xml", "_screen.jpg"
-_DEBUG_ARTIFACT_SUFFIXES = (".xml", ".jpg", ".png", ".txt")  # what age-based pruning may delete
+HIERARCHY_SUFFIX: str = "_hierarchy.xml"
+SCREENSHOT_SUFFIX: str = "_screen.jpg"
+_DEBUG_ARTIFACT_SUFFIXES: tuple[str, str, str, str] = (
+    ".xml",
+    ".jpg",
+    ".png",
+    ".txt",
+)  # what age-based pruning may delete
 
 
 def prune_debug_dumps() -> None:
     """Keep only the newest DEBUG_KEEP hierarchy+screenshot pairs and DEBUG_KEEP failure logcats, and
-    delete any debug artifact (.xml/.jpg/.png/.txt, top level only) older than DEBUG_RETAIN_DAYS — manual dumps and one-off
-    screenshots don't belong to a pair and otherwise never age out. Anything else in DEBUG_DIR
+    delete any debug artifact (.xml/.jpg/.png/.txt, top level only) older than DEBUG_RETAIN_DAYS —
+    manual dumps and one-off screenshots don't belong to a pair and otherwise never age out. Anything else in DEBUG_DIR
     (e.g. a scratch test*.sqlite a DB_PATH may still point at) is left alone. Best-effort: a file
     that can't be removed is logged and skipped, never raised."""
     try:
@@ -30,6 +36,7 @@ def prune_debug_dumps() -> None:
         hierarchies: list[Path] = sorted(
             config.DEBUG_DIR.glob(f"*{HIERARCHY_SUFFIX}"), key=lambda p: p.stat().st_mtime
         )
+        old: Path
         for old in hierarchies[: -config.DEBUG_KEEP]:
             stem: str = old.name.removesuffix(HIERARCHY_SUFFIX)
             doomed += [
@@ -50,6 +57,7 @@ def prune_debug_dumps() -> None:
     except OSError as e:  # e.g. DEBUG_DIR doesn't exist yet, or a file vanished mid-scan
         log("WARN: could not scan debug dumps for pruning:", repr(e))
         return
+    f: Path
     for f in doomed:
         try:
             f.unlink(missing_ok=True)
@@ -57,7 +65,7 @@ def prune_debug_dumps() -> None:
             log(f"WARN: could not prune debug file {f.name!r}:", repr(e))
 
 
-CRASH_SIGNATURES_FILE = Path(__file__).with_name("crash_signatures.tsv")
+CRASH_SIGNATURES_FILE: Path = Path(__file__).with_name("crash_signatures.tsv")
 
 
 def load_crash_signatures(path: Path = CRASH_SIGNATURES_FILE) -> dict[str, str]:
@@ -69,20 +77,23 @@ def load_crash_signatures(path: Path = CRASH_SIGNATURES_FILE) -> dict[str, str]:
     return {row[0]: row[1] if len(row) > 1 else "" for row in rows}
 
 
-CRASH_SIGNATURES = load_crash_signatures()
+CRASH_SIGNATURES: dict[str, str] = load_crash_signatures()
 # What a failure logcat keeps besides error/fatal lines: the known crash signatures, plus kills and ANRs.
-_LOGCAT_SIGNATURES = re.compile(
+_LOGCAT_SIGNATURES: re.Pattern[str] = re.compile(
     "|".join(
         map(re.escape, [*CRASH_SIGNATURES, "ANR in ", "lowmemorykiller", "am_kill", "am_crash", "am_anr"])
     )
 )
-_LOGCAT_PRIORITY = re.compile(r"^\S+\s+\S+\s+\d+\s+\d+\s+([VDIWEF])\s")  # `-v threadtime` lines
+_LOGCAT_PRIORITY: re.Pattern[str] = re.compile(
+    r"^\S+\s+\S+\s+\d+\s+\d+\s+([VDIWEF])\s"
+)  # `-v threadtime` lines
 
 
 def _filter_logcat(text: str) -> list[str]:
     """Error/fatal lines and known crash signatures from `logcat -v threadtime` output, last
     LOGCAT_TAIL_LINES of them."""
     kept: list[str] = []
+    line: str
     for line in text.splitlines():
         m: re.Match[str] | None = _LOGCAT_PRIORITY.match(line)
         if (m and m.group(1) in "EF") or _LOGCAT_SIGNATURES.search(line):
@@ -137,7 +148,9 @@ def _write_pair(directory: Path, stem: str, xml: str, image: Image.Image) -> Non
     image.convert("RGB").save(directory / f"{stem}{SCREENSHOT_SUFFIX}", quality=70)
 
 
-_CAPTURE_NAME = re.compile(rf"^\d{{3}}-(?P<screen>[a-z_0-9]+?)(?P<fail>-fail)?{re.escape(HIERARCHY_SUFFIX)}$")
+_CAPTURE_NAME: re.Pattern[str] = re.compile(
+    rf"^\d{{3}}-(?P<screen>[a-z_0-9]+?)(?P<fail>-fail)?{re.escape(HIERARCHY_SUFFIX)}$"
+)
 
 
 def dump_stem(seq: int, screen: str, failure: bool) -> str:

@@ -18,7 +18,7 @@ from pathlib import Path
 from devtools import ROOT
 from devtools.jsonvalues import JSON
 
-SPEC = ROOT / "docs" / "openapi.json"
+SPEC: Path = ROOT / "docs" / "openapi.json"
 
 
 def render() -> str:

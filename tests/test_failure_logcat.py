@@ -21,11 +21,11 @@ from tests.deviceflows import (
     stop_after_first_sleep,
 )
 
-pytestmark = pytest.mark.usefixtures("fast_offline")
+pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
 # --- failure logcat -------------------------------------------------------------------------------
 
-LOGCAT = """\
+LOGCAT: str = """\
 09-14 17:16:39.100  1234  1250 I ActivityManager: Start proc 5678:com.instagram.android
 09-14 17:16:39.200  1234  1250 D Something: chatter
 09-14 17:16:40.000   512   530 E AndroidRuntime: FATAL EXCEPTION IN SYSTEM PROCESS: main
@@ -157,6 +157,7 @@ def test_failure_logcats_are_pruned_like_other_debug_files(
 ) -> None:
     monkeypatch.setattr(config, "DEBUG_KEEP", 2)
     config.DEBUG_DIR.mkdir(parents=True)
+    i: int
     for i in range(4):
         f: Path = config.DEBUG_DIR / f"logcat_2026091{i}T000000Z.txt"
         f.write_text("x")

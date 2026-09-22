@@ -24,7 +24,7 @@ def older_than(value: SqlValue, days: float) -> bool:
     return parsed is None or datetime.now(UTC) - parsed > timedelta(days=days)
 
 
-_BOUNDS = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+_BOUNDS: re.Pattern[str] = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 
 
 def parse_bounds(bounds: str | None) -> tuple[int, int, int, int] | None:
@@ -70,7 +70,7 @@ def digest(data: str | bytes) -> str:
     return hashlib.sha256(data.encode() if isinstance(data, str) else data).hexdigest()[:16]
 
 
-_SAFE_USERNAME = re.compile(r"^[A-Za-z0-9._]+$")
+_SAFE_USERNAME: re.Pattern[str] = re.compile(r"^[A-Za-z0-9._]+$")
 
 
 def safe_filename(username: str) -> str | None:

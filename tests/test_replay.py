@@ -8,7 +8,7 @@ import igprofiles
 import pytest
 from devtools import promote_dump
 
-CASES = sorted(
+CASES: list[tuple[str, Path]] = sorted(
     (path.parent.parent.name, path)
     for path in Path(igprofiles.__file__).parent.glob("v*/fixtures/*.expected.json")
 )

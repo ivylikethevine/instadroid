@@ -8,7 +8,7 @@ import pytest
 from igprofiles.screens import id_matches
 from instadroid import capture, common, config, device, parsing, stories, versioning
 
-FIXTURE = igprofiles.fixture("v424", "feed_445.xml").read_text()
+FIXTURE: str = igprofiles.fixture("v424", "feed_445.xml").read_text()
 
 
 def test_parse_hierarchy_finds_both_cards_and_skips_sponsored() -> None:
@@ -75,7 +75,7 @@ def test_resource_ids_match_on_a_whole_id_segment_or_the_full_id() -> None:
 # (2026-09-11): its media node (carrying the "Reel by ..." alt) renders *before* its own header —
 # every other card layout has the header first — and it has no separate caption or timestamp node
 # at all, only the header's own content-desc.
-REEL_COLLAB_FIXTURE = """<hierarchy><node><node resource-id="android:id/list">
+REEL_COLLAB_FIXTURE: str = """<hierarchy><node><node resource-id="android:id/list">
   <node resource-id="com.instagram.android:id/media_group" bounds="[0,210][1080,2093]">
     <node resource-id="com.instagram.android:id/row_feed_photo_imageview"
           content-desc="Reel by Someone, Liked by a_friend and others, 2 comments, 57 minutes ago"
@@ -208,7 +208,7 @@ def test_permalink_regex_accepts_reel_and_p_with_tracking_params() -> None:
     assert rx.match("https://www.instagram.com/someone/") is None
 
 
-NOW = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+NOW: datetime = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(
@@ -295,7 +295,7 @@ def test_same_post_requires_matching_username() -> None:
     assert parsing.same_post(a, b) is False
 
 
-STORY_TRAY_FIXTURE = """<hierarchy><node><node resource-id="com.instagram.android:id/reels_tray_container"
+STORY_TRAY_FIXTURE: str = """<hierarchy><node><node resource-id="com.instagram.android:id/reels_tray_container"
   class="androidx.recyclerview.widget.RecyclerView">
     <node class="android.widget.LinearLayout">
       <node class="android.widget.Button" content-desc="myself's story, 0 of 3, Unseen."
@@ -323,7 +323,7 @@ def test_parse_story_tray_skips_own_story_and_dedupes_the_nested_image() -> None
 # Modeled on a real Following-list screen dump (own account, 2026-09-11): "Categories" suggestion
 # cards (own resource-ids: title/subtitle, no follow_list_username) sit above the real rows, and a
 # "Sorted by ..." header between them — both must never be mistaken for a followed account.
-FOLLOWING_LIST_FIXTURE = """<hierarchy><node><node resource-id="com.instagram.android:id/frame_header">
+FOLLOWING_LIST_FIXTURE: str = """<hierarchy><node><node resource-id="com.instagram.android:id/frame_header">
     <node resource-id="com.instagram.android:id/row_header_textview" text="Categories" />
   </node>
   <node resource-id="com.instagram.android:id/container" content-desc="Least interacted with">

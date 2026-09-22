@@ -82,6 +82,7 @@ def test_prune_debug_removes_old_loose_artifacts_but_not_other_files(debug_dir: 
 
 def test_prune_debug_still_caps_dump_pairs_by_count(debug_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "DEBUG_KEEP", 2)
+    i: int
     for i in range(4):
         _touch(debug_dir / f"d{i}_hierarchy.xml", days_old=0.1 * (4 - i))
         _touch(debug_dir / f"d{i}_screen.jpg", days_old=0.1 * (4 - i))

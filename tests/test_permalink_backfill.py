@@ -11,11 +11,11 @@ from shared import sqlrows
 from tests.deviceflows import feed_device, seed_post
 from tests.fakedevice import FakeDevice
 
-pytestmark = pytest.mark.usefixtures("fast_offline")
+pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
-NOW = datetime.now(UTC)
+NOW: datetime = datetime.now(UTC)
 # A day ago: recent enough that retention (RETAIN_DAYS) keeps the rows, older than any update a run makes.
-OLD = (NOW - timedelta(days=1)).isoformat()
+OLD: str = (NOW - timedelta(days=1)).isoformat()
 
 
 def _hashes(d: FakeDevice) -> tuple[str, str]:
@@ -65,6 +65,8 @@ def test_a_stored_post_without_a_permalink_gets_one_and_keeps_its_id(quiet_run: 
     stats: scrape.RunStats = scrape.scrape_once(d, con)
 
     assert stats["new"] == 0
+    h: str
+    url: str
     for h, url in (
         (top, "https://www.instagram.com/reel/TOP123/"),
         (other, "https://www.instagram.com/p/OTHER1/"),

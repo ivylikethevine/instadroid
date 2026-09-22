@@ -11,7 +11,6 @@ new-profile = "devtools.new_profile:main"
 promote-dump = "devtools.promote_dump:main"
 check-new-builds = "devtools.check_new_builds:main"
 export-openapi = "devtools.export_openapi:main"
-local-annotations = "devtools.local_annotations:main"
 
 [build-system]
 requires = ["setuptools>=84"]
@@ -34,17 +33,26 @@ cache-dir = "local/.ruff_cache"
 [tool.ruff.lint]
 # ANN: every function is annotated, tests included, and ANN401 forbids an explicit Any. TID251 bans the
 # typing escape hatches outright (see banned-api below), PGH forbids blanket `# type: ignore`/`# noqa`, and
-# RUF100 flags a `# noqa` that no longer suppresses anything. Every local variable is annotated where it's
-# first bound: no linter has that rule, so devtools/local_annotations.py is one (`local-annotations`, run by
-# scripts/check.sh's python group and tests/test_typing_policy.py). That test also covers the suppression comments.
+# RUF100 flags a `# noqa` that no longer suppresses anything. Every variable is annotated where it's first
+# bound: ruff has no such rule, so constricter checks it ([tool.constricter] below); `external` keeps ruff from
+# treating its LVA codes as unknown. tests/test_typing_policy.py covers the suppression comments.
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "ANN", "TID251", "PGH", "RUF100"]
 ignore = ["E501"]
+external = ["LVA"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "typing.Any".msg = "No Any: give the value a real type (see README's Development section)"
 "typing_extensions.Any".msg = "No Any: give the value a real type"
 "typing.cast".msg = "No cast(): narrow with isinstance or a typed helper instead"
 "typing_extensions.cast".msg = "No cast(): narrow with isinstance or a typed helper instead"
+
+[tool.constricter]
+# The strictest setting: every code (LVA001-LVA006) is an error, and module and class bodies are checked too,
+# so every variable is annotated where it's first bound, `for` targets and `match` captures included, and no
+# annotation is vague (Any, object, or a bare generic). Run by scripts/check.sh's python group over app/,
+# tests/ and .github/scripts.
+level = "suffocate"
+all-scopes = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

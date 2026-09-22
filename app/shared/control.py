@@ -17,9 +17,9 @@ from pathlib import Path
 from .sqlrows import SqlValue
 from .timestamps import parse_iso
 
-LOCK = "manual.lock"
-HOLD = "needs-human.hold"  # its text is the error that raised it
-RUN_NOW = "scrape-now"
+LOCK: str = "manual.lock"
+HOLD: str = "needs-human.hold"  # its text is the error that raised it
+RUN_NOW: str = "scrape-now"
 
 
 def env_control_dir(db_path: str, environ: Mapping[str, str] = os.environ) -> Path:

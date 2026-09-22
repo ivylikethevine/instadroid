@@ -4,9 +4,10 @@ from pathlib import Path
 
 import igprofiles
 import pytest
+from igprofiles import BaseProfile
 from instadroid import capture, config, db, device, diagnostics, tune, versioning
 
-V424 = igprofiles.load("v424")
+V424: BaseProfile = igprofiles.load("v424")
 
 
 @pytest.fixture(autouse=True)

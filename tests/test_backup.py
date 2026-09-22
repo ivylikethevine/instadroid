@@ -17,7 +17,7 @@ def con(con: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     return con
 
 
-NOW = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+NOW: datetime = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
 
 
 def test_a_backup_is_a_consistent_copy(con: sqlite3.Connection) -> None:
@@ -41,6 +41,7 @@ def test_backups_wait_out_the_interval_unless_forced(
 
 def test_only_the_newest_backups_are_kept(con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "BACKUP_KEEP", 2)
+    day: int
     for day in range(4):
         backup.backup_database(con, force=True, now=NOW + timedelta(days=day))
     assert [p.name for p in backup.backups()] == [

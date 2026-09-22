@@ -11,7 +11,7 @@ from uiautomator2.exceptions import HTTPError, LaunchUiAutomationError, UiObject
 from tests.fakedevice import FakeDevice
 
 # A feed list with nothing identifiable in it: parse_hierarchy() returns [] for this.
-EMPTY_XML = '<hierarchy><node resource-id="android:id/list" bounds="[0,0][1080,2340]" /></hierarchy>'
+EMPTY_XML: str = '<hierarchy><node resource-id="android:id/list" bounds="[0,0][1080,2340]" /></hierarchy>'
 
 
 @pytest.fixture

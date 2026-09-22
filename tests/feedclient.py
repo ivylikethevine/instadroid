@@ -12,6 +12,7 @@ from PIL import Image
 
 def fresh_feedserver() -> None:
     """Forget every feedserver module, so the next `import feedserver` reads the environment again."""
+    name: str
     for name in [n for n in sys.modules if n == "feedserver" or n.startswith("feedserver.")]:
         del sys.modules[name]
 
@@ -19,7 +20,7 @@ def fresh_feedserver() -> None:
 # Legacy schema (no media, accounts or stories tables) with two posts, scraped in the order a run actually
 # finds them (newest post first), so scraped_at DESC would get the order backwards; posted_at DESC must
 # recover the true chronological order.
-TWO_POSTS = """
+TWO_POSTS: str = """
 CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,
     media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT);
 INSERT INTO posts VALUES ('ABC', 'someone', 'photo', '2 days ago', 'Hi <there>', 'ABC.jpg',

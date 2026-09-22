@@ -21,6 +21,7 @@ def newer_builds(listing: str, newest_validated: str | None) -> dict[int, str]:
     """{major: newest build} for every major version in `listing` above the newest validated build's."""
     floor: int = igprofiles.major_of(newest_validated) or 0
     newest: dict[int, str] = {}
+    build: str
     for build in (m[0] for m in igprofiles.BUILD.finditer(listing)):
         major: int = igprofiles.major_of(build) or 0
         if major > floor and (
@@ -39,6 +40,8 @@ def issue_body(builds: dict[int, str], newest_validated: str | None) -> str:
         "| Major | Newest build | Covered by |",
         "|---|---|---|",
     ]
+    major: int
+    build: str
     for major, build in builds.items():
         lines.append(f"| {major} | `{build}` | `{igprofiles.covering(major) or 'no profile'}` |")
     first: str = next(iter(builds.values()))

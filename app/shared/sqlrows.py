@@ -25,15 +25,15 @@ def _item(row: _Row, key: int | str) -> object:
 def fetch_one(cur: sqlite3.Cursor) -> sqlite3.Row | None:
     """The cursor's next row, or None when there are no more."""
     cur.row_factory = sqlite3.Row
-    rows: list[object] = cur.fetchmany(1)
-    return next((r for r in rows if isinstance(r, sqlite3.Row)), None)
+    rows: list[sqlite3.Row] = cur.fetchmany(1)
+    return rows[0] if rows else None
 
 
 def fetch_all(cur: sqlite3.Cursor) -> list[sqlite3.Row]:
     """Every remaining row of the cursor."""
     cur.row_factory = sqlite3.Row
-    rows: list[object] = cur.fetchall()
-    return [r for r in rows if isinstance(r, sqlite3.Row)]
+    rows: list[sqlite3.Row] = cur.fetchall()
+    return rows
 
 
 def scalar(cur: sqlite3.Cursor) -> SqlValue:
@@ -51,10 +51,12 @@ def scalar_int(cur: sqlite3.Cursor) -> int | None:
 def cell(row: sqlite3.Row, key: int | str) -> SqlValue:
     """row[key]: a column by position or by case-insensitive name, raising IndexError for one the row
     doesn't have."""
-    value: object = _item(row, key)
-    if value is None or isinstance(value, str | int | float | bytes):
-        return value
-    raise TypeError(f"column {key!r} holds {type(value).__name__}, not an SQLite value")
+    value: SqlValue
+    match _item(row, key):
+        case None | str() | int() | float() | bytes() as value:
+            return value
+        case _:
+            raise TypeError(f"column {key!r} holds {type(_item(row, key)).__name__}, not an SQLite value")
 
 
 def values(row: sqlite3.Row) -> tuple[SqlValue, ...]:

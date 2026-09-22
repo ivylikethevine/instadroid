@@ -10,9 +10,9 @@ from pathlib import Path
 
 import igprofiles
 import pytest
-from devtools import check_new_builds, export_openapi, local_annotations, new_profile, promote_dump
+from devtools import check_new_builds, export_openapi, new_profile, promote_dump
 
-FEED_445 = igprofiles.fixture("v424", "feed_445.xml")
+FEED_445: Path = igprofiles.fixture("v424", "feed_445.xml")
 
 
 @pytest.mark.parametrize(
@@ -22,9 +22,8 @@ FEED_445 = igprofiles.fixture("v424", "feed_445.xml")
         (promote_dump, "--help", "usage: "),
         (check_new_builds, "--help", "usage: "),
         (export_openapi, "--help", "usage: "),
-        (local_annotations, local_annotations.__file__, "total 0 in 1 file(s)\n"),
     ],
-    ids=["new_profile", "promote_dump", "check_new_builds", "export_openapi", "local_annotations"],
+    ids=["new_profile", "promote_dump", "check_new_builds", "export_openapi"],
 )
 def test_each_tool_runs_as_a_script(
     module: types.ModuleType,
@@ -34,7 +33,7 @@ def test_each_tool_runs_as_a_script(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Run as `python -m devtools.<tool> ...`, the `__main__` block hands the command line to main() and
-    exits with its return code (--help exits 0 from argparse; the annotation checker takes files, not options)."""
+    exits with its return code (--help exits 0 from argparse)."""
     monkeypatch.delenv("FEED_TOKEN", raising=False)
     monkeypatch.setattr(sys, "argv", [module.__name__, argument])
     exit_info: pytest.ExceptionInfo[SystemExit]
@@ -136,6 +135,8 @@ def _host(**changes: bool | str | int) -> new_profile.HostState:
     state: new_profile.HostState = new_profile.HostState(
         redroid_running=True, app_running=False, redroid_mem="1.0GiB / 3GiB", host_available_mib=8000
     )
+    key: str
+    value: bool | str | int
     for key, value in changes.items():
         setattr(state, key, value)
     return state

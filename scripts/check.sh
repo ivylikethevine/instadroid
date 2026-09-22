@@ -9,7 +9,7 @@
 #   scripts/check.sh --install [...]    first fetch tools.txt's pinned binaries into local/ci-tools
 #
 # Subcommands, grouped as ci.yml's jobs are:
-#   python     ruff (check + format), basedpyright, lint-imports, local-annotations   (lint job)
+#   python     ruff (check + format), basedpyright, lint-imports, constricter         (lint job)
 #   test       pytest with coverage; the floor is pyproject.toml's fail_under          (test job)
 #   audit      pip-audit over both hashed locks (needs the network)                    (audit job)
 #   shell      shellcheck, shfmt                                                        (shell job)
@@ -220,11 +220,10 @@ check_lint_imports() {
   run lint-imports lint-imports
 }
 
-# Every local variable annotated where it's first bound (app/devtools/local_annotations.py); no
-# off-the-shelf linter has the rule, so the project's own script is the check.
-check_local_annotations() {
-  need local-annotations local-annotations || return
-  run local-annotations local-annotations
+# Every variable annotated where it's first bound, at pyproject.toml's [tool.constricter] level
+check_constricter() {
+  need constricter constricter || return
+  run constricter constricter app tests .github/scripts
 }
 
 check_test() {
@@ -349,7 +348,7 @@ for sub in "${selected[@]}"; do
     check_ruff
     check_basedpyright
     check_lint_imports
-    check_local_annotations
+    check_constricter
     ;;
   test) check_test ;;
   audit) check_audit ;;

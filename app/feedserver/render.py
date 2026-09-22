@@ -100,7 +100,7 @@ def thumbnail(fe: FeedEntry, file: str) -> None:
 # at the end of a sentence doesn't swallow the full stop). Hashtags: letters, digits and "_", not all
 # digits. Neither may follow a word character, "/" or "@"/"#", which leaves emails and URL
 # fragments ("a@b.com", "example.com/#top") alone.
-_CAPTION_LINK = re.compile(
+_CAPTION_LINK: re.Pattern[str] = re.compile(
     r"(?<![\w/@#.])@(?P<user>[A-Za-z0-9_](?:[A-Za-z0-9_.]{0,28}[A-Za-z0-9_])?)(?![\w@])"
     r"|(?<![\w/@#&])#(?P<tag>\w*[^\W\d]\w*)"
 )
@@ -114,6 +114,7 @@ def caption_html(caption: str) -> str:
     pos: int = 0
     user: str | None
     href: str
+    m: re.Match[str]
     for m in _CAPTION_LINK.finditer(caption):
         out.append(escape(caption[pos : m.start()]))
         if user := m["user"]:

@@ -52,14 +52,15 @@ scripts/check.sh python    # all four, as CI's lint job runs them
 ruff check . && ruff format --check .
 basedpyright
 lint-imports
-local-annotations
+constricter app tests .github/scripts
 ```
 
 These run over `app/` and `tests/` alike and are part of the test contract, not just style:
 
 - **Typing.** basedpyright strict with `reportAny`, plus ruff's `ANN` rules, so no value typed `Any`
-  gets through, and `local-annotations` (`app/devtools/local_annotations.py`) for the rule that every
-  local variable is annotated, which no linter has. `tests/test_typing_policy.py` runs that rule too
+  gets through, and [constricter](https://github.com/ivylikethevine/python-constricter) at its
+  strictest level for the rule that every variable is annotated, which ruff doesn't have.
+  `tests/test_typing_policy.py` runs constricter too
   and catches the suppression comments the linters can't forbid on their own. The rules are in
   [CONTRIBUTING.md](CONTRIBUTING.md#typing-and-coverage).
 - **Import boundaries.** import-linter's contracts in `pyproject.toml`: the feed server doesn't import
@@ -125,7 +126,7 @@ No real account data is used in any fixture.
 
 On every non-draft pull request and every push to `main`, `ci.yml` runs tiers 1 to 3: the `test` job
 runs the whole suite with coverage (replay and contract tests included), and the `lint` job runs
-ruff, basedpyright, `lint-imports` and `local-annotations`, each through `scripts/check.sh`. Both are skipped when a
+ruff, basedpyright, `lint-imports` and constricter, each through `scripts/check.sh`. Both are skipped when a
 change touches only Markdown, `docs/` or workflow files. `coverage.yml` runs the suite with coverage
 again after each green CI run on a push to `main`, for the badge, and on a same-repository pull
 request, where it comments the pull request's coverage and test count next to `main`'s. The docs job

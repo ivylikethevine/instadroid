@@ -21,9 +21,10 @@ from instadroid.common import parse_bounds
 from lxml import etree
 from PIL import Image
 
-IG_PKG = "com.instagram.android"
-LAUNCHER_PKG = "com.android.launcher3"
-WIDTH, HEIGHT = 1080, 2340
+IG_PKG: str = "com.instagram.android"
+LAUNCHER_PKG: str = "com.android.launcher3"
+WIDTH: int = 1080
+HEIGHT: int = 2340
 
 type Node = tuple[dict[str, str], list[Node]]
 
@@ -60,6 +61,7 @@ def hierarchy(*children: Node) -> str:
         kids: list[Node]
         attrs, kids = n
         el: etree._Element = etree.SubElement(parent, "node", attrs)
+        kid: Node
         for kid in kids:
             add(el, kid)
 

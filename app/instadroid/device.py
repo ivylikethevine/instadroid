@@ -52,7 +52,9 @@ def is_transient(e: BaseException) -> bool:
     return isinstance(e, _TRANSIENT)
 
 
-_TRANSIENT = (DeviceNotReady, adbutils.AdbError, adbutils.AdbTimeout, U2DeviceError)
+_TRANSIENT: tuple[
+    type[DeviceNotReady], type[adbutils.AdbError], type[adbutils.AdbTimeout], type[U2DeviceError]
+] = (DeviceNotReady, adbutils.AdbError, adbutils.AdbTimeout, U2DeviceError)
 
 
 def transient_error_names() -> set[str]:
@@ -61,6 +63,7 @@ def transient_error_names() -> set[str]:
 
     def walk(cls: type[BaseException]) -> Iterator[type[BaseException]]:
         yield cls
+        sub: type[BaseException]
         for sub in cls.__subclasses__():
             yield from walk(sub)
 
@@ -239,7 +242,10 @@ def human_scroll_list(d: uidevice.Device) -> None:
 
 def first(d: uidevice.Device, **kinds: Iterable[str]) -> uidevice.Selector | None:
     """Return the first existing selector among the given candidate lists."""
+    kind: str
+    values: Iterable[str]
     for kind, values in kinds.items():
+        v: str
         for v in values:
             sel: uidevice.Selector = d(**{kind: v})
             if sel.exists(timeout=1):
@@ -254,7 +260,7 @@ def first(d: uidevice.Device, **kinds: Iterable[str]) -> uidevice.Selector | Non
 # of the container's life (see docs/INCIDENTS.md, "Reducing idle memory"). Force-stopped here instead:
 # unlike pm disable-user, this only kills the current process, so whatever needs one again just
 # relaunches it — no risk of the packageinstaller-style "required singleton" crash from disabling.
-CACHED_APP_SWEEP = (
+CACHED_APP_SWEEP: tuple[str, str, str, str, str] = (
     "com.android.settings",
     "com.android.permissioncontroller",
     "com.android.managedprovisioning",
@@ -287,7 +293,7 @@ def _redroid_memory(d: uidevice.Device) -> MemoryReading | None:
         return None
 
 
-MEMORY_FILES = (
+MEMORY_FILES: tuple[str, str, str, str] = (
     "/sys/fs/cgroup/memory.current",
     "/sys/fs/cgroup/memory.max",
     "/sys/fs/cgroup/memory.events",

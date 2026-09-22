@@ -32,7 +32,7 @@ from devtools import ROOT, jsonvalues
 from devtools.jsonvalues import JSON
 
 # UI chrome that is the same for everyone; left out of the review list.
-_CHROME = re.compile(
+_CHROME: re.Pattern[str] = re.compile(
     r"^(Back|Home|Overview|Send post\..*|Like|Comment|Save|More|Following|For you|\d+(:\d+)?( [AP]M)?|"
     r"\d+ (second|minute|hour|day|week)s? ago|[A-Z][a-z]+ \d{1,2}(, \d{4})?|Yesterday|Battery.*|Ethernet\.)$"
 )
@@ -83,19 +83,25 @@ def pseudonymize(xml: str) -> str:
             names[value] = f"{kind}{sum(v.startswith(kind) for v in names.values()) + 1}"
 
     m: re.Match[str] | None
+    p: parsing.ParsedPost
     for p in found["posts"]:
         alias(p["username"], "user")
         alias(p["place"], "Place ")
         if m := re.search(r"\bby ([^,]+),", p["alt"]):
             alias(m.group(1), "Display ")
         alias(p["caption"].rstrip("…").strip(), "Caption ")
+    item: parsing.StoryItem
     for item in found["story_tray"]:
         alias(item["username"], "user")
+    username: str
     for username in found["following_list"]:
         alias(username, "user")
     root: etree._Element = etree.fromstring(xml.encode())
     selectors: Selectors = versioning.PROFILE.selectors
     value: str | None
+    n: etree._Element
+    attr: str
+    handle: str
     for n in root.iter("node"):  # names on screen that no parser returns
         for attr in ("text", "content-desc"):
             value = n.get(attr) or ""
@@ -205,6 +211,7 @@ def print_promoted(promoted: Promoted) -> None:
         f" {len(result['story_tray'])} story tray item(s); {len(result['following_list'])} following row(s)"
     )
     print("\nReview before committing — text still in the fixture:")
+    value: str
     for value in promoted.leftovers:
         print("  ", value)
 
@@ -224,6 +231,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     profile_name: str
     if opts.update:
         (profile_name,) = opts.args
+        out: Path
         for out in rerecord(profile_name):
             print("wrote", out.relative_to(ROOT))
         return

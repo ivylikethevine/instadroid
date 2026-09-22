@@ -12,6 +12,9 @@ httpx2==2.12.0
 basedpyright==1.40.1
 lxml-stubs==0.5.1
 import-linter==2.15
+# Every local variable annotated where it's first bound. Not on PyPI yet: pinned to a commit's source archive
+# (hashed like the rest); move to `python-constricter==X.Y.Z` once it's released.
+python-constricter @ https://github.com/ivylikethevine/python-constricter/archive/1b54f6d96ba087c652e83e238322029c6d53116a.tar.gz
 shfmt-py==4.2.0
 typos==1.50.1
 zizmor==1.30.1

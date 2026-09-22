@@ -3,8 +3,9 @@
 
 import sqlite3
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import NoReturn, TypedDict, Unpack
 
 import pytest
@@ -17,15 +18,17 @@ from instadroid import (
 
 from tests.fakedevice import FakeDevice, Node, hierarchy, node
 
-SAVE_FAILURE_LOGCAT = diagnostics.save_failure_logcat  # captured before conftest stubs it out
-CAPTION = SELECTORS["caption_class"]  # from v424's own module, whatever profile a test pins
-ACTION_BAR = node("action_bar_container", bounds=(0, 142, 1080, 289))
-FOLLOWING_TITLE = node(
+SAVE_FAILURE_LOGCAT: Callable[[str], Path | None] = (
+    diagnostics.save_failure_logcat
+)  # captured before conftest stubs it out
+CAPTION: str = SELECTORS["caption_class"]  # from v424's own module, whatever profile a test pins
+ACTION_BAR: Node = node("action_bar_container", bounds=(0, 142, 1080, 289))
+FOLLOWING_TITLE: Node = node(
     "action_bar_title", cls="android.widget.TextView", text="Following", bounds=(150, 160, 500, 270)
 )
-TOP_URL = "https://www.instagram.com/reel/TOP123/?igsh=abc"
-OTHER_URL = "https://www.instagram.com/p/OTHER1/?igsh=xyz"
-PROFILE_TAB = node("profile_tab", desc="Profile", bounds=(864, 2088, 1080, 2214), goto="profile")
+TOP_URL: str = "https://www.instagram.com/reel/TOP123/?igsh=abc"
+OTHER_URL: str = "https://www.instagram.com/p/OTHER1/?igsh=xyz"
+PROFILE_TAB: Node = node("profile_tab", desc="Profile", bounds=(864, 2088, 1080, 2214), goto="profile")
 
 
 class RunOptions(TypedDict, total=False):
@@ -64,12 +67,12 @@ def home_screen(switcher_goto: str = "menu", extra: Iterable[Node] = ()) -> str:
     )
 
 
-MENU = hierarchy(
+MENU: str = hierarchy(
     node(cls="android.widget.TextView", text="Following", bounds=(0, 1800, 1080, 1900), goto="following"),
     node(cls="android.widget.TextView", text="Favorites", bounds=(0, 1900, 1080, 2000)),
 )
 
-STORY = hierarchy(
+STORY: str = hierarchy(
     node(
         "reel_viewer_root",
         bounds=(0, 0, 1080, 2340),
@@ -134,7 +137,7 @@ def copy_link(clip: str | None = None) -> Node:
     return node(desc="Copy link", bounds=(0, 2240, 1080, 2330), clip=clip, goto="following")
 
 
-OLDER_CARDS = [
+OLDER_CARDS: list[Node] = [
     node("row_feed_profile_header", desc="old_user posted a photo 2 days ago", bounds=(0, 300, 1080, 437)),
     node("row_feed_photo_imageview", desc="Photo by Old User, 5 likes", bounds=(0, 437, 1080, 1500)),
     node("row_feed_button_share", bounds=(390, 1500, 453, 1621)),
@@ -240,6 +243,9 @@ def feed_device_with_following(
     d.screens["profile"] = profile_screen()
     d.back["profile"] = "following"
     page_names: list[str] = ["following_list"] + [f"following_list_s{i}" for i in range(2, len(pages) + 1)]
+    i: int
+    name: str
+    usernames: list[str]
     for i, (name, usernames) in enumerate(zip(page_names, pages, strict=True)):
         d.screens[name] = following_list_screen(usernames)
         d.back[name] = "profile"

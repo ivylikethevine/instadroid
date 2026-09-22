@@ -11,7 +11,7 @@ from fastapi import Request, Response
 
 from . import settings
 
-OPEN_PATHS = ("/health",)  # the compose healthcheck calls it without credentials
+OPEN_PATHS: tuple[str] = ("/health",)  # the compose healthcheck calls it without credentials
 
 
 class SkipHealthcheck(logging.Filter):

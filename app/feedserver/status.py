@@ -14,7 +14,7 @@ from shared.timestamps import parse_iso
 from . import control, queries, settings
 from .queries import string, text
 
-router = APIRouter()
+router: APIRouter = APIRouter()
 
 
 class Health(BaseModel):

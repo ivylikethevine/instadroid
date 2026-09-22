@@ -17,15 +17,16 @@ from pathlib import Path
 
 from .base import BaseProfile
 
-MIN_MAJOR = 424  # oldest Instagram version this project supports: the lowest profile's major
+MIN_MAJOR: int = 424  # oldest Instagram version this project supports: the lowest profile's major
 # The build installed when nothing more specific is asked for (auto-install, `scraper.py install`,
 # `new-profile restore`). Pinned below the newest validated build on purpose: 446.0.0.49.77 has
 # crashed on launch on the reference device since 2026-09-15 (docs/RUNLOG.md). None means the
 # newest validated build. tests/test_profiles.py checks it's a validated build.
 DEFAULT_BUILD: str | None = "445.0.0.45.83"
-BUILD = re.compile(r"\b(\d{3})\.\d+\.\d+\.\d+\.\d+\b")  # a full build, "446.0.0.49.77"; group 1 is its major
-_NAME = re.compile(r"^v(\d{3})$")
-_ROOT = Path(__file__).parent
+# A full build, "446.0.0.49.77"; group 1 is its major.
+BUILD: re.Pattern[str] = re.compile(r"\b(\d{3})\.\d+\.\d+\.\d+\.\d+\b")
+_NAME: re.Pattern[str] = re.compile(r"^v(\d{3})$")
+_ROOT: Path = Path(__file__).parent
 
 
 def major_of(version: str | None) -> int | None:
@@ -48,6 +49,7 @@ def normalize(name: str) -> str:
 def available() -> list[str]:
     """Profile directory names at or above MIN_MAJOR, ascending: every vXYZ/ with an __init__.py."""
     names: list[str] = []
+    d: Path
     for d in _ROOT.iterdir():
         m: re.Match[str] | None = _NAME.match(d.name)
         if m and (d / "__init__.py").is_file() and int(m.group(1)) >= MIN_MAJOR:
@@ -66,8 +68,10 @@ def load(name: str) -> BaseProfile:
         raise ValueError(f"{name} is below the supported floor (v{MIN_MAJOR})")
     if name not in available():
         raise ValueError(f"no profile directory igprofiles/{name}/ (available: {', '.join(available())})")
-    profile_cls: object = getattr(importlib.import_module(f"igprofiles.{name}"), "Profile", None)
-    if not (isinstance(profile_cls, type) and issubclass(profile_cls, BaseProfile)):
+    profile_cls: type[BaseProfile] | None = getattr(
+        importlib.import_module(f"igprofiles.{name}"), "Profile", None
+    )
+    if not (isinstance(profile_cls, type) and BaseProfile in profile_cls.__mro__):
         raise ValueError(f"igprofiles/{name}/__init__.py must define Profile(BaseProfile)")
     profile: BaseProfile = profile_cls()
     missing: list[str] = [a for a in ("major", "selectors") if not hasattr(profile, a)]

@@ -15,7 +15,7 @@ from typing import NoReturn, TypedDict, Unpack
 import igprofiles
 import pytest
 from devtools import new_profile, promote_dump
-from igprofiles import screens
+from igprofiles import BaseProfile, screens
 from igprofiles.base import Selectors
 from instadroid import config, db, diagnostics, scrape, versioning
 from lxml import etree
@@ -23,10 +23,10 @@ from lxml import etree
 from tests.deviceflows import feed_device, following_list_screen, home_screen
 from tests.fakedevice import FakeDevice, hierarchy, node
 
-pytestmark = pytest.mark.usefixtures("fast_offline")
+pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
-V424 = igprofiles.load("v424")
-FEED_XML = igprofiles.fixture("v424", "feed_445.xml").read_text()
+V424: BaseProfile = igprofiles.load("v424")
+FEED_XML: str = igprofiles.fixture("v424", "feed_445.xml").read_text()
 
 
 # --- igprofiles.screens --------------------------------------------------------------------------
@@ -36,6 +36,7 @@ def test_every_selector_key_belongs_to_a_screen_or_is_situational() -> None:
     placed: set[str] = {k for s in screens.SCREENS.values() for k in (*s.required, *s.optional)} | set(
         screens.SITUATIONAL
     )
+    name: str
     for name in igprofiles.available():
         keys: set[str] = set(igprofiles.load(name).selectors)
         assert keys <= placed, f"{name}: place {keys - placed} in igprofiles/screens.py"
@@ -214,6 +215,7 @@ def scratch_profiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
 
     monkeypatch.setattr(igprofiles, "fixture", fixture)
     yield root
+    mod: str
     for mod in [m for m in sys.modules if m.startswith("igprofiles.v447")]:
         del sys.modules[mod]
 
@@ -393,6 +395,8 @@ def test_baseline_installs_runs_and_checks(
 
 def _dumps(directory: Path, files: dict[str, str]) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
+    stem: str
+    xml: str
     for stem, xml in files.items():
         (directory / f"{stem}_hierarchy.xml").write_text(xml)
     return directory
@@ -525,6 +529,7 @@ def test_pseudonymize_catches_names_no_parser_returns() -> None:
         node("clips_video_container", desc="Reel by Zed Q, 82 likes, 17 comments, 2 hours ago"),
     )
     clean: str = promote_dump.pseudonymize(xml)
+    name: str
     for name in (
         "me.myself",
         "suggested.acct",

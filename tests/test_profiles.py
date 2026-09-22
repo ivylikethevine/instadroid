@@ -11,11 +11,11 @@ from pathlib import Path
 import igprofiles
 import pytest
 from igprofiles import BaseProfile, major_of, version_key
-from igprofiles.base import _check_key_groups
+from igprofiles.base import Selectors, _check_key_groups
 from instadroid import config, install, parsing, versioning
 
-ROOT = igprofiles.load(igprofiles.available()[0])
-FEED_XML = igprofiles.fixture("v424", "feed_445.xml").read_text()
+ROOT: BaseProfile = igprofiles.load(igprofiles.available()[0])
+FEED_XML: str = igprofiles.fixture("v424", "feed_445.xml").read_text()
 
 # --- discovery and loading ---------------------------------------------------------------------
 
@@ -80,7 +80,8 @@ def test_load_rejects_a_profile_whose_major_does_not_match_its_directory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Profile(BaseProfile):
-        major, selectors = 446, ROOT.selectors
+        major: int = 446
+        selectors: Selectors = ROOT.selectors
 
     _fake_profile_dir(monkeypatch, "v447", Profile)
     with pytest.raises(ValueError, match="defines major=446, expected 447"):
@@ -89,7 +90,9 @@ def test_load_rejects_a_profile_whose_major_does_not_match_its_directory(
 
 def test_load_rejects_validated_builds_below_the_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     class Profile(BaseProfile):
-        major, selectors, validated = 447, ROOT.selectors, ("446.0.0.49.77",)
+        major: int = 447
+        selectors: Selectors = ROOT.selectors
+        validated: tuple[str, ...] = ("446.0.0.49.77",)
 
     _fake_profile_dir(monkeypatch, "v447", Profile)
     with pytest.raises(ValueError, match="validated builds below 447: 446.0.0.49.77"):
@@ -98,7 +101,7 @@ def test_load_rejects_validated_builds_below_the_profile(monkeypatch: pytest.Mon
 
 def test_load_rejects_a_profile_without_a_major_or_selectors(monkeypatch: pytest.MonkeyPatch) -> None:
     class Profile(BaseProfile):
-        notes = "declares nothing"
+        notes: str = "declares nothing"
 
     _fake_profile_dir(monkeypatch, "v447", Profile)
     with pytest.raises(ValueError, match="v447 Profile is missing major, selectors"):
@@ -168,7 +171,7 @@ def test_default_build_falls_back_to_the_newest_build(monkeypatch: pytest.Monkey
 
 def test_validated_builds_are_not_inherited() -> None:
     class Profile(type(ROOT)):
-        major = 447
+        major: int = 447
 
     assert Profile().own_validated == () and Profile().validated == ROOT.validated
 
@@ -205,6 +208,7 @@ def test_every_profile_meets_the_contract(name: str) -> None:
     names: list[str] = igprofiles.available()
     following: str | None = names[names.index(name) + 1] if name != names[-1] else None
     assert profile.major >= igprofiles.MIN_MAJOR
+    build: str
     for build in profile.own_validated:  # each validated build is one this profile actually covers
         assert igprofiles.covering(major_of(build)) == name, build
     # Every selector key the scraper reads must exist, so a profile can't silently drop one.
@@ -235,13 +239,14 @@ def test_a_profile_exists_only_where_something_changed(name: str) -> None:
 
 def test_the_change_check_notices_selectors_and_overrides() -> None:
     class Same(type(ROOT)):
-        major = 447
+        major: int = 447
 
     class NewSelector(type(ROOT)):
-        major, selectors = 447, {**ROOT.selectors, "share_id": "moved"}
+        major: int = 447
+        selectors: Selectors = {**ROOT.selectors, "share_id": "moved"}
 
     class Override(type(ROOT)):
-        major = 447
+        major: int = 447
 
         def parse_hierarchy(self, base: Callable[[str], list[parsing.Post]], xml: str) -> list[parsing.Post]:
             return base(xml)
@@ -281,7 +286,9 @@ def test_activate_profile_warns_when_ig_profile_is_not_the_covering_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Profile(type(ROOT)):
-        major, selectors, validated = 447, {**ROOT.selectors, "share_id": "moved"}, ("447.0.0.1.1",)
+        major: int = 447
+        selectors: Selectors = {**ROOT.selectors, "share_id": "moved"}
+        validated: tuple[str, ...] = ("447.0.0.1.1",)
 
     _fake_profile_dir(monkeypatch, "v447", Profile)
     monkeypatch.setattr(config, "IG_PROFILE", "v424")
@@ -346,7 +353,7 @@ def test_a_profile_method_overrides_a_versioned_function_and_receives_the_base(
 
 def test_overrides_are_inherited_by_newer_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
     class Newer(_WithParserOverride):
-        major = 446
+        major: int = 446
 
     baseline: list[parsing.Post] = parsing.parse_hierarchy(FEED_XML)
     monkeypatch.setattr(versioning, "PROFILE", Newer())

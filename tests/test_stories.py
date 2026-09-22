@@ -19,9 +19,9 @@ from shared import sqlrows
 from tests.deviceflows import feed_device, following_screen
 from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, hierarchy
 
-pytestmark = pytest.mark.usefixtures("fast_offline")
+pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
-_NOISE = Image.effect_noise((WIDTH // 8, HEIGHT // 8), 80)  # random, so generated once
+_NOISE: Image.Image = Image.effect_noise((WIDTH // 8, HEIGHT // 8), 80)  # random, so generated once
 
 
 def _frame() -> Image.Image:

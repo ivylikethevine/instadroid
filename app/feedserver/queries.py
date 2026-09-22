@@ -89,6 +89,7 @@ def extra_slides(con: sqlite3.Connection, post_ids: list[str]) -> dict[str, list
     if post_ids:
         placeholders: str = ",".join("?" * len(post_ids))
         sql: str = f"SELECT post_id, file FROM media WHERE post_id IN ({placeholders}) ORDER BY post_id, idx"
+        row: sqlite3.Row
         for row in all_rows(con, sql, post_ids):
             out.setdefault(string(row, 0), []).append(string(row, 1))
     return out
