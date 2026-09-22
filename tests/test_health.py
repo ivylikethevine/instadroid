@@ -22,6 +22,9 @@ def _add_runs(db: Path, runs: list[tuple[float, str | None, str | None]]) -> Non
         )"""
     )
     now: datetime = datetime.now(UTC)
+    hours_ago: float
+    error: str | None
+    warning: str | None
     for hours_ago, error, warning in sorted(runs, key=lambda r: -r[0]):  # oldest first, like real ids
         finished: datetime = now - timedelta(hours=hours_ago)
         con.execute(

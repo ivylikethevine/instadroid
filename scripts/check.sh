@@ -9,7 +9,7 @@
 #   scripts/check.sh --install [...]    first fetch tools.txt's pinned binaries into local/ci-tools
 #
 # Subcommands, grouped as ci.yml's jobs are:
-#   python     ruff (check + format), basedpyright, lint-imports, local-annotations   (lint job)
+#   python     ruff (check + format), basedpyright, lint-imports, constricter         (lint job)
 #   test       pytest with coverage; the floor is pyproject.toml's fail_under          (test job)
 #   audit      pip-audit over both hashed locks (needs the network)                    (audit job)
 #   shell      shellcheck, shfmt                                                        (shell job)
@@ -220,11 +220,10 @@ check_lint_imports() {
   run lint-imports lint-imports
 }
 
-# Every local variable annotated where it's first bound (app/devtools/local_annotations.py); no
-# off-the-shelf linter has the rule, so the project's own script is the check.
-check_local_annotations() {
-  need local-annotations local-annotations || return
-  run local-annotations local-annotations
+# Every variable annotated where it's first bound, at pyproject.toml's [tool.constricter] level
+check_constricter() {
+  need constricter constricter || return
+  run constricter constricter app tests .github/scripts
 }
 
 check_test() {
@@ -239,8 +238,16 @@ check_audit() {
   local -a extra=()
   read -ra extra <<<"${PIP_AUDIT_ARGS:-}" # whitespace-split, unglobbed
   # Both locks are fully pinned and hashed, so pip-audit checks exactly those versions without resolving.
-  run pip-audit pip-audit --disable-pip --require-hashes -r app/requirements.txt -r requirements-dev.txt --strict \
+  # It can't audit a URL requirement (no version to look up), so those entries (python-constricter, until
+  # it's released; docs/ROADMAP.md) are dropped from a copy of the dev lock: the `name @ url` line and
+  # its --hash continuations.
+  local dev_lock
+  dev_lock="$(mktemp)"
+  awk '/^[^ #]+ @ / { skip = 1 } skip { if ($0 !~ /\\$/) skip = 0; next } { print }' \
+    requirements-dev.txt >"$dev_lock"
+  run pip-audit pip-audit --disable-pip --require-hashes -r app/requirements.txt -r "$dev_lock" --strict \
     "${extra[@]}"
+  rm -f "$dev_lock"
 }
 
 check_shellcheck() {
@@ -349,7 +356,7 @@ for sub in "${selected[@]}"; do
     check_ruff
     check_basedpyright
     check_lint_imports
-    check_local_annotations
+    check_constricter
     ;;
   test) check_test ;;
   audit) check_audit ;;

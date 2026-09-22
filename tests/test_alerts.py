@@ -20,8 +20,8 @@ from tests.support import UrlResponse, record_run_ago, sql_column
 if TYPE_CHECKING:
     from _typeshed import SupportsRead
 
-NOW = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
-CHALLENGE = "RuntimeError(\"Instagram wants a human: 'Confirm it's you' screen; see /debug\")"
+NOW: datetime = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+CHALLENGE: str = "RuntimeError(\"Instagram wants a human: 'Confirm it's you' screen; see /debug\")"
 
 
 @pytest.fixture
@@ -64,6 +64,7 @@ def test_a_login_challenge_is_an_alert_straight_away(con: sqlite3.Connection) ->
 
 
 def test_consecutive_failures_are_an_alert(con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch) -> None:
+    hours: int
     for hours in (3, 2, 1):
         _run(con, hours, "DeviceNotReady('adb offline')")
     found: dict[str, str] = alerts.conditions(con, NOW)

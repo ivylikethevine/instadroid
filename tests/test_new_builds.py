@@ -1,7 +1,7 @@
 import igprofiles
 from devtools import check_new_builds
 
-LISTING = "440.1.0.46.86, 446.0.0.49.77, 447.0.0.12.3, 447.0.0.40.1,\n448.0.0.1.2 garbage 39.0.0.0.0"
+LISTING: str = "440.1.0.46.86, 446.0.0.49.77, 447.0.0.12.3, 447.0.0.40.1,\n448.0.0.1.2 garbage 39.0.0.0.0"
 
 
 def test_only_majors_above_the_newest_validated_build_count() -> None:

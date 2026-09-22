@@ -13,7 +13,7 @@ from pathlib import Path
 from . import config
 from .common import log
 
-_NAME = "posts-%Y%m%dT%H%M%SZ.sqlite"
+_NAME: str = "posts-%Y%m%dT%H%M%SZ.sqlite"
 
 
 def _taken_at(path: Path) -> datetime | None:
@@ -52,6 +52,7 @@ def backup_database(con: sqlite3.Connection, force: bool = False, now: datetime 
     with closing(sqlite3.connect(partial)) as out:
         con.backup(out)
     partial.replace(dest)
+    old: Path
     for old in backups()[: -config.BACKUP_KEEP] if config.BACKUP_KEEP > 0 else []:
         old.unlink(missing_ok=True)
     log(f"backed up the database to {dest}")

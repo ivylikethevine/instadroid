@@ -11,4 +11,4 @@
 
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]  # the repository root: app/devtools/ -> app/ -> .
+ROOT: Path = Path(__file__).resolve().parents[2]  # the repository root: app/devtools/ -> app/ -> .

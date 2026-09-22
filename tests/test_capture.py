@@ -18,7 +18,7 @@ from shared import sqlrows
 from tests.deviceflows import CAPTION, TOP_URL, feed_device, following_screen, top_card_id
 from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, FakeSelector, Node, Out, hierarchy, node
 
-pytestmark = pytest.mark.usefixtures("fast_offline")
+pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
 
 def test_fetch_permalink_copies_and_canonicalises_the_link() -> None:
@@ -158,7 +158,7 @@ def test_expand_caption_is_a_noop_for_a_caption_that_was_never_truncated() -> No
     assert d.taps == []  # nothing to tap
 
 
-_NOISE = Image.effect_noise((WIDTH // 8, HEIGHT // 8), 80)  # random, so generated once
+_NOISE: Image.Image = Image.effect_noise((WIDTH // 8, HEIGHT // 8), 80)  # random, so generated once
 
 
 def _story_frame(seed: int, overlay: bool = False) -> Image.Image:

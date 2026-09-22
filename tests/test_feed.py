@@ -413,7 +413,7 @@ def test_feed_image_that_is_not_an_image_has_no_dimensions(
     assert '<media:thumbnail url="http://feed.test/media/ABC.jpg"/>' in body
 
 
-POSTED_AT_ONLY = """
+POSTED_AT_ONLY: str = """
 CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,
     media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT);
 INSERT INTO posts VALUES ('h3', 'someone', 'photo', NULL, 'No relative date', NULL,

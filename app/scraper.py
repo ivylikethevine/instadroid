@@ -17,10 +17,11 @@
 The scraper itself lives in the instadroid/ package.
 """
 
+import sqlite3
 import sys
 
+from igprofiles import BaseProfile, default_build, version_key
 from igprofiles import available as available_profiles
-from igprofiles import default_build, version_key
 from igprofiles import load as load_profile
 from instadroid import (
     backup,
@@ -33,37 +34,48 @@ from instadroid import (
     install,
     navigation,
     scrape,
+    uidevice,
     versioning,
 )
+from instadroid.db import VersionPair
+from instadroid.scrape import RunStats
 
 if __name__ == "__main__":
+    version: list[str]
+    action: str
+    old: str
+    new: str
     match sys.argv[1:]:
         case ["once", *_]:
-            con = db.db_init()
+            con: sqlite3.Connection = db.db_init()
             wait: float
             if wait := scrape.budget_wait_seconds(con):
                 sys.exit(
                     f"{config.MAX_RUNS_PER_DAY} runs already started in the last 24h (MAX_RUNS_PER_DAY);"
                     f" the next is allowed in {wait / 3600:.1f}h. MAX_RUNS_PER_DAY=0 disables the budget."
                 )
+            stats: RunStats | None
+            exc: Exception | None
             stats, exc = scrape.run_recorded(con)  # recorded in runs, like a scheduled run
             if exc or stats is None:
                 sys.exit(f"run failed: {exc!r}")
             print(stats["new"], "new posts,", stats["metrics"].get("new_stories", 0), "new stories")
         case ["login", *_]:
-            d = device.connect_device()
+            d: uidevice.Device = device.connect_device()
             try:
                 navigation.ensure_logged_in(d)
                 print("logged in")
             finally:
                 device.force_stop(d, config.IG_PKG)  # don't leave ~800MiB resident for whatever runs next
         case ["profiles", *_]:
-            names = available_profiles()
+            names: list[str] = available_profiles()
+            name: str
+            following: str | None
             for name, following in zip(names, [*names[1:], None], strict=True):
-                p = load_profile(name)
-                covers = f"{p.major}-{int(following[1:]) - 1}" if following else f"{p.major} and newer"
-                active = " (active)" if p.name == versioning.PROFILE.name else ""
-                validated = ", ".join(sorted(p.own_validated, key=version_key)) or "none yet"
+                p: BaseProfile = load_profile(name)
+                covers: str = f"{p.major}-{int(following[1:]) - 1}" if following else f"{p.major} and newer"
+                active: str = " (active)" if p.name == versioning.PROFILE.name else ""
+                validated: str = ", ".join(sorted(p.own_validated, key=version_key)) or "none yet"
                 print(f"{p.name}{active}  covers Instagram {covers}  {p.notes}\n  validated: {validated}")
             print("default install:", default_build() or "latest")
         case ["install", *version] if len(version) <= 1:
@@ -79,12 +91,15 @@ if __name__ == "__main__":
         case ["doctor", *_]:
             print(doctor.report(db.db_init()), end="")
         case ["compat", *_]:
-            pairs = db.version_pairs(db.db_init())
+            pairs: list[VersionPair] = db.version_pairs(db.db_init())
             print("redroid image | Instagram | profile | runs (ok, clean) | new posts | last run")
-            for p in pairs:
+            pair: VersionPair
+            for pair in pairs:
                 print(
-                    f"{p['redroid_image'] or '?'} | {p['ig_version']} | {p['selector_profile'] or '?'}"
-                    f" | {p['runs']} ({p['ok_runs']}, {p['clean_runs']}) | {p['new_posts']} | {p['last_run'][:10]}"
+                    f"{pair['redroid_image'] or '?'} | {pair['ig_version']}"
+                    f" | {pair['selector_profile'] or '?'} | {pair['runs']}"
+                    f" ({pair['ok_runs']}, {pair['clean_runs']}) | {pair['new_posts']}"
+                    f" | {pair['last_run'][:10]}"
                 )
             if not pairs:
                 print("(no runs that reached the device yet)")
@@ -101,7 +116,7 @@ if __name__ == "__main__":
         case ["backup", *_]:
             print("wrote", backup.backup_database(db.db_init(), force=True))
         case ["rename", old, new]:
-            n = db.rename_account(db.db_init(), old, new)
+            n: int = db.rename_account(db.db_init(), old, new)
             print(f"moved {n} post(s) from {old!r} to {new!r}")
         case ["rename", *_]:
             print("usage: scraper.py rename <old_username> <new_username>")

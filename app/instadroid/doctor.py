@@ -17,7 +17,8 @@ from shared.timestamps import parse_iso
 
 from . import alerts, config, control, db, device, diagnostics, scrape, versioning
 
-Adb = Callable[[list[str]], str | None]  # runs `adb -s ADB_ADDR <args>`, returns stdout or None on failure
+# Runs `adb -s ADB_ADDR <args>`, returns stdout or None on failure.
+type Adb = Callable[[list[str]], str | None]
 
 
 def adb_run(args: list[str]) -> str | None:
@@ -49,6 +50,7 @@ def _runs_section(con: sqlite3.Connection, now: datetime) -> list[str]:
     rows: list[sqlite3.Row] = sqlrows.fetch_all(con.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 5"))
     if not rows:
         return [*lines, "no runs recorded yet"]
+    r: sqlite3.Row
     for r in rows:
         error: str | None = sqlrows.cell_str(r, "error")
         warning: str | None = sqlrows.cell_str(r, "warning") if sqlrows.has_column(r, "warning") else None
@@ -85,6 +87,7 @@ def _control_section(con: sqlite3.Connection) -> list[str]:
     open_alerts: list[sqlite3.Row] = sqlrows.fetch_all(
         con.execute("SELECT kind, message, raised_at FROM alerts ORDER BY raised_at")
     )
+    a: sqlite3.Row
     for a in open_alerts:
         lines.append(
             f"alert since {(sqlrows.cell_str(a, 'raised_at') or '?')[:16]}: {alerts.TITLES.get(sqlrows.must_str(a, 'kind'), '?')}:"
@@ -134,6 +137,8 @@ def _logcat_section(adb: Adb) -> list[str]:
     if not text:
         return [*lines, "could not read logcat"]
     found: bool = False
+    signature: str
+    fix: str
     for signature, fix in diagnostics.CRASH_SIGNATURES.items():
         count: int = text.count(signature)
         if count:

@@ -9,7 +9,7 @@ from shared import control as files
 
 from . import queries, settings
 
-router = APIRouter()
+router: APIRouter = APIRouter()
 
 
 class ControlState(BaseModel):

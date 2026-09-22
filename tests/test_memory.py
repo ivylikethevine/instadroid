@@ -20,7 +20,7 @@ from tests.deviceflows import StopLoop, feed_device, stop_after_first_sleep
 from tests.fakedevice import FakeDevice, Out
 from tests.support import fetch_row
 
-pytestmark = pytest.mark.usefixtures("fast_offline")
+pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
 
 def test_force_stop_is_one_shell_call_and_best_effort() -> None:
@@ -39,7 +39,7 @@ def test_force_stop_is_one_shell_call_and_best_effort() -> None:
 
 # --- memory guard ---------------------------------------------------------------------------------
 
-MIB = 1024 * 1024
+MIB: int = 1024 * 1024
 
 
 def cgroup_output(
@@ -110,6 +110,7 @@ def test_scrape_once_still_stops_instagram_when_the_run_raises(monkeypatch: pyte
     with pytest.raises(device.DeviceNotReady):
         scrape.scrape_once(d, db.db_init())
     assert d.shell_calls.count(f"am force-stop {config.IG_PKG}") == 2
+    pkg: str
     for pkg in device.CACHED_APP_SWEEP:
         assert d.shell_calls.count(f"am force-stop {pkg}") == 2
 

@@ -49,17 +49,18 @@ from shared.errors import short_error
 
 from devtools import ROOT, promote_dump
 
-PROFILES_DIR = ROOT / "app" / "igprofiles"
-DEV_DIR = ROOT / "local" / "data" / "debug" / "profile-dev"  # /debug/profile-dev in the container
-CONTAINER_DEV_DIR = "/debug/profile-dev"
+PROFILES_DIR: Path = ROOT / "app" / "igprofiles"
+DEV_DIR: Path = ROOT / "local" / "data" / "debug" / "profile-dev"  # /debug/profile-dev in the container
+CONTAINER_DEV_DIR: str = "/debug/profile-dev"
 # Screens whose dumps the parsers read, so a fixture of them checks parse output, not just selectors.
-PARSED_SCREENS = ("feed", "home_feed", "following_list")
+PARSED_SCREENS: tuple[str, str, str] = ("feed", "home_feed", "following_list")
 # Baseline caps (docs/PROFILES.md): enough to reach every screen, short enough to stay light.
-DEFAULT_SCROLLS, DEFAULT_STORIES = 5, 2
+DEFAULT_SCROLLS: int = 5
+DEFAULT_STORIES: int = 2
 # Refuse a baseline when redroid already uses more than this share of its limit, or the host has less
 # free memory than this: the run adds Instagram's ~800MiB on top (docs/INCIDENTS.md).
-MAX_START_PERCENT = 60
-MIN_HOST_AVAILABLE_MIB = 2048
+MAX_START_PERCENT: int = 60
+MIN_HOST_AVAILABLE_MIB: int = 2048
 
 
 # --- builds and forks ------------------------------------------------------------------------------
@@ -142,6 +143,8 @@ def fork(build: str, root: Path = PROFILES_DIR, today: date | None = None) -> Pa
     if target.exists():
         raise ValueError(f"{target} already exists")
     target.mkdir(parents=True)
+    name: str
+    text: str
     for name, text in render_profile(major, parent.name, today or date.today()).items():
         (target / name).write_text(text)
     return target
@@ -149,10 +152,15 @@ def fork(build: str, root: Path = PROFILES_DIR, today: date | None = None) -> Pa
 
 def parent_of(profile: BaseProfile) -> BaseProfile | None:
     """The profile this one subclasses (v424 for a v447 forked from it), or None for the root profile."""
-    for cls in inspect.getmro(type(profile))[1:]:
-        if cls is not BaseProfile and issubclass(cls, BaseProfile) and "major" in vars(cls):
-            return cls()
-    return None
+    parent: type[BaseProfile] | None = next(
+        (
+            cls
+            for cls in inspect.getmro(type(profile))[1:]
+            if cls is not BaseProfile and issubclass(cls, BaseProfile) and "major" in vars(cls)
+        ),
+        None,
+    )
+    return parent() if parent is not None else None
 
 
 # --- baseline --------------------------------------------------------------------------------------
@@ -188,12 +196,22 @@ def compose_run(args: Sequence[str], env: dict[str, str], root: Path = ROOT) -> 
     so the profile being developed (and any selector edit) is what runs, without a rebuild."""
     cmd: list[str] = ["docker", "compose", "--project-directory", str(root), "run", "--rm", "--no-deps"]
     cmd += ["-v", f"{root / 'app'}:/app:ro"]
+    key: str
+    value: str
     for key, value in env.items():
         cmd += ["-e", f"{key}={value}"]
     return [*cmd, "app", "python", "scraper.py", *args]
 
 
-_UNITS = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "kB": 1000, "MB": 1000**2, "GB": 1000**3}
+_UNITS: dict[str, int] = {
+    "B": 1,
+    "KiB": 1024,
+    "MiB": 1024**2,
+    "GiB": 1024**3,
+    "kB": 1000,
+    "MB": 1000**2,
+    "GB": 1000**3,
+}
 
 
 def parse_mem_usage(text: str) -> tuple[int, int]:
@@ -292,6 +310,7 @@ def _run_logged(cmd: Sequence[str], log_path: Path) -> int:
     ):
         log.write("$ " + " ".join(cmd) + "\n")
         assert proc.stdout is not None
+        line: str
         for line in map(str, proc.stdout):  # typeshed types a Popen's pipe as IO[Any]; these are str lines
             sys.stdout.write(line)
             log.write(line)
@@ -315,6 +334,7 @@ def baseline(
     problems: list[str]
     if problems := preflight_problems(read_host_state()):
         print("Not starting the baseline run:")
+        p: str
         for p in problems:
             print("  -", p)
         return 1
@@ -332,6 +352,7 @@ def baseline(
     )
     if not yes and not _confirm("Drive the device now?"):
         return 1
+    sub: str
     for sub in ("dumps", "media"):
         (out / sub).mkdir(parents=True, exist_ok=True)
     env: dict[str, str] = baseline_env(build, scrolls, stories, following)
@@ -394,6 +415,7 @@ def captured_dumps(dumps: Path) -> list[tuple[Path, str, bool]]:
     """(path, screen, failure) for every capture in `dumps`, in capture order."""
     found: list[tuple[Path, str, bool]] = []
     parts: tuple[str, bool] | None
+    path: Path
     for path in sorted(dumps.glob(f"*{diagnostics.HIERARCHY_SUFFIX}")) if dumps.is_dir() else []:
         if parts := diagnostics.parse_dump_name(path.name):
             found.append((path, *parts))
@@ -421,6 +443,9 @@ def check_dumps(profile: BaseProfile, dumps: Path) -> list[DumpReport]:
     parsed: str
     items: int
     _: int
+    path: Path
+    screen: str
+    failure: bool
     for path, screen, failure in captured_dumps(dumps):
         xml: str = path.read_text()
         with versioning.using(profile):
@@ -490,6 +515,7 @@ def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], r
         return "\n".join([*lines, "No captured screens. Run `new-profile baseline` first.", ""])
     lines += ["| Dump | Screen | Result | Missing required keys | Parsed |", "|---|---|---|---|---|"]
     result: str
+    r: DumpReport
     for r in reports:
         if r.check.looks_empty:
             result = "⚠ almost no Instagram UI (a popup holding focus, the launcher, a crash dialog?)"
@@ -512,6 +538,8 @@ def render_report(build: str, profile: BaseProfile, reports: list[DumpReport], r
         by_screen.setdefault(r.screen, []).append(r)
     lines.append("## By screen")
     lines.append("")
+    screen: str
+    spec: screens.Screen
     for screen, spec in screens.SCREENS.items():
         got: list[DumpReport] = [r for r in by_screen.get(screen, []) if not r.check.looks_empty]
         if not got:
@@ -557,6 +585,7 @@ def pick_fixtures(reports: list[DumpReport], wanted: Sequence[str] = PARSED_SCRE
     items (the earliest on a tie). It needs at least one, or its fixture would only prove that nothing
     parses."""
     best: dict[str, DumpReport] = {}
+    r: DumpReport
     for r in reports:
         if r.screen not in wanted or r.failure or not r.check.ok or not r.items:
             continue
@@ -571,9 +600,11 @@ def promote(build: str, wanted: Sequence[str] = PARSED_SCREENS) -> int:
     profile: BaseProfile = covering_profile(build)
     major: int = parse_version(build)
     picked: dict[str, Path] = pick_fixtures(check_dumps(profile, dev_dir(build) / "dumps"), wanted)
+    screen: str
     for screen in wanted:
         if screen not in picked:
             print(f"- {screen}: no clean capture to promote")
+    dump: Path
     for screen, dump in picked.items():
         try:
             promote_dump.print_promoted(promote_dump.promote(dump, profile.name, f"{screen}_{major}"))
@@ -593,6 +624,7 @@ def validation_problems(profile: BaseProfile, build: str, run: RunSummary | None
     fixtures: list[Path] = sorted(igprofiles.fixture(profile.name, "").glob(f"*_{major}.expected.json"))
     if not fixtures:
         problems.append(f"no replay fixtures for {major}: `new-profile promote {build}`")
+    recorded: Path
     for recorded in fixtures:
         problems += promote_dump.fixture_problems(profile, recorded)
     if run is None:
@@ -607,7 +639,7 @@ def validation_problems(profile: BaseProfile, build: str, run: RunSummary | None
     return problems
 
 
-_VALIDATED = re.compile(r"^    validated = \((?P<body>[^)]*)\)\n", re.M)
+_VALIDATED: re.Pattern[str] = re.compile(r"^    validated = \((?P<body>[^)]*)\)\n", re.M)
 
 
 def add_validated(init: Path, build: str) -> None:
@@ -637,6 +669,7 @@ def validate(build: str) -> int:
     problems: list[str]
     if problems := validation_problems(profile, build, run):
         print(f"Instagram {build} can't be marked validated with {profile.name} yet:")
+        p: str
         for p in problems:
             print("  -", p)
         return 1

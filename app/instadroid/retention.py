@@ -37,6 +37,7 @@ def _delete_posts(con: sqlite3.Connection, post_ids: list[str], files: set[str])
 
 def discard_media(*files: str | None) -> None:
     """Unlink media files (relative to MEDIA_DIR), skipping None/empty names and missing files."""
+    fn: str | None
     for fn in files:
         if fn:
             (config.MEDIA_DIR / fn).unlink(missing_ok=True)
@@ -139,6 +140,7 @@ def prune_old_posts(con: sqlite3.Connection) -> None:
         orphans: list[Path] = [
             f for ext in config.MEDIA_EXTS for f in config.MEDIA_DIR.glob(f"*{ext}") if f.name not in kept
         ]
+        f: Path
         for f in orphans:
             f.unlink(missing_ok=True)
         if orphans:

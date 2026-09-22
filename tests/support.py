@@ -33,6 +33,7 @@ def json_object(r: Response) -> dict[str, Json]:
 
 def json_at(value: Json, *path: str) -> Json:
     """value[path[0]][path[1]]..., where every step must be an object."""
+    key: str
     for key in path:
         assert isinstance(value, dict), f"expected an object at {key!r}, got {value!r}"
         value = value[key]

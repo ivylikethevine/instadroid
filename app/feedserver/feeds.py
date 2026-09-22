@@ -15,7 +15,7 @@ from shared.timestamps import parse_iso
 from . import queries, render, settings
 from .queries import string, text
 
-router = APIRouter()
+router: APIRouter = APIRouter()
 
 
 # responses= for the Atom feed routes, written out on each: FastAPI types that parameter as
@@ -50,6 +50,7 @@ def feed(request: Request, user: str | None = None, limit: int = 200) -> Respons
 
     # Each alert gets a new id per raise, so a reader shows it again if it's resolved and raised later.
     fe: FeedEntry
+    alert: sqlite3.Row
     for alert in alerts:
         message: str = string(alert, "message")
         fe = fg.add_entry(order="append")
@@ -71,6 +72,7 @@ def feed(request: Request, user: str | None = None, limit: int = 200) -> Respons
     posted_date: str | None
     place: str | None
     scraped_abs: datetime | None
+    r: sqlite3.Row
     for r in entries:
         username, kind, media_file = string(r, "username"), text(r, "kind"), text(r, "media_file")
         fe = fg.add_entry(order="append")
@@ -90,6 +92,7 @@ def feed(request: Request, user: str | None = None, limit: int = 200) -> Respons
         avatar: str | None = avatars.get(username)
         if avatar:
             html += f'<p><img src="{render.media_url(avatar)}" alt="" width="48" height="48" /></p>'
+        slide: str
         for slide in ([media_file] if media_file else []) + extra_slides.get(string(r, "id"), []):
             html += f"<p>{render.img(slide)}</p>"
         if media_file:
@@ -136,6 +139,7 @@ def stories_feed(request: Request, limit: int = 200) -> Response:
     username: str
     media_file: str | None
     fe: FeedEntry
+    r: sqlite3.Row
     for r in entries:
         username, media_file = string(r, "username"), text(r, "media_file")
         fe = fg.add_entry(order="append")
@@ -206,6 +210,7 @@ def opml(request: Request) -> Response:
     _feed_outline(
         category, "Instagram — Stories", render.feed_url("/stories.xml"), "https://www.instagram.com/"
     )
+    u: str
     for u in usernames:
         _feed_outline(
             category, u, render.feed_url("/instagram.xml", user=u), f"https://www.instagram.com/{quote(u)}/"

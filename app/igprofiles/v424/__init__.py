@@ -5,15 +5,15 @@ The selectors were written against 445.0.0.45.83 and have since handled every bu
 gets its own profile subclassing this one.
 """
 
-from igprofiles.base import BaseProfile
+from igprofiles.base import BaseProfile, Selectors
 
 from .selectors import SELECTORS
 
 
 class Profile(BaseProfile):
-    major = 424
-    selectors = SELECTORS
-    validated = (
+    major: int = 424
+    selectors: Selectors = SELECTORS
+    validated: tuple[str, ...] = (
         "424.0.0.49.64",
         "440.1.0.46.86",
         "441.0.0.43.81",
@@ -23,4 +23,4 @@ class Profile(BaseProfile):
         "445.0.0.45.83",
         "446.0.0.49.77",
     )
-    notes = "root profile: login, stories, photos, carousels, Reels, permalinks"
+    notes: str = "root profile: login, stories, photos, carousels, Reels, permalinks"

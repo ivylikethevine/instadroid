@@ -39,6 +39,7 @@ def expand_caption(d: uidevice.Device, p: parsing.Post) -> str:
             log(f"WARN: caption expand tap failed for {p['username']}:", repr(e))
             break
         root: etree._Element = etree.fromstring(xml.encode())
+        n: etree._Element
         for n in root.iter("node"):
             if n.get("class") != SELECTORS["caption_class"]:
                 continue
@@ -51,9 +52,10 @@ def expand_caption(d: uidevice.Device, p: parsing.Post) -> str:
     return p["caption"]
 
 
-_last_code = ""  # the shortcode of the last permalink handed out, to spot a clipboard that didn't change
-_dumpsys_noted = False  # the dumpsys notes ("a clip but no link", "failed") are logged once per run each
-_dumpsys_failed = False
+_last_code: str = ""  # the shortcode of the last permalink handed out, to spot a clipboard that didn't change
+# The dumpsys notes ("a clip but no link", "failed") are logged once per run each.
+_dumpsys_noted: bool = False
+_dumpsys_failed: bool = False
 
 
 def reset_last_url(d: uidevice.Device) -> None:
@@ -122,6 +124,7 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
         log("WARN: card moved before the share tap; no permalink")
         return None, "sheet"
     link: uidevice.Selector = d(description=SELECTORS["copy_link_desc"])
+    _tap: int
     for _tap in range(config.SHARE_TAP_TRIES):  # the first tap is occasionally swallowed by the video overlay
         # Coordinate tap from the fresh dump: element-based clicks on this (non-clickable)
         # ViewGroup are unreliable on video cards.
@@ -252,6 +255,7 @@ def capture_carousel(d: uidevice.Device, p: parsing.Post, pid: str) -> list[str]
     inset: int = max(int((x2 - x1) * 0.1), 1)
     key: str = parsing.post_id(p)
     files: list[str] = []
+    slide: int
     for slide in range(2, total + 1):
         d.swipe(x2 - inset, cy, x1 + inset, cy, duration=device.swipe_duration())
         device.human_pause(0.8, 1.6)
@@ -306,6 +310,7 @@ def capture_avatar(d: uidevice.Device, header_bounds: str, username: str) -> str
     save_media(img.crop(box), avatar_dir / fn)
     # The orphan sweep never looks in avatars/, so drop this account's avatar in any other format
     # here (e.g. its old .jpg after switching MEDIA_FORMAT) rather than leaving it behind forever.
+    ext: str
     for ext in config.MEDIA_EXTS:
         if ext != media_ext():
             (avatar_dir / f"{safe_user}{ext}").unlink(missing_ok=True)

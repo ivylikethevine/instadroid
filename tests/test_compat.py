@@ -5,7 +5,7 @@ from typing import Unpack
 import pytest
 from instadroid import config, db, device
 
-IMAGE = "erstt/redroid:13.0.0_ndk_ChromeOS"
+IMAGE: str = "erstt/redroid:13.0.0_ndk_ChromeOS"
 
 
 def _run(
@@ -33,7 +33,7 @@ def test_version_pairs_summarizes_runs_per_image_and_build(
     _run(con, "2026-09-14T13:00:00+00:00", "446.0.0.49.77", error="DeviceNotReady")
     _run(con, "2026-09-14T14:00:00+00:00", None, error="adb offline")  # never reached the device
 
-    pairs: list[dict[str, object]] = [dict(r) for r in db.version_pairs(con)]
+    pairs: list[db.VersionPair] = db.version_pairs(con)
     assert pairs == [
         {
             "redroid_image": IMAGE,

@@ -277,6 +277,8 @@ def _rename_media(pid: str, media: str, extra_media: list[str]) -> tuple[str, li
         f"{pid}{Path(media).suffix}",
         *(f"{pid}_{i}{Path(fn).suffix}" for i, fn in enumerate(extra_media, 1)),
     ]
+    old: str
+    new_name: str
     for old, new_name in zip([media, *extra_media], names, strict=True):
         (config.MEDIA_DIR / old).rename(config.MEDIA_DIR / new_name)
     return names[0], names[1:]
@@ -379,6 +381,7 @@ def _scrape_feed(
             feed_reopened, empty_streak = True, 0
             navigation.open_target_feed(d)
             continue
+        p: parsing.Post
         for p in posts:
             u: str = p["username"]
             if not u:

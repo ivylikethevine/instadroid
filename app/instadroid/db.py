@@ -227,6 +227,8 @@ def _migrate(con: sqlite3.Connection) -> None:
     how many have run, and is bumped only after each one finishes, so a crash mid-migration retries
     it on the next start. Append new migrations; never reorder or remove one."""
     done: int = sqlrows.scalar_int(con.execute("PRAGMA user_version")) or 0
+    version: int
+    migration: Callable[[sqlite3.Connection], None]
     for version, migration in enumerate(MIGRATIONS[done:], start=done + 1):
         migration(con)
         con.execute(f"PRAGMA user_version = {version}")
@@ -238,6 +240,8 @@ def _add_columns(con: sqlite3.Connection, table: str, columns: dict[str, str]) -
     existing: set[sqlrows.SqlValue] = {
         sqlrows.cell(r, 1) for r in sqlrows.fetch_all(con.execute(f"PRAGMA table_info({table})"))
     }
+    col: str
+    kind: str
     for col, kind in columns.items():
         if col not in existing:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
@@ -276,6 +280,7 @@ def consecutive_failures(con: sqlite3.Connection) -> int:
     poll loop's failure backoff (scrape.next_sleep_seconds()) is based on, read from the table so a
     restart doesn't forget it."""
     n: int = 0
+    r: sqlite3.Row
     for r in sqlrows.fetch_all(con.execute("SELECT error FROM runs ORDER BY id DESC LIMIT 64")):
         if sqlrows.cell_str(r, 0) is None:
             break
@@ -329,6 +334,9 @@ def check_selector_drift(
         )
     )
     dropped: list[str] = []
+    label: str
+    current: float
+    key: str
     for label, current, key in (
         ("cards/screen", cards_per_screen, "cards_per_screen"),
         ("captioned", share_captioned, "share_captioned"),
@@ -431,6 +439,7 @@ def _migrate_dedupe(con: sqlite3.Connection) -> None:
     hadn't rendered on the first pass. Uses the same merge path as a live scrape. A single corrupt
     row is skipped rather than turned into a permanent boot loop."""
     log("running one-time dedupe migration")
+    r: sqlite3.Row | None  # a posts row; None once fetch_one() finds it merged away
     for r in sqlrows.fetch_all(
         con.execute("SELECT id, posted_date, scraped_at FROM posts WHERE posted_at IS NULL")
     ):
@@ -445,6 +454,7 @@ def _migrate_dedupe(con: sqlite3.Connection) -> None:
             )
     con.commit()
     merged: int = 0
+    id_row: sqlite3.Row
     for id_row in sqlrows.fetch_all(con.execute("SELECT id FROM posts ORDER BY scraped_at")):
         rid: sqlrows.SqlValue = sqlrows.cell(id_row, 0)
         r = sqlrows.fetch_one(con.execute("SELECT * FROM posts WHERE id=?", (rid,)))
@@ -476,6 +486,7 @@ def _migrate_accounts(con: sqlite3.Connection) -> None:
     """Migration 2: give every username already in posts an accounts row, so avatar capture and
     rename_account() have something to attach to for accounts seen before that table existed."""
     log("running one-time accounts backfill")
+    username_row: sqlite3.Row
     for username_row in sqlrows.fetch_all(con.execute("SELECT DISTINCT username FROM posts")):
         username: sqlrows.SqlValue = sqlrows.cell(username_row, 0)
         try:
@@ -510,6 +521,7 @@ def _migrate_rehash(con: sqlite3.Connection) -> None:
     log("running one-time rehash migration")
     rows: list[sqlite3.Row] = sqlrows.fetch_all(con.execute("SELECT id, username, caption FROM posts"))
     changed: int = 0
+    r: sqlite3.Row
     for r in rows:
         rid: str | None = sqlrows.cell_str(r, "id")
         username: str | None = sqlrows.cell_str(r, "username")
@@ -529,7 +541,7 @@ def _migrate_rehash(con: sqlite3.Connection) -> None:
     log(f"rehash migration: updated {changed} of {len(rows)} row(s)")
 
 
-MIGRATIONS = (
+MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_dedupe,
     _migrate_accounts,
     _migrate_story_retention,
@@ -561,6 +573,7 @@ def find_duplicate(
         "SELECT * FROM posts WHERE username=? AND posted_at BETWEEN ? AND ?",
         (username, (posted_at - window).isoformat(), (posted_at + window).isoformat()),
     )
+    r: sqlite3.Row
     for r in sqlrows.fetch_all(cur):
         if exclude_id and sqlrows.cell(r, "id") == exclude_id:
             continue

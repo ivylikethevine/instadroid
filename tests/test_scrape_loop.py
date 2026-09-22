@@ -42,7 +42,7 @@ from tests.deviceflows import (
 from tests.fakedevice import FakeDevice, Node, node
 from tests.support import fetch_row, record_run_ago, row_dict
 
-pytestmark = pytest.mark.usefixtures("fast_offline")
+pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
 
 def test_scrape_once_end_to_end(fast_offline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,6 +88,7 @@ def test_scrape_once_end_to_end(fast_offline: Path, monkeypatch: pytest.MonkeyPa
         )
     ]
     assert slides == [(1, "OTHER1_1.webp"), (2, "OTHER1_2.webp")]
+    fn: str
     for fn in ("TOP123.webp", "OTHER1.webp", "OTHER1_1.webp", "OTHER1_2.webp"):
         assert (media / fn).exists()
         assert (media / fn).read_bytes()[8:12] == b"WEBP"  # the default MEDIA_FORMAT
@@ -101,6 +102,7 @@ def test_scrape_once_end_to_end(fast_offline: Path, monkeypatch: pytest.MonkeyPa
     assert isinstance(story_file, str)
     assert (media / story_file).exists()
     assert d.presses[-1] == "home"
+    pkg: str
     for pkg in device.CACHED_APP_SWEEP:
         assert f"am force-stop {pkg}" in d.shell_calls
     assert f"am force-stop {config.IG_PKG}" in d.shell_calls
@@ -281,6 +283,7 @@ def test_the_daily_budget_holds_the_loop_until_the_oldest_run_ages_out(
     monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 3)
     monkeypatch.setattr(config, "SCRAPE_ON_STARTUP", True)
     con: sqlite3.Connection = db.db_init()
+    minutes: int
     for minutes in (23 * 60, 12 * 60, 60):
         record_run_ago(con, minutes)
     assert scrape.budget_wait_seconds(con) == pytest.approx(3600 + 1, abs=5)  # the 23h-old one ages out in 1h

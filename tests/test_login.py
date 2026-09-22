@@ -18,7 +18,7 @@ from instadroid import (
 from tests.deviceflows import RunOptions, home_screen
 from tests.fakedevice import IG_PKG, FakeDevice, Out, hierarchy, node
 
-pytestmark = pytest.mark.usefixtures("fast_offline")
+pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
 # --- login ------------------------------------------------------------------------------------
 
@@ -275,7 +275,7 @@ def test_an_app_that_dies_right_after_launch_is_not_logged_in() -> None:
     class CrashingDevice(FakeDevice):
         """Instagram comes to the front, then crashes back to the launcher a moment later."""
 
-        checks = 0
+        checks: int = 0
 
         def app_current(self) -> dict[str, str]:
             self.checks += 1

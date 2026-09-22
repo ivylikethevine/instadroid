@@ -34,7 +34,7 @@ from tests.deviceflows import (
 from tests.fakedevice import FakeDevice, FakeSelector, Node, hierarchy, node
 from tests.support import sql_column
 
-pytestmark = pytest.mark.usefixtures("fast_offline")
+pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
 # --- feed navigation --------------------------------------------------------------------------
 
@@ -152,6 +152,8 @@ def test_scrape_once_stays_on_home_feed_when_feed_mode_is_home(
     con: sqlite3.Connection = db.db_init()
     # Seed every card already-known so nothing new needs the share-sheet round trip -- this test
     # is about which feed scrape_once() navigates to, not about re-testing that flow.
+    i: int
+    card: parsing.Post
     for i, card in enumerate(parsing.parse_hierarchy(home_feed_screen())):
         seed_post(con, f"SEEN{i}", card["username"], "already stored", 1, h=parsing.post_id(card))
     d: FakeDevice = FakeDevice(
@@ -283,6 +285,7 @@ def test_scrape_once_does_not_filter_before_the_first_successful_refresh(
 
 def test_on_target_feed_is_false_when_no_feed_is_showing_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
     d: FakeDevice = FakeDevice({"blank": hierarchy()}, "blank")
+    mode: str
     for mode in ("home", "chrono"):
         monkeypatch.setattr(config, "FEED_MODE", mode)
         assert navigation.on_target_feed(d) is False

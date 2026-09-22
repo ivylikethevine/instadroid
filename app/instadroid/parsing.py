@@ -16,11 +16,11 @@ from .versioning import SELECTORS, versioned
 # real caption has rendered ("Photo 1 of 2 by X, 113 likes, 10 comments"), or empty. Two cards
 # with a weak caption on either side are treated as the same post if the time/author also match;
 # real, differing captions never are. See same_post().
-_WEAK_CAPTION = re.compile(r"^(Photo|Video|Reel|Image|Carousel)\b.*\bby\b", re.I)
+_WEAK_CAPTION: re.Pattern[str] = re.compile(r"^(Photo|Video|Reel|Image|Carousel)\b.*\bby\b", re.I)
 
-_RELATIVE_AGO = re.compile(r"^(\d+) (second|minute|hour|day|week)s? ago$")
-_ABSOLUTE_DATE = re.compile(r"^([A-Z][a-z]+) (\d{1,2})(?:, (\d{4}))?$")
-_UNIT_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
+_RELATIVE_AGO: re.Pattern[str] = re.compile(r"^(\d+) (second|minute|hour|day|week)s? ago$")
+_ABSOLUTE_DATE: re.Pattern[str] = re.compile(r"^([A-Z][a-z]+) (\d{1,2})(?:, (\d{4}))?$")
+_UNIT_SECONDS: dict[str, int] = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
 
 
 def parse_posted_at(text: str, now: datetime) -> tuple[datetime, int] | None:
@@ -169,6 +169,7 @@ def parse_hierarchy(xml: str) -> list[Post]:
     cur: Post | None = None
     # The action bar floats over the list; remember where it ends so crops can skip it.
     clip_top: int = 0
+    n: etree._Element
     for n in root.iter("node"):
         if id_matches(n.get("resource-id") or "", SELECTORS["action_bar_id"]):
             b: tuple[int, int, int, int] | None
@@ -266,6 +267,7 @@ def parse_hierarchy(xml: str) -> list[Post]:
                 cur["posted_date"] = text
             cur["complete"] = True  # the timestamp row sits below the caption
     # The provisional top card only counts if we could identify it.
+    p: Post
     for p in posts:
         if p["headless"] and not p["kind"]:
             p["kind"] = "post"
@@ -301,6 +303,7 @@ def parse_story_tray(xml: str) -> list[StoryItem]:
     if tray is None:
         return []
     items: list[StoryItem] = []
+    n: etree._Element
     for n in tray.iter("node"):
         # The avatar image inside shares the same content-desc as its parent Button; restrict to
         # the Button itself so each tray item is matched exactly once.
@@ -323,7 +326,7 @@ def parse_story_tray(xml: str) -> list[StoryItem]:
 # before "… more" (two lines, 50-60 characters each at this display size), so the card hashes the
 # same whether it's seen truncated or after capture.expand_caption() expanded it: hashing 200
 # characters had the same post processed twice in one run (docs/RUNLOG.md, the 446 validation run).
-CAPTION_KEY_CHARS = 40
+CAPTION_KEY_CHARS: int = 40
 
 
 def caption_key(caption: str) -> str:

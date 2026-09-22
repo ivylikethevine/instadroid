@@ -1,22 +1,26 @@
-"""The typing rules the linters can't enforce on their own. Every local variable is annotated where
-it's first bound (devtools/local_annotations.py has the rule; nothing in ruff or basedpyright requires
-it). And the escape hatches: ruff bans importing Any and cast
-(TID251) and blanket ignores (PGH); basedpyright ignores `# type: ignore` (enableTypeIgnoreComments=false)
-and reports Any values (reportAny). What's left is a suppression comment that silences basedpyright
-itself, or a noqa that switches off the annotation rules, and that's what this test catches."""
+"""The typing rules, from the test suite as well as scripts/check.sh. Every variable is annotated where
+it's first bound (constricter, at pyproject.toml's [tool.constricter] level). And the escape hatches: ruff
+bans importing Any and cast (TID251) and blanket ignores (PGH); basedpyright ignores `# type: ignore`
+(enableTypeIgnoreComments=false) and reports Any values (reportAny). What's left is a suppression comment
+that silences basedpyright itself, or a noqa that switches off the annotation rules (ruff's ANN or
+constricter's LVA), and that's what this test catches."""
 
 import re
 from pathlib import Path
 
-from devtools import ROOT, local_annotations
+import pytest
+from constricter import cli
+from devtools import ROOT
 
-SOURCES = sorted(
+SOURCES: list[Path] = sorted(
     p
     for top in ("app", "tests", "typings")
     for p in (ROOT / top).rglob("*.py*")
     if p.suffix in (".py", ".pyi") and "__pycache__" not in p.parts
 )
-FORBIDDEN = re.compile(r"#\s*(?:type:\s*ignore|(?:based)?pyright:\s*ignore|noqa:[^\n]*\bANN\d*)")
+FORBIDDEN: re.Pattern[str] = re.compile(
+    r"#\s*(?:type:\s*ignore|(?:based)?pyright:\s*ignore|noqa:[^\n]*\b(?:ANN|LVA)\d*)"
+)
 
 
 def test_there_are_sources_to_check() -> None:
@@ -33,14 +37,10 @@ def test_no_type_checker_suppressions_or_annotation_noqa() -> None:
     assert not offences, "type-checker suppressions aren't allowed:\n" + "\n".join(offences)
 
 
-def test_every_local_variable_is_annotated() -> None:
-    """The same files and rule as the `local-annotations` script in scripts/check.sh's python group."""
-    sources: list[Path] = local_annotations.repository_sources()
-    assert len(sources) > 20
-    offences: list[str] = [
-        o.replace(str(ROOT) + "/", "") for path in sources for o in local_annotations.unannotated_locals(path)
-    ]
-    assert not offences, (
-        "every local variable is annotated where it's first bound (see devtools/local_annotations.py):\n"
-        + "\n".join(offences)
-    )
+def test_every_variable_is_annotated(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same files and settings as the constricter check in scripts/check.sh's python group."""
+    monkeypatch.chdir(ROOT)  # constricter reads [tool.constricter] from the nearest pyproject.toml
+    status: int = cli.main(["app", "tests", ".github/scripts"])
+    assert status == 0, "every variable is annotated where it's first bound:\n" + capsys.readouterr().out

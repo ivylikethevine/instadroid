@@ -95,6 +95,8 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
     clip_top: int | None
     media_bounds = clip_top = None
     posted_date: str = ""
+    rid: str
+    n: etree._Element
     for rid, n in nodes:
         if id_matches(rid, SELECTORS["story_media_id"]) and media_bounds is None:
             media_bounds = n.get("bounds")
@@ -130,6 +132,7 @@ def scrape_stories(d: uidevice.Device, con: sqlite3.Connection) -> int:
     diagnostics.capture_screen(d, "home_feed", tray_xml)
     items: list[parsing.StoryItem] = [i for i in parsing.parse_story_tray(tray_xml) if not i["seen"]]
     new: int = 0
+    item: parsing.StoryItem
     for item in items[: config.MAX_STORIES_PER_RUN]:
         if not navigation.on_home_feed(d):
             # A prior story's own auto-exit can eject the app entirely (see capture_story()); tapping
@@ -186,7 +189,7 @@ def scrape_stories(d: uidevice.Device, con: sqlite3.Connection) -> int:
 # Max differing bits (of 64) for two story crops to count as the same frame. Re-captures of one
 # frame differ only by screenshot noise and overlays; distinct stories stored on 2026-09-14 were
 # 16-45 bits apart.
-STORY_PHASH_DISTANCE = 10
+STORY_PHASH_DISTANCE: int = 10
 
 
 class _Resizable(Protocol):
@@ -204,6 +207,7 @@ def _dhash(img: Image.Image) -> str:
     """64-bit difference hash: survives re-encoding and small overlays, unlike a byte hash."""
     px: bytes = _resized(img.convert("L"), (9, 8)).tobytes()
     bits: int = 0
+    i: int
     for i in range(72):
         if i % 9 != 8:
             bits = bits << 1 | (px[i] > px[i + 1])

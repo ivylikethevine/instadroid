@@ -666,6 +666,9 @@ pytest-cov==7.1.0 \
     --hash=sha256:30674f2b5f6351aa09702a9c8c364f6a01c27aae0c1366ae8016160d1efc56b2 \
     --hash=sha256:a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678
     # via -r requirements-dev.in
+python-constricter @ https://github.com/ivylikethevine/python-constricter/archive/1b54f6d96ba087c652e83e238322029c6d53116a.tar.gz \
+    --hash=sha256:15ae7e816540765cbed298f1f291fc27cf7d7c60af311ccf1e28d87a193b83a7
+    # via -r requirements-dev.in
 requests==2.34.2 \
     --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0 \
     --hash=sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed

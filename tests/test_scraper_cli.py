@@ -16,12 +16,12 @@ from tests.deviceflows import RunOptions
 from tests.fakedevice import FakeDevice
 from tests.support import record_run_ago
 
-SCRAPER = str(ROOT / "app" / "scraper.py")
+SCRAPER: str = str(ROOT / "app" / "scraper.py")
 
 
 def _run(monkeypatch: pytest.MonkeyPatch, *args: str) -> None:
     monkeypatch.setattr(sys, "argv", ["scraper.py", *args])
-    _: dict[str, object] = runpy.run_path(SCRAPER, run_name="__main__")
+    runpy.run_path(SCRAPER, run_name="__main__")
 
 
 @pytest.fixture(autouse=True)
