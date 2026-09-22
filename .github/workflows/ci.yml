@@ -347,7 +347,8 @@ jobs:
   # The required check (see the header). always(), so it reports even when a job it needs failed or
   # was skipped; it fails only on a failure or cancellation.
   result:
-    if: always()
+    # skipped on a draft like the jobs it needs; a skipped required check still passes
+    if: always() && github.event.pull_request.draft != true
     needs: [changes, lint, test, audit, shell, docs, docker, dependency-review, secrets, actionlint, zizmor]
     name: CI result
     runs-on: ubuntu-latest
