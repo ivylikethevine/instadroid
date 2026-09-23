@@ -15,6 +15,11 @@ A config flag, one function, a CI tweak, or docs.
   leak scan). `git filter-repo --replace-text` with a replacements file, then a force-push and a
   fresh clone everywhere. The repository owner's call; not done yet. The maintainer has an offline
   runbook for it, kept outside the repository.
+- **Report a blocked upstream as drift**: for a row it cannot read, `check_tool_versions.sh` prints
+  `(could not read upstream releases)` and counts no problem, while `tool-versions.yml` blocks
+  egress to a fixed host list, so a pin whose upstream lives on a host missing from that list reads
+  as fine forever. Count a problem when every row one host serves went unread (a blocked host, not a one-off
+  rate limit), naming the host in the tracking issue.
 
 Done: Markdown lint and format checks, a link check (relative links on pull
 requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:
