@@ -322,7 +322,8 @@ def link_problems() -> list[str]:
     return problems
 
 
-CHECKS: dict[str, Callable[[], list[str]]] = {
+type Check = Callable[[], list[str]]  # a check's problems, one line each
+CHECKS: dict[str, Check] = {
     "env": env_problems,
     "contents": contents_problems,
     "links": link_problems,

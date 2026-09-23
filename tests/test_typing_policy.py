@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 import pytest
-from constricter import cli
+from constricter.cli import command
 from devtools import ROOT
 
 SOURCES: list[Path] = sorted(
@@ -42,5 +42,5 @@ def test_every_variable_is_annotated(
 ) -> None:
     """The same files and settings as the constricter check in scripts/check.sh's python group."""
     monkeypatch.chdir(ROOT)  # constricter reads [tool.constricter] from the nearest pyproject.toml
-    status: int = cli.main(["app", "tests", ".github/scripts"])
+    status: int = command.main(["app", "tests", ".github/scripts"])
     assert status == 0, "every variable is annotated where it's first bound:\n" + capsys.readouterr().out

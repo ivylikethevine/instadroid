@@ -62,6 +62,9 @@ class _ActiveSelectors:
 
 SELECTORS: _ActiveSelectors = _ActiveSelectors()
 
+# A profile's override of a @versioned function: the base implementation, then the function's arguments.
+type Override[**P, R] = Callable[Concatenate[Callable[P, R], P], R]
+
 
 class Versioned[**P, R]:
     """A @versioned function: calling it runs the active PROFILE's override of the same name when there
@@ -77,7 +80,7 @@ class Versioned[**P, R]:
         # contract (igprofiles/base.py) takes the base implementation followed by the function's own
         # arguments and returns what it does. Profiles are looked up by name at runtime, so being
         # callable is all that can be checked here.
-        override: Callable[Concatenate[Callable[P, R], P], R] | None = getattr(PROFILE, self.name, None)
+        override: Override[P, R] | None = getattr(PROFILE, self.name, None)
         if override is None:
             return self.base(*args, **kwargs)
         if not callable(override):

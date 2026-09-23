@@ -162,7 +162,7 @@ def test_access_log_blanks_the_token_and_still_skips_health(
     from feedserver import auth
 
     def record(path: str) -> logging.LogRecord:
-        args: tuple[str, str, str, str, int] = ("127.0.0.1:5000", "GET", path, "1.1", 200)
+        args: tuple[str | int, ...] = ("127.0.0.1:5000", "GET", path, "1.1", 200)
         return logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d', args, None)
 
     log_filter: auth.SkipHealthcheck = auth.SkipHealthcheck()

@@ -83,7 +83,7 @@ SCREENS: dict[str, Screen] = {
 
 # Not tied to one screen: interstitials and challenges that may appear anywhere, the logged-out
 # welcome screen, a leftover alert, the clipboard's permalink, and a lookup table.
-SITUATIONAL: tuple[str, str, str, str, str, str] = (
+SITUATIONAL: tuple[str, ...] = (
     "dismiss_texts",
     "challenge_texts",
     "welcome_existing_profile_text",
@@ -94,7 +94,8 @@ SITUATIONAL: tuple[str, str, str, str, str, str] = (
 
 # Debug dump names the scraper already writes (diagnostics.dump_debug) and the screen each one shows,
 # or is supposed to show: "last" and "empty_feed0" are feed screens that parsed nothing.
-_DUMP_SCREENS: tuple[tuple[re.Pattern[str], str], ...] = (
+type DumpScreen = tuple[re.Pattern[str], str]  # a dump name's pattern, and the screen it shows
+_DUMP_SCREENS: tuple[DumpScreen, ...] = (
     (re.compile(r"^(last|empty_feed\d*|feed_switch)$"), "feed"),
     (re.compile(r"^feed_switch_menu\d*$"), "feed_switch_menu"),
     (re.compile(r"^home_feed_open$"), "home_feed"),

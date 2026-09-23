@@ -260,7 +260,7 @@ def first(d: uidevice.Device, **kinds: Iterable[str]) -> uidevice.Selector | Non
 # of the container's life (see docs/INCIDENTS.md, "Reducing idle memory"). Force-stopped here instead:
 # unlike pm disable-user, this only kills the current process, so whatever needs one again just
 # relaunches it — no risk of the packageinstaller-style "required singleton" crash from disabling.
-CACHED_APP_SWEEP: tuple[str, str, str, str, str] = (
+CACHED_APP_SWEEP: tuple[str, ...] = (
     "com.android.settings",
     "com.android.permissioncontroller",
     "com.android.managedprovisioning",
