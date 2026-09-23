@@ -666,9 +666,9 @@ pytest-cov==7.1.0 \
     --hash=sha256:30674f2b5f6351aa09702a9c8c364f6a01c27aae0c1366ae8016160d1efc56b2 \
     --hash=sha256:a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678
     # via -r requirements-dev.in
-python-constricter==0.2.3 \
-    --hash=sha256:218d533c8f9c05a5532bfe0e02a555b1b1f70009daf69e0a215aeb0e61907588 \
-    --hash=sha256:67eb1cf2f2cc2669e1d0ed28ce4015a25e7bc13ac32a74e2ea0ce1edad9dca7d
+python-constricter==0.2.4 \
+    --hash=sha256:9e38f705488430261a6a3acc2ce4547a429fe7ee77669495cb5d2a4f86bbac7c \
+    --hash=sha256:fbc4c93946ce56a40dd05fcc44e08b71cf1c5db84f4bdb75a3dcb63e6b9d4275
     # via -r requirements-dev.in
 requests==2.34.2 \
     --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0 \

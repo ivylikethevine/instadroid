@@ -13,7 +13,7 @@ basedpyright==1.40.1
 lxml-stubs==0.5.1
 import-linter==2.15
 # Every local variable annotated where it's first bound.
-python-constricter==0.2.3
+python-constricter==0.2.4
 shfmt-py==4.2.0
 typos==1.50.1
 zizmor==1.30.1
