@@ -1,5 +1,6 @@
 import sqlite3
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import igprofiles
@@ -72,6 +73,25 @@ def no_alert_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
 def control_files_in_tmp(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     """The poll loop's lock and scrape-now files live in a throwaway directory, never /db."""
     monkeypatch.setattr(config, "CONTROL_DIR", tmp_path_factory.mktemp("control"))
+
+
+@pytest.fixture(autouse=True)
+def close_databases(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Tests open databases with db_init() and leave them to the test's end; close each one at teardown
+    rather than when it's garbage-collected, which warns ResourceWarning."""
+    opened: list[sqlite3.Connection] = []
+    real_init: Callable[[], sqlite3.Connection] = db.db_init
+
+    def tracked_init() -> sqlite3.Connection:
+        con: sqlite3.Connection = real_init()
+        opened.append(con)
+        return con
+
+    monkeypatch.setattr(db, "db_init", tracked_init)
+    yield
+    con: sqlite3.Connection
+    for con in opened:
+        con.close()
 
 
 @pytest.fixture(autouse=True)

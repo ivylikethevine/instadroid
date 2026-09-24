@@ -6,20 +6,22 @@ Ordered by scope, smallest first.
 
 A config flag, one function, a CI tweak, or docs.
 
-- **Dump the card when its media node isn't found**: one Reel card logged "no crop: media node not
-  found" 4 times in a row and was stored with no media file ([run log](RUNLOG.md), 446 validation
-  run). `scrape.py` only logs on that path, so the card's hierarchy has never been seen; call
-  `_dump_debug` there.
 - **Rewrite git history to remove leaked identifiers**: the working tree was scrubbed, but older
   commits still carry real usernames, captions and places (the list is in [PROFILES.md](PROFILES.md)'s
   leak scan). `git filter-repo --replace-text` with a replacements file, then a force-push and a
   fresh clone everywhere. The repository owner's call; not done yet. The maintainer has an offline
   runbook for it, kept outside the repository.
+- **Report a blocked upstream as drift**: for a row it cannot read, `check_tool_versions.sh` prints
+  `(could not read upstream releases)` and counts no problem, while `tool-versions.yml` blocks
+  egress to a fixed host list, so a pin whose upstream lives on a host missing from that list reads
+  as fine forever. Count a problem when every row one host serves went unread (a blocked host, not a one-off
+  rate limit), naming the host in the tracking issue.
 
 Done: Markdown lint and format checks, a link check (relative links on pull
 requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:
 advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
-(import-linter) and hashed dependency locks (pip-compile). Earlier: credentials from a file, caption hashtag/mention links, optional feed
+(import-linter), hashed dependency locks (pip-compile) and a `no_media_node` debug dump on the
+"media node not found" path. Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
 
@@ -65,10 +67,13 @@ Open investigations, new capture mechanisms, or changes to the container/process
 
 - **Posts processed twice in one run, and Copy link misses**: in the 446 validation run, 3 of 6 new
   posts came back on a later screen, failed Copy link three times each, and were merged into the rows
-  stored moments earlier ([run log](RUNLOG.md)). That fits `_post_key()` hashing a truncated caption
-  once and the expanded caption the next time, but it's unconfirmed. Copy link also often leaves the
-  clipboard empty (6 of 8 attempts in the 445 baseline), mostly on cards already back on screen, and
-  a post whose every retry fails is stored under a hash id (README.md's "Known limitations").
+  stored moments earlier ([run log](RUNLOG.md)). `_post_key()` (`app/instadroid/parsing.py`) now keys
+  on the caption's first line with the "…" stripped, cut to 40 characters, with a rehash migration;
+  no device run has confirmed it fixes the repeats. Copy link also often leaves the clipboard empty
+  (6 of 8 attempts in the 445 baseline), mostly on cards already back on screen, and a post whose
+  every retry fails is stored under a hash id (README.md's "Known limitations").
+  `fetch_permalink()` (`app/instadroid/capture.py`) falls back to `dumpsys clipboard` over root adb
+  and logs which source worked; the next real run decides whether that fixes it.
 - **Reach the real Following feed without the switcher**: under `gpu_mode=guest` the switcher's
   bottom sheet may not open, and the scraper then falls back to Home — algorithmic, with suggested
   posts mixed in. Investigate a deep link or activity intent that opens Following directly;

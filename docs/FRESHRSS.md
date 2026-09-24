@@ -1,9 +1,9 @@
 # FreshRSS
 
-Subscribe to `http://<host>:8000/instagram.xml` (set `PUBLIC_URL` in compose to whatever
+Subscribe to `http://<host>:8000/instagram.xml` (set `PUBLIC_URL` in `.env` to whatever
 FreshRSS can reach so image links resolve). Per-account feeds: `/instagram.xml?user=somebody`.
-`/users` lists everyone seen so far. `/stories.xml` is a separate feed of currently-unexpired
-stories (see the README's "Stories") — subscribe to it separately if you want it. In each post,
+`/users` lists every account with a stored post. `/stories.xml` is a separate feed of captured
+story frames, kept for `RETAIN_DAYS` like posts (see the README's "Stories") — subscribe to it separately if you want it. In each post,
 @mentions and #hashtags in the caption link to that account's or hashtag's Instagram page.
 
 **Feed auth**: the feed server is open to anything that can reach it, which is fine on the default
@@ -17,9 +17,9 @@ setup. A `?token=` value is blanked in the access log. Browsers get a basic-auth
 Without a token, a non-loopback `FEED_HOST` logs a warning at startup.
 
 If FreshRSS runs on the same host (see below), set `PUBLIC_URL=http://127.0.0.1:8000`, not
-`http://localhost:8000` — confirmed the hard way: a FreshRSS container's `localhost` resolved to
-`::1` first, and the feed server only binds the IPv4 loopback (`FEED_HOST=127.0.0.1` default), so
-every subscription failed with "Failed to resolve domain" until `PUBLIC_URL` used the literal IP.
+`http://localhost:8000` (the default): a FreshRSS container's `localhost` can resolve to `::1`
+first, and the feed server only binds the IPv4 loopback (`FEED_HOST=127.0.0.1` default), so
+every subscription fails with "Failed to resolve domain".
 
 **One-step bulk subscribe**: `/opml` is an OPML outline listing all of the above — the aggregate
 feed, `/stories.xml`, and one entry per account in `/users` — nested under a single "Instagram"

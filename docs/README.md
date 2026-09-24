@@ -6,15 +6,15 @@ needs a doc update, [CONTRIBUTING.md](CONTRIBUTING.md#which-docs-change-with-wha
 
 ## Using instadroid
 
-| Doc                               | Covers                                                                                                       |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| [README](../README.md)            | What it does, host requirements, first-time setup, how a scrape works, and the settings worth knowing first. |
-| [Compatibility](COMPATIBILITY.md) | Which redroid image runs which Instagram build, why Android 13, and what was weighed and not shipped.        |
-| [Operations](OPERATIONS.md)       | Health, restarts, manual lock and scrape-now, alerts, the selector-drift canary, memory, storage, backups.   |
-| [FreshRSS](FRESHRSS.md)           | Subscribing, feed auth, OPML, push refresh, and running FreshRSS on the same host.                           |
-| [Version profiles](PROFILES.md)   | How per-Instagram-version selector profiles work, and the steps for supporting a new build.                  |
-| [Support](SUPPORT.md)             | Where to ask for help, what to include, and what to expect back.                                             |
-| [OpenAPI spec](openapi.json)      | The feed server's routes, generated from the code.                                                           |
+| Doc                               | Covers                                                                                                               |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| [README](../README.md)            | What it does, host requirements, first-time setup, how a scrape works, and the settings worth knowing first.         |
+| [Compatibility](COMPATIBILITY.md) | Which redroid image runs which Instagram build, why Android 13, and what was weighed and not shipped.                |
+| [Operations](OPERATIONS.md)       | Health, `doctor`, restarts, manual lock and scrape-now, alerts, the selector-drift canary, memory, storage, backups. |
+| [FreshRSS](FRESHRSS.md)           | Subscribing, feed auth, OPML, push refresh, and running FreshRSS on the same host.                                   |
+| [Version profiles](PROFILES.md)   | How per-Instagram-version selector profiles work, and the steps for supporting a new build.                          |
+| [Support](SUPPORT.md)             | Where to ask for help, what to include, and what to expect back.                                                     |
+| [OpenAPI spec](openapi.json)      | The feed server's routes, generated from the code.                                                                   |
 
 ## Understanding it
 

@@ -35,8 +35,8 @@ track those). They are:
 - **Credential handling.** `IG_USERNAME` and `IG_PASSWORD` are read from `.env` as plain environment
   variables, or from files (`IG_PASSWORD_FILE`, e.g. a Docker secret). Any way they can leak (into
   logs, `/status`, debug dumps, the feeds, or the published image) is in scope.
-- **The feed server** (`app/feedserver/`: `/instagram.xml`, `/stories.xml`, `/opml`, `/media`, `/status`,
-  `/health`). It's unauthenticated unless `FEED_TOKEN` is set. Anything that reaches beyond what it's
+- **The feed server** (`app/feedserver/`: `/instagram.xml`, `/stories.xml`, `/opml`, `/users`, `/media`,
+  `/status`, `/control`, `/health`). It's unauthenticated unless `FEED_TOKEN` is set. Anything that reaches beyond what it's
   meant to serve is in scope: getting past the token, triggering `/control` changes from another
   site (cross-site POST/DELETE requests are refused), a media signature that opens a file it wasn't
   issued for, path traversal out of the media directory, injection through captions or usernames

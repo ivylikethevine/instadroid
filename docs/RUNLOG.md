@@ -38,7 +38,8 @@ Still open (none of these are 446-specific; all were seen on 445 too; tracked in
 
 - **"no crop: media node not found"**, 4 times in a row on one Reel card, which was then
   stored with permalink and caption but no media file. No dump is taken on that path, so the card's
-  hierarchy is still unseen; wiring `_dump_debug` in there is the next step.
+  hierarchy is still unseen; wiring a debug dump in there is the next step (done 2026-09-16: a
+  `no_media_node` dump via `diagnostics.dump_debug()`).
 - **Re-processing of a just-stored post**: 3 of the 6 new posts (a carousel, the Reel and a photo)
   came back on a later screen, failed Copy link three times each, and were then merged into the row
   stored moments earlier. This happens _within one run_, not just across runs, which fits the
@@ -130,5 +131,5 @@ on a card no parser returned (`Reel by <name>, 82 likes, ...`); `promote_dump.ps
 catches those, and no committed fixture had one. `DEFAULT_BUILD = "445.0.0.45.83"` replaced the
 newest validated build as the default install.
 
-Done at the time: `DEFAULT_PROFILE` became `v446` (since replaced by automatic selection; a fresh install fetches 446, and a
-device still on 445 gets a mismatch warning until `scraper.py install`).
+Done at the time: `DEFAULT_PROFILE` became `v446` (since replaced by automatic selection of the
+profile covering the installed version).

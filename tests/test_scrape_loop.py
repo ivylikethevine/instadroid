@@ -3,6 +3,7 @@
 import sqlite3
 import urllib.request
 from collections.abc import Callable, Iterator
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
@@ -244,9 +245,10 @@ def test_main_records_a_transient_failure_and_retries_early(
     with pytest.raises(StopLoop):
         scrape.main()
 
-    error: SqlValue = sqlrows.scalar(
-        sqlite3.connect(fast_offline / "posts.sqlite").execute("SELECT error FROM runs")
-    )
+    con: sqlite3.Connection
+    error: SqlValue
+    with closing(sqlite3.connect(fast_offline / "posts.sqlite")) as con:
+        error = sqlrows.scalar(con.execute("SELECT error FROM runs"))
     assert isinstance(error, str) and error.startswith("AdbError")
     assert 2 * 60 <= sleeps[0] <= 3 * 60
 
@@ -322,8 +324,10 @@ def test_main_records_a_successful_run_with_device_versions(
     with pytest.raises(StopLoop):
         scrape.main()
 
-    con: sqlite3.Connection = sqlite3.connect(fast_offline / "posts.sqlite")
-    run: dict[str, SqlValue] = row_dict(fetch_row(con.execute("SELECT * FROM runs")))
+    con: sqlite3.Connection
+    run: dict[str, SqlValue]
+    with closing(sqlite3.connect(fast_offline / "posts.sqlite")) as con:
+        run = row_dict(fetch_row(con.execute("SELECT * FROM runs")))
     assert (run["new_posts"], run["new_stories"], run["warning"], run["error"]) == (2, 1, "w", None)
     assert (run["android_release"], run["ig_version"]) == ("13", "445.0.0.45.83")
     assert run["selector_profile"] == "v424"
@@ -413,7 +417,9 @@ def _one_screen(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_startup_wait_is_zero_for_an_unreadable_runs_table_or_finish_time(poll_window: None) -> None:
-    assert scrape._startup_wait_seconds(sqlite3.connect(":memory:")) == 0  # no runs table at all
+    empty: sqlite3.Connection
+    with closing(sqlite3.connect(":memory:")) as empty:
+        assert scrape._startup_wait_seconds(empty) == 0  # no runs table at all
     con: sqlite3.Connection = db.db_init()
     db.record_run(con, "2026-09-14T12:00:00+00:00", "not a timestamp", 0, None, {})
     assert scrape._startup_wait_seconds(con) == 0

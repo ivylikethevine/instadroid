@@ -41,16 +41,16 @@ ignore = ["E501"]
 external = ["LVA"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"typing.Any".msg = "No Any: give the value a real type (see README's Development section)"
+"typing.Any".msg = "No Any: give the value a real type (see docs/CONTRIBUTING.md, Typing and coverage)"
 "typing_extensions.Any".msg = "No Any: give the value a real type"
 "typing.cast".msg = "No cast(): narrow with isinstance or a typed helper instead"
 "typing_extensions.cast".msg = "No cast(): narrow with isinstance or a typed helper instead"
 
 [tool.constricter]
-# The strictest setting: every code (LVA001-LVA006) is an error, and module and class bodies are checked too,
-# so every variable is annotated where it's first bound, `for` targets and `match` captures included, and no
-# annotation is vague (Any, object, or a bare generic). Run by scripts/check.sh's python group over app/,
-# tests/ and .github/scripts.
+# The strictest setting: every default code (LVA001-LVA011) is an error, and module and class bodies are
+# checked too, so every variable is annotated where it's first bound, `for` targets and `match` captures
+# included, and no annotation is vague (Any, object, or a bare generic). Run by scripts/check.sh's python group
+# over app/, tests/ and .github/scripts.
 level = "suffocate"
 all-scopes = true
 
@@ -64,7 +64,7 @@ data_file = "local/.coverage"
 source = ["app"]
 
 [tool.coverage.report]
-# The project rule (README, Development): at least 95% of all Python code is covered by tests.
+# The project rule (docs/CONTRIBUTING.md, Typing and coverage): at least 95% of all Python code is covered by tests.
 fail_under = 95
 
 [tool.basedpyright]

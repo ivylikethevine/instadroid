@@ -45,7 +45,7 @@ The rules and the incidents behind them are in
   redroid images at the same volume; give another version its own path (e.g.
   `./local/data/android-15`). The `init` service's guard (`scripts/guard-android-data.sh`) refuses
   a mismatch; don't route around it by deleting `local/data/android.image`.
-- **Ask the user before any device-driving run**: `scraper.py login`, `once`, `scrape-now`, a manual
+- **Ask the user before any device-driving run**: `scraper.py login`, `once`, `scrape-now`, `install`, a manual
   scrape, `new-profile baseline` and `new-profile restore` (`.claude/settings.json` asks for these).
   First check `docker stats` headroom and force-stop Instagram. `new-profile baseline` checks headroom
   and refuses while the `app` service runs, but that doesn't replace asking; its other subcommands
@@ -66,8 +66,8 @@ The rules and the incidents behind them are in
 
 Good practice, not a gate: pull the image before starting it (`docker compose pull redroid`) so a bad
 tag fails cheaply, prefer starting detached (`up -d`) with a quick look at logs and host
-responsiveness after, over walking away mid-boot, and tear a test container down when done. Both
-compose services use `restart: unless-stopped`, so they also come back on their own after a host
+responsiveness after, over walking away mid-boot, and tear a test container down when done. redroid
+and app use `restart: unless-stopped`, so they also come back on their own after a host
 reboot; `docker compose stop`/`down` is what keeps them down.
 
 ## Traps

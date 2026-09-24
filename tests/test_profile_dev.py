@@ -259,15 +259,24 @@ def test_a_forked_profile_without_builds_runs_with_a_warning(
 
 def test_add_validated_keeps_one_sorted_tuple(tmp_path: Path) -> None:
     init: Path = tmp_path / "__init__.py"
-    init.write_text("class Profile(Base):\n    major = 447\n    selectors = SELECTORS\n    notes = 'x'\n")
+    init.write_text(
+        "class Profile(Base):\n    major: int = 447\n    selectors: Selectors = SELECTORS\n    notes: str = 'x'\n"
+    )
     new_profile.add_validated(init, "447.0.0.40.1")  # no tuple yet: added after selectors
     new_profile.add_validated(init, "447.0.0.9.2")
     new_profile.add_validated(init, "447.0.0.40.1")  # already there
     assert init.read_text() == (
-        "class Profile(Base):\n    major = 447\n    selectors = SELECTORS\n"
-        '    validated = (\n        "447.0.0.9.2",\n        "447.0.0.40.1",\n    )\n'
-        "    notes = 'x'\n"
+        "class Profile(Base):\n    major: int = 447\n    selectors: Selectors = SELECTORS\n"
+        '    validated: tuple[str, ...] = (\n        "447.0.0.9.2",\n        "447.0.0.40.1",\n    )\n'
+        "    notes: str = 'x'\n"
     )
+
+
+def test_add_validated_extends_the_root_profile(tmp_path: Path) -> None:
+    init: Path = tmp_path / "__init__.py"
+    init.write_text(Path(igprofiles.__file__).with_name("v424").joinpath("__init__.py").read_text())
+    new_profile.add_validated(init, "446.0.0.50.1")
+    assert '        "446.0.0.49.77",\n        "446.0.0.50.1",\n    )\n' in init.read_text()
 
 
 # --- baseline ------------------------------------------------------------------------------------
@@ -494,7 +503,7 @@ def test_validating_a_build_records_it_and_its_fixtures_with_the_covering_profil
     assert new_profile.validation_problems(profile, build, new_profile.run_summary(db_path)) == []
     assert new_profile.validate(build) == 0
     assert (
-        '    validated = (\n        "447.0.0.34.72",\n    )'
+        '    validated: tuple[str, ...] = (\n        "447.0.0.34.72",\n    )'
         in (scratch_profiles / "v447" / "__init__.py").read_text()
     )
 
@@ -693,7 +702,7 @@ def test_validate_lists_what_is_still_missing(
     out: str = capsys.readouterr().out
     assert "can't be marked validated with v447 yet:" in out
     assert "  - no replay fixtures for 447" in out and "  - no baseline run recorded" in out
-    assert "validated = ()" in (scratch_profiles / "v447" / "__init__.py").read_text()
+    assert "validated: tuple[str, ...] = ()" in (scratch_profiles / "v447" / "__init__.py").read_text()
 
 
 def test_main_fork_reports_the_new_profile(

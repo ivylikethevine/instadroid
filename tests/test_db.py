@@ -468,6 +468,23 @@ def test_migration_drops_the_redundant_media_post_index(
     assert not sql_column(con.execute("SELECT name FROM sqlite_master WHERE name='media_post'"))
 
 
+def test_rehash_migration_skips_a_row_without_an_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A corrupt legacy row without an id is skipped, not crashed on, and the migration still finishes."""
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
+    con: sqlite3.Connection = db.db_init()
+    con.execute(
+        "INSERT INTO posts (id, username, caption, scraped_at, hash) VALUES (NULL, 'u', 'cap', 'x', 'old')"
+    )
+    con.execute("PRAGMA user_version = 4")
+    con.commit()
+    con.close()
+
+    con = db.db_init()
+
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert sql_column(con.execute("SELECT hash FROM posts WHERE id IS NULL")) == ["old"]
+
+
 def test_migration_rehashes_stored_posts_to_the_current_post_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
