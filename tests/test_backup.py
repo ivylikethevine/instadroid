@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -23,8 +24,9 @@ NOW: datetime = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
 def test_a_backup_is_a_consistent_copy(con: sqlite3.Connection) -> None:
     path: Path | None = backup.backup_database(con, now=NOW)
     assert path is not None and path.name == "posts-20260914T120000Z.sqlite"
-    copy: sqlite3.Connection = sqlite3.connect(path)
-    assert copy.execute("SELECT id FROM posts").fetchall() == [("p1",)]
+    copy: sqlite3.Connection
+    with closing(sqlite3.connect(path)) as copy:
+        assert copy.execute("SELECT id FROM posts").fetchall() == [("p1",)]
     assert not list(path.parent.glob("*.part"))
 
 

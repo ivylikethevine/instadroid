@@ -19,6 +19,7 @@ The scraper itself lives in the instadroid/ package.
 
 import sqlite3
 import sys
+from contextlib import closing
 
 from igprofiles import BaseProfile, default_build, version_key
 from igprofiles import available as available_profiles
@@ -47,16 +48,17 @@ if __name__ == "__main__":
     new: str
     match sys.argv[1:]:
         case ["once", *_]:
-            con: sqlite3.Connection = db.db_init()
-            wait: float
-            if wait := scrape.budget_wait_seconds(con):
-                sys.exit(
-                    f"{config.MAX_RUNS_PER_DAY} runs already started in the last 24h (MAX_RUNS_PER_DAY);"
-                    f" the next is allowed in {wait / 3600:.1f}h. MAX_RUNS_PER_DAY=0 disables the budget."
-                )
+            con: sqlite3.Connection
             stats: RunStats | None
             exc: Exception | None
-            stats, exc = scrape.run_recorded(con)  # recorded in runs, like a scheduled run
+            with closing(db.db_init()) as con:
+                wait: float
+                if wait := scrape.budget_wait_seconds(con):
+                    sys.exit(
+                        f"{config.MAX_RUNS_PER_DAY} runs already started in the last 24h (MAX_RUNS_PER_DAY);"
+                        f" the next is allowed in {wait / 3600:.1f}h. MAX_RUNS_PER_DAY=0 disables the budget."
+                    )
+                stats, exc = scrape.run_recorded(con)  # recorded in runs, like a scheduled run
             if exc or stats is None:
                 sys.exit(f"run failed: {exc!r}")
             print(stats["new"], "new posts,", stats["metrics"].get("new_stories", 0), "new stories")
@@ -89,9 +91,12 @@ if __name__ == "__main__":
             diagnostics.dump_debug(d, "manual")
             print("wrote", config.DEBUG_DIR)
         case ["doctor", *_]:
-            print(doctor.report(db.db_init()), end="")
+            with closing(db.db_init()) as con:
+                print(doctor.report(con), end="")
         case ["compat", *_]:
-            pairs: list[VersionPair] = db.version_pairs(db.db_init())
+            pairs: list[VersionPair]
+            with closing(db.db_init()) as con:
+                pairs = db.version_pairs(con)
             print("redroid image | Instagram | profile | runs (ok, clean) | new posts | last run")
             pair: VersionPair
             for pair in pairs:
@@ -114,9 +119,12 @@ if __name__ == "__main__":
                 "seconds if due",
             )
         case ["backup", *_]:
-            print("wrote", backup.backup_database(db.db_init(), force=True))
+            with closing(db.db_init()) as con:
+                print("wrote", backup.backup_database(con, force=True))
         case ["rename", old, new]:
-            n: int = db.rename_account(db.db_init(), old, new)
+            n: int
+            with closing(db.db_init()) as con:
+                n = db.rename_account(con, old, new)
             print(f"moved {n} post(s) from {old!r} to {new!r}")
         case ["rename", *_]:
             print("usage: scraper.py rename <old_username> <new_username>")

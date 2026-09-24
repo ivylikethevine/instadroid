@@ -2,6 +2,7 @@
 
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import closing
 from pathlib import Path
 from typing import NoReturn
 
@@ -198,8 +199,9 @@ def test_main_records_memory_stats(fast_offline: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(scrape, "scrape_once", fake_scrape_once)
     with pytest.raises(StopLoop):
         scrape.main()
-    con: sqlite3.Connection = sqlite3.connect(fast_offline / "posts.sqlite")
-    assert sqlrows.values(fetch_row(con.execute("SELECT mem_peak_mb, oom_kills FROM runs"))) == (1843, 1)
+    con: sqlite3.Connection
+    with closing(sqlite3.connect(fast_offline / "posts.sqlite")) as con:
+        assert sqlrows.values(fetch_row(con.execute("SELECT mem_peak_mb, oom_kills FROM runs"))) == (1843, 1)
 
 
 def test_redroid_memory_is_off_when_the_cgroup_read_itself_fails() -> None:

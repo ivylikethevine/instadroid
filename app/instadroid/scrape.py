@@ -2,6 +2,7 @@
 
 import sqlite3
 from collections import Counter
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
@@ -541,7 +542,12 @@ def run_recorded(con: sqlite3.Connection) -> tuple[RunStats | None, Exception | 
 
 
 def main() -> None:
-    con: sqlite3.Connection = db.db_init()
+    con: sqlite3.Connection
+    with closing(db.db_init()) as con:
+        _poll_loop(con)
+
+
+def _poll_loop(con: sqlite3.Connection) -> None:
     attempt: int = 0  # consecutive transient-failure retries so far
     failures: int = db.consecutive_failures(con)  # failed runs in a row, restarts included
     wait: float

@@ -37,6 +37,7 @@ import sqlite3
 import subprocess
 import sys
 from collections.abc import Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -474,7 +475,7 @@ def run_summary(db_path: Path) -> RunSummary | None:
         return None
     con: sqlite3.Connection
     row: sqlite3.Row | None
-    with sqlite3.connect(db_path) as con:
+    with closing(sqlite3.connect(db_path)) as con:
         try:
             row = sqlrows.fetch_one(con.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1"))
         except sqlite3.OperationalError:
@@ -769,10 +770,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"created {path.relative_to(ROOT)}; override what drifted, then `check {opts.build}` again"
                 )
                 return 0
-            case "restore":
+            case _:  # "restore", the only command left: argparse accepts no other
                 return restore(opts.yes)
-            case _:  # argparse accepts no other command
-                pass
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
     return 2
