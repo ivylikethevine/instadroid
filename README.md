@@ -122,8 +122,8 @@ same by hand, e.g. after a `/data/system` reset.
 
 The password doesn't have to live in `.env`: `IG_PASSWORD_FILE` (and `IG_USERNAME_FILE`) read the value
 from a file instead, such as a Docker secret mounted at `/run/secrets/` — `docker-compose.yml` has a
-commented `secrets:` example. `FEED_TOKEN` and `FRESHRSS_REFRESH_URL` accept a `_FILE` variant the same
-way. Setting both forms of one, or a file the app can't read, stops the process with an error.
+commented `secrets:` example. `FEED_TOKEN`, `ALERT_URL` and `FRESHRSS_REFRESH_URL` accept a `_FILE`
+variant the same way. Setting both forms of one, or a file the app can't read, stops the process with an error.
 
 The `app` container installs Instagram on the device itself the first time it finds it missing:
 `ensure_logged_in()` fetches it with `apkeep` (built into the image, from APKPure) and
@@ -138,8 +138,8 @@ adb -s 127.0.0.1:5555 install-multiple local/xapk/com.instagram.android.apk loca
 ```
 
 (needs [`apkeep`](https://github.com/EFForg/apkeep) on the host; apkmirror blocks scripted
-downloads, hence APKPure). The build installed is the newest one validated with the version
-profiles (see below; `scraper.py profiles` shows it); `IG_APK_VERSION` overrides it, and `latest` means
+downloads, hence APKPure). The build installed is the version profiles' default build (see below;
+`scraper.py profiles` shows it); `IG_APK_VERSION` overrides it, and `latest` means
 whatever APKPure has newest. Each pinned version is cached in its own `local/data/apk/<version>/` folder.
 `APK_CACHE_DIR`/`APK_FETCH_TIMEOUT` tune the cache location and download/install timeout — see
 `.env.example`.
@@ -164,7 +164,8 @@ the log line, and the recovery.
 
 The scraper runs the login step at the start of every scrape, so once the session is saved on the
 device it is a no-op. If Instagram asks for a code or "confirm it's you", the run aborts with a
-`login_screen.jpg` / `login_hierarchy.xml` in `local/data/debug`; finish that step by hand and re-run.
+`login_screen.jpg` / `login_hierarchy.xml` in `local/data/debug` and holds every later run; finish
+that step by hand, then `scraper.py unlock` ([docs/OPERATIONS.md](docs/OPERATIONS.md#health-and-restarts)).
 First-run interstitials (notifications, location, "set up on new device") are dismissed automatically.
 What's specific to a range of Instagram versions (selectors, any behavior that differs, the builds
 checked to work, test fixtures) lives in a version profile under `app/igprofiles/`. A profile exists
@@ -264,7 +265,7 @@ an unfollow gets reflected automatically.
 A single refresh isn't guaranteed to be exhaustive — confirmed live against a real 30-account list,
 which one refresh captured completely and another captured 27 of 30 (a different 3 missed each
 time). The scroll amount is tuned to the list's own row height specifically to keep this rare (see
-`_human_scroll_list()`), but it's Instagram's own chunked rendering, not something this project can
+`device.human_scroll_list()`), but it's Instagram's own chunked rendering, not something this project can
 fully control from the outside. A miss is self-correcting: the account reappears once it's on
 screen for the _next_ scheduled refresh, so this only ever means "may take an extra
 `FOLLOWING_REFRESH_DAYS` before a newly-followed or missed account's posts start showing up," not a
@@ -305,7 +306,7 @@ and running FreshRSS on the same host.
 
 ### Health and restarts
 
-Both services restart on their own, `/health` turns the container `unhealthy` when scraping looks
+The services restart on their own, `/health` turns the container `unhealthy` when scraping looks
 stuck or keeps failing, and `scraper.py lock`/`unlock`/`scrape-now` hold or trigger runs while you
 drive the device yourself. A run that ends on a login challenge holds every later run until you
 `unlock`, so the scraper never retries a login on its own; repeated failures widen the poll

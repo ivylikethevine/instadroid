@@ -153,7 +153,8 @@ container's lifetime instead of being evicted.
 
 `scripts/tune-android.sh` now `pm disable-user`s these apps (extending the existing Google-app
 disable list), which stops them from ever launching rather than relying on a reclaim that doesn't
-happen here.
+happen here. The list now lives in `app/instadroid/tune_packages.txt`, which the app's first-connect
+tuning (`app/instadroid/tune.py`) applies too.
 
 Deliberately left alone: `com.android.settings` (the single largest cached entry at ~78MiB, but a
 core app — too risky to disable), `com.android.provision`/`com.android.managedprovisioning`
@@ -186,6 +187,9 @@ With the corrected list (16 apps, `com.android.packageinstaller` excluded) appli
 and verified across a cold restart: `docker stats` idle usage dropped from 1018MiB to 745.7MiB
 (~272MiB / ~27%), PIDs dropped from 1009 to 758, `sys.boot_completed` reached normally, and a full
 `logcat` check showed zero `FATAL EXCEPTION IN SYSTEM PROCESS` lines.
+
+The app's first-connect tuning applies the same list; on a fresh `/data` (2026-09-16) it disabled 18
+packages, and a cold restart booted with none of the known crash signatures in logcat.
 
 ## Instagram itself never gets reclaimed between polls (2026-09-11)
 

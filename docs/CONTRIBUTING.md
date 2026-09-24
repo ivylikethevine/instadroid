@@ -105,10 +105,12 @@ reaches every caller.
   annotation on every variable where it's first bound, in function, module and class bodies alike,
   including tuple unpacking, `:=` and `with ... as` (declare the name on the line before); `for`
   targets and `match` captures, which Python can't annotate inline, are declared (`name: T`) on the
-  line before too, and an annotation can't be vague (`Any`, `object`, or a generic without its
-  parameters). Comprehension variables and `except ... as` are exempt. `constricter --explain LVA002`
+  line before too. An annotation can't be vague (`Any`, `object`, or a generic without its
+  parameters), nest too deeply (name a part with a `type` alias), list a tuple of more than four
+  elements (use a `NamedTuple`), or be wider than every value the name is bound to, and a name isn't
+  re-annotated with the type it already has. Comprehension variables and `except ... as` are exempt. `constricter --explain LVA002`
   explains a code, and `constricter --fix` adds the annotations a value decides;
-- basedpyright checks `app/` and `tests/` in strict mode with `reportAny`, so no
+- basedpyright checks `app/`, `tests/` and `.github/scripts/` in strict mode with `reportAny`, so no
   value typed `Any` gets through, not even one returned by the standard library;
 - libraries that ship no type information (uiautomator2, adbutils, feedgen) get local stubs in
   `typings/`.
@@ -141,7 +143,7 @@ Parts of this project drive a real redroid container and a real Instagram accoun
 time, including a kernel panic, `/data` corruption from mixing Android versions, and a whole-host
 freeze from a scrape that ran out of memory. The rules that came out of them:
 
-- Before a device-driving run (`scraper.py login`, `once`, `scrape-now`, `new-profile baseline` or
+- Before a device-driving run (`scraper.py login`, `once`, `scrape-now`, `install`, `new-profile baseline` or
   `restore`), check `docker stats` headroom and force-stop Instagram. Keep scrape test runs short
   (`MAX_SCROLLS=5`, `MAX_STORIES_PER_RUN=2`), and don't interleave manual `adb`/`am` commands with a
   run.
@@ -161,7 +163,8 @@ AI agents working in this repository follow the same rules, plus a few agent-spe
 ## What CI runs
 
 `.github/workflows/ci.yml`, on every non-draft pull request, every push to `main`, weekly and on
-dispatch. Each job with a local equivalent runs `scripts/check.sh` with its group:
+dispatch. Each job with a local equivalent runs `scripts/check.sh` with its group. New workflows wait
+until v1.0: every added pin is upkeep.
 
 - a `changes` job first: when a push or pull request touches only Markdown, `docs/` or workflow
   files, the Python, shell and Docker jobs are skipped. The docs job and the workflow linters always

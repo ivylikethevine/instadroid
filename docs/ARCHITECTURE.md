@@ -7,11 +7,20 @@ app to a feed reader, where the trust boundaries sit, and where state lives. The
 
 ## Contents
 
+- [Design principles](#design-principles)
 - [Component map](#component-map)
 - [How a post reaches a reader](#how-a-post-reaches-a-reader)
 - [Trust boundaries](#trust-boundaries)
 - [Where state lives](#where-state-lives)
 - [Weighed and not shipped](#weighed-and-not-shipped)
+
+## Design principles
+
+- Every Instagram-facing action has a ceiling that holds whichever code path reaches it: the daily
+  launch budget, the per-run time budget and the failure backoff ([OPERATIONS.md](OPERATIONS.md)).
+- A failure that needs a person stops the scraper until a person acts; no timer resumes it.
+- Nothing restarts redroid automatically. Health checks report, they don't act.
+- Python and Docker only, until run data shows a reason to leave them.
 
 ## Component map
 
@@ -33,7 +42,7 @@ app/                 the app image's build context
   instadroid/        the scraper (the package docstring lists its modules)
   igprofiles/        per-Instagram-version profiles (docs/PROFILES.md)
   feedserver/        the feed server, served as uvicorn feedserver:app
-  shared/            the leaf both sides import: fileenv (secrets from files), sqlrows (typed SQLite rows)
+  shared/            the leaf both sides import: settings, control files, secrets from files, typed SQLite rows
   devtools/          dev commands, not in the image: new-profile, promote-dump, check-new-builds, export-openapi
 tests/               the test suite
 scripts/             host and device shell scripts (tune-android.sh, diagnose.sh, ...)
@@ -88,10 +97,10 @@ flowchart LR
   compromise of the Android container is a compromise of the host.
 - **The app ↔ APKPure.** A fresh Instagram install trusts whatever APKPure serves; `apkeep` itself is
   pinned to a release and checksum in `app/Dockerfile`.
-- **Feed server ↔ readers.** It binds `FEED_HOST`, loopback by default. With `FEED_TOKEN`, every path
-  but `/health` needs the token, media URLs carry a per-file HMAC signature instead, and cross-site
-  state-changing requests are refused (`feedserver.auth`). Without it, anyone who can reach the port
-  reads everything scraped.
+- **Feed server ↔ readers.** It binds `FEED_HOST`, loopback by default, and refuses cross-site
+  state-changing requests (`feedserver.auth`). With `FEED_TOKEN`, every path but `/health` needs the
+  token and media URLs carry a per-file HMAC signature instead. Without it, anyone who can reach the
+  port reads everything scraped and can lock or trigger runs.
 - **The app ↔ outbound webhooks.** `ALERT_URL` and `FRESHRSS_REFRESH_URL` can carry tokens; they're
   never logged with their query string or credentials (`instadroid.common.redact_url`).
 
@@ -117,8 +126,8 @@ retention, the size cap and backups.
 
 ## Weighed and not shipped
 
-Designs considered and declined, kept so they aren't re-proposed without something new. Each links
-to where the decision is recorded.
+Designs considered and declined, kept so they aren't re-proposed without something new. Where the
+decision is recorded elsewhere, the entry links to it.
 
 - **Host GPU mode for redroid**: tried as a fix for the Following-feed switcher, rejected for a tenfold
   slower boot ([COMPATIBILITY.md](COMPATIBILITY.md#weighed-and-not-shipped)).
@@ -132,3 +141,11 @@ to where the decision is recorded.
 - **Device locale and mock GPS** for fingerprint consistency: locale changes needed a system broadcast
   `adb shell` can't send, and `adb emu geo fix` doesn't work on redroid; `.env.example`'s
   `DEVICE_TIMEZONE` comment has the detail.
+- **A private-API client, or rewriting the driver in another language**: a higher ban risk, and it
+  defeats the point of driving the real app.
+- **An on-device Kotlin UiAutomator agent**: waits for run data showing the adb round trips are the
+  bottleneck.
+- **A wider display** (`REDROID_WIDTH` above 1080): Instagram serves feed images at display width, so
+  1080 is already native.
+- **Restarting redroid or the app automatically on `unhealthy`**: a restart rarely fixes a stuck
+  redroid and costs minutes each time.

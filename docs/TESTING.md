@@ -37,13 +37,22 @@ over `app/`. pytest-cov enforces it, so a run under the floor fails. The README'
 the figure from the latest green push to `main`, measured by `.github/workflows/coverage.yml` and
 served by `pages.yml`; the badge turns bright green at that same `fail_under`.
 
-`tests/conftest.py` holds three autouse fixtures every test gets:
+`tests/conftest.py` holds the autouse fixtures every test gets:
 
 - `profile_v424` pins the root profile, `v424`, so the suite as a whole is the `v424` regression
   suite unless a test selects another;
-- `no_real_logcat` records `diagnostics.save_failure_logcat` calls instead of running the real `adb`
-  binary, which on a developer host could reach a live redroid;
-- `no_profile_capture` keeps capture mode off whatever the environment says.
+- `no_real_boot_wait` and `no_real_logcat` stand in for the calls that run the real `adb` binary (the
+  boot wait, device tuning, and `diagnostics.save_failure_logcat`), which on a developer host could
+  reach a live redroid;
+- `no_profile_capture` keeps capture mode off whatever the environment says;
+- `backups_in_tmp` and `control_files_in_tmp` put database backups and the poll loop's control files
+  in throwaway directories, and `no_alert_delivery` blanks `ALERT_URL`;
+- `close_databases` closes every connection `db_init()` opened at the test's teardown, rather than
+  leaving it to garbage collection and a `ResourceWarning`;
+- `no_permalink_backfill` turns the permalink backfill off; its own tests turn it back on.
+
+Two more are opt-in: `fast_offline`, the device-flow setup (paths under `tmp_path`, no pauses, test
+credentials), and `con`, a fresh database.
 
 ## Tier 2: static contracts
 
@@ -68,9 +77,10 @@ These run over `app/` and `tests/` alike and are part of the test contract, not 
   import the scraper code they configure, and `instadroid.parsing` stays pure (no device, network or
   database code), which is what the replay tests rely on. See
   [ARCHITECTURE.md](ARCHITECTURE.md#component-map).
-- **Profiles.** `tests/test_profiles.py`'s `test_every_profile_meets_the_contract` checks every
-  profile directory automatically: every profile but the lowest differs from its parent, and every
-  validated build is one its profile covers.
+- **Profiles.** `tests/test_profiles.py` checks every profile directory automatically:
+  `test_every_profile_meets_the_contract` requires every selector key the root profile has, no
+  override that matches no `@versioned` function, and every validated build to be one its profile
+  covers, and every profile but the lowest must differ from its parent.
 - **The OpenAPI spec.** `tests/test_scripts_cli.py` runs `export-openapi --check`, so the suite fails
   until `docs/openapi.json` is regenerated after a route change.
 

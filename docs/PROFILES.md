@@ -13,8 +13,8 @@ The dated device runs behind the decisions here are in the [run log](RUNLOG.md).
 ## Why
 
 Instagram ships a new major version roughly weekly, and any of them can move a resource-id or
-change a card layout. On 2026-09-14 a fresh install pulled **446.0.0.49.77** while every selector had
-been written against **445**. Rather than editing selectors in place and losing a known-good
+change a card layout, and a fresh install can pull a build newer than the one the selectors were
+written against. Rather than editing selectors in place and losing a known-good
 baseline, what's specific to a range of Instagram versions lives in a self-contained profile, and
 the scraper runs exactly one of them.
 
@@ -120,7 +120,9 @@ a selector edit is live on the next run without rebuilding the image. What stays
 what a changed selector or override should be.
 
 1. **Find the exact build** on APKPure: `apkeep -l -a com.instagram.android -d apk-pure` (inside the
-   app image) lists them. The major version alone isn't enough.
+   app image) lists them. The major version alone isn't enough. The weekly `new-builds.yml` workflow
+   keeps an issue open listing each major newer than every validated build (`check-new-builds`,
+   `app/devtools/check_new_builds.py`).
 2. **Baseline**: `new-profile baseline 447.0.0.x.y`. This is a device-driving run, so read
    the [device-run rules](CONTRIBUTING.md#running-against-a-real-device) and the host freeze in [INCIDENTS.md](INCIDENTS.md) first. Before asking for confirmation it refuses to start if:
    - the `app` service is running (its scraper loop drives the same device; `docker compose stop app`),
@@ -130,7 +132,7 @@ what a changed selector or override should be.
    Then it installs that build (`scraper.py install <build>`, a `-r -d` downgrade when needed, which
    may need a fresh login) and does one run under whichever profile covers it, capped at
    `MAX_SCROLLS=5` and `MAX_STORIES_PER_RUN=2` (`--scrolls`, `--stories`; `--following` also visits the
-   Following list). The run uses a scratch database and media directory, so nothing reaches the real
+   Following list; `--below-floor` runs a build older than every profile under the lowest one). The run uses a scratch database and media directory, so nothing reaches the real
    feed or FreshRSS.
 
    In capture mode (`PROFILE_CAPTURE_DIR`) the scraper saves every screen it visits: feed screens,

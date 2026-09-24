@@ -101,16 +101,17 @@ Holds only what Instagram {major} changed relative to {parent}: selector keys in
 methods named after @versioned functions (docs/PROFILES.md). A profile that changes nothing shouldn't exist.
 """
 
+from igprofiles.base import Selectors
 from igprofiles.{parent} import Profile as Profile{parent_major}
 
 from .selectors import SELECTORS
 
 
 class Profile(Profile{parent_major}):
-    major = {major}
-    selectors = SELECTORS
-    validated = ()
-    notes = "forked from {parent}"
+    major: int = {major}
+    selectors: Selectors = SELECTORS
+    validated: tuple[str, ...] = ()
+    notes: str = "forked from {parent}"
 '''
     selectors: str = f'''"""Selectors for Instagram {major} onward.
 
@@ -640,7 +641,9 @@ def validation_problems(profile: BaseProfile, build: str, run: RunSummary | None
     return problems
 
 
-_VALIDATED: re.Pattern[str] = re.compile(r"^    validated = \((?P<body>[^)]*)\)\n", re.M)
+_VALIDATED: re.Pattern[str] = re.compile(
+    r"^    validated(?:: tuple\[str, \.\.\.\])? = \((?P<body>[^)]*)\)\n", re.M
+)
 
 
 def add_validated(init: Path, build: str) -> None:
@@ -650,11 +653,11 @@ def add_validated(init: Path, build: str) -> None:
     m: re.Match[str] | None = _VALIDATED.search(text)
     builds: set[str] = {b[1] for b in re.finditer(r'"([^"]+)"', m["body"])} if m else set[str]()
     lines: str = "".join(f'        "{b}",\n' for b in sorted(builds | {build}, key=version_key))
-    block: str = f"    validated = (\n{lines}    )\n"
+    block: str = f"    validated: tuple[str, ...] = (\n{lines}    )\n"
     selectors: re.Match[str] | None
     if m:
         text = text[: m.start()] + block + text[m.end() :]
-    elif selectors := re.search(r"^    selectors = .*\n", text, re.M):
+    elif selectors := re.search(r"^    selectors(?:: \w+)? = .*\n", text, re.M):
         text = text[: selectors.end()] + block + text[selectors.end() :]
     else:
         raise ValueError(f"no `validated` or `selectors` line in {init}")

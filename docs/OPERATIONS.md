@@ -11,7 +11,7 @@ redroid incidents referred to below are written up in [INCIDENTS.md](INCIDENTS.m
 
 ## Health and restarts
 
-Both services use `restart: unless-stopped`, so they come back after a host reboot or a crash;
+Every long-running service uses `restart: unless-stopped`, so they come back after a host reboot or a crash;
 `docker compose stop` (or `down`) keeps them down. `/status` is a plain-HTML page of recent runs.
 `/health` returns 503 — which the compose healthcheck turns into `unhealthy` in `docker ps` — when
 no run has finished within `POLL_MAX_HOURS` + 30min of the last one (the loop looks stuck), or no
@@ -19,7 +19,8 @@ run has _succeeded_ for 2 × `POLL_MAX_HOURS` + 1h (e.g. a login challenge is wa
 Docker doesn't restart an unhealthy container by itself. After a long downtime the stack reports
 unhealthy until its first run finishes. redroid has a healthcheck too, on `sys.boot_completed`, so an
 Android that never finishes booting (or crash-looped back into booting) shows as `unhealthy` in
-`docker ps`; it exists for visibility only, and nothing acts on it.
+`docker ps`; on a clean start it turns healthy about 20 seconds in. It exists for visibility only,
+and nothing acts on it.
 
 **One report of the whole state**: `docker compose exec app python scraper.py doctor` prints the
 control state, the last five runs with their result and peak memory, the failure backoff and daily
@@ -51,9 +52,8 @@ starts, not on the schedule, not from `scrape-now`, not after a restart, until y
 docker compose exec app python scraper.py unlock    # or: DELETE /control/lock, or rm the file
 ```
 
-Unlike the manual lock it never expires. Without it the loop relaunched Instagram, and for a wrong
-password retyped it, every poll interval until someone noticed, which is the kind of repetition that
-gets an account flagged. `/status`, `/control` and the alert below all show the hold and its reason.
+Unlike the manual lock it never expires. Without it the loop would relaunch Instagram, and retype a
+wrong password, every poll interval: the kind of repetition that gets an account flagged. `/status`, `/control` and the alert below all show the hold and its reason.
 Finish the challenge in scrcpy (or fix the credentials) first, then unlock.
 
 **Failure alerts**: after each run the scraper raises an alert for a login challenge, for
@@ -93,7 +93,7 @@ first-seen wins on a duplicate merge; `NULL` for posts from before this was adde
 
 **Selector-drift canary**: every run also records its parse yield — cards parsed per screen dump,
 the share of cards with a real (non-placeholder) caption, and the share flagged "complete" (see
-`_is_weak_caption()`) — as `runs.cards_per_screen`/`share_captioned`/`share_complete`. If any of the
+`parsing.is_weak_caption()`) — as `runs.cards_per_screen`/`share_captioned`/`share_complete`. If any of the
 three falls below `SELECTOR_DRIFT_THRESHOLD` (default 0.5, i.e. half) of the rolling average over
 the last `SELECTOR_DRIFT_BASELINE_RUNS` successful runs (default 10; needs at least
 `SELECTOR_DRIFT_MIN_RUNS`, default 3, prior runs with a nonzero baseline before it judges anything),
@@ -121,10 +121,10 @@ access log.
 
 Every post also gets a `posted_at` column (parsed from its relative/absolute timestamp), which is
 what the feed and DB are ordered by — not `scraped_at`, since the newest post is always scraped
-_first_ within a run. Before storing a new card, the driver checks for an existing post by the same
+_first_ within a run. Before storing a new card, the scraper checks for an existing post by the same
 author within a close time window; if either side's caption hasn't rendered yet (empty, or a bare
 media description like "Photo 1 of 2 by X, 113 likes"), the two are treated as one post and merged
-rather than stored twice — this is what previously caused ~30% of stored posts to be duplicates.
+rather than stored twice.
 The first run after upgrading applies this merge once to the existing database. A merge like this
 bumps the row's `updated_at` (even though `scraped_at`, when it was first seen, doesn't change) —
 the feed's ETag keys off `updated_at`, so a caption correction like this actually reaches FreshRSS
@@ -146,8 +146,7 @@ directory (e.g. scratch `test*.sqlite` databases) are never touched.
 Saved images are WebP by default (`MEDIA_FORMAT=jpeg` switches back). Re-encoding real crops,
 WebP came out ~36% smaller than JPEG at the default `MEDIA_QUALITY=95` and ~56% smaller at 90.
 Switching formats needs no migration: the database stores each file's name, so earlier files keep
-serving, and the orphan sweep and retention handle both extensions. One side effect: stories are
-deduplicated by file bytes, so a story still live when you switch formats may be stored once more.
+serving, and the orphan sweep and retention handle both extensions.
 In the feeds, every image carries its `width`/`height`, each entry gets a `<media:thumbnail>` (the
 cover image) for readers that show pictures in list view, and video/Reel titles start with ▶.
 
