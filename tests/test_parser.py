@@ -2,6 +2,7 @@ import random
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import igprofiles
 import pytest
@@ -234,6 +235,18 @@ def test_parse_posted_at_bare_date_rolls_back_a_year_if_in_the_future() -> None:
     _: int
     dt, _ = parsed
     assert dt.year == 2025
+
+
+def test_parse_posted_at_reads_a_bare_date_as_a_day_on_the_device() -> None:
+    tz: ZoneInfo = ZoneInfo("America/Los_Angeles")
+    assert parsing.parse_posted_at("September 1", NOW, tz) == (datetime(2026, 9, 1, 7, 0, tzinfo=UTC), 86400)
+    assert parsing.parse_posted_at("3 hours ago", NOW, tz) == (datetime(2026, 9, 8, 9, 0, tzinfo=UTC), 3600)
+    # 03:00 UTC on January 1 is still December 31 there: "December 31" was today, not a year ago.
+    new_year: datetime = datetime(2027, 1, 1, 3, 0, tzinfo=UTC)
+    assert parsing.parse_posted_at("December 31", new_year, tz) == (
+        datetime(2026, 12, 31, 8, 0, tzinfo=UTC),
+        86400,
+    )
 
 
 def test_parse_posted_at_rejects_unknown_formats() -> None:

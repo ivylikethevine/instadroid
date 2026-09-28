@@ -10,7 +10,7 @@ name: Publish
 # A manual dispatch is a rehearsal of the same pipeline on the dispatched commit: gate (green CI only),
 # build, smoke test and scan. publish and release run only for a pushed v* tag, so a rehearsal can't
 # promote or release anything. Its image is pushed by digest with no tag and stays in GHCR as an untagged
-# version until deleted.
+# version until prune-images.yml deletes it.
 on:
   push:
     tags: ["v*"]

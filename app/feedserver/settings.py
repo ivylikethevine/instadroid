@@ -11,6 +11,7 @@ DB_PATH: str = env.env_db_path()
 MEDIA_DIR: Path = env.env_media_dir()
 PUBLIC_URL: str = os.environ.get("PUBLIC_URL", "http://localhost:8000").rstrip("/")
 POLL_MAX_HOURS: float = env.env_poll_max_hours()
+TIMEZONE: str = env.env_timezone()  # TZ: the zone the feeds spell times out in; "" = UTC
 FEED_HOST: str = os.environ.get("FEED_HOST", "127.0.0.1")
 # Required on every request except /health once set: as a bearer token, as the password of HTTP
 # basic auth (any username), or as ?token=. Media URLs in the feeds are signed with it instead of

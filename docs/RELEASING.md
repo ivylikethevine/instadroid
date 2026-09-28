@@ -108,7 +108,8 @@ Dispatching `publish.yml` by hand rehearses it on the dispatched commit: the gat
 there's no tag to check), the build, the smoke test and the scan. `publish` and `release` run only for
 a pushed tag, so a rehearsal **never promotes or releases anything**. It runs in its own concurrency
 group, so it can't displace a queued release. Its image is still pushed by digest, with no tag, and
-stays in GHCR as an untagged package version until it's deleted.
+stays in GHCR as an untagged package version until `prune-images.yml` deletes it, in the first weekly
+run after it's a week old.
 
 ## Verifying a published image
 

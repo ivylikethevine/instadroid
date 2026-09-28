@@ -188,7 +188,8 @@ cancelled, and passes when each passed or was skipped, so jobs can be renamed or
 change filter without touching branch protection.
 
 Every job in every workflow starts with `step-security/harden-runner`, which records the runner's
-network egress (and blocks all but an allowlist in `publish.yml`'s `publish` and `release` jobs);
+network egress (and blocks all but an allowlist in the jobs that hold a write token for packages or
+releases: `publish.yml`'s `publish` and `release`, and `prune-images.yml`);
 `lint_workflows.sh` fails a job whose first step isn't it. The same script requires a
 `timeout-minutes` on every job, top-level `permissions:`, `persist-credentials: false` on every
 checkout, a success gate on every `workflow_run` job, and a commit SHA with a version comment on
@@ -233,6 +234,10 @@ The other workflows:
 - `new-builds.yml`: weekly, keeps one issue open while APKPure lists an Instagram major version newer
   than every validated build, and closes it once nothing newer is listed.
 - `publish.yml`: on a `vX.Y.Z` tag, the release ([RELEASING.md](RELEASING.md)).
+- `prune-images.yml`: weekly, deletes the versions of the published image in GHCR that no tag needs
+  and that are older than a week, which is what a rehearsal of `publish.yml` leaves behind. Release
+  images, their platform manifests and their attestations stay. A dispatch lists what it would
+  delete, and deletes only with `delete` set.
 
 Dependabot watches pip (both locks), npm (the Markdown tools' lock), the Dockerfile's base image,
 compose's images and GitHub Actions (the workflows and the composite actions), in one weekly pull

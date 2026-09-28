@@ -1,6 +1,6 @@
 """What used to be two manual first-time steps, done by the app on its first connect after each
 start: waiting for Android to finish booting, and the device tuning scripts/tune-android.sh does
-by hand (animations off, sync and location off, the screen never sleeping, DEVICE_TIMEZONE, and the
+by hand (animations off, sync and location off, the screen never sleeping, the timezone, and the
 unused Google/AOSP apps in tune_packages.txt disabled so they never sit resident: CLAUDE.md,
 "Memory"). Every command is idempotent, so running it on every start costs one batched adb round
 trip and changes nothing on an already-tuned device."""

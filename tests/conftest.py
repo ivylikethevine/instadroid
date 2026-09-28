@@ -70,6 +70,12 @@ def no_alert_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def device_in_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The device's timezone is UTC, whatever TZ or DEVICE_TIMEZONE the environment has."""
+    monkeypatch.setattr(config, "DEVICE_TIMEZONE", "")
+
+
+@pytest.fixture(autouse=True)
 def control_files_in_tmp(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     """The poll loop's lock and scrape-now files live in a throwaway directory, never /db."""
     monkeypatch.setattr(config, "CONTROL_DIR", tmp_path_factory.mktemp("control"))

@@ -125,7 +125,7 @@ services:
     network_mode: host
     environment:
       LISTEN: ${FRESHRSS_LISTEN:-127.0.0.1:8080}
-      TZ: ${DEVICE_TIMEZONE:-UTC}
+      TZ: ${TZ:-${DEVICE_TIMEZONE:-UTC}}
       CRON_MIN: ${FRESHRSS_CRON_MIN:-} # empty: the scraper pings FreshRSS instead of it polling
       # Required: FreshRSS 1.30+ refuses to fetch internal hosts (an SSRF guard), so without this the
       # subscription to 127.0.0.1 silently fetches nothing.
