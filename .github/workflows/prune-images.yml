@@ -1,0 +1,76 @@
+name: Prune images
+
+# Weekly and on dispatch: delete the versions of the published image in GHCR that no tag needs, which is
+# what a publish.yml rehearsal leaves behind. Release images, the platform manifests under them and
+# their attestations stay; .github/scripts/prune_untagged_images.sh has the rules. A dispatch only lists
+# what it would delete unless `delete` is set.
+on:
+  schedule:
+    - cron: "53 9 * * 1" # weekly
+  workflow_dispatch:
+    inputs:
+      delete:
+        description: Delete the versions listed, rather than only listing them
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Its own group, not publish.yml's: a pending run replaces the one pending before it in the same group,
+# and a prune must never displace a queued release. The script's minimum age is what keeps it off the
+# image of a release in flight.
+concurrency:
+  group: prune-images
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: delete untagged image versions (GHCR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # checkout: the script
+      packages: write # list the package's versions, read their manifests, delete the unused ones
+    steps:
+      # Block, not audit: this job holds a package-write token. It reaches github.com (the checkout), the
+      # GitHub API (the package's versions) and GHCR (ghcr.io, and pkg-containers.githubusercontent.com,
+      # where it redirects blob reads), nothing else. Tighten or extend this from the audit insights of a run.
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >-
+            api.github.com:443
+            github.com:443
+            ghcr.io:443
+            pkg-containers.githubusercontent.com:443
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts/prune_untagged_images.sh
+          sparse-checkout-cone-mode: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The schedule deletes; a dispatch does only when asked to.
+      - name: Prune untagged versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ github.repository }}
+          DELETE: ${{ github.event_name == 'schedule' || inputs.delete }}
+        run: |
+          set -uo pipefail
+          args=("$IMAGE")
+          [ "$DELETE" != true ] || args=(--delete "$IMAGE")
+          rc=0
+          .github/scripts/prune_untagged_images.sh "${args[@]}" | tee "$RUNNER_TEMP/prune.txt" || rc=$?
+          {
+            echo "### Untagged versions of \`ghcr.io/${IMAGE,,}\`"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/prune.txt"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          exit "$rc"

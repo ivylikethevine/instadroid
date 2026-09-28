@@ -125,12 +125,12 @@ BACKUP_EVERY_HOURS: float = float(os.environ.get("BACKUP_EVERY_HOURS", "24"))
 BACKUP_KEEP: int = int(os.environ.get("BACKUP_KEEP", "7"))
 MAX_STORIES_PER_RUN: int = int(os.environ.get("MAX_STORIES_PER_RUN", "10"))
 TIME_DISTRIBUTION: str = os.environ.get("TIME_DISTRIBUTION", "uniform")  # uniform | lognormal | daynight
-# "Local" time for the daynight distribution below — deliberately not applied anywhere by default
-# (empty = leave the device's own clock/timezone alone). Set this to match wherever the account's
-# network traffic appears to originate; see tune-android.sh, which applies the same value to the
-# device itself via `service call alarm`, and README's "Staying under the radar" for why a timezone
-# that doesn't match the network's egress is worse than setting neither.
-DEVICE_TIMEZONE: str = os.environ.get("DEVICE_TIMEZONE", "")
+# The device's timezone: DEVICE_TIMEZONE, else TZ (the zone the feeds show times in). Tuning applies it
+# to the device (tune.py, tune-android.sh), bare dates Instagram shows are read in it, and it's "local"
+# for the daynight distribution below. Empty = the device's own timezone is left alone and both are
+# UTC. It should match where the account's network traffic appears to originate (README, "Staying
+# under the radar"), which is what DEVICE_TIMEZONE is for when that isn't TZ.
+DEVICE_TIMEZONE: str = env.env_device_timezone()
 DAYNIGHT_QUIET_START: int = int(os.environ.get("DAYNIGHT_QUIET_START", "0"))  # local hour, inclusive
 DAYNIGHT_QUIET_END: int = int(os.environ.get("DAYNIGHT_QUIET_END", "6"))  # local hour, exclusive
 # Consecutive screens with no identifiable post before a run treats the feed as lost: dump, reopen

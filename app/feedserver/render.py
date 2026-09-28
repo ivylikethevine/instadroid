@@ -13,13 +13,15 @@ from fastapi import Request, Response
 from feedgen.entry import FeedEntry
 from feedgen.feed import FeedGenerator
 from PIL import Image, ImageFile
+from shared import env
 
 from . import auth, settings
 from .queries import EtagPart
 
 
-def utc(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%d %H:%M UTC")
+def local(dt: datetime) -> str:
+    """`dt` in the TZ setting's zone, named by its abbreviation: "2026-09-08 01:00 PDT"."""
+    return dt.astimezone(env.zone(settings.TIMEZONE)).strftime("%Y-%m-%d %H:%M %Z")
 
 
 def cached(request: Request, *parts: EtagPart) -> tuple[str, Response | None]:

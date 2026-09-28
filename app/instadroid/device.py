@@ -7,13 +7,13 @@ import random
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from typing import TypedDict
 from weakref import WeakKeyDictionary
-from zoneinfo import ZoneInfo
 
 import adbutils
 import uiautomator2 as u2
+from shared import env
 from uiautomator2.exceptions import DeviceError as U2DeviceError
 
 from . import config, tune, uidevice, versioning
@@ -169,10 +169,9 @@ def ensure_foreground(d: uidevice.Device) -> bool:
 
 def _in_quiet_hours(now: datetime) -> bool:
     """True during the configured local quiet window (only consulted by the "daynight"
-    distribution below). Uses DEVICE_TIMEZONE so "local" reflects the account's apparent timezone,
-    not the container's own clock, which stays UTC regardless of DEVICE_TIMEZONE."""
-    tz: ZoneInfo | timezone = ZoneInfo(config.DEVICE_TIMEZONE) if config.DEVICE_TIMEZONE else UTC
-    local_hour: int = now.astimezone(tz).hour
+    distribution below). "Local" is the device's timezone (DEVICE_TIMEZONE), the account's apparent
+    one, not the container's own clock, which follows TZ."""
+    local_hour: int = now.astimezone(env.zone(config.DEVICE_TIMEZONE)).hour
     if config.DAYNIGHT_QUIET_START <= config.DAYNIGHT_QUIET_END:
         return config.DAYNIGHT_QUIET_START <= local_hour < config.DAYNIGHT_QUIET_END
     return (

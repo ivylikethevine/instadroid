@@ -114,8 +114,8 @@ docker compose exec app python scraper.py once        # first scrape, watch the 
 
 On its first connect after each app start (a restart of redroid alone doesn't count; run
 `scripts/tune-android.sh` then, or restart the app) the app waits for Android to finish booting and
-tunes the device: animations, sync and location off, the screen never sleeping, `DEVICE_TIMEZONE` from `.env`
-if set (see "Staying under the radar"), and the unused Google/AOSP apps in
+tunes the device: animations, sync and location off, the screen never sleeping, the timezone from `TZ` in
+`.env` if set (see "Staying under the radar"), and the unused Google/AOSP apps in
 `app/instadroid/tune_packages.txt` disabled so they never sit resident (cuts idle memory). It's
 idempotent, one adb round trip; `TUNE_ON_CONNECT=0` skips it, and `scripts/tune-android.sh` does the
 same by hand, e.g. after a `/data/system` reset.
@@ -323,10 +323,11 @@ device-failure retries, the selector-drift canary and memory management.
   `DAYNIGHT_QUIET_START`..`DAYNIGHT_QUIET_END` local hours (default 0–6). `daynight` is a cheap
   extra layer: a metronome that's merely slow is still a metronome, whereas real usage thins out
   overnight.
-- `DEVICE_TIMEZONE` (e.g. `America/Los_Angeles`) is applied to the device by the first-connect tuning
-  (or `tune-android.sh`; takes effect immediately, no reboot) and defines "local" for `daynight`. It's empty by default
-  on purpose: a timezone that doesn't match the network egress may be a worse signal than the
-  device's default GMT.
+- `TZ` (e.g. `America/Los_Angeles`) is applied to the device by the first-connect tuning (or
+  `tune-android.sh`; takes effect immediately, no reboot), defines "local" for `daynight`, and is the
+  zone the feeds spell their times out in. A timezone that doesn't match the network egress may be a
+  worse signal than the device's default GMT, so when yours doesn't, set the device's alone with
+  `DEVICE_TIMEZONE`.
 - `MAX_SCROLLS` 25 is roughly 10–15 posts per run on this feed layout (each new post costs a
   share-sheet round trip). If you follow enough accounts to post more than that in a ~3-hour
   window, raise the poll frequency slowly (lower `POLL_MIN_HOURS`/`POLL_MAX_HOURS`) rather than

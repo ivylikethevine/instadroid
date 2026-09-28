@@ -61,7 +61,7 @@ def feed(request: Request, user: str | None = None, limit: int = 200) -> Respons
         fe.updated(raised)
         fe.published(raised)
         fe.content(
-            f"<p>{escape(message)}</p><p><small>since {render.utc(raised)} · "
+            f"<p>{escape(message)}</p><p><small>since {render.local(raised)} · "
             f'<a href="{public_url}/status">status page</a></small></p>',
             type="html",
         )
@@ -103,14 +103,14 @@ def feed(request: Request, user: str | None = None, limit: int = 200) -> Respons
         meta: list[str] = []
         if posted_date := text(r, "posted_date"):
             meta.append(
-                f"Posted {escape(posted_date)}" + (f" ({render.utc(posted_abs)})" if posted_abs else "")
+                f"Posted {escape(posted_date)}" + (f" ({render.local(posted_abs)})" if posted_abs else "")
             )
         elif posted_abs:
-            meta.append(f"Posted {render.utc(posted_abs)}")
+            meta.append(f"Posted {render.local(posted_abs)}")
         if place := opt_str(r, "place"):
             meta.append(f"at {escape(place)}")
         if scraped_abs := parse_iso(text(r, "scraped_at")):
-            meta.append(f"saved {render.utc(scraped_abs)}")
+            meta.append(f"saved {render.local(scraped_abs)}")
         meta.append(f'<a href="{escape(url)}">open on Instagram</a>')
         html += f"<p><small>{' · '.join(meta)}</small></p>"
         fe.content(html, type="html")
@@ -153,7 +153,7 @@ def stories_feed(request: Request, limit: int = 200) -> Response:
         html: str = f"<p>{render.img(media_file)}</p>" if media_file else ""
         if media_file:
             render.thumbnail(fe, media_file)
-        html += f"<p><small>saved {render.utc(scraped)}</small></p>"
+        html += f"<p><small>saved {render.local(scraped)}</small></p>"
         fe.content(html, type="html")
 
     return Response(fg.atom_str(pretty=True), media_type="application/atom+xml", headers={"ETag": etag})

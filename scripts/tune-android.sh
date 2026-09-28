@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One-time (idempotent) device tuning: turn off animations and disable Google apps the scraper
 # never uses, to cut CPU/RAM inside the container. Keeps GMS + WebView (Instagram wants them).
-# Also sets the device's timezone from DEVICE_TIMEZONE (read from .env if present, or already
-# exported) — see DEVICE_TIMEZONE in app/instadroid/config.py for why this isn't set by default.
+# Also sets the device's timezone from DEVICE_TIMEZONE, else TZ (read from .env if present, or
+# already exported) — see DEVICE_TIMEZONE in app/instadroid/config.py.
 # The app does the same thing itself on its first connect after each start (instadroid/tune.py,
 # TUNE_ON_CONNECT), so this is for tuning by hand, e.g. after a /data/system reset; the package
 # list is app/instadroid/tune_packages.txt, shared with the app. Run from the repository root.
@@ -18,8 +18,9 @@ if [ -f .env ]; then
   . ./.env
   set +a
 fi
-if [ -n "${DEVICE_TIMEZONE:-}" ]; then
-  $A service call alarm 3 s16 "$DEVICE_TIMEZONE" >/dev/null 2>&1 && echo "timezone set to $DEVICE_TIMEZONE"
+zone="${DEVICE_TIMEZONE:-${TZ:-}}"
+if [ -n "$zone" ]; then
+  $A service call alarm 3 s16 "$zone" >/dev/null 2>&1 && echo "timezone set to $zone"
 fi
 $A settings put global window_animation_scale 0
 $A settings put global transition_animation_scale 0

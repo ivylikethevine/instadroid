@@ -3,7 +3,7 @@ list, timestamps, and post identity. No device access, so it's what the replay t
 
 import re
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import NotRequired, TypedDict
 
 from igprofiles.screens import id_matches
@@ -23,10 +23,11 @@ _ABSOLUTE_DATE: re.Pattern[str] = re.compile(r"^([A-Z][a-z]+) (\d{1,2})(?:, (\d{
 _UNIT_SECONDS: dict[str, int] = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
 
 
-def parse_posted_at(text: str, now: datetime) -> tuple[datetime, int] | None:
+def parse_posted_at(text: str, now: datetime, tz: tzinfo = UTC) -> tuple[datetime, int] | None:
     """Convert a header/timestamp string ("3 days ago", "August 29", "Yesterday") into an
     absolute UTC instant plus the granularity of that instant in seconds (e.g. 3600 for an
-    hours-ago value, 86400 for a bare date). Returns None if the text isn't a format we know."""
+    hours-ago value, 86400 for a bare date). A bare date is a day in `tz`, the timezone of the device
+    that showed it. Returns None if the text isn't a format we know."""
     if not text:
         return None
     text = text.strip()
@@ -42,9 +43,9 @@ def parse_posted_at(text: str, now: datetime) -> tuple[datetime, int] | None:
             month: int = datetime.strptime(m.group(1), "%B").month
         except ValueError:
             return None
-        year: int = int(m.group(3)) if m.group(3) else now.year
+        year: int = int(m.group(3)) if m.group(3) else now.astimezone(tz).year
         try:
-            dt: datetime = datetime(year, month, int(m.group(2)), tzinfo=UTC)
+            dt: datetime = datetime(year, month, int(m.group(2)), tzinfo=tz)
         except ValueError:
             return None
         if not m.group(3) and dt > now:  # bare "Month Day" with no year: assume the past
@@ -52,7 +53,7 @@ def parse_posted_at(text: str, now: datetime) -> tuple[datetime, int] | None:
                 dt = dt.replace(year=year - 1)
             except ValueError:  # "February 29" rolled back into a non-leap year
                 return None
-        return dt, 86400
+        return dt.astimezone(UTC), 86400
     return None
 
 

@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
 
-from shared import sqlrows
+from shared import env, sqlrows
 from shared.timestamps import parse_iso
 
 from . import (
@@ -174,7 +174,9 @@ def _store_post(
     stored duplicate (returns False) or insert it as a new post (True)."""
     if p["caption_truncated"]:
         p["caption"] = capture.expand_caption(d, p)
-    parsed: tuple[datetime, int] | None = parsing.parse_posted_at(p["posted_date"], datetime.now(UTC))
+    parsed: tuple[datetime, int] | None = parsing.parse_posted_at(
+        p["posted_date"], datetime.now(UTC), env.zone(config.DEVICE_TIMEZONE)
+    )
     posted_at: datetime | None
     precision: int | None
     posted_at, precision = parsed if parsed else (None, None)

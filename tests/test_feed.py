@@ -43,6 +43,13 @@ def test_feed_entries_expose_both_posted_and_saved_dates_for_sorting(
     assert "saved 2026-09-08 08:00 UTC" in body
 
 
+def test_feed_spells_times_out_in_the_tz_setting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    body: str = make_app(tmp_path, monkeypatch, tz="America/Los_Angeles").get("/instagram.xml").text
+    assert "Posted 2 days ago (2026-09-08 02:00 PDT)" in body
+    assert "saved 2026-09-08 01:00 PDT" in body
+    assert "<published>2026-09-08T09:00:00+00:00</published>" in body  # the instants stay as stored
+
+
 def test_user_filter_and_users_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
     assert json_body(client.get("/users")) == ["other", "someone"]
