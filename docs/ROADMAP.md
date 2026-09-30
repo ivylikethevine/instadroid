@@ -43,10 +43,6 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   challenge-style stop) and reuse `install.install_instagram()` (`app/instadroid/install.py`)
   with a newer validated build (`new-profile baseline`/`validate`, or `fork` if it drifted), plus a `scraper.py dump` smoke check, keeping the previous xapk in
   `APK_CACHE_DIR` for rollback.
-- **OpenSSF Best Practices badge**: Scorecard is wired up (`.github/workflows/scorecard.yml` and the
-  README badge). What's left is bestpractices.dev, a manual self-certification questionnaire rather
-  than a CI job, plus the Scorecard checks still open: branch protection and fuzzing. The answer sheet
-  and the open checks are in [`OPENSSF-IMPROVEMENTS.md`](OPENSSF-IMPROVEMENTS.md).
 - **Resource-id check for new Instagram builds in CI**: `.github/workflows/new-builds.yml` already opens
   an issue weekly when APKPure lists a major version newer than every validated build
   (`check-new-builds`, `app/devtools/check_new_builds.py`). Still to add: a static resource-id report in that issue.

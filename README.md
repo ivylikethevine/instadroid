@@ -16,8 +16,6 @@ driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom 
        measured by .github/workflows/coverage.yml (.github/scripts/coverage_badges.sh writes both
        files) and served by .github/workflows/pages.yml.
      - OpenSSF Scorecard: api.scorecard.dev, fed by .github/workflows/scorecard.yml.
-     - OpenSSF Best Practices: the project's bestpractices.dev entry. Not registered yet; uncomment
-       the line below with the real project id once it is.
      - License: GitHub's detection of LICENSE.md.
      - Python: static, mirrors pyproject.toml's requires-python. -->
 
@@ -26,9 +24,6 @@ driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom 
 [![Tests](https://img.shields.io/github/check-runs/ivylikethevine/instadroid/main?nameFilter=Unit%20tests&label=tests)](https://github.com/ivylikethevine/instadroid/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fivylikethevine.github.io%2Finstadroid%2Fbadges%2Fcoverage.json)](https://github.com/ivylikethevine/instadroid/actions/workflows/coverage.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ivylikethevine/instadroid/badge)](https://scorecard.dev/viewer/?uri=github.com/ivylikethevine/instadroid)
-
-<!-- [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/PROJECT_ID/badge)](https://www.bestpractices.dev/projects/PROJECT_ID) -->
-
 [![License: MIT](https://img.shields.io/github/license/ivylikethevine/instadroid)](LICENSE.md)
 [![Python 3.14](https://img.shields.io/badge/python-3.14-blue?logo=python&logoColor=white)](https://github.com/ivylikethevine/instadroid/blob/main/pyproject.toml)
 
