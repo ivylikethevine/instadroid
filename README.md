@@ -16,8 +16,6 @@ driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom 
        measured by .github/workflows/coverage.yml (.github/scripts/coverage_badges.sh writes both
        files) and served by .github/workflows/pages.yml.
      - OpenSSF Scorecard: api.scorecard.dev, fed by .github/workflows/scorecard.yml.
-     - OpenSSF Best Practices: the project's bestpractices.dev entry. Not registered yet; uncomment
-       the line below with the real project id once it is.
      - License: GitHub's detection of LICENSE.md.
      - Python: static, mirrors pyproject.toml's requires-python. -->
 
@@ -26,9 +24,6 @@ driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom 
 [![Tests](https://img.shields.io/github/check-runs/ivylikethevine/instadroid/main?nameFilter=Unit%20tests&label=tests)](https://github.com/ivylikethevine/instadroid/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fivylikethevine.github.io%2Finstadroid%2Fbadges%2Fcoverage.json)](https://github.com/ivylikethevine/instadroid/actions/workflows/coverage.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ivylikethevine/instadroid/badge)](https://scorecard.dev/viewer/?uri=github.com/ivylikethevine/instadroid)
-
-<!-- [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/PROJECT_ID/badge)](https://www.bestpractices.dev/projects/PROJECT_ID) -->
-
 [![License: MIT](https://img.shields.io/github/license/ivylikethevine/instadroid)](LICENSE.md)
 [![Python 3.14](https://img.shields.io/badge/python-3.14-blue?logo=python&logoColor=white)](https://github.com/ivylikethevine/instadroid/blob/main/pyproject.toml)
 
@@ -240,9 +235,11 @@ queue is exhausted (Back, by contrast, always returns cleanly to the tray). Give
 stories only ever contribute their currently-shown frame, not the whole reel — a deliberate scope
 decision, not a "not yet implemented" gap. Stories have no permalink/shortcode the way posts do, so a
 capture is matched by how it looks: a crop within 10 bits (of 64) of a perceptual hash of a story
-the same account had stored in the last day is a re-capture and is discarded, and so is a
-near-black viewer transition frame. (An exact byte hash missed these, since every capture
-re-encodes a fresh screenshot.) The crop skips the header overlay, so the relative timestamp
+the same account had stored in the last day is a re-capture and is discarded, as is one within 4 bits
+of another account's (the same frame reshared by both), and so is a near-black viewer transition
+frame; a dark first screenshot is retaken once, in case it caught a fade-in. (An exact byte hash
+missed these, since every capture re-encodes a fresh screenshot.) The whole frame is saved, header
+overlay included, but the hash reads only the part below that overlay, so the relative timestamp
 ticking over between runs doesn't change it.
 Captured stories are served at `/stories.xml` and share `RETAIN_DAYS` with posts — no separate
 story-retention window.
@@ -285,6 +282,8 @@ everything else it reconciles. Each run's `/status` page shows how many posts a 
 
 - When "Copy link" fails on every retry (`PERMALINK_RETRIES`) for a post, its id is a hash of
   author + caption (or media description) instead of the permalink shortcode.
+  A card whose header has scrolled off and that shows no date isn't stored that way: with neither a
+  date nor a permalink it can't be told from a post already stored, so it waits for a later run.
 - Avatar and video-still crops are positional, not selector-based — Instagram's accessibility tree
   has no addressable node for either (the header is a collapsed leaf; the video frame is whatever's
   on screen after `VIDEO_SETTLE_SECONDS`) — so their exact framing hasn't been verified against a

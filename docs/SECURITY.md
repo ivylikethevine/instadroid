@@ -158,8 +158,8 @@ fresh APK install trusting APKPure. They're listed under
   ([PROFILES.md](PROFILES.md#leak-scan-2026-09-14)); the maintainer keeps an offline runbook for
   rewriting that history, outside the repository, not yet run ([ROADMAP.md](ROADMAP.md)).
 
-[OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md) tracks what's still open against OpenSSF Scorecard
-and the Best Practices criteria.
+[OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md) tracks what's still open against OpenSSF
+Scorecard.
 
 ## Supported versions
 

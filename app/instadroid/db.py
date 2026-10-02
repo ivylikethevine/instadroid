@@ -24,6 +24,7 @@ class PostRow(TypedDict):
     media_file: str | None
     scraped_at: str  # first seen
     hash: str  # parsing.post_id() of the card
+    alt_hash: str | None  # its post_id() under the other caption form (collapsed or expanded), if they differ
     url: str | None
     place: str
     posted_at: str | None
@@ -43,6 +44,7 @@ class StoredPost(TypedDict):
     media_file: ReadOnly[str | None]
     scraped_at: ReadOnly[str]
     hash: ReadOnly[str | None]
+    alt_hash: ReadOnly[str | None]
     url: ReadOnly[str | None]
     place: ReadOnly[str | None]
     posted_at: ReadOnly[str | None]
@@ -99,6 +101,7 @@ def stored_post(row: sqlite3.Row) -> StoredPost:
         "media_file": text(row, "media_file"),
         "scraped_at": sqlrows.must_str(row, "scraped_at"),
         "hash": text(row, "hash"),
+        "alt_hash": text(row, "alt_hash"),
         "url": text(row, "url"),
         "place": text(row, "place"),
         "posted_at": text(row, "posted_at"),
@@ -129,9 +132,12 @@ def db_init() -> sqlite3.Connection:
     )
     # permalink_attempts: Copy link tries spent backfilling a hash-id post (scrape._backfill_permalink()).
     _add_columns(con, "posts", {"permalink_attempts": "INTEGER NOT NULL DEFAULT 0"})
+    # alt_hash: the card's hash under its other caption form, so a post is recognised collapsed or expanded.
+    _add_columns(con, "posts", {"alt_hash": "TEXT"})
     # Backfill for rows written before updated_at existed, and a no-op once that's done.
     con.execute("UPDATE posts SET updated_at = scraped_at WHERE updated_at IS NULL")
     con.execute("CREATE INDEX IF NOT EXISTS posts_hash ON posts(hash)")
+    con.execute("CREATE INDEX IF NOT EXISTS posts_alt_hash ON posts(alt_hash)")
     con.execute("CREATE INDEX IF NOT EXISTS posts_username_posted_at ON posts(username, posted_at)")
     con.execute(
         # idx is 1-based: the cover image stays in posts.media_file as today, this only holds
@@ -528,11 +534,7 @@ def _migrate_rehash(con: sqlite3.Connection) -> None:
         if rid is None or username is None:  # a corrupt legacy row must not block every later start
             log(f"WARN: rehash migration skipped a row without an id or username: {rid!r}")
             continue
-        caption: str = sqlrows.cell_str(r, "caption") or ""
-        key: str = (
-            parsing.alt_key(caption) if parsing.is_weak_caption(caption) else parsing.caption_key(caption)
-        )
-        new_hash: str = common.digest(f"{username}|{key}")
+        new_hash: str = _stored_caption_hash(username, sqlrows.cell_str(r, "caption"))
         cur: sqlite3.Cursor = con.execute(
             "UPDATE posts SET hash=? WHERE id=? AND hash IS NOT ?", (new_hash, rid, new_hash)
         )
@@ -541,13 +543,118 @@ def _migrate_rehash(con: sqlite3.Connection) -> None:
     log(f"rehash migration: updated {changed} of {len(rows)} row(s)")
 
 
+def _stored_caption_hash(username: str, caption: str | None) -> str:
+    """parsing.post_id() of a stored post, from its stored caption: what the card's caption or,
+    failing that, its media description was."""
+    text: str = caption or ""
+    key: str = parsing.alt_key(text) if parsing.is_weak_caption(text) else parsing.caption_key(text)
+    return common.digest(f"{username}|{key}")
+
+
+def _migrate_alt_hash(con: sqlite3.Connection) -> None:
+    """Fill posts.alt_hash where it can be worked out: the stored caption is the expanded one, so a
+    row whose hash isn't that caption's was last seen collapsed, and the expanded key is its other
+    form. A row stored under the expanded key gets its collapsed one the next time it's on screen."""
+    log("running one-time alt-hash migration")
+    filled: int = 0
+    r: sqlite3.Row
+    for r in sqlrows.fetch_all(
+        con.execute(
+            "SELECT id, username, caption, hash FROM posts"
+            " WHERE alt_hash IS NULL AND id IS NOT NULL AND username IS NOT NULL"
+        )
+    ):
+        expanded: str = _stored_caption_hash(sqlrows.must_str(r, "username"), sqlrows.cell_str(r, "caption"))
+        if sqlrows.cell_str(r, "hash") not in (None, expanded):
+            con.execute("UPDATE posts SET alt_hash=? WHERE id=?", (expanded, sqlrows.cell(r, "id")))
+            filled += 1
+    con.commit()
+    log(f"alt-hash migration: filled {filled} row(s)")
+
+
+def _migrate_merge_twins(con: sqlite3.Connection) -> None:
+    """Merge a row stored with neither a date nor a permalink into the row that holds the same
+    account's same caption: the second capture of a post whose caption had just been expanded, taken
+    after its header scrolled off. The other row wins, as in a live merge; the twin's extra slides
+    follow its cover, kept if that's adopted and discarded otherwise."""
+    log("running one-time twin-merge migration")
+    merged: int = 0
+    id_row: sqlite3.Row
+    for id_row in sqlrows.fetch_all(
+        con.execute("SELECT id FROM posts WHERE url IS NULL AND posted_at IS NULL ORDER BY scraped_at")
+    ):
+        rid: sqlrows.SqlValue = sqlrows.cell(id_row, 0)
+        try:
+            # Read now, not with the ids: an earlier merge may have changed this row.
+            r: sqlite3.Row | None = sqlrows.fetch_one(con.execute("SELECT * FROM posts WHERE id=?", (rid,)))
+            twin: StoredPost | None = stored_post(r) if r else None
+            dup: sqlite3.Row | None = (
+                find_duplicate(con, twin["username"], None, None, twin["caption"], exclude_id=twin["id"])
+                if twin
+                else None
+            )
+            if not twin or not dup:
+                continue
+            keeper: str = sqlrows.must_str(dup, "id")
+            row: StoredPost
+            media_to_drop: str | None
+            row, media_to_drop = merged_fields(dup, twin, datetime.now(UTC))
+            if twin["media_file"] and row["media_file"] == twin["media_file"]:
+                con.execute("UPDATE OR IGNORE media SET post_id=? WHERE post_id=?", (keeper, twin["id"]))
+            slides: list[str] = [
+                sqlrows.must_str(m, 0)
+                for m in sqlrows.fetch_all(
+                    con.execute("SELECT file FROM media WHERE post_id=?", (twin["id"],))
+                )
+            ]
+            con.execute("DELETE FROM media WHERE post_id=?", (twin["id"],))
+            con.execute("DELETE FROM posts WHERE id=?", (twin["id"],))
+            write_merged(con, keeper, row)
+            con.commit()
+            retention.discard_media(media_to_drop, *slides)
+            merged += 1
+        except Exception as e:  # a single corrupt/unexpected row must not block every future start
+            con.rollback()
+            log(f"WARN: twin-merge migration skipped row {rid!r}:", repr(e))
+    log(f"twin-merge migration: merged {merged} twin row(s)")
+
+
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_dedupe,
     _migrate_accounts,
     _migrate_story_retention,
     _migrate_drop_media_post_index,
     _migrate_rehash,
+    _migrate_alt_hash,
+    _migrate_merge_twins,
 )
+
+
+def _find_same_caption(
+    con: sqlite3.Connection, username: str, caption: str | None, exclude_id: str | None
+) -> sqlite3.Row | None:
+    """A stored row of this account with the same caption, for a card that shows no date (the
+    header-less top card), a permalinked row first. Only a caption longer than any collapsed one
+    counts, and only among rows RETAIN_DAYS back: without a date, a short or recurring caption can't
+    tell a repost from the post."""
+    shown: str = parsing.flat_caption(caption)
+    if parsing.is_weak_caption(caption) or len(shown) < parsing.CAPTION_KEY_CHARS:
+        return None
+    since: str = (
+        (datetime.now(UTC) - timedelta(days=config.RETAIN_DAYS)).isoformat() if config.RETAIN_DAYS > 0 else ""
+    )
+    r: sqlite3.Row
+    for r in sqlrows.fetch_all(
+        con.execute(
+            "SELECT * FROM posts WHERE username=? AND scraped_at >= ? ORDER BY url IS NULL, scraped_at",
+            (username, since),
+        )
+    ):
+        if exclude_id and sqlrows.cell(r, "id") == exclude_id:
+            continue
+        if parsing.flat_caption(sqlrows.cell_str(r, "caption"))[:200] == shown[:200]:
+            return r
+    return None
 
 
 def find_duplicate(
@@ -559,9 +666,10 @@ def find_duplicate(
     exclude_id: str | None = None,
 ) -> sqlite3.Row | None:
     """Look up a stored row that parsing.same_post() considers the same post as this freshly-parsed
-    card, within a coarse SQL time window (same_post itself applies the exact tolerance)."""
+    card, within a coarse SQL time window (same_post itself applies the exact tolerance). A card
+    with no date is matched on its caption alone (_find_same_caption())."""
     if posted_at is None:
-        return None
+        return _find_same_caption(con, username, caption, exclude_id)
     window: timedelta = timedelta(seconds=max(posted_at_prec or 0, 3600) * 2)
     candidate: parsing.PostIdentity = {
         "username": username,
@@ -613,6 +721,9 @@ def merged_fields(existing: sqlite3.Row, new: StoredPost, now: datetime) -> tupl
         "media_file": media,
         "scraped_at": old["scraped_at"],
         "hash": new["hash"],
+        "alt_hash": next(
+            (h for h in (new["alt_hash"], old["hash"], old["alt_hash"]) if h and h != new["hash"]), None
+        ),
         "url": old["url"] or new["url"],
         "place": old["place"] or new["place"],
         "posted_at": old["posted_at"] or new["posted_at"],
@@ -620,6 +731,13 @@ def merged_fields(existing: sqlite3.Row, new: StoredPost, now: datetime) -> tupl
         "ig_version": old["ig_version"] or new["ig_version"],
     }
     return row, media_to_drop
+
+
+def remember_hash(con: sqlite3.Connection, post_id: str, h: str) -> None:
+    """Record `h` as the hash a stored post was just seen under, keeping the one it replaces as
+    alt_hash: a post has a collapsed and an expanded caption form, and either may be on screen."""
+    con.execute("UPDATE posts SET alt_hash=hash, hash=? WHERE id=? AND hash IS NOT ?", (h, post_id, h))
+    con.commit()
 
 
 def write_merged(con: sqlite3.Connection, old_id: str, row: StoredPost) -> None:

@@ -5,7 +5,7 @@ from collections import Counter
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from shared import env, sqlrows
 from shared.timestamps import parse_iso
@@ -116,6 +116,9 @@ class RunStats(TypedDict):
     metrics: db.RunMetrics
 
 
+type StoreResult = Literal["new", "merged", "skipped"]  # what _store_post() did with a card
+
+
 def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
     """GET FRESHRSS_REFRESH_URL after a run that stored something new, so FreshRSS (or any reader
     with an equivalent refresh webhook) fetches immediately instead of waiting out its own poll
@@ -169,11 +172,14 @@ def _store_post(
     media: str | None,
     extra_media: list[str],
     ig_version: str | None,
-) -> bool:
+) -> StoreResult:
     """Save a captured card (media cropped, permalink fetched, `pid` its final id): merge it into a
-    stored duplicate (returns False) or insert it as a new post (True)."""
+    stored duplicate, insert it as a new post, or skip a header-less card with neither a date nor a
+    permalink, which nothing could tell from a post already stored. Expands a truncated caption in
+    place first, so `p` then hashes as the expanded card will."""
     if p["caption_truncated"]:
         p["caption"] = capture.expand_caption(d, p)
+    expanded: str = parsing.post_id(p)
     parsed: tuple[datetime, int] | None = parsing.parse_posted_at(
         p["posted_date"], datetime.now(UTC), env.zone(config.DEVICE_TIMEZONE)
     )
@@ -190,6 +196,7 @@ def _store_post(
         "media_file": media,
         "scraped_at": now.isoformat(),
         "hash": h,
+        "alt_hash": expanded if expanded != h else None,
         "url": url,
         "place": p["place"],
         "posted_at": posted_at.isoformat() if posted_at else None,
@@ -206,7 +213,11 @@ def _store_post(
         # The stored cover wins, so this capture's extra slides are redundant too.
         retention.discard_media(media_to_drop, *extra_media)
         log(f"merged duplicate: {p['username']} -> {merged['id']}")
-        return False
+        return "merged"
+    if p["headless"] and posted_at is None and not url:
+        retention.discard_media(media, *extra_media)
+        log(f"skipped {p['username']}'s header-less card: no date and no permalink to identify it by")
+        return "skipped"
     if media and pid != h:  # crops were saved under the hash; name them after the permalink
         media, extra_media = _rename_media(pid, media, extra_media)
     row["media_file"] = media
@@ -217,7 +228,22 @@ def _store_post(
     )
     con.commit()
     log(f"new post: {p['username']} ({p['kind']}) {p['posted_date']} {url or '(no permalink)'}")
-    return True
+    return "new"
+
+
+def _find_stored(con: sqlite3.Connection, p: parsing.Post, h: str) -> sqlite3.Row | None:
+    """The stored row for a card: by either hash it has been seen under, or, for a card showing no
+    date (the header-less top card), by its caption, before a crop and a share sheet are spent on
+    it. A caption match records `h`, so the next sighting matches outright."""
+    row: sqlite3.Row | None = sqlrows.fetch_one(
+        con.execute("SELECT * FROM posts WHERE hash=? OR alt_hash=? OR id=?", (h, h, h))
+    )
+    if row or p["posted_date"]:
+        return row
+    row = db.find_duplicate(con, p["username"], None, None, p["caption"] or p["alt"])
+    if row:
+        db.remember_hash(con, sqlrows.must_str(row, "id"), h)
+    return row
 
 
 def _needs_permalink(stored: sqlite3.Row) -> bool:
@@ -226,12 +252,35 @@ def _needs_permalink(stored: sqlite3.Row) -> bool:
     return sqlrows.cell_str(stored, "url") is None and attempts < config.PERMALINK_BACKFILL_TRIES
 
 
-def _fetch_permalink(d: uidevice.Device, h: str, fail_reasons: Counter[str]) -> str | None:
+def _stored_under(con: sqlite3.Connection, url: str, p: parsing.Post) -> bool:
+    """True if the post stored under this permalink has the card's author and caption."""
+    row: sqlite3.Row | None = sqlrows.fetch_one(
+        con.execute("SELECT username, caption FROM posts WHERE id=?", (capture.permalink_code(url),))
+    )
+    return (
+        row is not None
+        and sqlrows.cell(row, "username") == p["username"]
+        and parsing.same_caption(sqlrows.cell_str(row, "caption"), p["caption"] or p["alt"])
+    )
+
+
+def _fetch_permalink(
+    d: uidevice.Device,
+    con: sqlite3.Connection,
+    h: str,
+    fail_reasons: Counter[str],
+    p: parsing.Post | None = None,
+) -> str | None:
     """capture.fetch_permalink(), counting a failure under its reason ("sheet"/"clipboard") in
-    `fail_reasons`."""
+    `fail_reasons`. A repeat of the last link handed out is that link when the post stored under it is
+    the card `p` (the same post copied again), and a clipboard failure otherwise."""
     url: str | None
     fail_reason: str | None
     url, fail_reason = capture.fetch_permalink(d, h)
+    if fail_reason == "repeat":
+        if url and p and _stored_under(con, url, p):
+            return url
+        url, fail_reason = None, "clipboard"
     if fail_reason:
         fail_reasons[fail_reason] += 1
     return url
@@ -254,7 +303,7 @@ def _backfill_permalink(
     updated_at moves, so the feed's ETag does and readers pick the link up. A link already stored for
     another row (the same post captured twice) is left alone. A failure is counted in `fail_reasons`."""
     post_id: str = sqlrows.must_str(stored, "id")
-    url: str | None = _fetch_permalink(d, h, fail_reasons)
+    url: str | None = _fetch_permalink(d, con, h, fail_reasons)
     attempts: int = (sqlrows.cell_int(stored, "permalink_attempts") or 0) + 1
     con.execute("UPDATE posts SET permalink_attempts=? WHERE id=?", (attempts, post_id))
     if url:
@@ -407,9 +456,7 @@ def _scrape_feed(
                 continue  # still on screen from the previous scroll
             if not p["complete"]:
                 continue  # wait until the whole bottom of the card is on screen (stable identity)
-            stored: sqlite3.Row | None = sqlrows.fetch_one(
-                con.execute("SELECT id, url, permalink_attempts FROM posts WHERE hash=? OR id=?", (h, h))
-            )
+            stored: sqlite3.Row | None = _find_stored(con, p, h)
             if stored:
                 this_run.add(h)
                 seen_streak += 1
@@ -430,7 +477,7 @@ def _scrape_feed(
             extra_media: list[str] = (
                 capture.capture_carousel(d, p, h) if media and p["kind"] == "carousel" else []
             )
-            url: str | None = _fetch_permalink(d, h, fail_reasons)
+            url: str | None = _fetch_permalink(d, con, h, fail_reasons, p)
             if not url and link_failures.get(h, 0) < config.PERMALINK_RETRIES:
                 # The sheet sometimes fails to open; try again on a later screen.
                 link_failures[h] = link_failures.get(h, 0) + 1
@@ -452,16 +499,17 @@ def _scrape_feed(
                 )
                 url, pid = None, h
             elif row:
-                seen_streak += 1  # same post, caption edited since we stored it
-                con.execute("UPDATE posts SET hash=? WHERE id=?", (h, pid))
-                con.commit()
+                seen_streak += 1  # same post, under a caption form (or an edit) not stored yet
+                db.remember_hash(con, pid, h)
                 retention.discard_media(media, *extra_media)
                 break
             seen_streak = 0
-            if _store_post(d, con, p, h, pid, url, media, extra_media, ig_version):
+            outcome: StoreResult = _store_post(d, con, p, h, pid, url, media, extra_media, ig_version)
+            this_run.add(parsing.post_id(p))  # the card's hash now that its caption is expanded
+            if outcome == "new":
                 new += 1
-            else:
-                seen_streak += 1  # merged into a stored duplicate
+            elif outcome == "merged":
+                seen_streak += 1
             break  # the screen may have shifted; re-dump before handling the next card
         else:  # nothing left to handle on this screen: scroll on
             log(f"screen {screens}: {len(posts)} cards, {new} new so far, seen-streak {seen_streak}")

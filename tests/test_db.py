@@ -53,6 +53,7 @@ class PostFields(TypedDict, total=False):
     media_file: str | None
     scraped_at: str
     hash: str
+    alt_hash: str | None
     url: str | None
     place: str
     posted_at: str | None
@@ -65,8 +66,8 @@ def _candidate(**fields: Unpack[PostFields]) -> db.PostRow:
     now: str = datetime.now(UTC).isoformat()
     row: db.PostRow = {
         "id": "h2", "username": "u", "kind": "carousel", "posted_date": "3 days ago", "caption": "Real caption",
-        "media_file": None, "scraped_at": now, "hash": "h2", "url": None, "place": "", "posted_at": None,
-        "updated_at": now, "ig_version": None,
+        "media_file": None, "scraped_at": now, "hash": "h2", "alt_hash": None, "url": None, "place": "",
+        "posted_at": None, "updated_at": now, "ig_version": None,
     }  # fmt: skip
     row.update(fields)
     return row
@@ -206,7 +207,7 @@ def test_db_init_migration_skips_a_row_it_already_merged_away(
     con = db.db_init()
 
     assert sql_column(con.execute("SELECT id FROM posts")) == ["ABC"]
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
 
 
 def test_db_init_migration_skips_a_row_the_merge_raises_on(
@@ -235,7 +236,7 @@ def test_db_init_migration_skips_a_row_the_merge_raises_on(
 
     assert sql_column(con.execute("SELECT id FROM posts")) == ["odd"]
     assert "WARN: dedupe migration skipped row 'odd': RuntimeError(" in capsys.readouterr().out
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
 
 
 def test_accounts_backfill_skips_a_username_the_insert_rejects(
@@ -258,7 +259,7 @@ def test_accounts_backfill_skips_a_username_the_insert_rejects(
 
     assert sql_column(con.execute("SELECT username FROM accounts ORDER BY username")) == ["fine"]
     assert "WARN: accounts backfill skipped 'cursed': IntegrityError(" in capsys.readouterr().out
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
 
 
 def test_migration_drops_the_stories_expiry_column(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -275,7 +276,7 @@ def test_migration_drops_the_stories_expiry_column(tmp_path: Path, monkeypatch: 
     columns: list[SqlValue] = sql_column(con.execute("SELECT name FROM pragma_table_info('stories')"))
     assert "expires_at" not in columns
     assert not sql_column(con.execute("SELECT name FROM sqlite_master WHERE name='stories_expires_at'"))
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
 
 
 @pytest.mark.parametrize(
@@ -406,7 +407,7 @@ def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(
     con = db.db_init()  # must not raise, and must not loop forever on the corrupt row
 
     # dedupe (v1), accounts backfill (v2), story-retention cleanup (v3), media_post index (v4), rehash (v5)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
     ids: set[SqlValue] = set(sql_column(con.execute("SELECT id FROM posts")))
     assert ids == {"bad", "good"}  # the corrupt row is left alone, not dropped or crashed on
 
@@ -442,7 +443,9 @@ def test_migration_backfills_an_accounts_row_for_every_existing_username(
 
     con = db.db_init()
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 5  # accounts backfill (v2), v3, v4, v5
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(
+        db.MIGRATIONS
+    )  # accounts backfill (v2) and every later one
     assert con.execute("SELECT username FROM accounts WHERE username='club'").fetchone() is not None
     # media_file / the media table are untouched: no backfill needed there.
     assert con.execute("SELECT media_file FROM posts WHERE id='h1'").fetchone()[0] == "h1.jpg"
@@ -464,7 +467,7 @@ def test_migration_drops_the_redundant_media_post_index(
 
     con = db.db_init()
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
     assert not sql_column(con.execute("SELECT name FROM sqlite_master WHERE name='media_post'"))
 
 
@@ -481,7 +484,7 @@ def test_rehash_migration_skips_a_row_without_an_id(tmp_path: Path, monkeypatch:
 
     con = db.db_init()
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
     assert sql_column(con.execute("SELECT hash FROM posts WHERE id IS NULL")) == ["old"]
 
 
@@ -507,7 +510,7 @@ def test_migration_rehashes_stored_posts_to_the_current_post_key(
 
     con = db.db_init()
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
     card: parsing.Post = parsing._new_post("u", "photo", "", "", 0)
     card["caption"] = "First line here…"  # the same post, seen truncated
     assert db.stored_post(fetch_row(con.execute("SELECT * FROM posts WHERE id='captioned'")))[
@@ -624,3 +627,147 @@ def test_needs_following_refresh_true_when_stale(
     con.execute("INSERT INTO following (username, updated_at) VALUES ('u', ?)", (old,))
     con.commit()
     assert db.needs_following_refresh(con) is True
+
+
+LONG: str = "A caption long enough that two different posts would not share it by accident"
+
+
+def _add_post(
+    con: sqlite3.Connection,
+    post_id: str,
+    caption: str = LONG,
+    *,
+    url: str | None = None,
+    dated: bool = False,
+    media_file: str | None = None,
+    days_old: float = 1,
+    h: str | None = None,
+) -> None:
+    """A post by "u", `days_old` days old, with its media file written when given."""
+    ts: str = (datetime.now(UTC) - timedelta(days=days_old)).isoformat()
+    if media_file:
+        (config.MEDIA_DIR / media_file).write_bytes(b"x")
+    con.execute(
+        "INSERT INTO posts (id, username, kind, caption, media_file, scraped_at, hash, url, posted_at, updated_at)"
+        " VALUES (?,'u','photo',?,?,?,?,?,?,?)",
+        (post_id, caption, media_file, ts, h or post_id, url, ts if dated else None, ts),
+    )
+    con.commit()
+
+
+def _dateless(
+    con: sqlite3.Connection, caption: str | None, username: str = "u", exclude_id: str | None = None
+) -> str | None:
+    """The id of the stored row a card with no date and this caption is matched to."""
+    row: sqlite3.Row | None = db.find_duplicate(con, username, None, None, caption, exclude_id)
+    return row["id"] if row else None
+
+
+def test_a_card_with_no_date_matches_a_stored_row_on_its_caption(con: sqlite3.Connection) -> None:
+    _add_post(con, "hashid")
+    _add_post(con, "ABC", LONG.replace(" long ", "\nlong  "), url="https://www.instagram.com/p/ABC/")
+    _add_post(con, "short", "See you there")
+    assert _dateless(con, LONG) == "ABC"  # the permalinked row first, whitespace aside
+    assert _dateless(con, LONG, exclude_id="ABC") == "hashid"
+    assert _dateless(con, LONG, username="someone_else") is None
+    assert _dateless(con, "See you there") is None  # too short to tell a repost from the post
+    assert _dateless(con, "Photo by U, 5 likes") is None and _dateless(con, None) is None
+    assert _dateless(con, LONG + " and then some") is None
+
+
+def test_the_dateless_match_looks_back_retain_days(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add_post(con, "old", days_old=90)
+    monkeypatch.setattr(config, "RETAIN_DAYS", 60)
+    assert _dateless(con, LONG) is None
+    monkeypatch.setattr(config, "RETAIN_DAYS", 0)  # nothing is ever deleted, so nothing is too old
+    assert _dateless(con, LONG) == "old"
+
+
+def test_a_merge_keeps_the_hash_of_each_caption_form(con: sqlite3.Connection) -> None:
+    _add_post(con, "h1", dated=True)
+    existing: sqlite3.Row = fetch_row(con.execute("SELECT * FROM posts WHERE id='h1'"))
+    now: datetime = datetime.now(UTC)
+    assert db.merged_fields(existing, _candidate(), now)[0]["alt_hash"] == "h1"
+    assert db.merged_fields(existing, _candidate(alt_hash="h3"), now)[0]["alt_hash"] == "h3"
+    assert db.merged_fields(existing, _candidate(hash="h1"), now)[0]["alt_hash"] is None
+
+
+def test_remember_hash_keeps_the_hash_it_replaces(con: sqlite3.Connection) -> None:
+    _add_post(con, "p", h="collapsed")
+    db.remember_hash(con, "p", "expanded")
+    db.remember_hash(con, "p", "expanded")  # seen that way again: nothing to remember
+    row: sqlite3.Row = fetch_row(con.execute("SELECT hash, alt_hash FROM posts WHERE id='p'"))
+    assert (row["hash"], row["alt_hash"]) == ("expanded", "collapsed")
+
+
+def _reopen_at(con: sqlite3.Connection, version: int) -> sqlite3.Connection:
+    """Close `con` as a database that has run `version` migrations, and open it again."""
+    con.execute(f"PRAGMA user_version = {version}")
+    con.commit()
+    con.close()
+    return db.db_init()
+
+
+def test_migration_fills_the_alt_hash_of_a_row_last_seen_collapsed(con: sqlite3.Connection) -> None:
+    card: parsing.Post = parsing._new_post("u", "photo", "", "", 0)
+    card["caption"] = LONG
+    expanded: str = parsing.post_id(card)
+    _add_post(con, "collapsed", dated=True, h="its-collapsed-key")
+    _add_post(con, "expanded", dated=True, h=expanded)
+
+    con = _reopen_at(con, 5)
+
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+    assert dict(con.execute("SELECT id, alt_hash FROM posts").fetchall()) == {
+        "collapsed": expanded,
+        "expanded": None,
+    }
+
+
+def test_migration_merges_a_dateless_twin_into_its_permalink_row(con: sqlite3.Connection) -> None:
+    _add_post(con, "ABC", url="https://www.instagram.com/p/ABC/", dated=True, media_file="ABC.webp", h="k1")
+    _add_post(con, "twin", media_file="twin.webp", days_old=0.9)
+    _add_post(con, "other", "A different caption, also long enough to be compared with the others")
+    (config.MEDIA_DIR / "twin_1.webp").write_bytes(b"x")
+    con.execute("INSERT INTO media (post_id, idx, file) VALUES ('twin', 1, 'twin_1.webp')")
+
+    con = _reopen_at(con, 6)
+
+    assert sql_column(con.execute("SELECT id FROM posts ORDER BY id")) == ["ABC", "other"]
+    kept: sqlite3.Row = fetch_row(con.execute("SELECT * FROM posts WHERE id='ABC'"))
+    assert (kept["media_file"], kept["hash"], kept["alt_hash"]) == ("ABC.webp", "twin", "k1")
+    assert kept["updated_at"] > kept["scraped_at"]  # the feed's ETag moves: an entry went away
+    assert sorted(p.name for p in config.MEDIA_DIR.iterdir()) == ["ABC.webp"]
+    assert con.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 0
+
+
+def test_twin_merge_keeps_the_twins_media_when_the_other_row_has_none(con: sqlite3.Connection) -> None:
+    _add_post(con, "ABC", url="https://www.instagram.com/p/ABC/", dated=True)
+    _add_post(con, "twin", media_file="twin.webp")
+    (config.MEDIA_DIR / "twin_1.webp").write_bytes(b"x")
+    con.execute("INSERT INTO media (post_id, idx, file) VALUES ('twin', 1, 'twin_1.webp')")
+
+    con = _reopen_at(con, 6)
+
+    assert sql_column(con.execute("SELECT media_file FROM posts")) == ["twin.webp"]
+    assert sql_column(con.execute("SELECT post_id || '/' || file FROM media")) == ["ABC/twin_1.webp"]
+    assert sorted(p.name for p in config.MEDIA_DIR.iterdir()) == ["twin.webp", "twin_1.webp"]
+
+
+def test_twin_merge_skips_a_row_the_merge_raises_on(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _add_post(con, "ABC", url="https://www.instagram.com/p/ABC/", dated=True)
+    _add_post(con, "twin")
+
+    def unexpected(existing: sqlite3.Row, new: db.StoredPost, now: datetime) -> NoReturn:
+        raise RuntimeError("something this row does that nothing anticipated")
+
+    monkeypatch.setattr(db, "merged_fields", unexpected)
+    con = _reopen_at(con, 6)
+
+    assert sql_column(con.execute("SELECT id FROM posts ORDER BY id")) == ["ABC", "twin"]
+    assert "WARN: twin-merge migration skipped row 'twin': RuntimeError(" in capsys.readouterr().out
+    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)

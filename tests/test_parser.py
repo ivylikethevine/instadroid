@@ -395,20 +395,23 @@ def test_capture_story_media_returns_none_when_clip_leaves_too_little_height(
     img: Image.Image = Image.new("RGB", (200, 400), "red")
 
     assert stories.capture_story_media(img, "[0,0][100,150]", 0, "tmp") is None
+    assert stories.capture_story_media(img, "[0,0][200,400]", 250, "tmp") is None  # 150 rows of body
 
 
-def test_capture_story_media_crops_and_saves_under_a_stories_subdirectory(
+def test_capture_story_media_saves_the_whole_frame_under_a_stories_subdirectory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from PIL import Image
+    from PIL import Image, ImageFile
 
     monkeypatch.setattr(config, "MEDIA_DIR", tmp_path)
     img: Image.Image = Image.new("RGB", (200, 400), "red")
 
-    path: Path | None = stories.capture_story_media(img, "[0,0][200,400]", 50, "tmpstory")
+    saved: tuple[Path, int] | None = stories.capture_story_media(img, "[0,20][200,400]", 70, "tmpstory")
 
-    assert path == tmp_path / "stories" / "tmpstory.webp"
-    assert path is not None and path.exists()
+    assert saved == (tmp_path / "stories" / "tmpstory.webp", 50)  # the header overlay covers 50 rows
+    stored: ImageFile.ImageFile
+    with Image.open(tmp_path / "stories" / "tmpstory.webp") as stored:
+        assert stored.size == (200, 380)  # nothing above the body is cut off
 
 
 def test_carousel_count_parses_slide_total() -> None:

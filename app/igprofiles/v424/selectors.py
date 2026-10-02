@@ -52,9 +52,9 @@ SELECTORS: Selectors = {
     ),
     "story_viewer_id": "reel_viewer_root",
     "story_media_id": "reel_viewer_media_container",
-    # The gradient behind the username/timestamp header, overlaid on the media itself — its bottom
-    # edge is where the crop should start, so the saved image doesn't bake in timestamp text that
-    # changes hour to hour (see capture_story_media()).
+    # The gradient behind the username/timestamp header, overlaid on the media itself — a story is
+    # hashed on the part below its bottom edge, so timestamp text that changes hour to hour can't
+    # make one frame look like two (see capture_story_media()).
     "story_shadow_id": "reel_viewer_top_shadow",
     "story_timestamp_id": "reel_viewer_timestamp",
     # Anything that means a share/bottom sheet is open. We never interact inside one except to

@@ -75,22 +75,29 @@ def test_fetch_permalink_notes_a_redacted_dumpsys_clip_once(
     assert capsys.readouterr().out.count("shows a clip but no permalink") == 1
 
 
-def test_fetch_permalink_ignores_the_previous_posts_link_left_in_the_clipboard(
+def test_fetch_permalink_reports_the_previous_posts_link_as_a_repeat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(capture, "_last_code", capture.permalink_code(TOP_URL))
     d: FakeDevice = feed_device(start="following")
-    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
+    assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/reel/TOP123/", "repeat")
 
 
 def test_the_same_link_read_raw_and_trimmed_is_still_the_same_link() -> None:
     """Copy link yields TOP_URL (tracking parameters, trailing slash); the previous run left the trimmed
-    form on the clipboard. They share a shortcode, so the new read is stale, not a fresh permalink."""
+    form on the clipboard. They share a shortcode, so the new read is a repeat, not a fresh permalink."""
     d: FakeDevice = feed_device(start="following")
     d.clipboard = "https://www.instagram.com/reel/TOP123/"
     capture.reset_last_url(d)
     assert capture._last_code == "TOP123"
-    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
+    assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/reel/TOP123/", "repeat")
+
+
+def test_a_repeat_seen_only_through_dumpsys_is_still_a_repeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(capture, "_last_code", "DUMP1")
+    d: FakeDevice = feed_device(top_share="share_noclip", start="following")
+    _dumpsys(d, monkeypatch, "  mPrimaryClip=ClipData { {T:https://www.instagram.com/p/DUMP1/?igsh=x} }")
+    assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/p/DUMP1/", "repeat")
 
 
 def test_fetch_permalink_when_the_card_is_gone() -> None:
@@ -209,10 +216,11 @@ def test_each_media_format_writes_its_own_encoding_and_extension(
     ext: str
     pil_format: str
     ext, pil_format = config.MEDIA_FORMATS[media_format]
-    path: Path | None = stories.capture_story_media(
+    saved: tuple[Path, int] | None = stories.capture_story_media(
         Image.new("RGB", (200, 400), "red"), "[0,0][200,400]", 0, "s"
     )
-    assert path is not None
+    assert saved is not None
+    path: Path = saved[0]
     assert path.name == f"s{ext}" and ext in config.MEDIA_EXTS
     img: ImageFile.ImageFile
     with Image.open(path) as img:
