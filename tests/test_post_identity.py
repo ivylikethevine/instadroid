@@ -1,0 +1,185 @@
+"""One post, one row: a card recognised under its collapsed and expanded caption, without a date, and
+through a Copy link that repeats the last shortcode."""
+
+import sqlite3
+
+import pytest
+from instadroid import config, db, parsing, scrape
+from shared import sqlrows
+from shared.sqlrows import SqlValue
+
+from tests.deviceflows import (
+    CAPTION,
+    TOP_URL,
+    copy_link,
+    feed_device,
+    following_screen,
+    seed_post,
+    top_card_id,
+)
+from tests.fakedevice import FakeDevice, Node, node
+from tests.support import fetch_row, row_dict
+
+pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
+
+LONG: str = "A caption long enough to be cut short in the feed, with more words after the cut"
+COLLAPSED: str = "someone_nice A caption long enough… more"
+PERMALINK: str = "https://www.instagram.com/reel/TOP123/"
+
+
+@pytest.fixture(autouse=True)
+def one_screen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run over the first Following screen only: no stories, no scroll."""
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+
+
+def _card(text: str, *, header: bool = True, goto: str | None = None, share: str = "share_top") -> list[Node]:
+    """A photo card by someone_nice with this caption text, its header on screen or scrolled off."""
+    head: list[Node] = [
+        node(
+            "row_feed_profile_header",
+            desc="someone_nice posted a photo 3 hours ago",
+            bounds=(0, 300, 1080, 437),
+        )
+    ]
+    return (head if header else []) + [
+        node("row_feed_photo_imageview", desc="Photo by Someone Nice, 5 likes", bounds=(0, 437, 1080, 1500)),
+        node("row_feed_button_share", bounds=(390, 1500, 453, 1621), goto=share),
+        node(cls=CAPTION, text=text, bounds=(32, 1630, 1080, 1700), goto=goto),
+    ]
+
+
+def _device(cards: list[Node], expanded: list[Node] | None = None) -> FakeDevice:
+    """The Following feed showing `cards`; tapping a caption's "more" shows `expanded` instead."""
+    d: FakeDevice = feed_device()
+    d.screens["following"] = following_screen(cards)
+    d.screens["expanded"] = following_screen(expanded if expanded is not None else cards)
+    d.screens["share_expanded"] = following_screen(sheet=copy_link(TOP_URL))
+    d.back |= {"expanded": "home", "share_expanded": "expanded"}
+    d.scroll = {}
+    return d
+
+
+def _hash(cards: list[Node]) -> str:
+    """parsing.post_id() of the first of `cards` as the Following feed shows it."""
+    return parsing.post_id(parsing.parse_hierarchy(following_screen(cards))[0])
+
+
+def _post(con: sqlite3.Connection, post_id: str = "TOP123") -> dict[str, SqlValue]:
+    return row_dict(fetch_row(con.execute("SELECT * FROM posts WHERE id=?", (post_id,))))
+
+
+def _expanding_device() -> FakeDevice:
+    return _device(_card(COLLAPSED, goto="expanded"), _card(f"someone_nice {LONG}", share="share_expanded"))
+
+
+def test_a_card_is_not_captured_again_once_its_caption_is_expanded() -> None:
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = _expanding_device()
+    collapsed: str = _hash(_card(COLLAPSED))
+
+    stats: scrape.RunStats = scrape.scrape_once(d, con)
+
+    assert stats["new"] == 1 and stats["metrics"].get("link_clipboard_failures") == 0
+    assert "share_expanded" not in d.history  # the expanded card was never taken for a new one
+    stored: dict[str, SqlValue] = _post(con)
+    assert stored["caption"] == LONG and stored["hash"] == collapsed
+    assert stored["alt_hash"] not in (None, collapsed)
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts")) == 1
+
+
+def test_a_later_run_recognises_the_post_under_either_caption_form() -> None:
+    con: sqlite3.Connection = db.db_init()
+    scrape.scrape_once(_expanding_device(), con)
+    cards: list[Node]
+    for cards in (_card(COLLAPSED), _card(f"someone_nice {LONG}")):
+        d: FakeDevice = _device(cards)
+        assert scrape.scrape_once(d, con)["new"] == 0
+        assert "share_top" not in d.history  # recognised from the hash alone
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts")) == 1
+
+
+def test_a_card_with_no_date_is_matched_to_its_stored_post_by_caption() -> None:
+    con: sqlite3.Connection = db.db_init()
+    seed_post(con, "TOP123", "someone_nice", LONG, 0, h="stored-key", url=PERMALINK)
+    d: FakeDevice = _device(_card(f"someone_nice {LONG}", header=False))
+
+    stats: scrape.RunStats = scrape.scrape_once(d, con)
+
+    assert stats["new"] == 0 and "share_top" not in d.history  # no crop, no share sheet
+    stored: dict[str, SqlValue] = _post(con)
+    assert (stored["hash"], stored["alt_hash"]) == (_hash(_card(f"someone_nice {LONG}")), "stored-key")
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts")) == 1
+
+
+def test_a_header_less_card_with_no_date_and_no_permalink_is_not_stored(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(config, "PERMALINK_RETRIES", 0)
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = _device(_card(f"someone_nice {LONG}", header=False, share="share_noclip"))
+
+    stats: scrape.RunStats = scrape.scrape_once(d, con)
+
+    assert stats["new"] == 0 and stats["metrics"].get("link_clipboard_failures") == 1
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts")) == 0
+    assert not list(config.MEDIA_DIR.glob("*.webp"))  # its crop went with it
+    assert "header-less card: no date and no permalink" in capsys.readouterr().out
+
+
+def test_the_same_shortcode_twice_is_the_same_post_copied_again() -> None:
+    """The clipboard still holds the link the last run ended on, and this run's first card is that
+    post under a hash nobody stored: Copy link "repeats", and the stored row says why."""
+    con: sqlite3.Connection = db.db_init()
+    seed_post(
+        con, "TOP123", "someone_nice", "Top card caption, and the rest of it", 1, h="stale", url=PERMALINK
+    )
+    d: FakeDevice = feed_device()
+    d.clipboard = TOP_URL
+
+    stats: scrape.RunStats = scrape.scrape_once(d, con)
+
+    assert stats["metrics"].get("link_clipboard_failures") == 0
+    stored: dict[str, SqlValue] = _post(con)
+    assert (stored["hash"], stored["alt_hash"]) == (top_card_id(feed_device(start="following")), "stale")
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts WHERE username='someone_nice'")) == 1
+
+
+def test_a_repeated_shortcode_for_a_post_that_is_not_stored_is_a_clipboard_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PERMALINK_RETRIES", 0)
+    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = feed_device()
+    d.clipboard = TOP_URL
+
+    stats: scrape.RunStats = scrape.scrape_once(d, con)
+
+    assert stats["metrics"].get("link_clipboard_failures") == 1
+    stored: sqlite3.Row = fetch_row(
+        con.execute("SELECT id, url, hash FROM posts WHERE username='someone_nice'")
+    )
+    assert stored["url"] is None and stored["id"] == stored["hash"]
+
+
+def test_a_repeated_shortcode_stored_for_another_caption_is_a_clipboard_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PERMALINK_RETRIES", 0)
+    con: sqlite3.Connection = db.db_init()
+    seed_post(con, "TOP123", "someone_nice", "Something else entirely", 9, h="stale", url=PERMALINK)
+    d: FakeDevice = feed_device()
+    d.clipboard = TOP_URL
+
+    assert scrape.scrape_once(d, con)["metrics"].get("link_clipboard_failures") == 1
+    assert _post(con)["hash"] == "stale"
+
+
+def test_same_caption_accepts_a_collapsed_start_and_a_placeholder() -> None:
+    assert parsing.flat_caption("First line\n\nsecond  line…") == "First line second line"
+    assert parsing.same_caption("First line\nsecond line", "First line sec…")
+    assert parsing.same_caption("First li…", "First line\nsecond line")
+    assert parsing.same_caption("Photo by Someone Nice, 5 likes", "Anything at all")
+    assert not parsing.same_caption("First line", "Another line")

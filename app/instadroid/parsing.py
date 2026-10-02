@@ -323,10 +323,10 @@ def parse_story_tray(xml: str) -> list[StoryItem]:
     return items
 
 
-# How much of a caption identifies its post. Short enough to sit inside the part Instagram shows
-# before "… more" (two lines, 50-60 characters each at this display size), so the card hashes the
-# same whether it's seen truncated or after capture.expand_caption() expanded it: hashing 200
-# characters had the same post processed twice in one run (docs/RUNLOG.md, the 446 validation run).
+# How much of a caption identifies its post. A collapsed caption can show less than this before
+# "… more", and with its line breaks flattened, so a card hashes differently once
+# capture.expand_caption() has expanded it: a post is stored under both keys (posts.hash and
+# posts.alt_hash). A shorter key wouldn't fix that, since an account's posts often open alike.
 CAPTION_KEY_CHARS: int = 40
 
 
@@ -336,6 +336,23 @@ def caption_key(caption: str) -> str:
     by rendered lines: a caption with an early line break shows just that line before "… more"."""
     first: str = caption.rstrip("…").split("\n", 1)[0]
     return " ".join(first.split())[:CAPTION_KEY_CHARS]
+
+
+def flat_caption(caption: str | None) -> str:
+    """A caption the way Instagram shows it collapsed: no truncation marker, and every run of
+    whitespace, line breaks included, one space."""
+    return " ".join((caption or "").rstrip("…").split())
+
+
+def same_caption(stored: str | None, shown: str | None) -> bool:
+    """True if a stored caption and the one a card shows are the same text, one possibly the
+    collapsed start of the other. A weak caption on either side says nothing, so it's a match."""
+    if is_weak_caption(stored) or is_weak_caption(shown):
+        return True
+    a: str
+    b: str
+    a, b = flat_caption(stored), flat_caption(shown)
+    return bool(a and b) and (a.startswith(b) or b.startswith(a))
 
 
 def alt_key(alt: str) -> str:

@@ -327,6 +327,16 @@ def test_opml_lists_every_account_plus_the_aggregate_and_stories_feeds(
     assert all(o.get("type") == "rss" for o in outlines)
 
 
+def test_opml_can_leave_the_aggregate_feed_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    whole: Response = client.get("/opml")
+    r: Response = client.get("/opml", params={"aggregate": "0"})
+    assert r.status_code == 200 and r.headers["etag"] != whole.headers["etag"]
+    assert 'xmlUrl="http://feed.test/instagram.xml"' not in r.text
+    assert 'xmlUrl="http://feed.test/stories.xml"' in r.text
+    assert 'xmlUrl="http://feed.test/instagram.xml?user=someone"' in r.text
+
+
 def test_opml_escapes_and_quotes_unusual_usernames(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import xml.etree.ElementTree as ET
 

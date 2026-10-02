@@ -20,16 +20,17 @@ class CapturedStory(TypedDict):
     username: str
     posted_date: str
     path: Path  # the saved crop, under a temporary name until it's stored
+    body_top: int  # rows of the crop above its body, the part a story is identified by
 
 
 @versioned
 def capture_story_media(
     img: Image.Image, media_bounds: str | None, clip_top: int, tmp_name: str
-) -> Path | None:
-    """Crop a story's current frame — from a screenshot already taken by the caller, not one taken
-    here — into MEDIA_DIR/stories. clip_top skips the username/timestamp header overlay so the
-    saved image doesn't bake in text that changes hour to hour (that text would otherwise make the
-    same still-active story hash differently across runs — see scrape_stories())."""
+) -> tuple[Path, int] | None:
+    """Crop a story's whole current frame — from a screenshot already taken by the caller, not one
+    taken here — into MEDIA_DIR/stories. Returns (path, the crop's rows above clip_top): the
+    username/timestamp header overlays those rows with text that changes hour to hour, so a story is
+    hashed on the body below them (see scrape_stories()), not on the whole crop."""
     b: tuple[int, int, int, int] | None
     if not (b := common.parse_bounds(media_bounds)):
         return None
@@ -38,14 +39,14 @@ def capture_story_media(
     x2: int
     y2: int
     x1, y1, x2, y2 = b
-    y1 = max(y1, clip_top)
-    if (y2 - y1) < 200:
+    body_top: int = max(clip_top - y1, 0)
+    if (y2 - y1 - body_top) < 200:
         return None
     stories_dir: Path = config.MEDIA_DIR / "stories"
     stories_dir.mkdir(parents=True, exist_ok=True)
     path: Path = stories_dir / f"{tmp_name}{capture.media_ext()}"
     capture.save_media(img.crop((x1, y1, x2, y2)), path)
-    return path
+    return path, body_top
 
 
 @versioned
@@ -88,6 +89,10 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
         device.human_pause(1, 1.5)
         return None
     img: Image.Image = d.screenshot()
+    if _brightness(img) < DARK_FRAME_MEAN:  # possibly a video story's fade-in: look once more
+        retake: Image.Image = d.screenshot()
+        if _brightness(retake) > _brightness(img):
+            img = retake
     diagnostics.capture_screen(d, "story_viewer", xml, image=img)
     d.press("back")  # off the device from here on; cropping/saving below never risks the timer
     device.human_pause(1, 1.5)
@@ -106,10 +111,12 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
                 clip_top = b[3]
         elif id_matches(rid, SELECTORS["story_timestamp_id"]) and not posted_date:
             posted_date = n.get("text") or ""
-    path: Path | None = capture_story_media(
+    saved: tuple[Path, int] | None = capture_story_media(
         img, media_bounds, clip_top or 0, f"tmp_{item['username']}_{int(time.time() * 1000)}"
     )
-    return {"username": item["username"], "posted_date": posted_date, "path": path} if path else None
+    if not saved:
+        return None
+    return {"username": item["username"], "posted_date": posted_date, "path": saved[0], "body_top": saved[1]}
 
 
 @versioned
@@ -117,8 +124,9 @@ def scrape_stories(d: uidevice.Device, con: sqlite3.Connection) -> int:
     """Visit each not-yet-seen account's story from the Home feed's tray, capture its current
     frame, and return to the feed FEED_MODE scrapes (navigation.open_target_feed()) afterward. Stories
     have no stable public id the way posts do (no permalink/shortcode), so a capture is checked against
-    the DB only afterwards: a blank frame, or one that looks like a story the account posted in the last
-    day (_find_story_duplicate()), is discarded."""
+    the DB only afterwards: a blank frame, or one that looks like a story stored in the last day
+    (_find_story_duplicate()), is discarded. That check, and the id, read the crop's body, below the
+    header overlay."""
     for _ in range(3):
         if navigation.on_home_feed(d):
             break
@@ -155,13 +163,14 @@ def scrape_stories(d: uidevice.Device, con: sqlite3.Connection) -> int:
         path, username = captured["path"], captured["username"]
         img: ImageFile.ImageFile
         with Image.open(path) as img:
-            blank: bool = _is_blank_frame(img)
-            phash: str = _dhash(img)
+            body: Image.Image = img.crop((0, captured["body_top"], img.width, img.height)).convert("RGB")
+        blank: bool = _is_blank_frame(body)
+        phash: str = _dhash(body)
         if blank or _find_story_duplicate(con, username, phash):
             log(f"story for {username}: {'blank frame' if blank else 'already stored'}; discarding")
             path.unlink(missing_ok=True)
             continue
-        digest: str = common.digest(path.read_bytes())
+        digest: str = common.digest(body.tobytes())
         cur: sqlite3.Cursor = con.execute(
             "INSERT OR IGNORE INTO stories (id, username, media_file, kind, posted_date, scraped_at, phash)"
             " VALUES (?,?,?,?,?,?,?)",
@@ -190,6 +199,11 @@ def scrape_stories(d: uidevice.Device, con: sqlite3.Connection) -> int:
 # frame differ only by screenshot noise and overlays; distinct stories stored on 2026-09-14 were
 # 16-45 bits apart.
 STORY_PHASH_DISTANCE: int = 10
+# The same for another account's story, which has to match more closely: a frame two accounts both
+# reshared is all but identical, and unrelated frames from two accounts can land within the above.
+STORY_PHASH_DISTANCE_OTHER: int = 4
+# Mean luminance (0-255) below which a screenshot is retaken once, in case it caught a fade-in.
+DARK_FRAME_MEAN: float = 25.0
 
 
 class _Resizable(Protocol):
@@ -220,16 +234,23 @@ def _is_blank_frame(img: Image.Image) -> bool:
     return stat.mean[0] < 8 and stat.stddev[0] < 4
 
 
+def _brightness(img: Image.Image) -> float:
+    """Mean luminance of a frame, from a thumbnail: cheap enough for capture_story()'s timed path."""
+    return ImageStat.Stat(_resized(img.convert("L"), (32, 32))).mean[0]
+
+
 def _find_story_duplicate(con: sqlite3.Connection, username: str, phash: str) -> bool:
-    """True if this account has a story stored in the last day (a story's lifetime) that looks the
-    same. The byte hash alone missed these: every capture re-encodes a fresh screenshot."""
+    """True if a story stored in the last day (a story's lifetime) looks the same: this account's
+    own, or one another account posted too (STORY_PHASH_DISTANCE_OTHER). The byte hash alone missed
+    these: every capture re-encodes a fresh screenshot."""
     cutoff: str = (datetime.now(UTC) - timedelta(days=1)).isoformat()
     rows: list[sqlite3.Row] = sqlrows.fetch_all(
         con.execute(
-            "SELECT phash FROM stories WHERE username=? AND scraped_at > ? AND phash IS NOT NULL",
-            (username, cutoff),
+            "SELECT username, phash FROM stories WHERE scraped_at > ? AND phash IS NOT NULL", (cutoff,)
         )
     )
     return any(
-        (int(sqlrows.must_str(r, 0), 16) ^ int(phash, 16)).bit_count() <= STORY_PHASH_DISTANCE for r in rows
+        (int(sqlrows.must_str(r, 1), 16) ^ int(phash, 16)).bit_count()
+        <= (STORY_PHASH_DISTANCE if sqlrows.cell(r, 0) == username else STORY_PHASH_DISTANCE_OTHER)
+        for r in rows
     )

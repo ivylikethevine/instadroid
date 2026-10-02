@@ -111,8 +111,10 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
     coordinates) because the feed can shift a few hundred px between a dump and a tap.
     Returns (url, None) on success, or (None, reason) where reason is "sheet" (the share sheet
     never opened, or the card/button vanished before it could) or "clipboard" (the sheet opened
-    and Copy link was tapped, but the clipboard never carried a fresh permalink) — the two need
-    different recoveries, so the caller counts them separately."""
+    and Copy link was tapped, but the clipboard never carried a permalink) — the two need
+    different recoveries, so the caller counts them separately. A clipboard still holding the last
+    link handed out is (that url, "repeat"): a copy that didn't land, or the same post copied again,
+    which only the caller can tell apart."""
     if not navigation.close_sheets(d):
         log("WARN: a sheet is stuck open; skipping permalink")
         return None, "sheet"
@@ -140,7 +142,7 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
         return None, "sheet"
     diagnostics.capture_screen(d, "share_sheet")
     # Note: clearing the clipboard first (d.set_clipboard) makes the next read come back empty.
-    # Staleness is caught below by comparing with the last link we handed out.
+    # A link that isn't new is caught below by comparing with the last one we handed out.
     device.human_pause(0.8, 1.2)  # let the sheet finish animating
     try:
         b: Mapping[str, int] = link.info.get("bounds") or {}
@@ -157,6 +159,7 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
     # than a beat, and the old one-shot read missed it more often than not.
     global _last_code
     url: str = ""
+    repeat: str = ""  # a read that still carried the last link handed out
     deadline: float = time.time() + config.CLIPBOARD_TIMEOUT
     while time.time() < deadline:
         time.sleep(0.4)
@@ -167,11 +170,13 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
             log("WARN: clipboard read failed:", repr(e))
             candidate = ""
         code: str = _code_of(candidate)
-        if not code or code == _last_code:
-            if _dumpsys_failed:
-                continue
+        if code and code == _last_code:
+            repeat = candidate
+        if (not code or code == _last_code) and not _dumpsys_failed:
             candidate, source = _clipboard_via_dumpsys(d, deadline - time.time()), "dumpsys"
             code = _code_of(candidate)
+            if code and code == _last_code:
+                repeat = candidate
         if code and code != _last_code:
             url, _last_code = candidate, code
             if source == "dumpsys":
@@ -179,11 +184,11 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
             break
     navigation.close_sheets(d)  # sheet usually closes itself after Copy link; make sure
     navigation.back_to_feed(d)
-    m: re.Match[str] | None = SELECTORS["permalink"].match(url)
+    m: re.Match[str] | None = SELECTORS["permalink"].match(url or repeat)
     if not m:
         log("WARN: clipboard did not contain a permalink:", repr(url[:80]))
         return None, "clipboard"
-    return f"https://www.instagram.com/{m.group('type')}/{m.group('code')}/", None
+    return f"https://www.instagram.com/{m.group('type')}/{m.group('code')}/", None if url else "repeat"
 
 
 def permalink_code(url: str) -> str:

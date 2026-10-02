@@ -129,8 +129,20 @@
     "/opml": {
       "get": {
         "summary": "Subscription list",
-        "description": "One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed\nper username in /users — a single FreshRSS import subscribes to everything this instance\nserves instead of pasting ?user= URLs in one at a time.",
+        "description": "One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed\nper username in /users — a single FreshRSS import subscribes to everything this instance\nserves instead of pasting ?user= URLs in one at a time. `aggregate=0` leaves the aggregate feed\nout: a reader dedupes entries within a feed, so beside the per-account feeds it shows every post twice.",
         "operationId": "opml_opml_get",
+        "parameters": [
+          {
+            "name": "aggregate",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Aggregate"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "An OPML outline.",
@@ -140,6 +152,16 @@
           },
           "304": {
             "description": "Not Modified"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
         }
       }
