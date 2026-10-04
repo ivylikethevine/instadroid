@@ -35,4 +35,4 @@ needs a doc update, [CONTRIBUTING.md](CONTRIBUTING.md#which-docs-change-with-wha
 | [Governance](GOVERNANCE.md)                     | Decision-making, roles, how a change gets in, and continuity for a single-maintainer project.       |
 | [Roadmap](ROADMAP.md)                           | Planned work, ordered by scope.                                                                     |
 | [Code of conduct](CODE_OF_CONDUCT.md)           | Standards for participating in any project space, and how they're enforced.                         |
-| [OpenSSF improvements](OPENSSF-IMPROVEMENTS.md) | Where the Scorecard score is capped, and the Best Practices answer sheet with evidence.             |
+| [OpenSSF improvements](OPENSSF-IMPROVEMENTS.md) | Where the Scorecard score is capped or still open, and what could move it.                          |

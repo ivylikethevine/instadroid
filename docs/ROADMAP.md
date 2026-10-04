@@ -16,12 +16,17 @@ A config flag, one function, a CI tweak, or docs.
   egress to a fixed host list, so a pin whose upstream lives on a host missing from that list reads
   as fine forever. Count a problem when every row one host serves went unread (a blocked host, not a one-off
   rate limit), naming the host in the tracking issue.
+- **Mask a story's header**: a story is saved whole, so its top carries the viewer's username and
+  age text over `reel_viewer_top_shadow`. Paint over the header's own nodes (avatar, username,
+  timestamp), not the whole gradient, or hold a long press while the screenshot is taken, which hides
+  the overlay but is one more gesture inside the viewer.
 
 Done: Markdown lint and format checks, a link check (relative links on pull
 requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:
 advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
-(import-linter), hashed dependency locks (pip-compile) and a `no_media_node` debug dump on the
-"media node not found" path. Earlier: credentials from a file, caption hashtag/mention links, optional feed
+(import-linter), hashed dependency locks (pip-compile), a `no_media_node` debug dump on the
+"media node not found" path, whole story frames, story frames matched across accounts, a retake of a
+dark story frame, the twin-post merge migration and `/opml?aggregate=0`. Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
 
@@ -29,6 +34,19 @@ spec.
 
 A feature across several parts of the scraper, compose or CI, or repeated real-device work.
 
+- **Confirm the double-capture fix on a device**: a card used to be captured a second time once
+  `capture.expand_caption()` had expanded its caption, since the collapsed and expanded captions hash
+  differently. A post is now stored under both hashes, a card with no date is matched on its caption,
+  and a Copy link that repeats the last shortcode is checked against the stored row; the test suite
+  covers each, no device run has. A clean run shows no `link_clipboard_failures` on a feed with nothing
+  new. Also unconfirmed: whether the `dumpsys clipboard` fallback fixes Copy link leaving the
+  clipboard empty (6 of 8 attempts in the 445 baseline, [run log](RUNLOG.md)).
+- **Stories that reshare a stored post**: a feed post shared to a story, by its own account or
+  another followed one, repeats an entry the posts feed already has. Find the reshared-post sticker's
+  node in the story viewer (no dump of one is recorded yet), hash that rectangle, and compare it with
+  the covers and slides of recently stored posts; then drop the story or store it as a link to the
+  post, which is still to decide. Matching the whole frame against stored images also works without
+  the node, but needs template matching, which the app has no dependency for.
 - **Retry Instagram 446**: 446.0.0.49.77 is in `v424.validated` but has crashed on launch since
   2026-09-15 (a native `SIGSEGV` in `RenderThread`; [run log](RUNLOG.md)), so `igprofiles.DEFAULT_BUILD`
   is pinned to 445. Retry it; if it still crashes, drop it from `v424.validated` and update its
@@ -43,10 +61,6 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   challenge-style stop) and reuse `install.install_instagram()` (`app/instadroid/install.py`)
   with a newer validated build (`new-profile baseline`/`validate`, or `fork` if it drifted), plus a `scraper.py dump` smoke check, keeping the previous xapk in
   `APK_CACHE_DIR` for rollback.
-- **OpenSSF Best Practices badge**: Scorecard is wired up (`.github/workflows/scorecard.yml` and the
-  README badge). What's left is bestpractices.dev, a manual self-certification questionnaire rather
-  than a CI job, plus the Scorecard checks still open: branch protection and fuzzing. The answer sheet
-  and the open checks are in [`OPENSSF-IMPROVEMENTS.md`](OPENSSF-IMPROVEMENTS.md).
 - **Resource-id check for new Instagram builds in CI**: `.github/workflows/new-builds.yml` already opens
   an issue weekly when APKPure lists a major version newer than every validated build
   (`check-new-builds`, `app/devtools/check_new_builds.py`). Still to add: a static resource-id report in that issue.
@@ -65,15 +79,6 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
 
 Open investigations, new capture mechanisms, or changes to the container/process topology.
 
-- **Posts processed twice in one run, and Copy link misses**: in the 446 validation run, 3 of 6 new
-  posts came back on a later screen, failed Copy link three times each, and were merged into the rows
-  stored moments earlier ([run log](RUNLOG.md)). `_post_key()` (`app/instadroid/parsing.py`) now keys
-  on the caption's first line with the "…" stripped, cut to 40 characters, with a rehash migration;
-  no device run has confirmed it fixes the repeats. Copy link also often leaves the clipboard empty
-  (6 of 8 attempts in the 445 baseline), mostly on cards already back on screen, and a post whose
-  every retry fails is stored under a hash id (README.md's "Known limitations").
-  `fetch_permalink()` (`app/instadroid/capture.py`) falls back to `dumpsys clipboard` over root adb
-  and logs which source worked; the next real run decides whether that fixes it.
 - **Reach the real Following feed without the switcher**: under `gpu_mode=guest` the switcher's
   bottom sheet may not open, and the scraper then falls back to Home — algorithmic, with suggested
   posts mixed in. Investigate a deep link or activity intent that opens Following directly;

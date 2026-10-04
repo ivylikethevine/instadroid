@@ -13,11 +13,11 @@ from instadroid import (
     parsing,
     stories,
 )
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageFile, ImageOps
 from shared import sqlrows
 
 from tests.deviceflows import feed_device, following_screen
-from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, hierarchy
+from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, hierarchy, node
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
@@ -105,3 +105,54 @@ def test_a_byte_identical_recapture_is_dropped_by_the_stories_table(
 
     assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM stories")) == 1
     assert len(list((config.MEDIA_DIR / "stories").iterdir())) == 1
+
+
+def test_a_story_is_saved_whole_and_identified_by_what_is_below_its_header() -> None:
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = feed_device(start="home")
+    d.screenshot = _frame
+    assert stories.scrape_stories(d, con) == 1
+    saved: ImageFile.ImageFile
+    with Image.open(next((config.MEDIA_DIR / "stories").iterdir())) as saved:
+        assert saved.size == (WIDTH, 2200 - 150)  # the viewer's whole media container
+
+    def other_header() -> Image.Image:
+        """The same frame an hour on: only the header overlay (down to y=400) reads differently."""
+        img: Image.Image = _frame()
+        ImageDraw.Draw(img).rectangle((0, 150, WIDTH, 399), fill="white")
+        return img
+
+    d = feed_device(start="home")
+    d.screenshot = other_header
+    assert stories.scrape_stories(d, con) == 0
+
+
+def test_a_dark_first_frame_is_retaken() -> None:
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = feed_device(start="home")
+    shots: list[Image.Image] = [Image.new("RGB", (WIDTH, HEIGHT), (3, 3, 3)), _frame()]
+    d.screenshot = lambda: shots.pop(0)
+    assert stories.scrape_stories(d, con) == 1  # the fade-in frame alone would have been blank
+    assert shots == []
+
+
+def test_another_accounts_frame_has_to_match_more_closely() -> None:
+    con: sqlite3.Connection = db.db_init()
+    now: str = datetime.now(UTC).isoformat()
+    con.execute(
+        "INSERT INTO stories (id, username, scraped_at, phash) VALUES ('s1', 'alice', ?, ?)",
+        (now, f"{0:016x}"),
+    )
+    near: str = f"{0b11:016x}"
+    nearish: str = f"{0b1111111:016x}"
+    assert stories._find_story_duplicate(con, "alice", nearish)
+    assert not stories._find_story_duplicate(con, "bob", nearish)
+    assert stories._find_story_duplicate(con, "bob", near)  # the frame both accounts reshared
+
+
+def test_a_story_viewer_without_a_media_node_stores_nothing() -> None:
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = feed_device(start="home")
+    d.screens["story_alice"] = hierarchy(node("reel_viewer_root", bounds=(0, 0, WIDTH, HEIGHT)))
+    assert stories.scrape_stories(d, con) == 0
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM stories")) == 0

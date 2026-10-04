@@ -32,6 +32,11 @@ category. It's a subscription list, not a feed: adding `/opml` as a feed URL fai
   `$PUBLIC_URL/opml`. FreshRSS then re-reads the outline on its own schedule, so accounts that
   appear later (or a rename via `scraper.py rename`) are picked up without re-importing.
 
+The outline holds the aggregate feed and every per-account feed, and a reader dedupes entries within
+a feed, not across feeds: subscribed to all of it, every post shows up twice. `/opml?aggregate=0`
+leaves the aggregate feed out; to keep only the aggregate, subscribe to `/instagram.xml` and
+`/stories.xml` directly.
+
 **Push instead of poll**: by default FreshRSS finds new posts on its own poll interval. To have
 the scraper tell it instead, set `FRESHRSS_REFRESH_URL` in `.env` to FreshRSS's "online cron"
 actualize URL (`http://<freshrss-host>/i/?c=feed&a=actualize&user=<name>&token=<token>` — the

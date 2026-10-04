@@ -173,16 +173,19 @@ def users() -> list[str]:
     responses={200: {"content": {"text/x-opml": {}}, "description": "An OPML outline."}, 304: {}},
     summary="Subscription list",
 )
-def opml(request: Request) -> Response:
+def opml(request: Request, aggregate: bool = True) -> Response:
     """One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed
     per username in /users — a single FreshRSS import subscribes to everything this instance
-    serves instead of pasting ?user= URLs in one at a time."""
+    serves instead of pasting ?user= URLs in one at a time. `aggregate=0` leaves the aggregate feed
+    out: a reader dedupes entries within a feed, so beside the per-account feeds it shows every post twice."""
     con: sqlite3.Connection
     with queries.connection() as con:
         usernames: list[str] = queries.usernames(con)
     etag: str
     not_modified: Response | None
-    etag, not_modified = render.cached(request, settings.PUBLIC_URL, settings.FEED_TOKEN, *usernames)
+    etag, not_modified = render.cached(
+        request, settings.PUBLIC_URL, settings.FEED_TOKEN, aggregate, *usernames
+    )
     if not_modified:
         return not_modified
 
@@ -204,9 +207,10 @@ def opml(request: Request) -> Response:
             htmlUrl=html_url,
         )
 
-    _feed_outline(
-        category, "Instagram — Following", render.feed_url("/instagram.xml"), "https://www.instagram.com/"
-    )
+    if aggregate:
+        _feed_outline(
+            category, "Instagram — Following", render.feed_url("/instagram.xml"), "https://www.instagram.com/"
+        )
     _feed_outline(
         category, "Instagram — Stories", render.feed_url("/stories.xml"), "https://www.instagram.com/"
     )
