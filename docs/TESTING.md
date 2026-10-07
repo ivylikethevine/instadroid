@@ -146,8 +146,15 @@ docs, the image, workflows) is in [CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs
 
 ## Fuzzing
 
-None exists. The one input from outside the project that gets parsed is the hierarchy XML a device
-returns, in `instadroid.parsing.parse_hierarchy()`, which is pure by contract (above) and so a
-candidate for a Python fuzzer such as atheris. Captions reach the feed through
-`feedserver.render.caption_html()`, which escapes them. See
+The one input from outside the project that gets parsed is the hierarchy XML a device returns, and
+its parsers in `instadroid.parsing` are pure by contract (above). `tests/fuzz/fuzz_parsing.py` runs
+them all (`parse_screen()`) under atheris, seeded with the replay fixtures; anything raised other
+than lxml's syntax error on input that isn't XML is a finding. Run by hand, not in CI:
+
+```bash
+python tests/fuzz/fuzz_parsing.py -max_total_time=60 local/fuzz-corpus app/igprofiles/v424/fixtures
+```
+
+libFuzzer writes the inputs it keeps into the first directory, so the fixtures go second. Captions
+reach the feed through `feedserver.render.caption_html()`, which escapes them. See
 [OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md).

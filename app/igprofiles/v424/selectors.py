@@ -46,7 +46,8 @@ SELECTORS: Selectors = {
     # The Home feed's story tray (not present on the Following screen). Each item's content-desc
     # is "<user>'s story, <index> of <total>, Unseen."/"...Seen." — index 0 is always the logged-in
     # account's own story.
-    "story_tray_id": "reels_tray_container",
+    # The second id is the tray floating over a feed that has scrolled a little (seen on 450).
+    "story_tray_ids": ("reels_tray_container", "overlay_stories_tray_container"),
     "story_item_desc": re.compile(
         r"^(?P<user>[\w.]+)'s story, (?P<index>\d+) of (?P<total>\d+), (?P<seen>\w+)\.$"
     ),
@@ -57,6 +58,10 @@ SELECTORS: Selectors = {
     # make one frame look like two (see capture_story_media()).
     "story_shadow_id": "reel_viewer_top_shadow",
     "story_timestamp_id": "reel_viewer_timestamp",
+    # The header's avatar, and the container of its texts (username, age, attribution): painted over
+    # in the saved frame (see capture_story()).
+    "story_avatar_id": "reel_viewer_profile_picture",
+    "story_header_text_id": "reel_viewer_text_container",
     # Anything that means a share/bottom sheet is open. We never interact inside one except to
     # tap "Copy link"; a stray tap there could message a contact.
     "sheet_markers_text": ["Write a message…"],

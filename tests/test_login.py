@@ -162,6 +162,11 @@ def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch: pytest.Mo
     assert install_call[3] == "install-multiple"
     assert install_call[4].endswith(f"{config.IG_PKG}.apk")
     assert install_call[5].endswith("config.arm64_v8a.apk")
+    # the notification prompt of a fresh install would take the foreground over the feed
+    assert (
+        f"pm set-permission-flags {config.IG_PKG} {install.NOTIFICATION_PERMISSION} user-set user-fixed"
+        in d.shell_calls
+    )
 
 
 def test_installing_instagram_reactivates_the_profile(monkeypatch: pytest.MonkeyPatch) -> None:

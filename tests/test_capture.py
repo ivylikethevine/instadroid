@@ -1,7 +1,6 @@
 """Capturing a post or story: permalinks through the share sheet, expanded captions, media formats, story dedupe."""
 
 import sqlite3
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -16,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFile, ImageOps
 from shared import sqlrows
 
 from tests.deviceflows import CAPTION, TOP_URL, feed_device, following_screen, top_card_id
-from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, FakeSelector, Node, Out, hierarchy, node
+from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, FakeSelector, Node, hierarchy, node
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
@@ -38,48 +37,37 @@ def test_fetch_permalink_reports_a_clipboard_that_never_updates() -> None:
     assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
 
 
-def _dumpsys(d: FakeDevice, monkeypatch: pytest.MonkeyPatch, clip: str) -> None:
-    """Make `d` answer `dumpsys clipboard` with `clip`, everything else as before."""
-    real: Callable[[str | list[str], float], Out] = d.shell
-
-    def shell(cmdargs: str | list[str], timeout: float = 60) -> Out:
-        joined: str = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
-        return Out(clip) if joined == "dumpsys clipboard" else real(cmdargs, timeout)
-
-    monkeypatch.setattr(d, "shell", shell)
-
-
-def test_fetch_permalink_falls_back_to_dumpsys_clipboard(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """uiautomator2's read is empty (the Android 10+ background-clipboard restriction), but the root
-    `dumpsys clipboard` dump shows the link."""
-    d: FakeDevice = feed_device(top_share="share_noclip", start="following")
-    _dumpsys(
-        d,
-        monkeypatch,
-        '  mPrimaryClip=ClipData { text/plain "" {T:https://www.instagram.com/p/DUMP1/?igsh=x} }',
-    )
-    assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/p/DUMP1/", None)
-    assert "permalink read via dumpsys clipboard" in capsys.readouterr().out
-
-
-def test_fetch_permalink_notes_a_redacted_dumpsys_clip_once(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    d: FakeDevice = feed_device(top_share="share_noclip", start="following")
-    _dumpsys(d, monkeypatch, "  mPrimaryClip=ClipData { text/plain {T:<redacted>} }")
-    capture.reset_last_url(d)
-    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
-    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
-    assert capsys.readouterr().out.count("shows a clip but no permalink") == 1
-
-
 def test_fetch_permalink_reports_the_previous_posts_link_as_a_repeat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """With a clipboard that can't be emptied, the last link handed out is all there is to compare with."""
     monkeypatch.setattr(capture, "_last_code", capture.permalink_code(TOP_URL))
     d: FakeDevice = feed_device(start="following")
+    d.clipboard, d.clipboard_settable = TOP_URL, False
+    assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/reel/TOP123/", "repeat")
+
+
+def test_the_link_already_on_the_clipboard_is_fresh_once_the_clipboard_was_emptied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same post copied again: its link was the last handed out and is still on the clipboard."""
+    monkeypatch.setattr(capture, "_last_code", capture.permalink_code(TOP_URL))
+    d: FakeDevice = feed_device(start="following")
+    d.clipboard = TOP_URL
+    assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/reel/TOP123/", None)
+
+
+def test_copy_link_is_tapped_again_and_emptying_stops_when_nothing_arrives(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    d: FakeDevice = feed_device(top_share="share_noclip", start="following")
+    d.clipboard = TOP_URL
+    capture.reset_last_url(d)
+    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
+    out: str = capsys.readouterr().out
+    assert "tapping it again" in out and "not emptying it again this run" in out
+    assert d.taps.count((540, 2285)) == 2 and not capture._clearing
+    d.clipboard = TOP_URL  # with emptying off, a link still there is compared with the last one handed out
     assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/reel/TOP123/", "repeat")
 
 
@@ -87,17 +75,10 @@ def test_the_same_link_read_raw_and_trimmed_is_still_the_same_link() -> None:
     """Copy link yields TOP_URL (tracking parameters, trailing slash); the previous run left the trimmed
     form on the clipboard. They share a shortcode, so the new read is a repeat, not a fresh permalink."""
     d: FakeDevice = feed_device(start="following")
-    d.clipboard = "https://www.instagram.com/reel/TOP123/"
+    d.clipboard, d.clipboard_settable = "https://www.instagram.com/reel/TOP123/", False
     capture.reset_last_url(d)
     assert capture._last_code == "TOP123"
     assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/reel/TOP123/", "repeat")
-
-
-def test_a_repeat_seen_only_through_dumpsys_is_still_a_repeat(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(capture, "_last_code", "DUMP1")
-    d: FakeDevice = feed_device(top_share="share_noclip", start="following")
-    _dumpsys(d, monkeypatch, "  mPrimaryClip=ClipData { {T:https://www.instagram.com/p/DUMP1/?igsh=x} }")
-    assert capture.fetch_permalink(d, top_card_id(d)) == ("https://www.instagram.com/p/DUMP1/", "repeat")
 
 
 def test_fetch_permalink_when_the_card_is_gone() -> None:
@@ -262,25 +243,6 @@ def test_a_clipboard_that_cannot_be_read_is_treated_as_empty(
     assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
     assert "clipboard read failed" in capsys.readouterr().out
     assert d.screen == "following"
-
-
-def test_fetch_permalink_survives_a_dumpsys_clipboard_failure(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(capture, "_dumpsys_failed", False)  # run state, normally reset by reset_last_url()
-    d: FakeDevice = feed_device(top_share="share_noclip", start="following")
-    real: Callable[[str | list[str], float], Out] = d.shell
-
-    def shell(cmdargs: str | list[str], timeout: float = 60) -> Out:
-        joined: str = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
-        if joined == "dumpsys clipboard":
-            raise RuntimeError("dumpsys: service not found")
-        return real(cmdargs, timeout)
-
-    monkeypatch.setattr(d, "shell", shell)
-    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
-    assert capture.fetch_permalink(d, top_card_id(d)) == (None, "clipboard")
-    assert capsys.readouterr().out.count("dumpsys clipboard failed") == 1  # not retried this run
 
 
 class _VanishingSelector(FakeSelector):

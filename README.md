@@ -145,7 +145,7 @@ when no build of that major version has been validated. To switch, including a d
 
 ```bash
 docker compose exec app python scraper.py profiles           # what's available, and what each installs
-docker compose exec app python scraper.py install            # the default build (445.0.0.45.83)
+docker compose exec app python scraper.py install            # the default build (450.0.0.50.77)
 docker compose exec app python scraper.py install 444.0.0.46.85
 ```
 
@@ -194,7 +194,8 @@ an older one or in shared code.
    refreshed after `AVATAR_REFRESH_DAYS`).
 4. For each new post: crop the media from a screenshot (a video/Reel gets `VIDEO_SETTLE_SECONDS` to
    let autoplay start and the audio-label overlay fade first; a carousel is swiped through in place,
-   capturing up to `MAX_CAROUSEL_SLIDES`), then tap Share → "Copy link" and read the clipboard. The
+   capturing up to `MAX_CAROUSEL_SLIDES`), then tap Share → "Copy link" and read the clipboard, emptied just before the tap so the
+   link on it afterwards is that post's. The
    shortcode becomes the post id and the feed links straight to the post. If the sheet fails to open
    or the clipboard never updates, it's retried on a later screen (`PERMALINK_RETRIES`), then the
    post falls back to a content hash. When a post stored that way is back on screen in a later run,
@@ -217,9 +218,11 @@ Taps are always made from a hierarchy dump taken immediately beforehand, and not
 inside an open sheet except "Copy link" (a stray tap there could message a contact).
 
 If a followed account renames itself, `docker compose exec app python scraper.py rename <old>
-<new>` repoints its stored history to the new username (there's no automatic detection — Instagram's
-numeric user id never appears in the feed's accessibility tree). It doesn't fix an existing
-`?user=<old>` FreshRSS subscription; re-subscribe under the new username after renaming.
+<new>` repoints its stored history to the new username. The scraper notices a rename when a post it
+has stored comes up again under another username (the permalink is the same) and raises an alert
+naming that command; it doesn't apply the rename itself, and an account with no stored post still in
+the feed goes unnoticed. A post two accounts share isn't taken for one. Renaming doesn't fix an
+existing `?user=<old>` FreshRSS subscription; re-subscribe under the new username after.
 
 ### Stories
 
@@ -238,9 +241,9 @@ capture is matched by how it looks: a crop within 10 bits (of 64) of a perceptua
 the same account had stored in the last day is a re-capture and is discarded, as is one within 4 bits
 of another account's (the same frame reshared by both), and so is a near-black viewer transition
 frame; a dark first screenshot is retaken once, in case it caught a fade-in. (An exact byte hash
-missed these, since every capture re-encodes a fresh screenshot.) The whole frame is saved, header
-overlay included, but the hash reads only the part below that overlay, so the relative timestamp
-ticking over between runs doesn't change it.
+missed these, since every capture re-encodes a fresh screenshot.) The whole frame is saved, with the header's
+avatar, username, age and attribution painted over; the hash reads only the part below the header
+overlay, so the relative timestamp ticking over between runs doesn't change it.
 Captured stories are served at `/stories.xml` and share `RETAIN_DAYS` with posts — no separate
 story-retention window.
 

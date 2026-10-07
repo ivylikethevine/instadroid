@@ -147,13 +147,17 @@ def test_scrape_once_drops_a_permalink_that_belongs_to_another_account(
     monkeypatch.setattr(config, "MAX_SCROLLS", 1)
     con: sqlite3.Connection = db.db_init()
     seed_post(con, "TOP123", "someone_else", "Unrelated", 10, h="unrelated")
+    d: FakeDevice = feed_device()
+    # A clipboard that can't be emptied: the link read may be an earlier copy landing late.
+    d.clipboard, d.clipboard_settable = "https://www.instagram.com/p/EARLIER/", False
 
-    scrape.scrape_once(feed_device(), con)
+    scrape.scrape_once(d, con)
 
     stored: dict[str, SqlValue] = row_dict(
         fetch_row(con.execute("SELECT * FROM posts WHERE username='someone_nice'"))
     )
     assert stored["url"] is None and stored["id"] != "TOP123"  # stored under its hash, not the stale link
+    assert db.rename_candidates(con) == []  # and no evidence of a rename
 
 
 def test_scrape_once_treats_an_edited_caption_as_the_same_post(monkeypatch: pytest.MonkeyPatch) -> None:

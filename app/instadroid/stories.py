@@ -1,14 +1,16 @@
 """Capturing stories from the Home feed's tray, with perceptual-hash dedupe."""
 
+import re
 import sqlite3
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol, TypedDict
 
 from igprofiles.screens import id_matches
 from lxml import etree
-from PIL import Image, ImageFile, ImageStat
+from PIL import Image, ImageDraw, ImageFile, ImageStat
 from shared import sqlrows
 
 from . import capture, common, config, device, diagnostics, navigation, parsing, uidevice
@@ -25,10 +27,11 @@ class CapturedStory(TypedDict):
 
 @versioned
 def capture_story_media(
-    img: Image.Image, media_bounds: str | None, clip_top: int, tmp_name: str
+    img: Image.Image, media_bounds: str | None, clip_top: int, tmp_name: str, masks: Sequence[str | None] = ()
 ) -> tuple[Path, int] | None:
     """Crop a story's whole current frame — from a screenshot already taken by the caller, not one
-    taken here — into MEDIA_DIR/stories. Returns (path, the crop's rows above clip_top): the
+    taken here — into MEDIA_DIR/stories, with each of `masks` (the bounds of the header's avatar and
+    texts) painted over first. Returns (path, the crop's rows above clip_top): the
     username/timestamp header overlays those rows with text that changes hour to hour, so a story is
     hashed on the body below them (see scrape_stories()), not on the whole crop."""
     b: tuple[int, int, int, int] | None
@@ -45,8 +48,34 @@ def capture_story_media(
     stories_dir: Path = config.MEDIA_DIR / "stories"
     stories_dir.mkdir(parents=True, exist_ok=True)
     path: Path = stories_dir / f"{tmp_name}{capture.media_ext()}"
-    capture.save_media(img.crop((x1, y1, x2, y2)), path)
+    frame: Image.Image = img.copy()
+    mask: str | None
+    for mask in masks:
+        box: tuple[int, int, int, int] | None
+        if box := common.parse_bounds(mask):
+            _paint_over(frame, box)
+    capture.save_media(frame.crop((x1, y1, x2, y2)), path)
     return path, body_top
+
+
+def _paint_over(img: Image.Image, box: tuple[int, int, int, int]) -> None:
+    """Fill a rectangle, grown by MASK_PAD, with the mean colour of its own outline, so the patch
+    takes the tone of the header gradient around it."""
+    x1: int = max(box[0] - MASK_PAD, 0)
+    y1: int = max(box[1] - MASK_PAD, 0)
+    x2: int = min(box[2] + MASK_PAD, img.width)
+    y2: int = min(box[3] + MASK_PAD, img.height)
+    if x2 - x1 < 2 or y2 - y1 < 2:
+        return
+    edges: tuple[tuple[int, int, int, int], ...] = (
+        (x1, y1, x2, y1 + 1),
+        (x1, y2 - 1, x2, y2),
+        (x1, y1, x1 + 1, y2),
+        (x2 - 1, y1, x2, y2),
+    )
+    means: list[list[float]] = [ImageStat.Stat(img.crop(edge).convert("RGB")).mean for edge in edges]
+    fill: tuple[int, ...] = tuple(round(sum(mean[c] for mean in means) / len(means)) for c in range(3))
+    ImageDraw.Draw(img).rectangle((x1, y1, x2 - 1, y2 - 1), fill=fill)
 
 
 @versioned
@@ -65,6 +94,8 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
     a single cheap exists() (not a repeated dump_hierarchy()) confirms the viewer opened, then the
     screenshot is taken and Back is pressed immediately — cropping and saving happen afterward,
     off-device, where they can't race anything.
+
+    The saved frame has the header's avatar and texts (username, age, attribution) painted over.
 
     Returns {username, posted_date, path} or None if the story didn't open, closed before the
     screenshot, or nothing could be cropped."""
@@ -100,6 +131,8 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
     clip_top: int | None
     media_bounds = clip_top = None
     posted_date: str = ""
+    header_age: str = ""
+    masks: list[str | None] = []
     rid: str
     n: etree._Element
     for rid, n in nodes:
@@ -111,12 +144,28 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
                 clip_top = b[3]
         elif id_matches(rid, SELECTORS["story_timestamp_id"]) and not posted_date:
             posted_date = n.get("text") or ""
+        elif id_matches(rid, SELECTORS["story_avatar_id"]):
+            masks.append(n.get("bounds"))
+        elif id_matches(rid, SELECTORS["story_header_text_id"]):
+            # A text's row holds what sits beside it too: a verified badge, a reshared account's avatar.
+            text: etree._Element
+            for text in n.iter("node"):
+                if text.get("text"):
+                    row: etree._Element | None = text.getparent()
+                    masks.append((text if row is None or row is n else row).get("bounds"))
+                    if not header_age and _STORY_AGE.match(text.get("text") or ""):
+                        header_age = text.get("text") or ""
     saved: tuple[Path, int] | None = capture_story_media(
-        img, media_bounds, clip_top or 0, f"tmp_{item['username']}_{int(time.time() * 1000)}"
+        img, media_bounds, clip_top or 0, f"tmp_{item['username']}_{int(time.time() * 1000)}", masks
     )
     if not saved:
         return None
-    return {"username": item["username"], "posted_date": posted_date, "path": saved[0], "body_top": saved[1]}
+    return {
+        "username": item["username"],
+        "posted_date": posted_date or header_age,
+        "path": saved[0],
+        "body_top": saved[1],
+    }
 
 
 @versioned
@@ -202,6 +251,11 @@ STORY_PHASH_DISTANCE: int = 10
 # The same for another account's story, which has to match more closely: a frame two accounts both
 # reshared is all but identical, and unrelated frames from two accounts can land within the above.
 STORY_PHASH_DISTANCE_OTHER: int = 4
+# Pixels a painted-over header node grows by on each side, to take its text's antialiased edge with it.
+MASK_PAD: int = 6
+# A story's age as the header shows it ("5h"), for a build whose header has no timestamp node of its own.
+_STORY_AGE: re.Pattern[str] = re.compile(r"^\d+ ?[smhdw]$")
+
 # Mean luminance (0-255) below which a screenshot is retaken once, in case it caught a fade-in.
 DARK_FRAME_MEAN: float = 25.0
 

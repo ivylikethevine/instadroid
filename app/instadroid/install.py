@@ -10,6 +10,8 @@ from . import config, device, uidevice, versioning
 from .common import log
 from .device import DeviceNotReady
 
+NOTIFICATION_PERMISSION: str = "android.permission.POST_NOTIFICATIONS"
+
 
 def _apk_version(version: str | None = None) -> str:
     """The Instagram build to fetch: `version` if given, else IG_APK_VERSION, else the default build
@@ -103,6 +105,9 @@ def install_instagram(d: uidevice.Device, version: str | None = None, downgrade:
     ]
     log(f"installing {config.IG_PKG} ({len(apks)} apk(s))")
     _run_checked(cmd, f"adb install of {config.IG_PKG}")
+    # Deny the notification permission for good: on a fresh install Android 13's prompt for it takes the
+    # foreground over the feed, and every screen then parses nothing.
+    d.shell(["pm", "set-permission-flags", config.IG_PKG, NOTIFICATION_PERMISSION, "user-set", "user-fixed"])
     installed: str | None = device.instagram_version(d, fresh=True)
     log(f"installed {config.IG_PKG}", installed or "(version unknown)")
     versioning.activate_profile(installed)  # device.connect_device() activated before this version existed

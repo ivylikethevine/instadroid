@@ -193,6 +193,17 @@ def db_init() -> sqlite3.Connection:
         )"""
     )
     con.execute(
+        # A stored post seen again under another username (scrape.py): evidence of a rename, kept
+        # until rename_account() moves the history or the post is pruned.
+        """CREATE TABLE IF NOT EXISTS rename_candidates (
+            old TEXT NOT NULL,
+            new TEXT NOT NULL,
+            post_id TEXT NOT NULL,
+            seen_at TEXT NOT NULL,
+            PRIMARY KEY (old, new, post_id)
+        )"""
+    )
+    con.execute(
         """CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             started_at TEXT NOT NULL,
@@ -392,8 +403,8 @@ def needs_following_refresh(con: sqlite3.Connection) -> bool:
 def rename_account(con: sqlite3.Connection, old: str, new: str) -> int:
     """Reconcile a followed account's history after it renamed itself: repoint every post from
     `old` to `new` and fold `old`'s accounts row (avatar, stable account_id if set) into `new`.
-    There is no detection here — Instagram's numeric user id is never present in the feed's
-    accessibility tree, so this is invoked by hand once a rename is noticed. Note this does not
+    Nothing calls this on its own: a stored post seen under a new username only raises an alert
+    (note_rename_candidate()), and `scraper.py rename` runs this once a person agrees. Note this does not
     fix up an existing `?user=old` FreshRSS subscription; re-subscribe under the new username."""
     if old == new:
         return 0
@@ -425,9 +436,32 @@ def rename_account(con: sqlite3.Connection, old: str, new: str) -> int:
             (new, sqlrows.cell(following_row, "updated_at")),
         )
         con.execute("DELETE FROM following WHERE username=?", (old,))
+    con.execute("DELETE FROM rename_candidates WHERE old IN (?, ?) OR new IN (?, ?)", (old, new, old, new))
     con.commit()
     retention.discard_media(dropped_avatar)
     return moved
+
+
+def note_rename_candidate(con: sqlite3.Connection, old: str, new: str, post_id: str) -> None:
+    """Record that `post_id`, stored for `old`, was on screen as a post of `new`."""
+    con.execute(
+        "INSERT OR IGNORE INTO rename_candidates (old, new, post_id, seen_at) VALUES (?,?,?,?)",
+        (old, new, post_id, datetime.now(UTC).isoformat()),
+    )
+    con.commit()
+
+
+def rename_candidates(con: sqlite3.Connection) -> list[tuple[str, str, int]]:
+    """(old, new, posts seen) for each suspected rename whose evidence still stands: the post is still
+    stored, and still under the old username."""
+    cur: sqlite3.Cursor = con.execute(
+        "SELECT c.old, c.new, COUNT(*) FROM rename_candidates c"
+        " JOIN posts p ON p.id = c.post_id AND p.username = c.old GROUP BY c.old, c.new ORDER BY c.old, c.new"
+    )
+    return [
+        (sqlrows.must_str(r, 0), sqlrows.must_str(r, 1), sqlrows.cell_int(r, 2) or 0)
+        for r in sqlrows.fetch_all(cur)
+    ]
 
 
 def _safe_parse_posted_at(

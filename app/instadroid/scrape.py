@@ -1,5 +1,6 @@
 """One scrape run (scrape_once) and the long-running poll loop (main)."""
 
+import re
 import sqlite3
 from collections import Counter
 from contextlib import closing
@@ -7,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, TypedDict
 
+from lxml import etree
 from shared import env, sqlrows
 from shared.timestamps import parse_iso
 
@@ -244,6 +246,20 @@ def _find_stored(con: sqlite3.Connection, p: parsing.Post, h: str) -> sqlite3.Ro
     if row:
         db.remember_hash(con, sqlrows.must_str(row, "id"), h)
     return row
+
+
+_SHARED_HEADER: re.Pattern[str] = re.compile(r"^([\w.]+) and (?:([\w.]+)|\d+ others?)$")
+
+
+def _shared_post(xml: str, owner: str, username: str) -> bool:
+    """Whether a card on this screen is headed by both accounts ("a and b"), or by one of them and
+    others it doesn't name: a post they share, which either may head, not one account renamed."""
+    n: etree._Element
+    for n in etree.fromstring(xml.encode()).iter("node"):
+        m: re.Match[str] | None = _SHARED_HEADER.match(n.get("text") or n.get("content-desc") or "")
+        if m and {m.group(1), m.group(2) or m.group(1)} <= {owner, username}:
+            return True
+    return False
 
 
 def _needs_permalink(stored: sqlite3.Row) -> bool:
@@ -492,13 +508,20 @@ def _scrape_feed(
                 if url
                 else None
             )
-            owner: sqlrows.SqlValue = sqlrows.cell(row, 0) if row else None
-            if row and owner != p["username"]:
+            owner: str | None = sqlrows.cell_str(row, 0) if row else None
+            if row and owner and owner != p["username"] and not capture.link_was_certain():
                 log(
                     f"WARN: permalink {pid} belongs to {owner}, not {p['username']}; stale clipboard, dropping it"
                 )
                 url, pid = None, h
             elif row:
+                if owner and owner != p["username"] and not _shared_post(xml, owner, p["username"]):
+                    # The link is this card's, and the post under it is another account's: a rename.
+                    db.note_rename_candidate(con, owner, p["username"], pid)
+                    note: str = f"{owner} now posts as {p['username']}? `scraper.py rename {owner} {p['username']}` moves its history"
+                    log(f"WARN: {note} (seen on {pid})")
+                    if note not in warnings:
+                        warnings.append(note)
                 seen_streak += 1  # same post, under a caption form (or an edit) not stored yet
                 db.remember_hash(con, pid, h)
                 retention.discard_media(media, *extra_media)

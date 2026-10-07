@@ -5,6 +5,8 @@ extend-ignore-re = [
   # A deliberate misspelling on one line takes a trailing `spellchecker: disable-line` comment
   # rather than a project-wide allowance.
   "(?Rm)^.*(#|//)\\s*spellchecker:\\s*disable-line$",
+  # A post id recorded in a replay fixture's .expected.json: a hash, which can spell anything.
+  "\"id\": \"[0-9a-f]{16}\"",
 ]
 
 [default.extend-words]

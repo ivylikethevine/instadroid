@@ -53,21 +53,43 @@ def expand_caption(d: uidevice.Device, p: parsing.Post) -> str:
 
 
 _last_code: str = ""  # the shortcode of the last permalink handed out, to spot a clipboard that didn't change
-# The dumpsys notes ("a clip but no link", "failed") are logged once per run each.
-_dumpsys_noted: bool = False
-_dumpsys_failed: bool = False
+# Whether the clipboard is emptied before a Copy link tap. Off for the rest of a run once a tap after
+# an emptied clipboard left it empty.
+_clearing: bool = True
+_certain: bool = False  # the last link fetch_permalink() returned came off an emptied clipboard
 
 
 def reset_last_url(d: uidevice.Device) -> None:
-    """Start a run treating whatever is on the clipboard now as stale, whichever way it's read."""
-    global _last_code, _dumpsys_noted, _dumpsys_failed
-    _dumpsys_noted = _dumpsys_failed = False
+    """Start a run treating whatever is on the clipboard now as stale."""
+    global _last_code, _clearing
+    _clearing = True
     current: str = ""
     try:
         current = d.clipboard or ""
     except Exception:
         current = ""
-    _last_code = _code_of(current) or _code_of(_clipboard_via_dumpsys(d, 5.0))
+    _last_code = _code_of(current)
+
+
+def link_was_certain() -> bool:
+    """Whether the link fetch_permalink() last returned can only be the card's: the clipboard was
+    empty before the tap. One taken for differing from the last link handed out could still be an
+    earlier copy landing late."""
+    return _certain
+
+
+def _clear_clipboard(d: uidevice.Device) -> bool:
+    """Empty the clipboard, so that a link on it after a Copy link tap is that tap's, even when it's
+    the link that was there before. False when it can't be emptied or emptying is off for this run:
+    the caller then has only the last link handed out to compare with."""
+    if not _clearing:
+        return False
+    try:
+        d.set_clipboard("")
+        return not (d.clipboard or "")
+    except Exception as e:
+        log("WARN: could not empty the clipboard:", repr(e))
+        return False
 
 
 def _code_of(text: str) -> str:
@@ -75,32 +97,6 @@ def _code_of(text: str) -> str:
     whether one came back with tracking parameters and a trailing slash and the other trimmed."""
     m: re.Match[str] | None = SELECTORS["permalink"].match(text)
     return m.group("code") if m else ""
-
-
-def _clipboard_via_dumpsys(d: uidevice.Device, timeout: float) -> str:
-    """The permalink in the system clipboard as `dumpsys clipboard` (root, over adb) prints it, or "".
-
-    A second opinion for the uiautomator2 read, which comes from its own instrumentation process:
-    Android 10+ only lets the focused app or the default IME read the clipboard, and that read came
-    back empty on 6 of 8 Copy link taps in the 445 baseline (docs/RUNLOG.md). This image's adbd is
-    root, and the service's dump prints the primary clip; whether this Android redacts the text in
-    that dump is what the next real run tells us, so a clip without a link is logged once."""
-    global _dumpsys_noted, _dumpsys_failed
-    try:
-        out: str = d.shell(["dumpsys", "clipboard"], timeout=max(0.5, timeout)).output or ""
-    except Exception as e:
-        if not _dumpsys_failed:
-            _dumpsys_failed = True
-            log("WARN: dumpsys clipboard failed (not retried this run):", repr(e))
-        return ""
-    m: re.Match[str] | None = SELECTORS["permalink"].search(out)
-    if m:
-        return m.group(0)
-    if "ClipData" in out and not _dumpsys_noted:
-        _dumpsys_noted = True
-        first: str = next((line.strip() for line in out.splitlines() if "ClipData" in line), "")
-        log(f"dumpsys clipboard shows a clip but no permalink (redacted?): {first[:120]!r}")
-    return ""
 
 
 @versioned
@@ -112,9 +108,12 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
     Returns (url, None) on success, or (None, reason) where reason is "sheet" (the share sheet
     never opened, or the card/button vanished before it could) or "clipboard" (the sheet opened
     and Copy link was tapped, but the clipboard never carried a permalink) — the two need
-    different recoveries, so the caller counts them separately. A clipboard still holding the last
-    link handed out is (that url, "repeat"): a copy that didn't land, or the same post copied again,
-    which only the caller can tell apart."""
+    different recoveries, so the caller counts them separately. The clipboard is emptied before the
+    tap, and Copy link is tapped once more if nothing arrives. Only when the clipboard couldn't be
+    emptied is one still holding the last link handed out (that url, "repeat"): a copy that didn't
+    land, or the same post copied again, which only the caller can tell apart."""
+    global _clearing, _certain
+    _certain = False
     if not navigation.close_sheets(d):
         log("WARN: a sheet is stuck open; skipping permalink")
         return None, "sheet"
@@ -141,8 +140,6 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
         navigation.back_to_feed(d)
         return None, "sheet"
     diagnostics.capture_screen(d, "share_sheet")
-    # Note: clearing the clipboard first (d.set_clipboard) makes the next read come back empty.
-    # A link that isn't new is caught below by comparing with the last one we handed out.
     device.human_pause(0.8, 1.2)  # let the sheet finish animating
     try:
         b: Mapping[str, int] = link.info.get("bounds") or {}
@@ -154,41 +151,51 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
         navigation.close_sheets(d)
         navigation.back_to_feed(d)
         return None, "sheet"
+    cleared: bool = _clear_clipboard(d)
     d.click(cx, cy)
-    # Poll instead of a single fixed-delay read: the clipboard write can lag the tap by more
-    # than a beat, and the old one-shot read missed it more often than not.
+    url: str
+    repeat: str
+    url, repeat = _poll_clipboard(d, cleared)
+    if not url and not repeat:
+        log("no link on the clipboard after Copy link; tapping it again")
+        d.click(cx, cy)
+        url, repeat = _poll_clipboard(d, cleared)
+        if cleared and not url:
+            _clearing = False
+            log("WARN: Copy link left an emptied clipboard empty; not emptying it again this run")
+    navigation.close_sheets(d)  # the sheet stays open after Copy link
+    navigation.back_to_feed(d)
+    _certain = cleared and bool(url)
+    m: re.Match[str] | None = SELECTORS["permalink"].match(url or repeat)
+    if not m:
+        log("WARN: clipboard did not contain a permalink:", repr(url[:80]))
+        return None, "clipboard"
+    return f"https://www.instagram.com/{m.group('type')}/{m.group('code')}/", None if url else "repeat"
+
+
+def _poll_clipboard(d: uidevice.Device, cleared: bool) -> tuple[str, str]:
+    """Poll the clipboard for CLIPBOARD_TIMEOUT after a Copy link tap: (the link copied, or "", a read
+    that still carried the last link handed out, or ""). Any link is the one copied when the clipboard
+    was `cleared` first; otherwise only one that differs from the last handed out. Polled, not read
+    once: the clipboard write can lag the tap."""
     global _last_code
     url: str = ""
-    repeat: str = ""  # a read that still carried the last link handed out
+    repeat: str = ""
     deadline: float = time.time() + config.CLIPBOARD_TIMEOUT
     while time.time() < deadline:
         time.sleep(0.4)
-        source: str = "uiautomator2"
         try:
             candidate: str = d.clipboard or ""
         except Exception as e:
             log("WARN: clipboard read failed:", repr(e))
             candidate = ""
         code: str = _code_of(candidate)
-        if code and code == _last_code:
-            repeat = candidate
-        if (not code or code == _last_code) and not _dumpsys_failed:
-            candidate, source = _clipboard_via_dumpsys(d, deadline - time.time()), "dumpsys"
-            code = _code_of(candidate)
-            if code and code == _last_code:
-                repeat = candidate
-        if code and code != _last_code:
+        if code and (cleared or code != _last_code):
             url, _last_code = candidate, code
-            if source == "dumpsys":
-                log("permalink read via dumpsys clipboard (uiautomator2's read was empty or stale)")
             break
-    navigation.close_sheets(d)  # sheet usually closes itself after Copy link; make sure
-    navigation.back_to_feed(d)
-    m: re.Match[str] | None = SELECTORS["permalink"].match(url or repeat)
-    if not m:
-        log("WARN: clipboard did not contain a permalink:", repr(url[:80]))
-        return None, "clipboard"
-    return f"https://www.instagram.com/{m.group('type')}/{m.group('code')}/", None if url else "repeat"
+        if code:
+            repeat = candidate
+    return url, repeat
 
 
 def permalink_code(url: str) -> str:

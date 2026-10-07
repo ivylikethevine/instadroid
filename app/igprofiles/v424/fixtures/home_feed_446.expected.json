@@ -1,0 +1,40 @@
+{
+ "posts": [
+  {
+   "kind": "carousel",
+   "username": "user1",
+   "posted_date": "21 hours ago",
+   "place": "Place 1",
+   "caption": "",
+   "caption_bounds": null,
+   "caption_truncated": false,
+   "bounds": "[0,723][1080,2088]",
+   "share_bounds": null,
+   "header_bounds": "[0,586][1080,723]",
+   "clip_top": 0,
+   "alt": "Photo 2 of 9 by Display 1, 177 likes, 4 comments",
+   "headless": false,
+   "complete": false,
+   "merged_reel": false,
+   "id": "4b05305f5e84b802"
+  }
+ ],
+ "story_tray": [
+  {
+   "username": "user2",
+   "seen": false,
+   "bounds": "[294,241][588,524]"
+  },
+  {
+   "username": "user3",
+   "seen": false,
+   "bounds": "[588,241][882,524]"
+  },
+  {
+   "username": "user4",
+   "seen": false,
+   "bounds": "[882,241][1080,524]"
+  }
+ ],
+ "following_list": []
+}

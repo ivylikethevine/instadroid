@@ -13,7 +13,7 @@ from instadroid import (
     parsing,
     stories,
 )
-from PIL import Image, ImageDraw, ImageFile, ImageOps
+from PIL import Image, ImageDraw, ImageFile, ImageOps, ImageStat
 from shared import sqlrows
 
 from tests.deviceflows import feed_device, following_screen
@@ -156,3 +156,64 @@ def test_a_story_viewer_without_a_media_node_stores_nothing() -> None:
     d.screens["story_alice"] = hierarchy(node("reel_viewer_root", bounds=(0, 0, WIDTH, HEIGHT)))
     assert stories.scrape_stories(d, con) == 0
     assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM stories")) == 0
+
+
+def test_the_header_avatar_and_texts_are_painted_over_in_the_saved_frame() -> None:
+    avatar: tuple[int, int, int, int] = (32, 200, 116, 284)
+    name: tuple[int, int, int, int] = (148, 200, 317, 244)
+    age: tuple[int, int, int, int] = (341, 200, 407, 244)
+    reshared_avatar: tuple[int, int, int, int] = (148, 260, 190, 300)  # no node of its own, beside its text
+    con: sqlite3.Connection = db.db_init()
+    d: FakeDevice = feed_device(start="home")
+    d.screens["story_alice"] = hierarchy(
+        node(
+            "reel_viewer_root",
+            bounds=(0, 0, WIDTH, HEIGHT),
+            children=[
+                node("reel_viewer_media_container", bounds=(0, 150, WIDTH, 2200)),
+                node("reel_viewer_top_shadow", bounds=(0, 150, WIDTH, 400)),
+                node("reel_viewer_profile_picture", bounds=avatar),
+                node(
+                    "reel_viewer_text_container",
+                    bounds=(116, 190, 975, 330),
+                    children=[
+                        node(cls="android.widget.TextView", text="alice", bounds=name),
+                        node(cls="android.widget.TextView", text="5h", bounds=age),
+                        node(
+                            bounds=(148, 256, 560, 304),
+                            children=[
+                                node(cls="android.widget.TextView", text="carol", bounds=(200, 260, 330, 300))
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+    )
+
+    def with_header() -> Image.Image:
+        img: Image.Image = Image.new("RGB", (WIDTH, HEIGHT), "gray")
+        img.paste(_frame().crop((0, 400, WIDTH, HEIGHT)), (0, 400))
+        box: tuple[int, int, int, int]
+        for box in (avatar, name, age, reshared_avatar):
+            ImageDraw.Draw(img).rectangle(box, fill="red")
+        return img
+
+    d.screenshot = with_header
+    assert stories.scrape_stories(d, con) == 1
+    assert (
+        sqlrows.scalar(con.execute("SELECT posted_date FROM stories")) == "5h"
+    )  # read from the header texts
+    saved: ImageFile.ImageFile
+    with Image.open(next((config.MEDIA_DIR / "stories").iterdir())) as saved:
+        frame: Image.Image = saved.convert("RGB")
+    box: tuple[int, int, int, int]
+    for box in (avatar, name, age, reshared_avatar):
+        mean: list[float] = ImageStat.Stat(frame.crop((box[0], box[1] - 150, box[2], box[3] - 150))).mean
+        assert abs(mean[0] - mean[1]) < 10, box  # gray like its surroundings, no longer red
+
+
+def test_a_header_node_outside_the_frame_is_not_painted() -> None:
+    img: Image.Image = Image.new("RGB", (100, 100), "gray")
+    stories._paint_over(img, (300, 300, 340, 340))
+    assert img.getextrema() == ((128, 128), (128, 128), (128, 128))

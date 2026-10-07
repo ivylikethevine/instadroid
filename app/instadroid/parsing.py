@@ -298,7 +298,11 @@ def parse_story_tray(xml: str) -> list[StoryItem]:
     of what's already been captured."""
     root: etree._Element = etree.fromstring(xml.encode())
     tray: etree._Element | None = next(
-        (n for n in root.iter("node") if id_matches(n.get("resource-id") or "", SELECTORS["story_tray_id"])),
+        (
+            n
+            for n in root.iter("node")
+            if any(id_matches(n.get("resource-id") or "", v) for v in SELECTORS["story_tray_ids"])
+        ),
         None,
     )
     if tray is None:

@@ -199,8 +199,7 @@ def test_a_build_below_the_floor_is_only_evaluated_on_request() -> None:
 @pytest.fixture
 def scratch_profiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A directory forked profiles land in, importable as igprofiles.vXYZ next to the real ones. Tests
-    fork a hypothetical v447: no real profile covers anything from 447 but the root, v424, whose newest
-    validated build is older."""
+    fork a hypothetical v499, far above every validated build: no real profile covers it but the root, v424."""
     root: Path = tmp_path / "igprofiles"
     root.mkdir()
     monkeypatch.setattr(igprofiles, "__path__", [str(root), *igprofiles.__path__])
@@ -216,24 +215,24 @@ def scratch_profiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     monkeypatch.setattr(igprofiles, "fixture", fixture)
     yield root
     mod: str
-    for mod in [m for m in sys.modules if m.startswith("igprofiles.v447")]:
+    for mod in [m for m in sys.modules if m.startswith("igprofiles.v499")]:
         del sys.modules[mod]
 
 
 def test_fork_creates_an_empty_profile_subclassing_the_covering_one(scratch_profiles: Path) -> None:
-    path: Path = new_profile.fork("447.0.0.34.72", root=scratch_profiles, today=date(2026, 9, 14))
-    assert path == scratch_profiles / "v447"
-    profile: igprofiles.BaseProfile = igprofiles.load("v447")
-    assert (profile.major, profile.own_validated) == (447, ())
+    path: Path = new_profile.fork("499.0.0.34.72", root=scratch_profiles, today=date(2026, 9, 14))
+    assert path == scratch_profiles / "v499"
+    profile: igprofiles.BaseProfile = igprofiles.load("v499")
+    assert (profile.major, profile.own_validated) == (499, ())
     assert isinstance(profile, type(V424))
     assert profile.selectors == V424.selectors and profile.selectors is not V424.selectors
     parent: igprofiles.BaseProfile | None = new_profile.parent_of(profile)
     assert parent is not None and parent.name == "v424"
-    assert new_profile.covering_profile("447.0.0.34.72").name == "v447"  # it now covers 447
+    assert new_profile.covering_profile("499.0.0.34.72").name == "v499"  # it now covers 499
     assert not versioning._unknown_hooks(profile)
     assert "2026-09-14" in (path / "__init__.py").read_text()
     with pytest.raises(ValueError, match="already exists"):
-        new_profile.fork("447.0.0.34.72", root=scratch_profiles)
+        new_profile.fork("499.0.0.34.72", root=scratch_profiles)
 
 
 def test_fork_refuses_to_take_over_builds_validated_with_the_parent(scratch_profiles: Path) -> None:
@@ -247,12 +246,12 @@ def test_fork_refuses_to_take_over_builds_validated_with_the_parent(scratch_prof
 def test_a_forked_profile_without_builds_runs_with_a_warning(
     scratch_profiles: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    new_profile.fork("447.0.0.34.72", root=scratch_profiles)
+    new_profile.fork("499.0.0.34.72", root=scratch_profiles)
     monkeypatch.setattr(config, "IG_PROFILE", "")
-    versioning.activate_profile("447.0.0.34.72")
-    assert versioning.PROFILE.name == "v447"
+    versioning.activate_profile("499.0.0.34.72")
+    assert versioning.PROFILE.name == "v499"
     assert versioning.PROFILE_WARNING == (
-        "Instagram 447.0.0.34.72 hasn't been validated with profile v447 (newest validated: none yet; see"
+        "Instagram 499.0.0.34.72 hasn't been validated with profile v499 (newest validated: none yet; see"
         " docs/PROFILES.md)"
     )
 
@@ -260,14 +259,14 @@ def test_a_forked_profile_without_builds_runs_with_a_warning(
 def test_add_validated_keeps_one_sorted_tuple(tmp_path: Path) -> None:
     init: Path = tmp_path / "__init__.py"
     init.write_text(
-        "class Profile(Base):\n    major: int = 447\n    selectors: Selectors = SELECTORS\n    notes: str = 'x'\n"
+        "class Profile(Base):\n    major: int = 499\n    selectors: Selectors = SELECTORS\n    notes: str = 'x'\n"
     )
-    new_profile.add_validated(init, "447.0.0.40.1")  # no tuple yet: added after selectors
-    new_profile.add_validated(init, "447.0.0.9.2")
-    new_profile.add_validated(init, "447.0.0.40.1")  # already there
+    new_profile.add_validated(init, "499.0.0.40.1")  # no tuple yet: added after selectors
+    new_profile.add_validated(init, "499.0.0.9.2")
+    new_profile.add_validated(init, "499.0.0.40.1")  # already there
     assert init.read_text() == (
-        "class Profile(Base):\n    major: int = 447\n    selectors: Selectors = SELECTORS\n"
-        '    validated: tuple[str, ...] = (\n        "447.0.0.9.2",\n        "447.0.0.40.1",\n    )\n'
+        "class Profile(Base):\n    major: int = 499\n    selectors: Selectors = SELECTORS\n"
+        '    validated: tuple[str, ...] = (\n        "499.0.0.9.2",\n        "499.0.0.40.1",\n    )\n'
         "    notes: str = 'x'\n"
     )
 
@@ -275,8 +274,8 @@ def test_add_validated_keeps_one_sorted_tuple(tmp_path: Path) -> None:
 def test_add_validated_extends_the_root_profile(tmp_path: Path) -> None:
     init: Path = tmp_path / "__init__.py"
     init.write_text(Path(igprofiles.__file__).with_name("v424").joinpath("__init__.py").read_text())
-    new_profile.add_validated(init, "446.0.0.50.1")
-    assert '        "446.0.0.49.77",\n        "446.0.0.50.1",\n    )\n' in init.read_text()
+    new_profile.add_validated(init, "499.0.0.50.1")
+    assert '",\n        "499.0.0.50.1",\n    )\n' in init.read_text()
 
 
 # --- baseline ------------------------------------------------------------------------------------
@@ -438,11 +437,11 @@ def test_check_report_flags_drift_popups_and_uncaptured_screens(tmp_path: Path) 
 def test_check_compares_parsing_with_the_parent_when_it_differs(
     scratch_profiles: Path, tmp_path: Path
 ) -> None:
-    path: Path = new_profile.fork("447.0.0.34.72", root=scratch_profiles)
+    path: Path = new_profile.fork("499.0.0.34.72", root=scratch_profiles)
     (path / "selectors.py").write_text(
         (path / "selectors.py").read_text() + 'SELECTORS["share_id"] = "row_feed_share_button"\n'
     )
-    profile: igprofiles.BaseProfile = igprofiles.load("v447")
+    profile: igprofiles.BaseProfile = igprofiles.load("v499")
     report: new_profile.DumpReport = new_profile.check_dumps(
         profile, _dumps(tmp_path / "d", {"001-feed": FEED_XML})
     )[0]
@@ -458,7 +457,7 @@ def _record_run(db_path: Path, **values: str | int | None) -> None:
         " redroid_image TEXT, android_release TEXT)"
     )
     row: dict[str, str | int | None] = {
-        "ig_version": "447.0.0.34.72",
+        "ig_version": "499.0.0.34.72",
         "error": None,
         "new_posts": 3,
         "new_stories": 1,
@@ -474,15 +473,15 @@ def _record_run(db_path: Path, **values: str | int | None) -> None:
 def test_validating_a_build_records_it_and_its_fixtures_with_the_covering_profile(
     scratch_profiles: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    new_profile.fork("447.0.0.34.72", root=scratch_profiles)
-    profile: igprofiles.BaseProfile = igprofiles.load("v447")
-    build: str = "447.0.0.34.72"
+    new_profile.fork("499.0.0.34.72", root=scratch_profiles)
+    profile: igprofiles.BaseProfile = igprofiles.load("v499")
+    build: str = "499.0.0.34.72"
     problems: list[str] = new_profile.validation_problems(profile, build, None)
-    assert any("no replay fixtures for 447" in p for p in problems) and any(
+    assert any("no replay fixtures for 499" in p for p in problems) and any(
         "no baseline run" in p for p in problems
     )
 
-    dev: Path = tmp_path / "dev" / "447"
+    dev: Path = tmp_path / "dev" / "499"
 
     def dev_dir(build: str) -> Path:
         return dev
@@ -490,21 +489,21 @@ def test_validating_a_build_records_it_and_its_fixtures_with_the_covering_profil
     monkeypatch.setattr(new_profile, "dev_dir", dev_dir)
     _dumps(dev / "dumps", {"001-feed": FEED_XML, "002-feed": FEED_XML})
     assert new_profile.promote(build) == 0
-    fixtures: Path = scratch_profiles / "v447" / "fixtures"
-    assert (fixtures / "feed_447.xml").exists() and (fixtures / "feed_447.expected.json").exists()
+    fixtures: Path = scratch_profiles / "v499" / "fixtures"
+    assert (fixtures / "feed_499.xml").exists() and (fixtures / "feed_499.expected.json").exists()
 
     db_path: Path = dev / "posts.sqlite"
-    _record_run(db_path, ig_version="447.0.0.1.1", new_posts=0, error="DeviceNotReady('x')")
+    _record_run(db_path, ig_version="499.0.0.1.1", new_posts=0, error="DeviceNotReady('x')")
     problems = new_profile.validation_problems(profile, build, new_profile.run_summary(db_path))
-    assert any("scraped Instagram 447.0.0.1.1, not 447.0.0.34.72" in p for p in problems)
+    assert any("scraped Instagram 499.0.0.1.1, not 499.0.0.34.72" in p for p in problems)
     assert any("failed" in p for p in problems) and any("no posts" in p for p in problems)
 
     _record_run(db_path)
     assert new_profile.validation_problems(profile, build, new_profile.run_summary(db_path)) == []
     assert new_profile.validate(build) == 0
     assert (
-        '    validated: tuple[str, ...] = (\n        "447.0.0.34.72",\n    )'
-        in (scratch_profiles / "v447" / "__init__.py").read_text()
+        '    validated: tuple[str, ...] = (\n        "499.0.0.34.72",\n    )'
+        in (scratch_profiles / "v499" / "__init__.py").read_text()
     )
 
 
@@ -536,6 +535,11 @@ def test_pseudonymize_catches_names_no_parser_returns() -> None:
         node("secondary_label", text=" Big Band · Some Song"),
         node(cls="android.widget.Button", desc="collab.shop and other.person"),
         node("clips_video_container", desc="Reel by Zed Q, 82 likes, 17 comments, 2 hours ago"),
+        node(desc="_note.writer_ shared a note: feeling great"),
+        node("action_bar_title", cls="android.widget.TextView", text="own.account"),
+        node("follow_list_subtitle", cls="android.widget.TextView", text="Listed Person ✨"),
+        node(cls="android.widget.Button", desc="Message Listed Person ✨"),
+        node(cls="android.widget.TextView", text="1,234 followers"),
     )
     clean: str = promote_dump.pseudonymize(xml)
     name: str
@@ -549,6 +553,11 @@ def test_pseudonymize_catches_names_no_parser_returns() -> None:
         "Big Band",
         "Some Song",
         "Zed Q",
+        "_note.writer_",
+        "feeling great",
+        "own.account",
+        "Listed Person",
+        "1,234",
     ):
         assert name not in clean, name
     assert "Follow Display 1" in clean and "@user" in clean and "Reel by Display 2," in clean
@@ -564,10 +573,10 @@ def test_a_build_no_profile_covers_is_refused(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_fork_refuses_to_overwrite_a_directory_already_there(tmp_path: Path) -> None:
-    target: Path = tmp_path / "v447"
+    target: Path = tmp_path / "v499"
     target.mkdir()
     with pytest.raises(ValueError, match=re.escape(f"{target} already exists")):
-        new_profile.fork("447.0.0.34.72", root=tmp_path)
+        new_profile.fork("499.0.0.34.72", root=tmp_path)
     assert not list(target.iterdir())
 
 
@@ -667,23 +676,23 @@ def test_check_report_describes_the_latest_baseline_run(tmp_path: Path) -> None:
     )
     run: new_profile.RunSummary | None = new_profile.run_summary(db_path)
     assert run is not None and run.mem_peak_mb == 1800
-    text: str = new_profile.render_report("447.0.0.34.72", V424, [], run)
+    text: str = new_profile.render_report("499.0.0.34.72", V424, [], run)
     assert "Latest baseline run: Instagram 445.0.0.45.83, error: `DeviceNotReady" in text
     assert "3 new post(s), 1 new stor(ies), peak 1800 MiB." in text
     assert "Run warning: memory guard stopped the run at 90%" in text
-    assert "**The run scraped Instagram 445.0.0.45.83, not 447.0.0.34.72.**" in text
+    assert "**The run scraped Instagram 445.0.0.45.83, not 499.0.0.34.72.**" in text
     assert text.endswith("No captured screens. Run `new-profile baseline` first.\n")
     _record_run(db_path)  # a clean run of the right build
-    text = new_profile.render_report("447.0.0.34.72", V424, [], new_profile.run_summary(db_path))
-    assert "no error" in text and "Run warning" not in text and "not 447.0.0.34.72" not in text
+    text = new_profile.render_report("499.0.0.34.72", V424, [], new_profile.run_summary(db_path))
+    assert "no error" in text and "Run warning" not in text and "not 499.0.0.34.72" not in text
 
 
 def test_add_validated_needs_a_class_to_add_to(tmp_path: Path) -> None:
     init: Path = tmp_path / "__init__.py"
-    init.write_text("class Profile(Base):\n    major = 447\n")
+    init.write_text("class Profile(Base):\n    major = 499\n")
     with pytest.raises(ValueError, match="no `validated` or `selectors` line"):
-        new_profile.add_validated(init, "447.0.0.40.1")
-    assert init.read_text() == "class Profile(Base):\n    major = 447\n"
+        new_profile.add_validated(init, "499.0.0.40.1")
+    assert init.read_text() == "class Profile(Base):\n    major = 499\n"
 
 
 def test_validate_lists_what_is_still_missing(
@@ -692,17 +701,17 @@ def test_validate_lists_what_is_still_missing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    new_profile.fork("447.0.0.34.72", root=scratch_profiles)
+    new_profile.fork("499.0.0.34.72", root=scratch_profiles)
 
     def dev_dir(build: str) -> Path:
-        return tmp_path / "dev" / "447"
+        return tmp_path / "dev" / "499"
 
     monkeypatch.setattr(new_profile, "dev_dir", dev_dir)
-    assert new_profile.validate("447.0.0.34.72") == 1
+    assert new_profile.validate("499.0.0.34.72") == 1
     out: str = capsys.readouterr().out
-    assert "can't be marked validated with v447 yet:" in out
-    assert "  - no replay fixtures for 447" in out and "  - no baseline run recorded" in out
-    assert "validated: tuple[str, ...] = ()" in (scratch_profiles / "v447" / "__init__.py").read_text()
+    assert "can't be marked validated with v499 yet:" in out
+    assert "  - no replay fixtures for 499" in out and "  - no baseline run recorded" in out
+    assert "validated: tuple[str, ...] = ()" in (scratch_profiles / "v499" / "__init__.py").read_text()
 
 
 def test_main_fork_reports_the_new_profile(
@@ -718,11 +727,11 @@ def test_main_fork_reports_the_new_profile(
         return real_fork(build, scratch_profiles)
 
     monkeypatch.setattr(new_profile, "fork", fork_into_scratch)
-    assert new_profile.main(["fork", "447.0.0.34.72"]) == 0
+    assert new_profile.main(["fork", "499.0.0.34.72"]) == 0
     assert capsys.readouterr().out == (
-        "created igprofiles/v447; override what drifted, then `check 447.0.0.34.72` again\n"
+        "created igprofiles/v499; override what drifted, then `check 499.0.0.34.72` again\n"
     )
-    assert (scratch_profiles / "v447" / "selectors.py").exists()
+    assert (scratch_profiles / "v499" / "selectors.py").exists()
 
 
 # --- promote_dump --------------------------------------------------------------------------------

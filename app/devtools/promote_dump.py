@@ -25,6 +25,7 @@ from pathlib import Path
 import igprofiles
 from igprofiles import BaseProfile, screens
 from igprofiles.base import Selectors
+from igprofiles.screens import id_matches
 from instadroid import parsing, versioning
 from lxml import etree
 
@@ -113,11 +114,14 @@ def pseudonymize(xml: str) -> str:
             if m := selectors["story_item_desc"].match(value):
                 alias(m["user"], "user")
             # "Liked by <someone>", "by <someone>", an @mention, "<someone> and 3 others",
-            # "Profile picture of <someone>", "<someone>'s story".
+            # "Profile picture of <someone>", "<someone>'s story", "<someone> shared a note: <text>".
             handles: list[str] = [
                 h[1] for h in re.finditer(r"(?:\b(?:Liked by|by|of)\s|@)([\w.]{3,30})\b", value)
             ]
             handles += [h[1] for h in re.finditer(r"^([\w.]{3,30})(?: and \d+ others?$|'s story\b)", value)]
+            if m := re.match(r"^([\w.]{3,30}) shared a note: (.*)$", value, re.S):
+                handles.append(m.group(1))
+                alias(m.group(2).strip(), "Note ")
             # A collab post's two authors; both lowercase-initial, so "Search and explore" stays.
             if (m := re.match(r"^([\w.]{3,30}) and ([\w.]{3,30})$", value)) and not (
                 m.group(1)[0].isupper() or m.group(2)[0].isupper()
@@ -137,6 +141,17 @@ def pseudonymize(xml: str) -> str:
             # "Follow <display name>" on a suggested account.
             if (m := re.match(r"^Follow (.+)$", value)) and m.group(1) not in ("back", "Back"):
                 alias(m.group(1), "Display ")
+            # A Following-list row's "Message <display name>" button; its subtitle repeats the name.
+            if m := re.match(r"^Message (.+)$", value, re.S):
+                alias(m.group(1), "Display ")
+            # The account's own counts on its profile and Following list.
+            if m := re.match(r"^[\d,.]+[KM]? (followers?|following|subscriptions?)$", value, re.I):
+                names.setdefault(value, f"0 {m.group(1)}")
+        # The logged-in account's username, as the title of its own Following list.
+        if id_matches(n.get("resource-id") or "", "action_bar_title") and re.fullmatch(
+            r"[a-z0-9_.]{3,30}", n.get("text") or ""
+        ):
+            alias(n.get("text") or "", "user")
     ordered: list[str] = sorted(names, key=len, reverse=True)  # "ab_c" before "ab"
     pattern: re.Pattern[str] | None = (
         re.compile("|".join(rf"(?<![\w.]){re.escape(v)}(?![\w])" for v in ordered)) if ordered else None
