@@ -22,5 +22,6 @@ class Profile(BaseProfile):
         "444.0.0.46.85",
         "445.0.0.45.83",
         "446.0.0.49.77",
+        "450.0.0.50.77",
     )
     notes: str = "root profile: login, stories, photos, carousels, Reels, permalinks"

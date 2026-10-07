@@ -113,11 +113,14 @@ def pseudonymize(xml: str) -> str:
             if m := selectors["story_item_desc"].match(value):
                 alias(m["user"], "user")
             # "Liked by <someone>", "by <someone>", an @mention, "<someone> and 3 others",
-            # "Profile picture of <someone>", "<someone>'s story".
+            # "Profile picture of <someone>", "<someone>'s story", "<someone> shared a note: <text>".
             handles: list[str] = [
                 h[1] for h in re.finditer(r"(?:\b(?:Liked by|by|of)\s|@)([\w.]{3,30})\b", value)
             ]
             handles += [h[1] for h in re.finditer(r"^([\w.]{3,30})(?: and \d+ others?$|'s story\b)", value)]
+            if m := re.match(r"^([\w.]{3,30}) shared a note: (.*)$", value, re.S):
+                handles.append(m.group(1))
+                alias(m.group(2).strip(), "Note ")
             # A collab post's two authors; both lowercase-initial, so "Search and explore" stays.
             if (m := re.match(r"^([\w.]{3,30}) and ([\w.]{3,30})$", value)) and not (
                 m.group(1)[0].isupper() or m.group(2)[0].isupper()

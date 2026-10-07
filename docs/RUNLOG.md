@@ -133,3 +133,14 @@ newest validated build as the default install.
 
 Done at the time: `DEFAULT_PROFILE` became `v446` (since replaced by automatic selection of the
 profile covering the installed version).
+
+**450 on a fresh device, 2026-10-07 13:39-13:54 PDT** (capture mode, `MAX_SCROLLS=5`,
+`MAX_STORIES_PER_RUN=2`). On a new `/data`, `new-profile baseline 450.0.0.50.77` installed the build
+and logged in from the form with no challenge, but the first run stored nothing: Android 13's
+notification-permission prompt took the foreground over the Home feed, every screen parsed 0 cards
+and the run ended in `DeviceNotReady`. `install_instagram()` now denies that permission for good
+after an install (`pm set-permission-flags`). The rerun took 3 minutes: 2 stories, 2 new posts with
+permalinks, the Following feed opened through the switcher, every captured screen had its required
+keys under `v424`, peak 2157 MiB, no OOM kill. Promoted `feed_450` and `home_feed_450` and validated
+450; promoting turned up a scrubbing miss, the account in a tray item's "shared a note" label, which
+`promote_dump.pseudonymize()` now catches. 447-449 weren't run. The device was left on 450.

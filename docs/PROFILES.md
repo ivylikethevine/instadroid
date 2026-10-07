@@ -176,8 +176,9 @@ what a changed selector or override should be.
 - [x] Profiles only where something changes (2026-09-14): one root profile, `v424`; the covering
       profile is chosen automatically; `validated` lists builds; fixtures per version.
 - [x] Validated with `v424`: 424.0.0.49.64, 440.1.0.46.86, 441.0.0.43.81, 442.0.0.46.79, 443.0.0.48.82,
-      444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77 (see the [run log](RUNLOG.md)). Replay fixtures for 424 and 440-445
-      (none recorded for 446). 425-439 run with the "hasn't been validated" warning until each gets a baseline.
+      444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77, 450.0.0.50.77 (see the [run log](RUNLOG.md)). Replay fixtures for 424,
+      440-445 and 450 (none recorded for 446). 425-439 and 447-449 run with the "hasn't been validated" warning until
+      each gets a baseline.
 - [x] Floor moved to 424 and the default install pinned to 445 (2026-09-15).
 - [ ] Retry 446; if it still crashes, drop it from `v424.validated` (tracked in [ROADMAP.md](ROADMAP.md)).
 - [x] Old-build probe, `400.0.0.49.68`: installs, but crashes at native startup on every launch ([run log](RUNLOG.md)).
