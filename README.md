@@ -194,7 +194,8 @@ an older one or in shared code.
    refreshed after `AVATAR_REFRESH_DAYS`).
 4. For each new post: crop the media from a screenshot (a video/Reel gets `VIDEO_SETTLE_SECONDS` to
    let autoplay start and the audio-label overlay fade first; a carousel is swiped through in place,
-   capturing up to `MAX_CAROUSEL_SLIDES`), then tap Share → "Copy link" and read the clipboard. The
+   capturing up to `MAX_CAROUSEL_SLIDES`), then tap Share → "Copy link" and read the clipboard, emptied just before the tap so the
+   link on it afterwards is that post's. The
    shortcode becomes the post id and the feed links straight to the post. If the sheet fails to open
    or the clipboard never updates, it's retried on a later screen (`PERMALINK_RETRIES`), then the
    post falls back to a content hash. When a post stored that way is back on screen in a later run,
@@ -217,9 +218,11 @@ Taps are always made from a hierarchy dump taken immediately beforehand, and not
 inside an open sheet except "Copy link" (a stray tap there could message a contact).
 
 If a followed account renames itself, `docker compose exec app python scraper.py rename <old>
-<new>` repoints its stored history to the new username (there's no automatic detection — Instagram's
-numeric user id never appears in the feed's accessibility tree). It doesn't fix an existing
-`?user=<old>` FreshRSS subscription; re-subscribe under the new username after renaming.
+<new>` repoints its stored history to the new username. The scraper notices a rename when a post it
+has stored comes up again under another username (the permalink is the same) and raises an alert
+naming that command; it doesn't apply the rename itself, and an account with no stored post still in
+the feed goes unnoticed. A post two accounts share isn't taken for one. Renaming doesn't fix an
+existing `?user=<old>` FreshRSS subscription; re-subscribe under the new username after.
 
 ### Stories
 

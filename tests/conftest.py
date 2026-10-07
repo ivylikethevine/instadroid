@@ -128,6 +128,7 @@ def fast_offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(config, "IG_USERNAME", "me")
     monkeypatch.setattr(config, "IG_PASSWORD", "hunter2")
     monkeypatch.setattr(capture, "_last_code", "")
+    monkeypatch.setattr(capture, "_clearing", True)
     monkeypatch.setattr(config, "CLIPBOARD_TIMEOUT", 0.01)
     return tmp_path
 

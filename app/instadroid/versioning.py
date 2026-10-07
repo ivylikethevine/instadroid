@@ -9,7 +9,7 @@ from typing import Concatenate, overload
 
 from igprofiles import BaseProfile, covering, major_of, newest_build
 from igprofiles import select as select_profile
-from igprofiles.base import PatternKey, StrDictKey, StrKey, StrListKey, StrTupleKey
+from igprofiles.base import PatternKey, StrDictKey, StrKey, StrListKey, StrTupleKey, Verification
 
 from . import config
 from .common import log
@@ -114,8 +114,8 @@ def _is_method(profile: BaseProfile, name: str) -> bool:
 def activate_profile(installed: str | None) -> None:
     """(Re)load PROFILE for the `installed` Instagram: the profile covering it, or IG_PROFILE. Sets
     PROFILE_WARNING for a bad IG_PROFILE, an IG_PROFILE that isn't the one covering the installed
-    version, an installed major version no build of which has been validated with its profile, or a
-    misnamed override."""
+    version, an installed major version its profile neither confirms nor suspects to work
+    (BaseProfile.verification()), or a misnamed override."""
     profile: BaseProfile
     select_warning: str | None
     profile, select_warning = select_profile(config.IG_PROFILE, installed)
@@ -126,7 +126,8 @@ def activate_profile(installed: str | None) -> None:
         warnings.append(
             f"IG_PROFILE={profile.name} is set, but Instagram {installed} is covered by {expected or 'no profile'}"
         )
-    if installed and installed_major not in {major_of(b) for b in profile.own_validated}:
+    verification: Verification | None = profile.verification(installed_major)
+    if installed and verification is None:
         newest: str = newest_build(profile.name) or "none yet"
         warnings.append(
             f"Instagram {installed} hasn't been validated with profile {profile.name}"
@@ -140,5 +141,7 @@ def activate_profile(installed: str | None) -> None:
     warning: str | None = "; ".join(warnings) or None
     _set_active(profile, warning)
     log(f"profile {profile.name} (installed: {installed or 'none'})")
+    if installed and verification == "suspected":
+        log(f"Instagram {installed} sits between builds validated with {profile.name}: suspected to work")
     if warning:
         log("WARN:", warning)

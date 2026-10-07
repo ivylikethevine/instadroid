@@ -1,11 +1,15 @@
 """What every Instagram version profile provides. See docs/PROFILES.md for the full design."""
 
 import re
+from itertools import pairwise
 from typing import Literal
 
 # closed=True (PEP 728) says a selector set has exactly these keys, so iterating one (screens.py) yields
 # the value types below rather than `object`. typing.TypedDict only accepts it from Python 3.15.
 from typing_extensions import TypedDict
+
+# How a major version stands with a profile (BaseProfile.verification()).
+type Verification = Literal["confirmed", "suspected"]
 
 
 class Selectors(TypedDict, closed=True):
@@ -131,7 +135,8 @@ class BaseProfile:
       selectors    the full Selectors dict the scraper reads through SELECTORS
       validated    the exact builds a live baseline run and replay fixtures showed it handles
                    (devtools/new_profile.py validate). Declared on each profile's own class, never
-                   inherited: a new profile starts with none.
+                   inherited: a new profile starts with none. Their major versions are confirmed;
+                   the ones between two of them are suspected to work (verification()).
 
     Behavior overrides: a profile can replace any instadroid function marked @versioned by defining a
     method of the same name. It receives the base implementation first, so it can wrap or replace it:
@@ -155,6 +160,21 @@ class BaseProfile:
     def own_validated(self) -> tuple[str, ...]:
         """The builds validated with this profile itself, not inherited from the one it subclasses."""
         return self.validated if "validated" in vars(type(self)) else ()
+
+    def suspected(self) -> list[tuple[int, int]]:
+        """The ranges of major versions between two validated ones, inclusive: both ends ran on this
+        profile unchanged, so the builds between them are taken to, without a run of their own."""
+        majors: list[int] = sorted({int(b.split(".", 1)[0]) for b in self.own_validated})
+        return [(low + 1, high - 1) for low, high in pairwise(majors) if high - low > 1]
+
+    def verification(self, major: int | None) -> Verification | None:
+        """How `major` stands with this profile: "confirmed" when one of its builds is validated,
+        "suspected" when it lies between two that are, None when nothing says it works."""
+        if major is None:
+            return None
+        if any(b.split(".", 1)[0] == str(major) for b in self.own_validated):
+            return "confirmed"
+        return "suspected" if any(low <= major <= high for low, high in self.suspected()) else None
 
     def __repr__(self) -> str:
         return f"<profile {self.name}>"

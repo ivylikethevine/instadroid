@@ -4,7 +4,7 @@ through a Copy link that repeats the last shortcode."""
 import sqlite3
 
 import pytest
-from instadroid import config, db, parsing, scrape
+from instadroid import alerts, config, db, parsing, scrape
 from shared import sqlrows
 from shared.sqlrows import SqlValue
 
@@ -12,6 +12,7 @@ from tests.deviceflows import (
     CAPTION,
     TOP_URL,
     copy_link,
+    feed_cards,
     feed_device,
     following_screen,
     seed_post,
@@ -136,7 +137,7 @@ def test_the_same_shortcode_twice_is_the_same_post_copied_again() -> None:
         con, "TOP123", "someone_nice", "Top card caption, and the rest of it", 1, h="stale", url=PERMALINK
     )
     d: FakeDevice = feed_device()
-    d.clipboard = TOP_URL
+    d.clipboard, d.clipboard_settable = TOP_URL, False
 
     stats: scrape.RunStats = scrape.scrape_once(d, con)
 
@@ -153,7 +154,7 @@ def test_a_repeated_shortcode_for_a_post_that_is_not_stored_is_a_clipboard_failu
     monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
     con: sqlite3.Connection = db.db_init()
     d: FakeDevice = feed_device()
-    d.clipboard = TOP_URL
+    d.clipboard, d.clipboard_settable = TOP_URL, False
 
     stats: scrape.RunStats = scrape.scrape_once(d, con)
 
@@ -171,7 +172,7 @@ def test_a_repeated_shortcode_stored_for_another_caption_is_a_clipboard_failure(
     con: sqlite3.Connection = db.db_init()
     seed_post(con, "TOP123", "someone_nice", "Something else entirely", 9, h="stale", url=PERMALINK)
     d: FakeDevice = feed_device()
-    d.clipboard = TOP_URL
+    d.clipboard, d.clipboard_settable = TOP_URL, False
 
     assert scrape.scrape_once(d, con)["metrics"].get("link_clipboard_failures") == 1
     assert _post(con)["hash"] == "stale"
@@ -183,3 +184,35 @@ def test_same_caption_accepts_a_collapsed_start_and_a_placeholder() -> None:
     assert parsing.same_caption("First li…", "First line\nsecond line")
     assert parsing.same_caption("Photo by Someone Nice, 5 likes", "Anything at all")
     assert not parsing.same_caption("First line", "Another line")
+
+
+def test_a_stored_post_back_under_another_username_is_a_suspected_rename() -> None:
+    con: sqlite3.Connection = db.db_init()
+    seed_post(con, "TOP123", "former_name", "Top card caption, and the rest of it", 1, h="old", url=PERMALINK)
+    d: FakeDevice = feed_device()
+
+    stats: scrape.RunStats = scrape.scrape_once(d, con)
+
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts WHERE username='someone_nice'")) == 0
+    assert db.rename_candidates(con) == [("former_name", "someone_nice", 1)]
+    assert "former_name now posts as someone_nice?" in str(stats["metrics"].get("warning"))
+    assert "`scraper.py rename former_name someone_nice`" in alerts.conditions(con)[alerts.RENAME]
+
+    assert scrape.scrape_once(feed_device(), con)["new"] == 0  # recognised by its hash from now on
+    assert db.rename_account(con, "former_name", "someone_nice") == 1
+    assert db.rename_candidates(con) == [] and alerts.RENAME not in alerts.conditions(con)
+
+
+def test_a_post_two_accounts_share_is_not_a_rename() -> None:
+    con: sqlite3.Connection = db.db_init()
+    seed_post(con, "TOP123", "former_name", "Top card caption, and the rest of it", 1, h="old", url=PERMALINK)
+    d: FakeDevice = feed_device()
+    shared: Node = node(
+        cls="android.widget.Button", text="former_name and someone_nice", bounds=(0, 289, 1080, 290)
+    )
+    d.screens["following"] = following_screen([shared, *feed_cards()])
+
+    scrape.scrape_once(d, con)
+
+    assert db.rename_candidates(con) == []
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts WHERE username='someone_nice'")) == 0

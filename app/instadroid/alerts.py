@@ -20,13 +20,15 @@ from shared import sqlrows
 from shared.errors import short_error
 from shared.timestamps import parse_iso
 
-from . import common, config
+from . import common, config, db
 from .common import log
 
 LOGIN: str = "login"
 FAILING: str = "failing"
 NO_POSTS: str = "no_posts"
+RENAME: str = "rename"
 TITLES: dict[str, str] = {
+    RENAME: "an account seems to have a new username",
     LOGIN: "Instagram wants a human",
     FAILING: "scrape runs keep failing",
     NO_POSTS: "no new posts",
@@ -74,6 +76,12 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
         # Only once the scraper has been running for the whole window, so a fresh install is quiet.
         if first_run and first_run < cutoff and (newest_post is None or newest_post < cutoff):
             found[NO_POSTS] = f"no new post stored in {config.ALERT_NO_POSTS_HOURS:g}h"
+    renames: list[tuple[str, str, int]] = db.rename_candidates(con)
+    if renames:
+        found[RENAME] = "; ".join(
+            f"{old} now posts as {new} ({n} stored post(s) seen under it): `scraper.py rename {old} {new}`"
+            for old, new, n in renames
+        )
     return found
 
 

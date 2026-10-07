@@ -22,6 +22,15 @@ Most versions change nothing the scraper uses: 441-446 all ran on the 445 select
 profile exists **only where Instagram changed something**, and a build that changed nothing is just
 recorded as validated with the profile that already covers it.
 
+Not every version gets a run either. A profile's builds are verified in two ways, both listed by
+`python scraper.py profiles`:
+
+- **confirmed**: a build of that major version is in `Profile.validated`, after a baseline run and
+  replay fixtures (below);
+- **suspected**: the major version lies between two confirmed ones. Both ends ran on the same
+  profile, so the versions between them are taken to work, and they run without a warning
+  (`BaseProfile.verification()`).
+
 - **Floor:** 424 (`igprofiles.MIN_MAJOR`), the root profile `v424`, the oldest Instagram that runs on
   this image ([run log](RUNLOG.md)). Named `v440` until 2026-09-15; run log entries before then use the old name.
 - **Default install:** `igprofiles.DEFAULT_BUILD`, pinned to 450.0.0.50.77
@@ -67,8 +76,8 @@ On every connect (and after an install) `versioning.activate_profile()` picks th
 the installed version. Before a device is connected, the newest profile stands in. Warnings go to the
 log and show on `/status` as a run warning:
 
-- an installed major version with no build validated with its profile (e.g. a newer Instagram than
-  anything checked so far): it runs anyway;
+- an installed major version its profile neither confirms nor suspects to work (e.g. a newer
+  Instagram than anything checked so far): it runs anyway;
 - an installed version below every profile: the lowest profile runs.
 
 `IG_PROFILE` (`v424`, or just `424`) forces one profile instead, with a warning when it isn't the one
@@ -77,7 +86,8 @@ covering the installed version. A bad `IG_PROFILE` falls back to automatic selec
 `IG_APK_VERSION` overrides the build to install (`latest` = newest on APKPure). By default it's
 `igprofiles.DEFAULT_BUILD` (450.0.0.50.77 today), or `IG_PROFILE`'s newest validated build when that
 profile hasn't validated the default. `python scraper.py profiles` lists
-each profile, the versions it covers, its validated builds and the default install.
+each profile, the versions it covers, the builds confirmed and the versions suspected to work, and the
+default install.
 
 Each run records the active profile in `runs.selector_profile` (e.g. `v424`), next to `ig_version`.
 
@@ -178,8 +188,7 @@ what a changed selector or override should be.
       profile is chosen automatically; `validated` lists builds; fixtures per version.
 - [x] Validated with `v424`: 424.0.0.49.64, 440.1.0.46.86, 441.0.0.43.81, 442.0.0.46.79, 443.0.0.48.82,
       444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77, 450.0.0.50.77 (see the [run log](RUNLOG.md)). Replay fixtures for 424,
-      440-446 and 450. 425-439 and 447-449 run with the "hasn't been validated" warning until
-      each gets a baseline.
+      440-446 and 450. 425-439 and 447-449 are suspected to work, between confirmed builds.
 - [x] Floor moved to 424 and the default install pinned to 445 (2026-09-15).
 - [x] Retried 446 (2026-10-07): it runs on a new `/data`, and its fixtures are recorded.
 - [x] Default install moved to 450 (2026-10-07).

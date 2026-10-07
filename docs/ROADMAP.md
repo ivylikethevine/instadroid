@@ -22,7 +22,7 @@ requests, external links after merge and weekly), spell check (typos), container
 advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
 (import-linter), hashed dependency locks (pip-compile), a `no_media_node` debug dump on the
 "media node not found" path, whole story frames, story frames matched across accounts, a retake of a
-dark story frame, a story's header painted over, the twin-post merge migration and `/opml?aggregate=0`. Earlier: credentials from a file, caption hashtag/mention links, optional feed
+dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration and `/opml?aggregate=0`. Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
 
@@ -30,11 +30,6 @@ spec.
 
 A feature across several parts of the scraper, compose or CI, or repeated real-device work.
 
-- **Copy link that doesn't land**: on 446 the clipboard still held the previous link after 3 Copy link
-  taps in one run ([run log](RUNLOG.md)), so a post was stored without its permalink until the next run
-  added it. 450 showed none in 3 runs. Find out whether the tap misses or Instagram skips the copy, and
-  retry within the run. The `dumpsys clipboard` fallback has never been the read that found a link, so
-  it may be removable.
 - **Stories that reshare a stored post**: a feed post shared to a story, by its own account or
   another followed one, repeats an entry the posts feed already has. Find the reshared-post sticker's
   node in the story viewer (no dump of one is recorded yet), hash that rectangle, and compare it with
@@ -47,8 +42,7 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   its next `scraper.py install`.
 - **Baseline what hasn't been checked yet**: no capture-mode baseline has covered the own profile,
   the Following list (`--following`) or the login form, so their required selector keys are unchecked
-  on every build. And 425-439 and 447-449 run with the "hasn't been validated" warning until each
-  gets a `new-profile baseline`/`validate`.
+  on every build.
 - **Instagram update path**: install-on-missing is automatic (see README.md's "First-time setup"),
   but an _outdated_ install isn't handled yet — detect the forced "update Instagram" screen (as a
   challenge-style stop) and reuse `install.install_instagram()` (`app/instadroid/install.py`)
@@ -78,10 +72,13 @@ Open investigations, new capture mechanisms, or changes to the container/process
   unconfirmed whether one exists. (A followed-accounts allowlist now filters the fallback's
   suggested posts after the fact — see README.md's "Followed-accounts allowlist" — but reaching the
   real feed directly would still be cheaper than the extra Following-list navigation that costs.)
-- **Detect username changes automatically**: today a rename has to be noticed and reconciled by
-  hand (`scraper.py rename <old> <new>`). Instagram's numeric user id never appears in the feed's
-  accessibility tree, so detecting a rename would mean visiting each account's profile — extra
-  in-app navigation and detection surface per run, which is why it wasn't done automatically here.
+- **Apply username changes automatically**: a rename is detected when a stored post comes up again
+  under another username with the same permalink, and raises an alert with the `scraper.py rename`
+  command ([README](../README.md#how-a-scrape-works)). Still open: applying it without a person, which
+  needs a second signal first (a wrong merge joins two accounts' histories for good), such as the old
+  name leaving the Following list as the new one appears; a way to dismiss a wrong suspicion other
+  than waiting for the post to be pruned; and an account none of whose stored posts are still in the
+  feed, which only a visit to its profile would catch. No rename has been seen on a device yet.
 - **Full story-reel capture**: only a story's current frame is captured (see README.md's
   "Stories") — a deliberate scope decision, not a gap left for later, given that tapping to advance
   a story has been observed to eject the app to the OS launcher on this host once its queue is

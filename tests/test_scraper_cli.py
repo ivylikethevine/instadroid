@@ -46,7 +46,8 @@ def test_profiles_lists_what_each_covers_and_the_default_install(
     out: str = capsys.readouterr().out
     assert "v424" in out and "covers Instagram 424 and newer" in out
     assert (
-        "validated: 424.0.0.49.64, 440.1.0.46.86" in out
+        "verified (confirmed by a run): 424.0.0.49.64, 440.1.0.46.86" in out
+        and "verified (suspected, between confirmed builds): 425-439" in out
         and f"default install: {igprofiles.DEFAULT_BUILD}" in out
     )
 

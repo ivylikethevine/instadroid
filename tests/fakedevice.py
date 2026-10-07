@@ -176,6 +176,7 @@ class FakeDevice:
             "ro.product.name": "redroid",
         }
         self.clipboard: str | None = ""
+        self.clipboard_settable: bool = True  # False: set_clipboard() changes nothing
         self.history = [start]
         self.taps: list[tuple[int, int]] = []
         self.presses: list[str] = []
@@ -201,6 +202,10 @@ class FakeDevice:
     # --- uiautomator2 API ---------------------------------------------------------------------
     def __call__(self, **kwargs: str | list[str]) -> FakeSelector:
         return FakeSelector(self, kwargs)
+
+    def set_clipboard(self, text: str, label: str | None = None) -> None:
+        if self.clipboard_settable:
+            self.clipboard = text
 
     def dump_hierarchy(self) -> str:
         return self.screens[self.screen]

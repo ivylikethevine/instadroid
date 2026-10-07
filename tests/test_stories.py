@@ -211,3 +211,9 @@ def test_the_header_avatar_and_texts_are_painted_over_in_the_saved_frame() -> No
     for box in (avatar, name, age, reshared_avatar):
         mean: list[float] = ImageStat.Stat(frame.crop((box[0], box[1] - 150, box[2], box[3] - 150))).mean
         assert abs(mean[0] - mean[1]) < 10, box  # gray like its surroundings, no longer red
+
+
+def test_a_header_node_outside_the_frame_is_not_painted() -> None:
+    img: Image.Image = Image.new("RGB", (100, 100), "gray")
+    stories._paint_over(img, (300, 300, 340, 340))
+    assert img.getextrema() == ((128, 128), (128, 128), (128, 128))

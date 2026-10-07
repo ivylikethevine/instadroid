@@ -77,8 +77,16 @@ if __name__ == "__main__":
                 p: BaseProfile = load_profile(name)
                 covers: str = f"{p.major}-{int(following[1:]) - 1}" if following else f"{p.major} and newer"
                 active: str = " (active)" if p.name == versioning.PROFILE.name else ""
-                validated: str = ", ".join(sorted(p.own_validated, key=version_key)) or "none yet"
-                print(f"{p.name}{active}  covers Instagram {covers}  {p.notes}\n  validated: {validated}")
+                confirmed: str = ", ".join(sorted(p.own_validated, key=version_key)) or "none yet"
+                suspected: str = (
+                    ", ".join(str(low) if low == high else f"{low}-{high}" for low, high in p.suspected())
+                    or "none"
+                )
+                print(
+                    f"{p.name}{active}  covers Instagram {covers}  {p.notes}\n"
+                    f"  verified (confirmed by a run): {confirmed}\n"
+                    f"  verified (suspected, between confirmed builds): {suspected}"
+                )
             print("default install:", default_build() or "latest")
         case ["install", *version] if len(version) <= 1:
             d = device.connect_device()

@@ -175,3 +175,18 @@ against its own scratch database).
   read from the header's texts.
 
 The device was put back on 450 (an upgrade in place, login kept).
+
+**Copy link probes, 14:59-15:42 PDT** (450, then 446). The three "failures" on 446 earlier were not
+missed taps: the post was the last one copied in the preceding 450 run, kept in another scratch
+database, so its link was already on the clipboard and read as stale.
+
+- Timed on 450, the link is on the clipboard within 0.8s of the tap. The share sheet stays open after
+  Copy link, so it says nothing about whether the tap landed.
+- `dumpsys clipboard` prints nothing on this Android 13 image, with a clip present or not; the fallback
+  that read it is removed.
+- Emptying the clipboard first (`set_clipboard("")`) and then tapping gave the link 6 times of 6 on 450
+  and 4 of 4 on 446, the same post each time. A non-empty placeholder did not work: the link never
+  replaced it, and closing the sheet then left Instagram.
+- `fetch_permalink()` now empties the clipboard before the tap, taps once more if nothing arrives, and
+  stops emptying for the rest of the run if that also fails. A 450 run with it backfilled a missing
+  permalink and stored a new post, 0 `link_clipboard_failures`.

@@ -271,6 +271,36 @@ def test_activate_profile_follows_the_installed_version(monkeypatch: pytest.Monk
     assert versioning.PROFILE_WARNING is None
 
 
+class _Gapped(BaseProfile):
+    major: int = 500
+    selectors: Selectors = igprofiles.load("v424").selectors
+    validated: tuple[str, ...] = ("500.0.0.1.1", "501.0.0.1.1", "505.0.0.1.1", "507.0.0.1.1")
+
+
+def test_a_major_between_two_validated_ones_is_suspected_to_work() -> None:
+    profile: BaseProfile = _Gapped()
+    assert profile.suspected() == [(502, 504), (506, 506)]
+    assert [profile.verification(m) for m in (500, 503, 506, 507, 508, None)] == [
+        "confirmed",
+        "suspected",
+        "suspected",
+        "confirmed",
+        None,
+        None,
+    ]
+
+
+def test_a_suspected_build_runs_without_a_warning(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    low: int
+    low, _ = igprofiles.load("v424").suspected()[0]
+    monkeypatch.setattr(config, "IG_PROFILE", "")
+    versioning.activate_profile(f"{low}.0.0.1.1")
+    assert versioning.PROFILE_WARNING is None
+    assert f"Instagram {low}.0.0.1.1 sits between builds validated with v424" in capsys.readouterr().out
+
+
 def test_activate_profile_warns_about_an_unvalidated_major(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "IG_PROFILE", "")
     versioning.activate_profile("999.0.0.1.1")
