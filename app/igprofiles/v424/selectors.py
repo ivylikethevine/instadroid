@@ -46,7 +46,8 @@ SELECTORS: Selectors = {
     # The Home feed's story tray (not present on the Following screen). Each item's content-desc
     # is "<user>'s story, <index> of <total>, Unseen."/"...Seen." — index 0 is always the logged-in
     # account's own story.
-    "story_tray_id": "reels_tray_container",
+    # The second id is the tray floating over a feed that has scrolled a little (seen on 450).
+    "story_tray_ids": ("reels_tray_container", "overlay_stories_tray_container"),
     "story_item_desc": re.compile(
         r"^(?P<user>[\w.]+)'s story, (?P<index>\d+) of (?P<total>\d+), (?P<seen>\w+)\.$"
     ),

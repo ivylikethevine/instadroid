@@ -190,3 +190,16 @@ database, so its link was already on the clipboard and read as stale.
 - `fetch_permalink()` now empties the clipboard before the tap, taps once more if nothing arrives, and
   stops emptying for the rest of the run if that also fails. A 450 run with it backfilled a missing
   permalink and stored a new post, 0 `link_clipboard_failures`.
+
+**450 with the Following list, 15:54-16:03 PDT** (`new-profile baseline --no-install --following`). The
+run opened the own profile and its Following list and refreshed the allowlist (33 accounts, 5 posts
+filtered, peak 1959 MiB). The profile, the Following list and the login form (captured at the first
+login) each had every required key under `v424`; none had been captured before.
+
+- **The story tray has a second container id.** With the Home feed scrolled a little the tray floats
+  over it as `overlay_stories_tray_container`, not `reels_tray_container`, and that run found no
+  stories. `story_tray_ids` now lists both; `home_feed_overlay_450` is the fixture.
+- **Promoting the Following list turned up scrubbing misses**: each row's display name (its subtitle
+  and "Message `<name>`" button), the own username in the title bar and the account's own counts.
+  `promote_dump.pseudonymize()` now catches them; the fixture written before that was deleted, and
+  `following_list_450` is the scrubbed one.

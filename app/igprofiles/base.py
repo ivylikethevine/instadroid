@@ -25,7 +25,7 @@ class Selectors(TypedDict, closed=True):
     alt_kind: dict[str, str]
     share_id: str
     copy_link_desc: str
-    story_tray_id: str
+    story_tray_ids: tuple[str, ...]
     story_item_desc: re.Pattern[str]
     story_viewer_id: str
     story_media_id: str
@@ -68,7 +68,6 @@ type StrKey = Literal[
     "caption_class",
     "share_id",
     "copy_link_desc",
-    "story_tray_id",
     "story_viewer_id",
     "story_media_id",
     "story_shadow_id",
@@ -108,7 +107,7 @@ type PatternKey = Literal[
     "caption_more_suffix",
     "slide_index",
 ]
-type StrTupleKey = Literal["media_ids"]
+type StrTupleKey = Literal["media_ids", "story_tray_ids"]
 type StrDictKey = Literal["alt_kind"]
 
 

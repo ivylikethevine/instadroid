@@ -25,6 +25,7 @@ from pathlib import Path
 import igprofiles
 from igprofiles import BaseProfile, screens
 from igprofiles.base import Selectors
+from igprofiles.screens import id_matches
 from instadroid import parsing, versioning
 from lxml import etree
 
@@ -140,6 +141,17 @@ def pseudonymize(xml: str) -> str:
             # "Follow <display name>" on a suggested account.
             if (m := re.match(r"^Follow (.+)$", value)) and m.group(1) not in ("back", "Back"):
                 alias(m.group(1), "Display ")
+            # A Following-list row's "Message <display name>" button; its subtitle repeats the name.
+            if m := re.match(r"^Message (.+)$", value, re.S):
+                alias(m.group(1), "Display ")
+            # The account's own counts on its profile and Following list.
+            if m := re.match(r"^[\d,.]+[KM]? (followers?|following|subscriptions?)$", value, re.I):
+                names.setdefault(value, f"0 {m.group(1)}")
+        # The logged-in account's username, as the title of its own Following list.
+        if id_matches(n.get("resource-id") or "", "action_bar_title") and re.fullmatch(
+            r"[a-z0-9_.]{3,30}", n.get("text") or ""
+        ):
+            alias(n.get("text") or "", "user")
     ordered: list[str] = sorted(names, key=len, reverse=True)  # "ab_c" before "ab"
     pattern: re.Pattern[str] | None = (
         re.compile("|".join(rf"(?<![\w.]){re.escape(v)}(?![\w])" for v in ordered)) if ordered else None

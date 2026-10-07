@@ -536,6 +536,10 @@ def test_pseudonymize_catches_names_no_parser_returns() -> None:
         node(cls="android.widget.Button", desc="collab.shop and other.person"),
         node("clips_video_container", desc="Reel by Zed Q, 82 likes, 17 comments, 2 hours ago"),
         node(desc="_note.writer_ shared a note: feeling great"),
+        node("action_bar_title", cls="android.widget.TextView", text="own.account"),
+        node("follow_list_subtitle", cls="android.widget.TextView", text="Listed Person ✨"),
+        node(cls="android.widget.Button", desc="Message Listed Person ✨"),
+        node(cls="android.widget.TextView", text="1,234 followers"),
     )
     clean: str = promote_dump.pseudonymize(xml)
     name: str
@@ -551,6 +555,9 @@ def test_pseudonymize_catches_names_no_parser_returns() -> None:
         "Zed Q",
         "_note.writer_",
         "feeling great",
+        "own.account",
+        "Listed Person",
+        "1,234",
     ):
         assert name not in clean, name
     assert "Follow Display 1" in clean and "@user" in clean and "Reel by Display 2," in clean

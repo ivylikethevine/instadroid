@@ -31,18 +31,16 @@ spec.
 A feature across several parts of the scraper, compose or CI, or repeated real-device work.
 
 - **Stories that reshare a stored post**: a feed post shared to a story, by its own account or
-  another followed one, repeats an entry the posts feed already has. Find the reshared-post sticker's
-  node in the story viewer (no dump of one is recorded yet), hash that rectangle, and compare it with
-  the covers and slides of recently stored posts; then drop the story or store it as a link to the
-  post, which is still to decide. Matching the whole frame against stored images also works without
-  the node, but needs template matching, which the app has no dependency for.
+  another followed one, repeats an entry the posts feed already has. The reshared-post sticker has no
+  node to find: in 18 story dumps from 446 and 450 `reel_sticker_accessibility_container` was empty
+  every time, a reshared Reel among them, and none of the 10 header attribution texts was an
+  account handle. That leaves matching the frame against the covers and slides of recently stored
+  posts, which needs template matching, a dependency the app doesn't have. Whether a match drops the
+  story or stores it as a link to the post is still to decide.
 - **Retry 446 and 450 on a `/data` carried over from older builds**: 446 crashed on launch on
   2026-09-15 on a device that had run 424 just before, and both builds have since only run on a new
   `/data` ([run log](RUNLOG.md)). The default install is now 450, so an existing deployment gets it on
   its next `scraper.py install`.
-- **Baseline what hasn't been checked yet**: no capture-mode baseline has covered the own profile,
-  the Following list (`--following`) or the login form, so their required selector keys are unchecked
-  on every build.
 - **Instagram update path**: install-on-missing is automatic (see README.md's "First-time setup"),
   but an _outdated_ install isn't handled yet — detect the forced "update Instagram" screen (as a
   challenge-style stop) and reuse `install.install_instagram()` (`app/instadroid/install.py`)

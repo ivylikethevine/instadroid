@@ -44,7 +44,7 @@ SCREENS: dict[str, Screen] = {
         description="a feed with post cards (Following or Home), one screen of the scroll loop",
     ),
     "home_feed": Screen(
-        required=("home_tab_id", "story_tray_id", "story_item_desc"),
+        required=("home_tab_id", "story_tray_ids", "story_item_desc"),
         optional=("feed_switcher_desc", "profile_tab_id"),
         description="the top of the Home feed: tab bar, story tray and the feed switcher",
     ),

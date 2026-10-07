@@ -188,7 +188,9 @@ what a changed selector or override should be.
       profile is chosen automatically; `validated` lists builds; fixtures per version.
 - [x] Validated with `v424`: 424.0.0.49.64, 440.1.0.46.86, 441.0.0.43.81, 442.0.0.46.79, 443.0.0.48.82,
       444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77, 450.0.0.50.77 (see the [run log](RUNLOG.md)). Replay fixtures for 424,
-      440-446 and 450. 425-439 and 447-449 are suspected to work, between confirmed builds.
+      440-446 and 450 (450 also has the Following list, and the Home feed with its tray floating).
+      425-439 and 447-449 are suspected to work, between confirmed builds.
+- [x] Own profile, Following list and login form checked on 450 (2026-10-07): every required key present.
 - [x] Floor moved to 424 and the default install pinned to 445 (2026-09-15).
 - [x] Retried 446 (2026-10-07): it runs on a new `/data`, and its fixtures are recorded.
 - [x] Default install moved to 450 (2026-10-07).
