@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Unpack
 
+import igprofiles
 import pytest
 from devtools import ROOT
 from instadroid import config, db, device, diagnostics, install, navigation, scrape
@@ -44,7 +45,10 @@ def test_profiles_lists_what_each_covers_and_the_default_install(
     _run(monkeypatch, "profiles")
     out: str = capsys.readouterr().out
     assert "v424" in out and "covers Instagram 424 and newer" in out
-    assert "validated: 424.0.0.49.64, 440.1.0.46.86" in out and "default install: 445.0.0.45.83" in out
+    assert (
+        "validated: 424.0.0.49.64, 440.1.0.46.86" in out
+        and f"default install: {igprofiles.DEFAULT_BUILD}" in out
+    )
 
 
 def test_once_prints_the_run_and_exits_non_zero_when_it_failed(

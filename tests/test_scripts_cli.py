@@ -194,7 +194,7 @@ def test_restore_refuses_without_a_device_and_installs_the_default_build(
     monkeypatch.setattr(new_profile, "_confirm", decline)
     assert new_profile.restore() == 1 and not ran  # declined
     assert new_profile.restore(yes=True) == 0
-    assert ran[0][-2:] == ["install", "445.0.0.45.83"]
+    assert ran[0][-2:] == ["install", igprofiles.DEFAULT_BUILD]
 
 
 def test_new_profile_main_dispatches_and_reports_errors(

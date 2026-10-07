@@ -16,17 +16,13 @@ A config flag, one function, a CI tweak, or docs.
   egress to a fixed host list, so a pin whose upstream lives on a host missing from that list reads
   as fine forever. Count a problem when every row one host serves went unread (a blocked host, not a one-off
   rate limit), naming the host in the tracking issue.
-- **Mask a story's header**: a story is saved whole, so its top carries the viewer's username and
-  age text over `reel_viewer_top_shadow`. Paint over the header's own nodes (avatar, username,
-  timestamp), not the whole gradient, or hold a long press while the screenshot is taken, which hides
-  the overlay but is one more gesture inside the viewer.
 
 Done: Markdown lint and format checks, a link check (relative links on pull
 requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:
 advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
 (import-linter), hashed dependency locks (pip-compile), a `no_media_node` debug dump on the
 "media node not found" path, whole story frames, story frames matched across accounts, a retake of a
-dark story frame, the twin-post merge migration and `/opml?aggregate=0`. Earlier: credentials from a file, caption hashtag/mention links, optional feed
+dark story frame, a story's header painted over, the twin-post merge migration and `/opml?aggregate=0`. Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
 
@@ -34,28 +30,25 @@ spec.
 
 A feature across several parts of the scraper, compose or CI, or repeated real-device work.
 
-- **Confirm the double-capture fix on a device**: a card used to be captured a second time once
-  `capture.expand_caption()` had expanded its caption, since the collapsed and expanded captions hash
-  differently. A post is now stored under both hashes, a card with no date is matched on its caption,
-  and a Copy link that repeats the last shortcode is checked against the stored row; the test suite
-  covers each, no device run has. A clean run shows no `link_clipboard_failures` on a feed with nothing
-  new. Also unconfirmed: whether the `dumpsys clipboard` fallback fixes Copy link leaving the
-  clipboard empty (6 of 8 attempts in the 445 baseline, [run log](RUNLOG.md)).
+- **Copy link that doesn't land**: on 446 the clipboard still held the previous link after 3 Copy link
+  taps in one run ([run log](RUNLOG.md)), so a post was stored without its permalink until the next run
+  added it. 450 showed none in 3 runs. Find out whether the tap misses or Instagram skips the copy, and
+  retry within the run. The `dumpsys clipboard` fallback has never been the read that found a link, so
+  it may be removable.
 - **Stories that reshare a stored post**: a feed post shared to a story, by its own account or
   another followed one, repeats an entry the posts feed already has. Find the reshared-post sticker's
   node in the story viewer (no dump of one is recorded yet), hash that rectangle, and compare it with
   the covers and slides of recently stored posts; then drop the story or store it as a link to the
   post, which is still to decide. Matching the whole frame against stored images also works without
   the node, but needs template matching, which the app has no dependency for.
-- **Retry Instagram 446**: 446.0.0.49.77 is in `v424.validated` but has crashed on launch since
-  2026-09-15 (a native `SIGSEGV` in `RenderThread`; [run log](RUNLOG.md)), so `igprofiles.DEFAULT_BUILD`
-  is pinned to 445. Retry it; if it still crashes, drop it from `v424.validated` and update its
-  [`COMPATIBILITY.md`](COMPATIBILITY.md) row. If it works, promote its fixtures too: none have been
-  recorded for 446.
+- **Retry 446 and 450 on a `/data` carried over from older builds**: 446 crashed on launch on
+  2026-09-15 on a device that had run 424 just before, and both builds have since only run on a new
+  `/data` ([run log](RUNLOG.md)). The default install is now 450, so an existing deployment gets it on
+  its next `scraper.py install`.
 - **Baseline what hasn't been checked yet**: no capture-mode baseline has covered the own profile,
   the Following list (`--following`) or the login form, so their required selector keys are unchecked
-  on every build. And 425-439 run with the "hasn't been validated" warning until each gets a
-  `new-profile baseline`/`validate`.
+  on every build. And 425-439 and 447-449 run with the "hasn't been validated" warning until each
+  gets a `new-profile baseline`/`validate`.
 - **Instagram update path**: install-on-missing is automatic (see README.md's "First-time setup"),
   but an _outdated_ install isn't handled yet — detect the forced "update Instagram" screen (as a
   challenge-style stop) and reuse `install.install_instagram()` (`app/instadroid/install.py`)

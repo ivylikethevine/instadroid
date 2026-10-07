@@ -58,7 +58,7 @@ SCREENS: dict[str, Screen] = {
     ),
     "story_viewer": Screen(
         required=("story_viewer_id", "story_media_id"),
-        optional=("story_shadow_id", "story_timestamp_id"),
+        optional=("story_shadow_id", "story_timestamp_id", "story_avatar_id", "story_header_text_id"),
         description="one story open in the viewer",
     ),
     "share_sheet": Screen(

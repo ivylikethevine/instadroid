@@ -57,6 +57,10 @@ SELECTORS: Selectors = {
     # make one frame look like two (see capture_story_media()).
     "story_shadow_id": "reel_viewer_top_shadow",
     "story_timestamp_id": "reel_viewer_timestamp",
+    # The header's avatar, and the container of its texts (username, age, attribution): painted over
+    # in the saved frame (see capture_story()).
+    "story_avatar_id": "reel_viewer_profile_picture",
+    "story_header_text_id": "reel_viewer_text_container",
     # Anything that means a share/bottom sheet is open. We never interact inside one except to
     # tap "Copy link"; a stray tap there could message a contact.
     "sheet_markers_text": ["Write a message…"],

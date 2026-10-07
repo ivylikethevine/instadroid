@@ -145,7 +145,7 @@ when no build of that major version has been validated. To switch, including a d
 
 ```bash
 docker compose exec app python scraper.py profiles           # what's available, and what each installs
-docker compose exec app python scraper.py install            # the default build (445.0.0.45.83)
+docker compose exec app python scraper.py install            # the default build (450.0.0.50.77)
 docker compose exec app python scraper.py install 444.0.0.46.85
 ```
 
@@ -238,9 +238,9 @@ capture is matched by how it looks: a crop within 10 bits (of 64) of a perceptua
 the same account had stored in the last day is a re-capture and is discarded, as is one within 4 bits
 of another account's (the same frame reshared by both), and so is a near-black viewer transition
 frame; a dark first screenshot is retaken once, in case it caught a fade-in. (An exact byte hash
-missed these, since every capture re-encodes a fresh screenshot.) The whole frame is saved, header
-overlay included, but the hash reads only the part below that overlay, so the relative timestamp
-ticking over between runs doesn't change it.
+missed these, since every capture re-encodes a fresh screenshot.) The whole frame is saved, with the header's
+avatar, username, age and attribution painted over; the hash reads only the part below the header
+overlay, so the relative timestamp ticking over between runs doesn't change it.
 Captured stories are served at `/stories.xml` and share `RETAIN_DAYS` with posts — no separate
 story-retention window.
 

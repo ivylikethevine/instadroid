@@ -19,10 +19,9 @@ from .base import BaseProfile
 
 MIN_MAJOR: int = 424  # oldest Instagram version this project supports: the lowest profile's major
 # The build installed when nothing more specific is asked for (auto-install, `scraper.py install`,
-# `new-profile restore`). Pinned below the newest validated build on purpose: 446.0.0.49.77 has
-# crashed on launch on the reference device since 2026-09-15 (docs/RUNLOG.md). None means the
-# newest validated build. tests/test_profiles.py checks it's a validated build.
-DEFAULT_BUILD: str | None = "445.0.0.45.83"
+# `new-profile restore`). Pinned, so validating a newer build doesn't change what gets installed.
+# None means the newest validated build. tests/test_profiles.py checks it's a validated build.
+DEFAULT_BUILD: str | None = "450.0.0.50.77"
 # A full build, "446.0.0.49.77"; group 1 is its major.
 BUILD: re.Pattern[str] = re.compile(r"\b(\d{3})\.\d+\.\d+\.\d+\.\d+\b")
 _NAME: re.Pattern[str] = re.compile(r"^v(\d{3})$")

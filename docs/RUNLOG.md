@@ -4,6 +4,14 @@ Dated device runs behind the [version profiles](PROFILES.md): baselines, validat
 Instagram builds on the reference device. Newest entries go at the bottom. Profile names are as they
 were at the time: the root profile was `v440` until 2026-09-15, when it became `v424`.
 
+## Contents
+
+- [2026-09-14](#2026-09-14)
+- [2026-09-15](#2026-09-15)
+- [2026-10-07](#2026-10-07)
+
+## 2026-09-14
+
 **445 baseline, 2026-09-14 10:37-10:45 PDT** (3g limit, 4 CPUs, `MAX_SCROLLS=5`,
 `MAX_STORIES_PER_RUN=2`): the 445 selectors work. 2 stories, 2 posts (a Reel and a carousel with an
 extra slide), both with permalinks, captions, media and `ig_version=445.0.0.45.83`. Peak redroid
@@ -94,6 +102,8 @@ both stay open, keep the login across the downgrades and reach the Home feed, wi
 build of each major was used). So the native-startup crash ends at 424, and 424+ is at least launchable; whether the 440 floor could move
 down to 425 would take a capture-mode baseline of those builds.
 
+## 2026-09-15
+
 **424 under the root profile, 2026-09-15 00:09-00:14 PDT.** A capped capture-mode baseline of
 424.0.0.49.64 (`new_profile.py baseline --below-floor`, from a frozen copy of `app/` while the typing
 pass was editing the working tree) ran under `v440` unchanged: 2 stories, 2 posts (a carousel and a
@@ -134,6 +144,8 @@ newest validated build as the default install.
 Done at the time: `DEFAULT_PROFILE` became `v446` (since replaced by automatic selection of the
 profile covering the installed version).
 
+## 2026-10-07
+
 **450 on a fresh device, 2026-10-07 13:39-13:54 PDT** (capture mode, `MAX_SCROLLS=5`,
 `MAX_STORIES_PER_RUN=2`). On a new `/data`, `new-profile baseline 450.0.0.50.77` installed the build
 and logged in from the form with no challenge, but the first run stored nothing: Android 13's
@@ -144,3 +156,22 @@ permalinks, the Following feed opened through the switcher, every captured scree
 keys under `v424`, peak 2157 MiB, no OOM kill. Promoted `feed_450` and `home_feed_450` and validated
 450; promoting turned up a scrubbing miss, the account in a tray item's "shared a note" label, which
 `promote_dump.pseudonymize()` now catches. 447-449 weren't run. The device was left on 450.
+
+**Repeat runs on 450 and a 446 retry, 14:07-14:43 PDT** (the same fresh device and caps, each build
+against its own scratch database).
+
+- **Nothing is captured twice.** Two more runs on 450 stored 1 post that was new and then none, with
+  the stored cards back on screen both times, 0 `link_clipboard_failures` and 0 `link_sheet_failures`;
+  peaks 2270 and 2043 MiB.
+- **446 runs again.** `new-profile baseline 446.0.0.49.77` downgraded 450 in place and kept the login:
+  no crash and no ANR, 2 stories and 2 posts, every captured screen's required keys present, peak
+  2412 MiB. This is a new `/data`, so the `RenderThread` crash on the device used in September stays
+  unexplained. Promoted `feed_446` and `home_feed_446`.
+- **Copy link didn't land 3 times on 446**: the clipboard still held the previous link, so one post
+  was stored without a permalink. The next run matched its card to the stored row, added the link and
+  stored nothing new. `dumpsys clipboard` was never the read that found a link, on either build.
+- **Story headers are painted over** from the second 450 run on: the avatar and the rows holding the
+  username, age and attribution. 450's header has no `reel_viewer_timestamp` node; the age is now
+  read from the header's texts.
+
+The device was put back on 450 (an upgrade in place, login kept).

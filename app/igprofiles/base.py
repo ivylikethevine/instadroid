@@ -27,6 +27,8 @@ class Selectors(TypedDict, closed=True):
     story_media_id: str
     story_shadow_id: str
     story_timestamp_id: str
+    story_avatar_id: str
+    story_header_text_id: str
     sheet_markers_text: list[str]
     sheet_markers_desc: list[str]
     permalink: re.Pattern[str]
@@ -67,6 +69,8 @@ type StrKey = Literal[
     "story_media_id",
     "story_shadow_id",
     "story_timestamp_id",
+    "story_avatar_id",
+    "story_header_text_id",
     "feed_switcher_desc",
     "following_text",
     "following_title_id",

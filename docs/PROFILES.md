@@ -24,8 +24,9 @@ recorded as validated with the profile that already covers it.
 
 - **Floor:** 424 (`igprofiles.MIN_MAJOR`), the root profile `v424`, the oldest Instagram that runs on
   this image ([run log](RUNLOG.md)). Named `v440` until 2026-09-15; run log entries before then use the old name.
-- **Default install:** `igprofiles.DEFAULT_BUILD`, pinned to 445.0.0.45.83 while 446 crashes on launch
-  (`igprofiles.default_build()`; `None` would mean the newest validated build).
+- **Default install:** `igprofiles.DEFAULT_BUILD`, pinned to 450.0.0.50.77
+  (`igprofiles.default_build()`; `None` would mean the newest validated build). It was 445.0.0.45.83
+  from 2026-09-15, when 446 crashed on launch, until 2026-10-07.
 
 ## Design: profiles at change points
 
@@ -74,7 +75,7 @@ log and show on `/status` as a run warning:
 covering the installed version. A bad `IG_PROFILE` falls back to automatic selection with a warning.
 
 `IG_APK_VERSION` overrides the build to install (`latest` = newest on APKPure). By default it's
-`igprofiles.DEFAULT_BUILD` (445.0.0.45.83 today), or `IG_PROFILE`'s newest validated build when that
+`igprofiles.DEFAULT_BUILD` (450.0.0.50.77 today), or `IG_PROFILE`'s newest validated build when that
 profile hasn't validated the default. `python scraper.py profiles` lists
 each profile, the versions it covers, its validated builds and the default install.
 
@@ -177,10 +178,11 @@ what a changed selector or override should be.
       profile is chosen automatically; `validated` lists builds; fixtures per version.
 - [x] Validated with `v424`: 424.0.0.49.64, 440.1.0.46.86, 441.0.0.43.81, 442.0.0.46.79, 443.0.0.48.82,
       444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77, 450.0.0.50.77 (see the [run log](RUNLOG.md)). Replay fixtures for 424,
-      440-445 and 450 (none recorded for 446). 425-439 and 447-449 run with the "hasn't been validated" warning until
+      440-446 and 450. 425-439 and 447-449 run with the "hasn't been validated" warning until
       each gets a baseline.
 - [x] Floor moved to 424 and the default install pinned to 445 (2026-09-15).
-- [ ] Retry 446; if it still crashes, drop it from `v424.validated` (tracked in [ROADMAP.md](ROADMAP.md)).
+- [x] Retried 446 (2026-10-07): it runs on a new `/data`, and its fixtures are recorded.
+- [x] Default install moved to 450 (2026-10-07).
 - [x] Old-build probe, `400.0.0.49.68`: installs, but crashes at native startup on every launch ([run log](RUNLOG.md)).
 - [x] Leak scan of fixtures, tests, docs and git history (below); working tree cleaned, history not rewritten.
 
