@@ -4,6 +4,8 @@ import sqlite3
 import time
 from datetime import UTC, datetime
 
+import igprofiles
+
 from . import config, device, diagnostics, install, parsing, uidevice
 from .common import log
 from .device import DeviceNotReady
@@ -25,6 +27,55 @@ def _challenge_present(d: uidevice.Device) -> str | None:
         if d(textContains=t).exists(timeout=0.5):
             return t
     return None
+
+
+@versioned
+def _update_required(d: uidevice.Device) -> str | None:
+    """The title of the forced-update screen when that is what's in front: one of update_texts, with no
+    tab bar behind it (a caption in the feed can read the same)."""
+    t: str
+    for t in SELECTORS["update_texts"]:
+        if d(text=t).exists(timeout=0.5):
+            tab_bar: uidevice.Selector = d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}")
+            return None if tab_bar.exists(timeout=0.5) else t
+    return None
+
+
+def _update_instagram(d: uidevice.Device, title: str) -> None:
+    """Replace an Instagram that refuses to run until it's updated with a newer validated build
+    (igprofiles.newer_build(), or the newest on APKPure when IG_APK_VERSION is "latest"), and check the
+    new one starts. The replaced build's bundle stays in APK_CACHE_DIR, so `scraper.py install <build>`
+    can go back to it. Raises RuntimeError, for a person to step in, when auto-install is off, another
+    build is pinned, nothing newer is validated, or the new build asks for an update too."""
+    diagnostics.dump_debug(d, "update")
+    current: str | None = device.instagram_version(d)
+    pinned: str = config.IG_APK_VERSION
+    target: str | None = "latest" if pinned.lower() == "latest" else igprofiles.newer_build(current)
+    blocked: str | None = None
+    if not config.IG_AUTO_INSTALL:
+        blocked = "IG_AUTO_INSTALL is off"
+    elif pinned and pinned.lower() != "latest":
+        blocked = f"IG_APK_VERSION pins {pinned}"
+    elif not target:
+        blocked = "no validated build is newer (docs/PROFILES.md, Adding a version)"
+    if blocked or not target:
+        raise RuntimeError(
+            f"Instagram wants a human: '{title}' screen on {current or 'an unknown version'}, and {blocked};"
+            f" see {config.DEBUG_DIR}"
+        )
+    log(f"Instagram {current} asks for an update ('{title}'); installing {target}")
+    installed: str | None = install.install_instagram(d, target, downgrade=True)
+    device.launch_app(d)
+    device.human_pause(4, 6)
+    diagnostics.dump_debug(d, "updated")
+    if not device.in_foreground(d):
+        raise DeviceNotReady(f"{config.IG_PKG} {installed} did not come to the foreground after the update")
+    if _update_required(d):
+        raise RuntimeError(
+            f"Instagram wants a human: '{title}' screen still showing on {installed} after the update;"
+            f" see {config.DEBUG_DIR}"
+        )
+    log(f"updated Instagram {current} -> {installed}")
 
 
 @versioned
@@ -103,6 +154,9 @@ def ensure_logged_in(d: uidevice.Device) -> None:
     if c := _challenge_present(d):
         diagnostics.dump_debug(d, "login")
         raise RuntimeError(f"Instagram wants a human: '{c}' screen; see {config.DEBUG_DIR}")
+    update: str | None
+    if update := _update_required(d):
+        _update_instagram(d, update)
     existing: uidevice.Selector = d(text=SELECTORS["welcome_existing_profile_text"])
     if existing.exists(timeout=1):
         # Logged-out "Join Instagram" welcome screen (fresh install, or an invalidated session) —

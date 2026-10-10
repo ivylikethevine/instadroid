@@ -43,7 +43,7 @@ app/                 the app image's build context
   igprofiles/        per-Instagram-version profiles (docs/PROFILES.md)
   feedserver/        the feed server, served as uvicorn feedserver:app
   shared/            the leaf both sides import: settings, control files, secrets from files, typed SQLite rows
-  devtools/          dev commands, not in the image: new-profile, promote-dump, check-new-builds, export-openapi
+  devtools/          dev commands, not in the image: new-profile, promote-dump, check-new-builds, resource-id-report, export-openapi
 tests/               the test suite
 scripts/             host and device shell scripts (tune-android.sh, diagnose.sh, ...)
 typings/             stubs for untyped libraries

@@ -140,7 +140,17 @@ whatever APKPure has newest. Each pinned version is cached in its own `local/dat
 `.env.example`.
 
 Auto-install only runs when Instagram is missing, so a newer validated build doesn't replace an
-installed version by itself. The scraper picks the profile covering whatever is installed, and warns
+installed version by itself. The one exception is an installed build Instagram refuses to run until
+it's updated: when that screen is all there is, the scraper replaces the build in place with the
+default build, or the newest validated one, whichever is newer than what's installed, and carries on
+(`update` and `updated` debug dumps record the screen before and after). It stops and waits for a
+person instead, as it does for a login challenge, when `IG_AUTO_INSTALL=0`, when `IG_APK_VERSION`
+pins a build (`latest` updates to the newest on APKPure), when no validated build is newer, or when
+the new build asks for an update too. The replaced build's bundle stays in `local/data/apk`, so
+`scraper.py install <build>` goes back to it. The screen's wording hasn't been confirmed on a device
+yet ([docs/ROADMAP.md](docs/ROADMAP.md)).
+
+The scraper picks the profile covering whatever is installed, and warns
 when no build of that major version has been validated. To switch, including a downgrade:
 
 ```bash
@@ -223,7 +233,15 @@ If a followed account renames itself, `docker compose exec app python scraper.py
 has stored comes up again under another username (the permalink is the same) and raises an alert
 naming that command; it doesn't apply the rename itself, and an account with no stored post still in
 the feed goes unnoticed. A post two accounts share isn't taken for one. Renaming doesn't fix an
-existing `?user=<old>` FreshRSS subscription; re-subscribe under the new username after.
+existing `?user=<old>` FreshRSS subscription; re-subscribe under the new username after. When the
+suspicion is wrong, `scraper.py rename --dismiss <old> <new>` drops it for good.
+
+`RENAME_AUTO_APPLY=1` (off by default, and it needs the followed-accounts allowlist below) lets a run
+apply a suspected rename by itself once the Following list bears it out: the new username is on the
+list and the old one no longer is. The run's warning on `/status` says what it moved. A rename that
+reads two ways (one old name for two new ones, or the reverse) is still left to you. It is off
+because a wrong merge joins two accounts' histories for good, and no rename has been seen on a
+device yet.
 
 ### Stories
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import igprofiles
 import pytest
-from devtools import check_new_builds, export_openapi, new_profile, promote_dump
+from devtools import check_new_builds, export_openapi, new_profile, promote_dump, resource_ids
 
 FEED_445: Path = igprofiles.fixture("v424", "feed_445.xml")
 
@@ -22,8 +22,9 @@ FEED_445: Path = igprofiles.fixture("v424", "feed_445.xml")
         (promote_dump, "--help", "usage: "),
         (check_new_builds, "--help", "usage: "),
         (export_openapi, "--help", "usage: "),
+        (resource_ids, "--help", "usage: "),
     ],
-    ids=["new_profile", "promote_dump", "check_new_builds", "export_openapi"],
+    ids=["new_profile", "promote_dump", "check_new_builds", "export_openapi", "resource_ids"],
 )
 def test_each_tool_runs_as_a_script(
     module: types.ModuleType,

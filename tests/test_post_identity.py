@@ -216,3 +216,73 @@ def test_a_post_two_accounts_share_is_not_a_rename() -> None:
 
     assert db.rename_candidates(con) == []
     assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts WHERE username='someone_nice'")) == 0
+
+
+def _suspect(con: sqlite3.Connection) -> None:
+    """One run that sees stored post TOP123, former_name's, under someone_nice."""
+    seed_post(con, "TOP123", "former_name", "Top card caption, and the rest of it", 1, h="old", url=PERMALINK)
+    scrape.scrape_once(feed_device(), con)
+    assert db.rename_candidates(con) == [("former_name", "someone_nice", 1)]
+
+
+def _follow(con: sqlite3.Connection, *usernames: str) -> None:
+    con.execute("DELETE FROM following")
+    con.executemany(
+        "INSERT INTO following VALUES (?, '2026-09-14T00:00:00+00:00')", [(u,) for u in usernames]
+    )
+    con.commit()
+
+
+def test_the_following_list_confirms_a_rename_only_with_the_new_name_and_not_the_old() -> None:
+    con: sqlite3.Connection = db.db_init()
+    _suspect(con)
+    assert db.confirmed_renames(con) == []  # no stored list
+    _follow(con, "former_name", "someone_nice")
+    assert db.confirmed_renames(con) == []  # the old name is still followed: two accounts
+    _follow(con, "other_user")
+    assert db.confirmed_renames(con) == []  # the new name isn't followed
+    _follow(con, "someone_nice", "other_user")
+    assert db.confirmed_renames(con) == [("former_name", "someone_nice")]
+
+
+def test_a_rename_with_more_than_one_reading_is_left_for_a_person() -> None:
+    con: sqlite3.Connection = db.db_init()
+    _suspect(con)
+    _follow(con, "someone_nice", "other_user")
+    seed_post(con, "OTHER9", "former_name", "Another caption", 2, h="other9")
+    db.note_rename_candidate(con, "former_name", "other_user", "OTHER9")
+    assert db.confirmed_renames(con) == []  # one old name, two new ones
+    db.dismiss_rename(con, "former_name", "other_user")
+    seed_post(con, "THIRD9", "third_name", "A third caption", 3, h="third9")
+    db.note_rename_candidate(con, "third_name", "someone_nice", "THIRD9")
+    assert db.confirmed_renames(con) == []  # two old names, one new one
+
+
+def test_a_confirmed_rename_is_applied_only_when_that_is_turned_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    con: sqlite3.Connection = db.db_init()
+    _suspect(con)
+    _follow(con, "someone_nice", "other_user")
+    monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 0)  # the stored list is read, never refreshed here
+
+    assert not config.RENAME_AUTO_APPLY
+    scrape.scrape_once(feed_device(), con)
+    assert db.rename_candidates(con) == [("former_name", "someone_nice", 1)]
+
+    monkeypatch.setattr(config, "RENAME_AUTO_APPLY", True)
+    stats: scrape.RunStats = scrape.scrape_once(feed_device(), con)
+    assert "renamed former_name to someone_nice: 1 post(s) moved" in str(stats["metrics"].get("warning"))
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts WHERE username='former_name'")) == 0
+    assert db.rename_candidates(con) == [] and alerts.RENAME not in alerts.conditions(con)
+
+
+def test_a_dismissed_rename_is_not_suspected_again() -> None:
+    con: sqlite3.Connection = db.db_init()
+    _suspect(con)
+    assert db.dismiss_rename(con, "former_name", "someone_nice") == 1
+    assert db.rename_candidates(con) == [] and alerts.RENAME not in alerts.conditions(con)
+    con.execute(
+        "UPDATE posts SET hash='older', alt_hash=NULL WHERE id='TOP123'"
+    )  # so the card isn't known by hash
+    con.commit()
+    scrape.scrape_once(feed_device(), con)
+    assert db.rename_candidates(con) == []

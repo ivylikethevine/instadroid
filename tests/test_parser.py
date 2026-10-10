@@ -341,7 +341,7 @@ FOLLOWING_LIST_FIXTURE: str = """<hierarchy><node><node resource-id="com.instagr
   </node>
   <node resource-id="com.instagram.android:id/container" content-desc="Least interacted with">
     <node resource-id="com.instagram.android:id/title" text="Least interacted with" />
-    <node resource-id="com.instagram.android:id/subtitle" text="ashnikko and 6 others" />
+    <node resource-id="com.instagram.android:id/subtitle" text="another.artist and 6 others" />
   </node>
   <node resource-id="com.instagram.android:id/sorting_entry_row_option" text="Sorted by Default" />
   <node resource-id="com.instagram.android:id/follow_list_container">

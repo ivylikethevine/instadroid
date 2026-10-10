@@ -16,7 +16,7 @@ from instadroid import (
 )
 
 from tests.deviceflows import RunOptions, home_screen
-from tests.fakedevice import IG_PKG, FakeDevice, Out, hierarchy, node
+from tests.fakedevice import IG_PKG, FakeDevice, Node, Out, hierarchy, node
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
@@ -367,3 +367,109 @@ def test_fetch_raises_transiently_when_the_cache_holds_only_splits() -> None:
     (xapk_dir / "config.arm64_v8a.apk").write_bytes(b"split")  # the base apk is missing
     with pytest.raises(device.DeviceNotReady, match="no base apk"):
         install._fetch_instagram_apk()
+
+
+# --- a forced update ---------------------------------------------------------------------------
+
+
+def _outdated(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[list[str]],
+    *,
+    after: str = "home",
+    version: str = "446.0.0.49.77",
+) -> FakeDevice:
+    """A device whose Instagram shows only the update screen, and goes to `after` once adb replaces it."""
+    d: FakeDevice = FakeDevice(
+        {"update": text_screen("Update Instagram"), "home": home_screen()}, "update", ig_version=version
+    )
+
+    def replace(pkg: str = config.IG_PKG) -> None:
+        d.ig_version = "450.0.0.50.77"
+        d.screen = after
+
+    d.install = replace
+    _apk_run(monkeypatch, d, calls)
+    monkeypatch.setattr(config, "IG_APK_VERSION", "")
+    return d
+
+
+def test_an_update_screen_installs_a_newer_validated_build_in_place(
+    monkeypatch: pytest.MonkeyPatch, fast_offline: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[list[str]] = []
+    d: FakeDevice = _outdated(monkeypatch, calls)
+    navigation.ensure_logged_in(d)
+    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{config.IG_PKG}@{igprofiles.DEFAULT_BUILD}"
+    assert next(c for c in calls if c[0] == "adb")[4:6] == ["-r", "-d"]
+    assert d.screen == "home"
+    assert (fast_offline / "debug" / "update_hierarchy.xml").exists()
+    assert (fast_offline / "debug" / "updated_hierarchy.xml").exists()
+    assert "updated Instagram 446.0.0.49.77 -> 450.0.0.50.77" in capsys.readouterr().out
+
+
+def test_latest_as_the_pinned_version_updates_to_the_newest_on_apkpure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    d: FakeDevice = _outdated(monkeypatch, calls, version="450.0.0.50.77")
+    monkeypatch.setattr(config, "IG_APK_VERSION", "latest")
+    navigation.ensure_logged_in(d)
+    assert next(c for c in calls if c[0] == "apkeep")[2] == config.IG_PKG
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "version", "match"),
+    [
+        ("IG_AUTO_INSTALL", False, "446.0.0.49.77", "IG_AUTO_INSTALL is off"),
+        ("IG_APK_VERSION", "446.0.0.49.77", "446.0.0.49.77", "IG_APK_VERSION pins 446.0.0.49.77"),
+        ("IG_APK_VERSION", "", "450.0.0.50.77", "no validated build is newer"),
+    ],
+)
+def test_an_update_that_cannot_be_made_waits_for_a_person(
+    setting: str, value: bool | str, version: str, match: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    d: FakeDevice = _outdated(monkeypatch, calls, version=version)
+    monkeypatch.setattr(config, setting, value)
+    with pytest.raises(
+        RuntimeError, match=f"wants a human: 'Update Instagram' screen on {version}, and {match}"
+    ):
+        navigation.ensure_logged_in(d)
+    assert calls == []
+
+
+def test_a_new_build_that_asks_for_an_update_too_waits_for_a_person(monkeypatch: pytest.MonkeyPatch) -> None:
+    d: FakeDevice = _outdated(monkeypatch, [], after="update")
+    with pytest.raises(RuntimeError, match="wants a human: 'Update Instagram' screen still showing on 450"):
+        navigation.ensure_logged_in(d)
+
+
+def test_an_update_that_leaves_instagram_in_the_background_is_a_device_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    d: FakeDevice = _outdated(monkeypatch, [], after="launcher")
+    d.launch_blocked = True
+    with pytest.raises(device.DeviceNotReady, match="did not come to the foreground after the update"):
+        navigation.ensure_logged_in(d)
+
+
+def test_the_update_wording_in_a_feed_is_not_the_update_screen(monkeypatch: pytest.MonkeyPatch) -> None:
+    caption: Node = node(cls="android.widget.TextView", text="Update Instagram", bounds=(0, 1000, 1080, 1100))
+    d: FakeDevice = FakeDevice({"home": home_screen(extra=[caption])}, "home")
+    calls: list[list[str]] = []
+    _apk_run(monkeypatch, d, calls)
+    navigation.ensure_logged_in(d)
+    assert calls == []
+
+
+def test_the_build_to_update_to_is_the_default_or_the_newest_validated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert igprofiles.newer_build("446.0.0.49.77") == igprofiles.DEFAULT_BUILD
+    assert igprofiles.newer_build(igprofiles.newest_build()) is None
+    assert igprofiles.newer_build(None) is None
+    monkeypatch.setattr(igprofiles, "DEFAULT_BUILD", "424.0.0.49.64")
+    assert igprofiles.newer_build("446.0.0.49.77") == igprofiles.newest_build()
+    monkeypatch.setattr(igprofiles, "DEFAULT_BUILD", None)
+    assert igprofiles.newer_build("446.0.0.49.77") == igprofiles.newest_build()

@@ -208,8 +208,14 @@ def test_rename_moves_history_and_checks_its_arguments(
     con.close()
     _run(monkeypatch, "rename", "old_name", "new_name")
     assert "moved 1 post(s) from 'old_name' to 'new_name'" in capsys.readouterr().out
+    _run(monkeypatch, "rename", "--dismiss", "old_name", "new_name")
+    assert (
+        "dismissed: 'old_name' is not 'new_name' (0 post(s) of evidence dropped)" in capsys.readouterr().out
+    )
     with pytest.raises(SystemExit):
         _run(monkeypatch, "rename", "only_one")
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, "rename", "--dismiss", "only_one")
 
 
 def test_no_subcommand_runs_the_poll_loop(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -232,7 +232,8 @@ The other workflows:
 - `scorecard.yml`: OpenSSF Scorecard, after every green CI run on a push to `main`, weekly, and when
   a branch protection rule changes ([OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md)).
 - `new-builds.yml`: weekly, keeps one issue open while APKPure lists an Instagram major version newer
-  than every validated build, and closes it once nothing newer is listed.
+  than every validated build, and closes it once nothing newer is listed. The issue carries a
+  resource-id report for each such build ([PROFILES.md](PROFILES.md#adding-a-version)).
 - `publish.yml`: on a `vX.Y.Z` tag, the release ([RELEASING.md](RELEASING.md)).
 - `prune-images.yml`: weekly, deletes the versions of the published image in GHCR that no tag needs
   and that are older than a week, which is what a rehearsal of `publish.yml` leaves behind. Release

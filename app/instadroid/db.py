@@ -204,6 +204,14 @@ def db_init() -> sqlite3.Connection:
         )"""
     )
     con.execute(
+        # A suspected rename a person rejected (`scraper.py rename --dismiss`): never suspected again.
+        """CREATE TABLE IF NOT EXISTS rename_dismissals (
+            old TEXT NOT NULL,
+            new TEXT NOT NULL,
+            PRIMARY KEY (old, new)
+        )"""
+    )
+    con.execute(
         """CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             started_at TEXT NOT NULL,
@@ -403,8 +411,9 @@ def needs_following_refresh(con: sqlite3.Connection) -> bool:
 def rename_account(con: sqlite3.Connection, old: str, new: str) -> int:
     """Reconcile a followed account's history after it renamed itself: repoint every post from
     `old` to `new` and fold `old`'s accounts row (avatar, stable account_id if set) into `new`.
-    Nothing calls this on its own: a stored post seen under a new username only raises an alert
-    (note_rename_candidate()), and `scraper.py rename` runs this once a person agrees. Note this does not
+    A stored post seen under a new username only raises an alert (note_rename_candidate()), and
+    `scraper.py rename` runs this once a person agrees; with RENAME_AUTO_APPLY a run does, for a rename
+    the Following list bears out (confirmed_renames()). Note this does not
     fix up an existing `?user=old` FreshRSS subscription; re-subscribe under the new username."""
     if old == new:
         return 0
@@ -443,7 +452,10 @@ def rename_account(con: sqlite3.Connection, old: str, new: str) -> int:
 
 
 def note_rename_candidate(con: sqlite3.Connection, old: str, new: str, post_id: str) -> None:
-    """Record that `post_id`, stored for `old`, was on screen as a post of `new`."""
+    """Record that `post_id`, stored for `old`, was on screen as a post of `new`, unless that
+    suspicion was dismissed."""
+    if sqlrows.fetch_one(con.execute("SELECT 1 FROM rename_dismissals WHERE old=? AND new=?", (old, new))):
+        return
     con.execute(
         "INSERT OR IGNORE INTO rename_candidates (old, new, post_id, seen_at) VALUES (?,?,?,?)",
         (old, new, post_id, datetime.now(UTC).isoformat()),
@@ -461,6 +473,33 @@ def rename_candidates(con: sqlite3.Connection) -> list[tuple[str, str, int]]:
     return [
         (sqlrows.must_str(r, 0), sqlrows.must_str(r, 1), sqlrows.cell_int(r, 2) or 0)
         for r in sqlrows.fetch_all(cur)
+    ]
+
+
+def dismiss_rename(con: sqlite3.Connection, old: str, new: str) -> int:
+    """Drop the suspicion that `old` renamed itself to `new`, for good: its evidence is deleted and
+    the pair is never suspected again. Returns how many posts' worth of evidence there was."""
+    con.execute("INSERT OR IGNORE INTO rename_dismissals (old, new) VALUES (?, ?)", (old, new))
+    dropped: int = con.execute("DELETE FROM rename_candidates WHERE old=? AND new=?", (old, new)).rowcount
+    con.commit()
+    return dropped
+
+
+def confirmed_renames(con: sqlite3.Connection) -> list[tuple[str, str]]:
+    """The suspected renames (rename_candidates()) the Following list bears out: the new username is on
+    it and the old one no longer is. A list refreshed before the rename still has the old name, so a
+    stale one can only hold a rename back. Empty without a stored list. An old name suspected of
+    becoming two accounts, or two old names of becoming one, is left for a person."""
+    following: set[str] = {
+        sqlrows.must_str(r, 0) for r in sqlrows.fetch_all(con.execute("SELECT username FROM following"))
+    }
+    pairs: list[tuple[str, str]] = [(old, new) for old, new, _ in rename_candidates(con)]
+    olds: list[str] = [old for old, _ in pairs]
+    news: list[str] = [new for _, new in pairs]
+    return [
+        (old, new)
+        for old, new in pairs
+        if new in following and old not in following and olds.count(old) == 1 and news.count(new) == 1
     ]
 
 

@@ -544,6 +544,16 @@ def _scrape_feed(
             device.human_scroll(d)
             device.human_pause(config.SCROLL_PAUSE_MIN, config.SCROLL_PAUSE_MAX)
             screens += 1
+    if config.RENAME_AUTO_APPLY:
+        old_name: str
+        new_name: str
+        for old_name, new_name in db.confirmed_renames(con):
+            applied: str = (
+                f"renamed {old_name} to {new_name}: {db.rename_account(con, old_name, new_name)} post(s) moved"
+                " (the Following list has the new name and not the old)"
+            )
+            log(applied)
+            warnings.append(applied)
     if new_stories:  # after the posts, so a post shared to a story minutes earlier is already stored
         new_stories -= reshare.drop_reshared_stories(con, stories_from)
     retention.prune_old_posts(con)

@@ -86,6 +86,7 @@ SCREENS: dict[str, Screen] = {
 SITUATIONAL: tuple[str, ...] = (
     "dismiss_texts",
     "challenge_texts",
+    "update_texts",
     "welcome_existing_profile_text",
     "stray_alert_ok_text",
     "permalink",

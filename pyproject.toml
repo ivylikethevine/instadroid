@@ -10,6 +10,7 @@ requires-python = ">=3.14"
 new-profile = "devtools.new_profile:main"
 promote-dump = "devtools.promote_dump:main"
 check-new-builds = "devtools.check_new_builds:main"
+resource-id-report = "devtools.resource_ids:main"
 export-openapi = "devtools.export_openapi:main"
 
 [build-system]
