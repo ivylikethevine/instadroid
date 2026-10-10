@@ -24,6 +24,7 @@ from . import (
     diagnostics,
     navigation,
     parsing,
+    reshare,
     retention,
     stories,
     uidevice,
@@ -380,6 +381,7 @@ def _scrape_feed(
             followed = {sqlrows.must_str(r, 0) for r in rows}
     warnings: list[str] = []
     new_stories: int = 0
+    stories_from: str = datetime.now(UTC).isoformat()
     reason: str | None
     if reason := _stop_reason(guard, clock):
         log(f"WARN: {reason}; skipping stories")
@@ -542,6 +544,8 @@ def _scrape_feed(
             device.human_scroll(d)
             device.human_pause(config.SCROLL_PAUSE_MIN, config.SCROLL_PAUSE_MAX)
             screens += 1
+    if new_stories:  # after the posts, so a post shared to a story minutes earlier is already stored
+        new_stories -= reshare.drop_reshared_stories(con, stories_from)
     retention.prune_old_posts(con)
     retention.prune_expired_stories(con)
     diagnostics.prune_debug_dumps()  # age-based pruning shouldn't depend on a new dump happening to be taken

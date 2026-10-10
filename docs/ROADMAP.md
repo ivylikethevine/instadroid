@@ -11,18 +11,13 @@ A config flag, one function, a CI tweak, or docs.
   leak scan). `git filter-repo --replace-text` with a replacements file, then a force-push and a
   fresh clone everywhere. The repository owner's call; not done yet. The maintainer has an offline
   runbook for it, kept outside the repository.
-- **Report a blocked upstream as drift**: for a row it cannot read, `check_tool_versions.sh` prints
-  `(could not read upstream releases)` and counts no problem, while `tool-versions.yml` blocks
-  egress to a fixed host list, so a pin whose upstream lives on a host missing from that list reads
-  as fine forever. Count a problem when every row one host serves went unread (a blocked host, not a one-off
-  rate limit), naming the host in the tracking issue.
 
 Done: Markdown lint and format checks, a link check (relative links on pull
 requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:
 advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
 (import-linter), hashed dependency locks (pip-compile), a `no_media_node` debug dump on the
 "media node not found" path, whole story frames, story frames matched across accounts, a retake of a
-dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration and `/opml?aggregate=0`. Earlier: credentials from a file, caption hashtag/mention links, optional feed
+dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration, `/opml?aggregate=0`, an unreachable upstream host counted as tool-version drift and a story that only reshares a stored post dropped. Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
 
@@ -30,17 +25,6 @@ spec.
 
 A feature across several parts of the scraper, compose or CI, or repeated real-device work.
 
-- **Stories that reshare a stored post**: a feed post shared to a story, by its own account or
-  another followed one, repeats an entry the posts feed already has. The reshared-post sticker has no
-  node to find: in 18 story dumps from 446 and 450 `reel_sticker_accessibility_container` was empty
-  every time, a reshared Reel among them, and none of the 10 header attribution texts was an
-  account handle. That leaves matching the frame against the covers and slides of recently stored
-  posts, which needs template matching, a dependency the app doesn't have. Whether a match drops the
-  story or stores it as a link to the post is still to decide.
-- **Retry 446 and 450 on a `/data` carried over from older builds**: 446 crashed on launch on
-  2026-09-15 on a device that had run 424 just before, and both builds have since only run on a new
-  `/data` ([run log](RUNLOG.md)). The default install is now 450, so an existing deployment gets it on
-  its next `scraper.py install`.
 - **Instagram update path**: install-on-missing is automatic (see README.md's "First-time setup"),
   but an _outdated_ install isn't handled yet — detect the forced "update Instagram" screen (as a
   challenge-style stop) and reuse `install.install_instagram()` (`app/instadroid/install.py`)

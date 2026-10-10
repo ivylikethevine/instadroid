@@ -187,7 +187,8 @@ an older one or in shared code.
 2. Capture up to `MAX_STORIES_PER_RUN` not-yet-seen accounts' current story frame from the Home
    feed's tray — stories don't appear on the Following screen, so in chrono mode this means
    switching to Home and back; in home mode it's already there. See "Stories" below for what this
-   does and doesn't cover.
+   does and doesn't cover. A story that only reshares a stored post is deleted again at the end
+   of the run.
 3. Walk the accessibility tree screen by screen. A post is registered only once the bottom of its
    card (share button + caption/timestamp) is on screen, so it has a stable identity. The first time
    an account's own header is on screen each run, its avatar is cropped and saved (once per account,
@@ -244,6 +245,15 @@ frame; a dark first screenshot is retaken once, in case it caught a fade-in. (An
 missed these, since every capture re-encodes a fresh screenshot.) The whole frame is saved, with the header's
 avatar, username, age and attribution painted over; the hash reads only the part below the header
 overlay, so the relative timestamp ticking over between runs doesn't change it.
+
+A story that only reshares a stored post repeats an entry the posts feed already has, so at the end
+of a run each story the run stored is searched for every stored post image (covers and carousel
+slides), shown as the reshare sticker shows it: a card centred across the frame, at any size and
+height. A story is deleted when a card matches and the frame above and below it is only the blurred
+backdrop; one with text, a sticker or anything else sharp added there is kept, as is one whose post
+isn't stored yet by the end of that run. The sticker's own attribution line under the card doesn't
+count as added text.
+
 Captured stories are served at `/stories.xml` and share `RETAIN_DAYS` with posts — no separate
 story-retention window.
 
