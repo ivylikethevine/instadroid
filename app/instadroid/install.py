@@ -91,7 +91,8 @@ def install_instagram(d: uidevice.Device, version: str | None = None, downgrade:
     `apkeep` + `install-multiple` steps in README.md's First-time setup, and return the versionName the
     device then reports. Raises DeviceNotReady on any failure so the caller's retry ladder
     (device.is_transient()) handles it rather than aborting the whole run. `downgrade` adds `-r -d`,
-    replacing an installed newer version in place (allowed because redroid is a userdebug build).
+    replacing the installed version in place, a newer one included (allowed because redroid is a
+    userdebug build).
     """
     apks: list[Path] = _fetch_instagram_apk(version)
     flags: list[str] = ["-r", "-d"] if downgrade else []

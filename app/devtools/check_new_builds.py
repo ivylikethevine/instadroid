@@ -2,11 +2,13 @@
 
     apkeep -l -a com.instagram.android -d apk-pure | check-new-builds
     check-new-builds --versions-file versions.txt
+    check-new-builds --versions-file versions.txt --builds
 
 Reads apkeep's version listing (comma or newline separated) and prints a Markdown issue body listing,
 for each major version newer than the newest validated build, its newest build and the commands to
-baseline it. Prints nothing when there's nothing new. Used by .github/workflows/new-builds.yml; never
-downloads an APK or touches a device.
+baseline it. Prints nothing when there's nothing new. With --builds it prints the builds themselves
+instead, one per line: "validated <build>" for the newest validated one, then "new <build>" for each in
+the table. Used by .github/workflows/new-builds.yml; never downloads an APK or touches a device.
 """
 
 import argparse
@@ -60,8 +62,14 @@ def issue_body(builds: dict[int, str], newest_validated: str | None) -> str:
     return "\n".join(lines)
 
 
+def build_lines(builds: dict[int, str], newest_validated: str | None) -> str:
+    lines: list[str] = [f"validated {newest_validated}"] if newest_validated else []
+    return "".join(f"{line}\n" for line in [*lines, *(f"new {build}" for build in builds.values())])
+
+
 class Options(argparse.Namespace):
     versions_file: Path | None
+    builds: bool
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -69,13 +77,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--versions-file", type=Path, help="apkeep's listing (default: stdin)")
+    ap.add_argument("--builds", action="store_true", help="print the builds, not the issue body")
     opts: Options = ap.parse_args(argv, namespace=Options())
     listing: str = opts.versions_file.read_text() if opts.versions_file else sys.stdin.read()
     if not igprofiles.BUILD.search(listing):
         print("no Instagram builds in the listing; did apkeep fail?", file=sys.stderr)
         return 1
     newest: str | None = igprofiles.newest_build()
-    sys.stdout.write(issue_body(newer_builds(listing, newest), newest))
+    builds: dict[int, str] = newer_builds(listing, newest)
+    sys.stdout.write(build_lines(builds, newest) if opts.builds else issue_body(builds, newest))
     return 0
 
 

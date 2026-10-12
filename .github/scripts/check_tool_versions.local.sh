@@ -11,6 +11,12 @@ CI_WORKFLOW_ROSTER='apkeep|app/Dockerfile|/EFForg/apkeep/releases/download/\([0-
 # shellcheck disable=SC2034 # read by check_tool_versions.sh
 CI_IMAGE_GLOBS='app/Dockerfile docker-compose.yml'
 
+# The Markdown tools' npm manifest and the two pip-compile inputs, each read at its hashed lock's versions.
+# shellcheck disable=SC2034 # read by check_tool_versions.sh
+CI_MANIFESTS='npm|.github/package.json
+pip|app/requirements.in
+pip|requirements-dev.in'
+
 # _id_first <sed-BRE> <file> - the first capture in <file>, or nothing. The BRE is matched as written
 # (unlike _ci_extract, no leading .* is added), so every pattern here starts with ^.
 function _id_first() {

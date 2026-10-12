@@ -5,9 +5,9 @@ name: Image scan
 #   advisories land; findings go to code scanning (category image-scan-<name>)
 #   and a warning. publish.yml's scan job is the release gate.
 # - pins: app/Dockerfile's python base and docker-compose.yml's redroid and
-#   freshrss images. Dependabot repins on release, not on severity, so this
-#   scans each pinned digest and what its tag points at now, and keeps one
-#   tracking issue open only while a repin verifiably closes fixable
+#   freshrss images. tool-versions.yml reports a moved tag, not its severity,
+#   so this scans each pinned digest and what its tag points at now, and keeps
+#   one tracking issue open only while a repin verifiably closes fixable
 #   HIGH/CRITICAL findings (--ignore-unfixed; state machine:
 #   .github/scripts/scan_pinned_images.sh's header).
 #
@@ -173,8 +173,8 @@ jobs:
           echo "verdict=$rc" >>"$GITHUB_OUTPUT"
           [ "$rc" -le 2 ] || exit "$rc"
 
-      # An issue, not a pull request: dependabot already opens the repin PR. The
-      # report is the summary and the issue body both, so the two can't disagree.
+      # An issue, not a pull request: the repin is a hand edit. The report is
+      # the summary and the issue body both, so the two can't disagree.
       - uses: ./.github/actions/upsert-tracking-issue
         with:
           label: image-scan

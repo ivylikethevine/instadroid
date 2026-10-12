@@ -13,6 +13,7 @@
                              (unlock also clears the hold a login challenge raised)
     scrape-now               ask the poll loop to run now (rate-limited, see instadroid/control.py)
     rename OLD NEW           move an account's history to its new username
+    rename --dismiss OLD NEW   OLD did not become NEW: drop that suspicion for good
 
 The scraper itself lives in the instadroid/ package.
 """
@@ -129,13 +130,17 @@ if __name__ == "__main__":
         case ["backup", *_]:
             with closing(db.db_init()) as con:
                 print("wrote", backup.backup_database(con, force=True))
-        case ["rename", old, new]:
+        case ["rename", old, new] if not old.startswith("-"):
             n: int
             with closing(db.db_init()) as con:
                 n = db.rename_account(con, old, new)
             print(f"moved {n} post(s) from {old!r} to {new!r}")
+        case ["rename", "--dismiss", old, new]:
+            with closing(db.db_init()) as con:
+                n = db.dismiss_rename(con, old, new)
+            print(f"dismissed: {old!r} is not {new!r} ({n} post(s) of evidence dropped)")
         case ["rename", *_]:
-            print("usage: scraper.py rename <old_username> <new_username>")
+            print("usage: scraper.py rename [--dismiss] <old_username> <new_username>")
             sys.exit(1)
         case _:
             scrape.main()

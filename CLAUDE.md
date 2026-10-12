@@ -192,7 +192,8 @@ stops each OOM kill from dumping every process to the kernel log.
   lychee) are sha256-pinned rows in `.github/actions/setup-tool/tools.txt`; move a pin there, not in
   a workflow. Images are pinned by digest (the Dockerfile's base, and compose's redroid and FreshRSS).
   `apkeep` is pinned by URL and checksum in `app/Dockerfile`'s `ADD`, which `new-builds.yml` reads,
-  so keep that line's shape. Pins Dependabot can't move are drift-checked by `tool-versions.yml`.
+  so keep that line's shape. Dependabot opens no version-update pull request: `tool-versions.yml`
+  drift-checks every pin into one tracking issue, and each bump is a hand edit.
 
 ## Machine-specific notes
 

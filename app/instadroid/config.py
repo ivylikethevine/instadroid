@@ -89,6 +89,9 @@ DEBUG_KEEP: int = 12  # debug dump pairs to retain; older ones are pruned on eve
 # screen, plus every failure dump), never pruned, for `new-profile check`. Empty = off.
 PROFILE_CAPTURE_DIR: str = os.environ.get("PROFILE_CAPTURE_DIR", "").strip()
 CAPTURE_PER_SCREEN: int = 3
+# Development only: when set, each run's screens and actions are recorded as a tape in a folder of its
+# own under this directory (instadroid/recording.py), at the cost of extra device round trips. Empty = off.
+RECORD_DIR: str = os.environ.get("RECORD_DIR", "").strip()
 DEBUG_RETAIN_DAYS: float = float(os.environ.get("DEBUG_RETAIN_DAYS", "7"))  # 0 disables age-based pruning
 # How much of a filtered logcat to keep per device failure (see diagnostics.save_failure_logcat()).
 LOGCAT_TAIL_LINES: int = int(os.environ.get("LOGCAT_TAIL_LINES", "2000"))
@@ -123,6 +126,10 @@ MEDIA_MAX_MB: float = float(os.environ.get("MEDIA_MAX_MB", "0"))  # 0 disables t
 BACKUP_DIR: str = os.environ.get("BACKUP_DIR", "/db/backups")
 BACKUP_EVERY_HOURS: float = float(os.environ.get("BACKUP_EVERY_HOURS", "24"))
 BACKUP_KEEP: int = int(os.environ.get("BACKUP_KEEP", "7"))
+# Apply a suspected rename without a person, once the Following list bears it out (db.confirmed_renames()):
+# the new username is on the list and the old one isn't. Off by default: a wrong merge joins two accounts'
+# histories for good, and no rename has been seen on a device yet. Needs FOLLOWING_REFRESH_DAYS.
+RENAME_AUTO_APPLY: bool = os.environ.get("RENAME_AUTO_APPLY", "0").strip().lower() not in ("0", "false", "")
 MAX_STORIES_PER_RUN: int = int(os.environ.get("MAX_STORIES_PER_RUN", "10"))
 TIME_DISTRIBUTION: str = os.environ.get("TIME_DISTRIBUTION", "uniform")  # uniform | lognormal | daynight
 # The device's timezone: DEVICE_TIMEZONE, else TZ (the zone the feeds show times in). Tuning applies it

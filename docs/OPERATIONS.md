@@ -59,7 +59,7 @@ Finish the challenge in scrcpy (or fix the credentials) first, then unlock.
 **Failure alerts**: after each run the scraper raises an alert for a login challenge, for
 `ALERT_FAILED_RUNS` (default 3) failed runs in a row, optionally for no new post in
 `ALERT_NO_POSTS_HOURS`, and for an account that seems to have renamed itself (the alert names the
-`scraper.py rename` command; it clears once that's run or the post behind it is pruned). Each one is announced once when it's raised and once when it clears, as a
+`scraper.py rename` command; it clears once that's run, the suspicion is dismissed with `rename --dismiss`, or the post behind it is pruned). Each one is announced once when it's raised and once when it clears, as a
 POST to `ALERT_URL` (an [ntfy](https://ntfy.sh) topic URL works as is). With or without that, open
 alerts appear as the first entry of `/instagram.xml` and on `/status`, so the feed reader you already
 check shows them.

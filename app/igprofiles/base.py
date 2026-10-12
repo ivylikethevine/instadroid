@@ -51,6 +51,7 @@ class Selectors(TypedDict, closed=True):
     welcome_existing_profile_text: str
     dismiss_texts: list[str]
     challenge_texts: list[str]
+    update_texts: list[str]
     action_bar_id: str
     feed_list_id: str
     mute_toggle_desc_prefix: str
@@ -97,6 +98,7 @@ type StrListKey = Literal[
     "login_page_markers",
     "dismiss_texts",
     "challenge_texts",
+    "update_texts",
 ]
 type PatternKey = Literal[
     "header_desc",

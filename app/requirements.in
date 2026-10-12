@@ -1,7 +1,7 @@
 # The app's direct dependencies. requirements.txt is the hashed lock compiled from this file, which the
 # image and CI install; regenerate it after editing here (from app/, with pip-tools):
 #   pip-compile --allow-unsafe --generate-hashes --strip-extras requirements.in
-# Dependabot updates both files.
+# tool-versions.yml reports a newer release of anything listed here.
 uiautomator2>=3.7
 adbutils>=2.12
 lxml>=6.1.3

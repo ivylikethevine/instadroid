@@ -53,7 +53,7 @@
 #   none. Tools pinned elsewhere, not floating: the Python tools (ruff,
 #   basedpyright, zizmor, typos, pip-audit, shfmt-py) in the hashed
 #   requirements-dev.txt, and markdownlint-cli2 and prettier in
-#   ../../package-lock.json. Dependabot moves both.
+#   ../../package-lock.json. tool-versions.yml reports both.
 
 # Installed rather than taken from the runner image, whose copy moves when the
 # image does and would change what shellcheck reports with no commit here.

@@ -140,7 +140,17 @@ whatever APKPure has newest. Each pinned version is cached in its own `local/dat
 `.env.example`.
 
 Auto-install only runs when Instagram is missing, so a newer validated build doesn't replace an
-installed version by itself. The scraper picks the profile covering whatever is installed, and warns
+installed version by itself. The one exception is an installed build Instagram refuses to run until
+it's updated: when that screen is all there is, the scraper replaces the build in place with the
+default build, or the newest validated one, whichever is newer than what's installed, and carries on
+(`update` and `updated` debug dumps record the screen before and after). It stops and waits for a
+person instead, as it does for a login challenge, when `IG_AUTO_INSTALL=0`, when `IG_APK_VERSION`
+pins a build (`latest` updates to the newest on APKPure), when no validated build is newer, or when
+the new build asks for an update too. The replaced build's bundle stays in `local/data/apk`, so
+`scraper.py install <build>` goes back to it. The screen's wording hasn't been confirmed on a device
+yet ([docs/ROADMAP.md](docs/ROADMAP.md)).
+
+The scraper picks the profile covering whatever is installed, and warns
 when no build of that major version has been validated. To switch, including a downgrade:
 
 ```bash
@@ -187,7 +197,8 @@ an older one or in shared code.
 2. Capture up to `MAX_STORIES_PER_RUN` not-yet-seen accounts' current story frame from the Home
    feed's tray — stories don't appear on the Following screen, so in chrono mode this means
    switching to Home and back; in home mode it's already there. See "Stories" below for what this
-   does and doesn't cover.
+   does and doesn't cover. A story that only reshares a stored post is deleted again at the end
+   of the run.
 3. Walk the accessibility tree screen by screen. A post is registered only once the bottom of its
    card (share button + caption/timestamp) is on screen, so it has a stable identity. The first time
    an account's own header is on screen each run, its avatar is cropped and saved (once per account,
@@ -222,7 +233,15 @@ If a followed account renames itself, `docker compose exec app python scraper.py
 has stored comes up again under another username (the permalink is the same) and raises an alert
 naming that command; it doesn't apply the rename itself, and an account with no stored post still in
 the feed goes unnoticed. A post two accounts share isn't taken for one. Renaming doesn't fix an
-existing `?user=<old>` FreshRSS subscription; re-subscribe under the new username after.
+existing `?user=<old>` FreshRSS subscription; re-subscribe under the new username after. When the
+suspicion is wrong, `scraper.py rename --dismiss <old> <new>` drops it for good.
+
+`RENAME_AUTO_APPLY=1` (off by default, and it needs the followed-accounts allowlist below) lets a run
+apply a suspected rename by itself once the Following list bears it out: the new username is on the
+list and the old one no longer is. The run's warning on `/status` says what it moved. A rename that
+reads two ways (one old name for two new ones, or the reverse) is still left to you. It is off
+because a wrong merge joins two accounts' histories for good, and no rename has been seen on a
+device yet.
 
 ### Stories
 
@@ -244,6 +263,15 @@ frame; a dark first screenshot is retaken once, in case it caught a fade-in. (An
 missed these, since every capture re-encodes a fresh screenshot.) The whole frame is saved, with the header's
 avatar, username, age and attribution painted over; the hash reads only the part below the header
 overlay, so the relative timestamp ticking over between runs doesn't change it.
+
+A story that only reshares a stored post repeats an entry the posts feed already has, so at the end
+of a run each story the run stored is searched for every stored post image (covers and carousel
+slides), shown as the reshare sticker shows it: a card centred across the frame, at any size and
+height. A story is deleted when a card matches and the frame above and below it is only the blurred
+backdrop; one with text, a sticker or anything else sharp added there is kept, as is one whose post
+isn't stored yet by the end of that run. The sticker's own attribution line under the card doesn't
+count as added text.
+
 Captured stories are served at `/stories.xml` and share `RETAIN_DAYS` with posts — no separate
 story-retention window.
 

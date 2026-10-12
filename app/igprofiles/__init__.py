@@ -108,6 +108,19 @@ def default_build(profile: str | None = None) -> str | None:
     return newest_build(profile)
 
 
+def newer_build(installed: str | None) -> str | None:
+    """The validated build to replace `installed` with when Instagram refuses to run until it's updated:
+    DEFAULT_BUILD if that is newer, else the newest validated build if that is. None when nothing
+    validated is newer, or the installed version is unknown."""
+    if major_of(installed) is None:
+        return None
+    candidate: str | None
+    for candidate in (DEFAULT_BUILD, newest_build()):
+        if candidate and version_key(candidate) > version_key(installed or ""):
+            return candidate
+    return None
+
+
 def select(requested: str = "", installed: str | None = None) -> tuple[BaseProfile, str | None]:
     """(profile, warning). IG_PROFILE (`requested`) when it names a loadable profile; otherwise the
     profile covering the `installed` version, or the newest profile when nothing is installed (or its

@@ -15,7 +15,7 @@
 # image: README.md ("Which Android?") and docs/COMPATIBILITY.md.
 
 # The redroid tag, for init's Android-version guard and the app's run records. The redroid service
-# pins the same tag by digest on its own `image:` line, where Dependabot and the image scan read it;
+# pins the same tag by digest on its own `image:` line, where the drift check and the image scan read it;
 # .github/scripts/check_tool_versions.local.sh checks the two tags agree.
 x-redroid-image: &redroid_image erstt/redroid:13.0.0_ndk_ChromeOS
 

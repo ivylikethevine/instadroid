@@ -1,13 +1,13 @@
-# Moves the SHA-pinned `uses:` in the workflows and composite actions, the
-# Markdown tools' npm lock, the hashed pip locks, and the digest-pinned images,
-# via one weekly pull request into dev.
+# Names what dependabot could move: the SHA-pinned `uses:` in the workflows
+# and composite actions, the Markdown tools' npm lock, the hashed pip locks,
+# and the digest-pinned images.
 #
 # What this file cannot cover, and what covers it instead:
 #
 #   * The CI tools in .github/actions/setup-tool/tools.txt and the inline pins
 #     in .github/scripts/check_tool_versions.local.sh (apkeep's ADD URL, the
-#     just-the-docs theme): tool-versions.yml reports their drift in one
-#     tracking issue, on the same Monday and with the same 7-day cooldown. It
+#     just-the-docs theme): tool-versions.yml reports their drift in the same
+#     tracking issue, with the same 7-day cooldown. It
 #     also checks the Python version agrees across pyproject.toml,
 #     app/Dockerfile and every setup-python, and that x-redroid-image matches
 #     the redroid service's pinned image.
@@ -17,23 +17,13 @@
 #   * The language lines (setup-python's python-version, setup-node's
 #     node-version): moved by hand.
 #
-# Every ecosystem feeds one multi-ecosystem group, so a Monday run opens (or
-# rebases) a single pull request. schedule, commit-message and target-branch
-# are group-only keys (GitHub rejects them on an entry in a group); `patterns`
-# is required per entry, and cooldown/ignore stay per ecosystem. Dependabot
-# security updates, if enabled in the repository settings, still open their
-# own pull requests.
+# Each entry sets `open-pull-requests-limit: 0`, so no version-update pull
+# request opens: tool-versions.yml reports the same drift in one tracking
+# issue, and every bump is a hand edit made from it. Deleting the limits turns
+# the pull requests back on, with the schedule, cooldown and ignores they
+# need. Dependabot security updates, if enabled in the repository settings,
+# are not bound by the limit and still open their own pull requests.
 version: 2
-
-multi-ecosystem-groups:
-  all-dependencies:
-    schedule:
-      interval: weekly
-      day: monday
-    commit-message:
-      prefix: deps
-    # development happens on dev; main only moves by a release merge
-    target-branch: dev
 
 updates:
   # the composite actions under .github/actions/ pin their own `uses:`
@@ -41,8 +31,13 @@ updates:
     directories:
       - "/"
       - "/.github/actions/*"
-    multi-ecosystem-group: all-dependencies
-    patterns: ["*"]
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    commit-message:
+      prefix: deps
+    open-pull-requests-limit: 0
     # let a release age before its bump: a compromised release's window is its
     # first days (zizmor: dependabot-cooldown)
     cooldown:
@@ -51,44 +46,69 @@ updates:
   # .github/package.json -> package-lock.json (markdownlint-cli2, prettier)
   - package-ecosystem: npm
     directory: /.github
-    multi-ecosystem-group: all-dependencies
-    patterns: ["*"]
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    commit-message:
+      prefix: deps
+    open-pull-requests-limit: 0
     cooldown:
       default-days: 7
 
   # app/requirements.in -> the hashed app/requirements.txt the image installs
   - package-ecosystem: pip
     directory: /app
-    multi-ecosystem-group: all-dependencies
-    patterns: ["*"]
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    commit-message:
+      prefix: deps
+    open-pull-requests-limit: 0
     cooldown:
       default-days: 7
 
   # requirements-dev.in -> the hashed requirements-dev.txt (ruff, basedpyright, ...)
   - package-ecosystem: pip
     directory: /
-    multi-ecosystem-group: all-dependencies
-    patterns: ["*"]
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    commit-message:
+      prefix: deps
+    open-pull-requests-limit: 0
     cooldown:
       default-days: 7
 
   # app/Dockerfile's digest-pinned python base image
   - package-ecosystem: docker
     directory: /app
-    multi-ecosystem-group: all-dependencies
-    patterns: ["*"]
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    commit-message:
+      prefix: deps
+    open-pull-requests-limit: 0
     cooldown:
       default-days: 7
 
   # docker-compose.yml's digest-pinned redroid and freshrss images
   - package-ecosystem: docker-compose
     directory: /
-    multi-ecosystem-group: all-dependencies
-    patterns: ["*"]
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    commit-message:
+      prefix: deps
+    open-pull-requests-limit: 0
     cooldown:
       default-days: 7
     ignore:
       # A new Android major needs its own /data volume and validation
-      # (CLAUDE.md): a migration, not an update. Digest refreshes still arrive.
+      # (CLAUDE.md): a migration, not an update. A digest refresh is still one.
       - dependency-name: erstt/redroid
         update-types: ["version-update:semver-major"]

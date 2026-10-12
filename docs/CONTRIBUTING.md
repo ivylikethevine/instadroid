@@ -226,22 +226,24 @@ The other workflows:
 - `link-check.yml`: external links in the docs (lychee), after every green CI run on a push to
   `main` and weekly. Advisory: findings go to one tracking issue, so a site that's briefly down can't
   block a merge.
-- `tool-versions.yml`: drift check over the pins Dependabot can't see (the CI tools in
-  `.github/actions/setup-tool/tools.txt`, `apkeep`, the site theme) and a second look at the ones it
-  can, after every green CI run on a push to `main` and weekly, reported in one tracking issue.
+- `tool-versions.yml`: drift check over every pin (the CI tools in
+  `.github/actions/setup-tool/tools.txt`, `apkeep`, the site theme, the action SHAs, the image digests,
+  and the pip and npm locks' direct dependencies), after every green CI run on a push to `main` and
+  weekly, reported in one tracking issue.
 - `scorecard.yml`: OpenSSF Scorecard, after every green CI run on a push to `main`, weekly, and when
   a branch protection rule changes ([OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md)).
 - `new-builds.yml`: weekly, keeps one issue open while APKPure lists an Instagram major version newer
-  than every validated build, and closes it once nothing newer is listed.
+  than every validated build, and closes it once nothing newer is listed. The issue carries a
+  resource-id report for each such build ([PROFILES.md](PROFILES.md#adding-a-version)).
 - `publish.yml`: on a `vX.Y.Z` tag, the release ([RELEASING.md](RELEASING.md)).
 - `prune-images.yml`: weekly, deletes the versions of the published image in GHCR that no tag needs
   and that are older than a week, which is what a rehearsal of `publish.yml` leaves behind. Release
   images, their platform manifests and their attestations stay. A dispatch lists what it would
   delete, and deletes only with `delete` set.
 
-Dependabot watches pip (both locks), npm (the Markdown tools' lock), the Dockerfile's base image,
-compose's images and GitHub Actions (the workflows and the composite actions), in one weekly pull
-request into `dev`, with a 7-day cooldown.
+Dependabot opens no version-update pull request (`.github/dependabot.yml` sets each ecosystem's limit
+to 0): a bump is a hand edit made from `tool-versions.yml`'s tracking issue, which holds a release
+back for 7 days.
 
 ## Which docs change with what
 

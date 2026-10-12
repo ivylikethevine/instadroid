@@ -8,6 +8,7 @@ import re
 import time
 from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TypedDict
 from weakref import WeakKeyDictionary
 
@@ -16,7 +17,7 @@ import uiautomator2 as u2
 from shared import env
 from uiautomator2.exceptions import DeviceError as U2DeviceError
 
-from . import config, tune, uidevice, versioning
+from . import config, recording, tune, uidevice, versioning
 from .common import log
 from .versioning import versioned
 
@@ -132,6 +133,10 @@ def connect_device() -> uidevice.Device:
     log("device:", d.info.get("productName"), window_size(d))
     tune.tune_device(d)  # once per process; a no-op on an already-tuned device
     versioning.activate_profile(instagram_version(d))
+    if config.RECORD_DIR:
+        tape: Path = Path(config.RECORD_DIR) / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        log("recording this run to", tape)
+        return recording.Recorder(d, tape)
     return d
 
 

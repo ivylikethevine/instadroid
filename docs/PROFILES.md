@@ -133,7 +133,12 @@ what a changed selector or override should be.
 1. **Find the exact build** on APKPure: `apkeep -l -a com.instagram.android -d apk-pure` (inside the
    app image) lists them. The major version alone isn't enough. The weekly `new-builds.yml` workflow
    keeps an issue open listing each major newer than every validated build (`check-new-builds`,
-   `app/devtools/check_new_builds.py`).
+   `app/devtools/check_new_builds.py`). For each one the issue also says which resource ids the
+   covering profile's selectors use are gone from the build's base APK, and which ids were added and
+   removed since the newest validated build (`resource-id-report`, `app/devtools/resource_ids.py`,
+   reading `aapt2 dump resources`). A selector id that is gone is near-certain drift. A clean report
+   proves less: text and content-desc selectors aren't in the APK, and a layout change doesn't show
+   up either.
 2. **Baseline**: `new-profile baseline 447.0.0.x.y`. This is a device-driving run, so read
    the [device-run rules](CONTRIBUTING.md#running-against-a-real-device) and the host freeze in [INCIDENTS.md](INCIDENTS.md) first. Before asking for confirmation it refuses to start if:
    - the `app` service is running (its scraper loop drives the same device; `docker compose stop app`),

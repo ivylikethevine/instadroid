@@ -110,6 +110,10 @@ SELECTORS: Selectors = {
         "We Detected An Unusual Login",
         "Help us confirm it's you",
     ],
+    # The title of the screen an outdated build shows in place of everything else until it's updated.
+    # Not seen on a device yet: these are the wordings the screen is known by, to be replaced by the
+    # text of a real dump (navigation._update_required() saves one as "update").
+    "update_texts": ["Update Instagram", "Update required", "Update to continue"],
     # --- Formerly hardcoded inline in scraper.py; same values, moved here unchanged. ---
     # The action bar floating over the feed list; its bottom edge is where post crops start.
     "action_bar_id": "action_bar_container",
