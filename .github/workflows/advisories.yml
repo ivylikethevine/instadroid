@@ -71,7 +71,7 @@ jobs:
           report="$RUNNER_TEMP/advisories.md"
           found=0
           contributing="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/main/docs/CONTRIBUTING.md#development-setup"
-          echo "Known advisories affect locked dependencies. The fix is usually the Dependabot bump or a" >"$report"
+          echo "Known advisories affect locked dependencies. The fix is usually a bump or a" >"$report"
           echo "regenerated lock ([CONTRIBUTING.md]($contributing))." >>"$report"
 
           rc=0

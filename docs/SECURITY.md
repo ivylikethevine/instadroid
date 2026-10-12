@@ -124,7 +124,7 @@ fresh APK install trusting APKPure. They're listed under
   from release assets pinned by SHA-256 in `.github/actions/setup-tool/tools.txt`, and
   `scripts/check.sh --install` fetches the same pins locally. The Markdown tools come from
   `.github/package-lock.json`, which pins their whole dependency tree. `tool-versions.yml` tracks the
-  drift of the pins Dependabot can't see in one tracking issue.
+  drift of every pin in one tracking issue.
 - **Dependencies.** Python dependencies are installed from pip-compile locks with
   `--require-hashes`, in CI and in the image, and the project's own setuptools build dependency comes
   hashed from the dev lock. `pip-audit` checks both Python locks on every pull request, GitHub's
@@ -132,9 +132,9 @@ fresh APK install trusting APKPure. They're listed under
   `advisories.yml` re-audits the Python locks (`pip-audit`) and the Markdown tools' lock
   (`npm audit`) weekly and after each merge to `main`, keeping one tracking issue open while
   anything is found.
-- **Dependabot** tracks pip, npm, the Dockerfile's base image, compose's images and GitHub Actions,
-  in one weekly pull request into `dev` with a 7-day cooldown, so a compromised release has a week
-  to be caught before it's proposed.
+- **Updates.** `tool-versions.yml` reports a newer release of a pip or npm dependency, the Dockerfile's
+  base image, compose's images or a GitHub Action only once it is 7 days old, so a compromised release
+  has a week to be caught before it's proposed. Dependabot opens no version-update pull request.
 - **Images.** Every image is pinned by digest: the Dockerfile's Python base, and compose's redroid
   and FreshRSS. `image-scan.yml` scans those pins after every green CI run on `main` and weekly, and
   opens a tracking issue when a repin would close fixable HIGH or CRITICAL findings; it also scans
