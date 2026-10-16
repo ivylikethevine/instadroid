@@ -7,15 +7,19 @@
 #   * The CI tools in .github/actions/setup-tool/tools.txt and the inline pins
 #     in .github/scripts/check_tool_versions.local.sh (apkeep's ADD URL, the
 #     just-the-docs theme): tool-versions.yml reports their drift in the same
-#     tracking issue, with the same 7-day cooldown. It
-#     also checks the Python version agrees across pyproject.toml,
-#     app/Dockerfile and every setup-python, and that x-redroid-image matches
-#     the redroid service's pinned image.
+#     tracking issue, with the same 7-day cooldown. It also checks the Python
+#     version agrees across pyproject.toml, app/Dockerfile and every
+#     setup-python, and that x-redroid-image matches the redroid service's
+#     pinned image.
 #   * Whether an image bump fixes anything: the docker ecosystems are
 #     version-updates-only (GHSA has no container ecosystem), and a digest is
 #     just a digest. image-scan.yml measures that with trivy.
 #   * The language lines (setup-python's python-version, setup-node's
 #     node-version): moved by hand.
+#
+# Renovate was weighed and declined: it would cover the pins this file cannot,
+# but costs a second bot, its own config dialect, and a PR stream where
+# tool-versions.yml keeps one tracking issue.
 #
 # Each entry sets `open-pull-requests-limit: 0`, so no version-update pull
 # request opens: tool-versions.yml reports the same drift in one tracking

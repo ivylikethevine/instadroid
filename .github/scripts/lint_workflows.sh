@@ -15,15 +15,16 @@
 #      narrows it to another event (`github.event_name == '<event>'`, no `||`,
 #      and no comparison of event_name against workflow_run)
 #   5. every third-party `uses:` is pinned to a 40-hex commit SHA followed by
-#      a `# vX.Y.Z` comment (local `./` and `docker://` refs are exempt; a
-#      `$/` self-repository ref is rejected, as Scorecard reads it as an
-#      unpinned third-party action)
+#      a `# vX.Y.Z` comment (local `./`, `$/` and `docker://` refs are exempt)
 #   6. every job's first step is step-security/harden-runner with an explicit
 #      egress-policy, audit or block (reusable-workflow calls have no steps
 #      and are exempt; the action's own default is `block`, which with no
 #      allowlist would cut a job off, so the policy is never left to it)
+#   7. in a job whose actions/checkout sets sparse-checkout, every local
+#      `uses: ./<path>` step has <path> (or a parent directory of it) in that
+#      list - otherwise the runner fails with "Can't find 'action.yml'"
 #
-# Workflows get all six; composite actions (action.yml) get 2 and 5.
+# Workflows get all seven; composite actions (action.yml) get 2 and 5.
 #
 #   .github/scripts/lint_workflows.sh [file...]
 #
@@ -63,7 +64,7 @@ if [ $# -eq 0 ]; then
   )
 fi
 
-# Rules 1, 3, 4 and 6: workflows only.
+# Rules 1, 3, 4, 6 and 7: workflows only.
 # shellcheck disable=SC2016 # jq's $vars, not the shell's
 workflow_filter='
   def triggers: (.on // .["true"]) as $on
@@ -91,7 +92,19 @@ workflow_filter='
               and ($if | contains("||") | not)
               and ($if | test("github\\.event_name\\s*(==|!=)\\s*.workflow_run.") | not)) | not)
     | "job \($job): runs on workflow_run without requiring github.event.workflow_run.conclusion == '"'"'success'"'"'"
-  else empty end)
+  else empty end),
+  ((.jobs // {}) | to_entries[] | .key as $job | (.value.steps // []) as $steps
+    | ([$steps[] | select((.uses // "") | startswith("actions/checkout@"))
+        | (.with // {})["sparse-checkout"] | select(. != null)
+        | tostring | split("\n")[]
+        | sub("^\\s+"; "") | sub("\\s+$"; "") | select(. != "")
+        | sub("^/"; "") | sub("/+$"; "")]) as $sparse
+    | select(($steps | map(select((.uses // "") | startswith("actions/checkout@"))
+        | (.with // {})["sparse-checkout"]) | map(select(. != null)) | length) > 0)
+    | $steps[] | (.uses // "") | select(startswith("./"))
+    | ltrimstr("./") | sub("/+$"; "") as $path
+    | select([$sparse[] | . as $p | select($path == $p or ($path | startswith($p + "/")))] | length == 0)
+    | "job \($job): uses: ./\($path) is not in its checkout'"'"'s sparse-checkout list")
 '
 
 # Rule 2: workflows and composite actions alike ("false" as a string is
@@ -150,11 +163,7 @@ EOF_MSGS
     ref="${BASH_REMATCH[2]}"
     rest="${BASH_REMATCH[3]}"
     case "$ref" in
-    ./* | docker://*) continue ;;
-    '$/'*)
-      report "$file:$n" "uses: $ref: use a ./ ref (Scorecard reads \$/ as an unpinned third-party action)"
-      continue
-      ;;
+    ./* | '$/'* | docker://*) continue ;;
     esac
     if ! [[ "$ref" =~ $_lw_sha_re ]]; then
       report "$file:$n" "uses: $ref is not pinned to a 40-hex commit SHA"

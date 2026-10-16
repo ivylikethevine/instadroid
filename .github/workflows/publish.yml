@@ -40,7 +40,7 @@ jobs:
     outputs:
       prerelease: ${{ steps.tag.outputs.prerelease }}
     steps:
-      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: audit
       # A hyphen makes a prerelease (v1.0.0-rc1): a GitHub prerelease, never the latest release, and no
@@ -145,7 +145,7 @@ jobs:
       image: ${{ steps.image.outputs.image }}
       digest: ${{ steps.build.outputs.digest }}
     steps:
-      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -211,7 +211,7 @@ jobs:
       packages: read # pull the pushed digest
       security-events: write # upload the SARIF to code scanning
     steps:
-      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -235,7 +235,7 @@ jobs:
           DIGEST: ${{ needs.build.outputs.digest }}
         run: .github/scripts/trivy_scan.sh "$IMAGE@$DIGEST" "$RUNNER_TEMP"
       - name: Upload the findings to code scanning
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: ${{ runner.temp }}/trivy.sarif
           category: release-image
@@ -284,7 +284,7 @@ jobs:
       # one would need fulcio.githubapp.com and timestamp.githubapp.com instead. The Actions service
       # endpoints (OIDC token, cache) are allowed by the agent itself. Tighten or extend this from the
       # audit insights of a run.
-      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >-
@@ -377,7 +377,7 @@ jobs:
       # Block, not audit: this job holds a contents-write token. It reaches github.com (the checkout) and
       # the GitHub API (tags, generated notes, pull request bodies, the release itself), nothing else; it
       # uploads no assets, so not uploads.github.com. Tighten or extend this from the audit insights of a run.
-      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >-

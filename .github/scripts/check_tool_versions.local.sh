@@ -1,11 +1,14 @@
 # shellcheck shell=bash
+# SPDX-License-Identifier: MIT
 # The instadroid specifics for ./check_tool_versions.sh, which sources this file (the hook contract is
 # in that script's header). Nothing here runs on its own.
 
 # Inline pins the script can't find by itself: name|file-glob|sed-BRE-with-one-\(capture\)|check|tag-prefix
 # apkeep: app/Dockerfile's ADD URL (the checksum next to it changes with the version).
+# just-the-docs: the Pages theme, `_config.yml`'s `remote_theme:`.
 # shellcheck disable=SC2034 # read by check_tool_versions.sh
-CI_WORKFLOW_ROSTER='apkeep|app/Dockerfile|/EFForg/apkeep/releases/download/\([0-9][0-9.]*\)/|github:EFForg/apkeep|'
+CI_WORKFLOW_ROSTER='apkeep|app/Dockerfile|/EFForg/apkeep/releases/download/\([0-9][0-9.]*\)/|github:EFForg/apkeep|
+just-the-docs|_config.yml|remote_theme: just-the-docs/just-the-docs@v\([0-9][0-9.]*\)|github:just-the-docs/just-the-docs|'
 
 # The digest-pinned base image and the compose services' images.
 # shellcheck disable=SC2034 # read by check_tool_versions.sh
@@ -35,7 +38,7 @@ function _python_matches() {
 }
 
 function ci_local_checks() {
-  local want v f theme repo
+  local want v f
 
   echo "## Local checks (check_tool_versions.local.sh)"
   echo
@@ -58,17 +61,6 @@ function ci_local_checks() {
         _python_matches "$want" "setup-python python-version" "$v" "$f"
       done < <(sed -n 's|.*python-version: "\([0-9][0-9.]*\)".*|\1|p' "$f" | sort -u)
     done
-  fi
-
-  # The docs site's remote theme, in the root _config.yml (pages.yml builds the site from the root).
-  f=_config.yml
-  theme="$(_id_first '^remote_theme: *\([^ @]*/[^ @]*@v[0-9][0-9.]*\)' "$f")"
-  if [ -z "$theme" ]; then
-    printf '%-32s %-14s ERROR (no remote_theme: owner/repo@vX.Y.Z in _config.yml)\n' "jekyll theme" "-"
-    _ci_problem "jekyll theme" "no remote_theme: owner/repo@vX.Y.Z pin found in _config.yml"
-  else
-    repo="${theme%@*}"
-    _ci_report_pin "jekyll theme ($repo)" "${theme#*@v}" "github:$repo" "" "$f remote_theme"
   fi
 
   # docker-compose.yml names redroid twice: the tag in the x-redroid-image anchor (init's guard, the app's
