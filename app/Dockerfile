@@ -1,5 +1,5 @@
 # Pinned by digest (tool-versions.yml reports when the tag moves); the tag says which image it is.
-FROM python:3.14-slim@sha256:f85c5697265c178cc6887276c55fe16cf3d14ca35c3df6a5eab3b360534a55d2
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Debian's security fixes land before the python image is rebuilt with them (Trivy flagged sqlite, pcre2,
 # gzip and perl-base), and the scraper and feed server both use the system libsqlite3.
@@ -10,8 +10,8 @@ RUN apt-get update \
 # instadroid/install.py) — pinned to a specific release + checksum rather than trusting whatever
 # "latest" resolves to at build time. ADD verifies the checksum itself, so no curl in the image.
 # .github/workflows/new-builds.yml reads its apkeep URL and checksum from this ADD.
-ADD --checksum=sha256:a23579a3ba366d25a6d69848189b983d65662f4ecf4b9e11e16510811659de4e --chmod=0755 \
-    https://github.com/EFForg/apkeep/releases/download/1.0.0/apkeep-x86_64-unknown-linux-gnu \
+ADD --checksum=sha256:badd7ad9fa7d2f32abe01eaf33b7ff086361a95bbc000a33bf44b630d4bf2140 --chmod=0755 \
+    https://github.com/EFForg/apkeep/releases/download/1.1.0/apkeep-x86_64-unknown-linux-gnu \
     /usr/local/bin/apkeep
 RUN useradd -r -u 1000 -m app
 WORKDIR /app
