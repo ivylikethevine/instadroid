@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 name: CodeQL
 
 # CodeQL over the languages here it can read: Python and GitHub Actions.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 name: Release note
 
 # A PR body's `## Release note` section (the PR template's) is what the release
