@@ -24,18 +24,23 @@ from . import common, config, db
 from .common import log
 
 LOGIN: str = "login"
+RESTRICTED: str = "restricted"
 FAILING: str = "failing"
 NO_POSTS: str = "no_posts"
 RENAME: str = "rename"
 TITLES: dict[str, str] = {
     RENAME: "an account seems to have a new username",
     LOGIN: "Instagram wants a human",
+    RESTRICTED: "Instagram is limiting the account",
     FAILING: "scrape runs keep failing",
     NO_POSTS: "no new posts",
 }
-# Errors navigation.ensure_logged_in() raises when a person has to step in: a challenge, a login form
-# it couldn't fill or get past, or missing credentials.
-_NEEDS_HUMAN: tuple[str, str, str, str] = (
+# The error navigation.check_restricted() raises when Instagram is limiting the account.
+_RESTRICTED: str = "restricted the account"
+# Errors that need a person to step in: a restriction, and what navigation.ensure_logged_in() raises
+# for a challenge, a login form it couldn't fill or get past, or missing credentials.
+_NEEDS_HUMAN: tuple[str, ...] = (
+    _RESTRICTED,
     "wants a human",
     "login page shown",
     "login screen shown",
@@ -59,7 +64,11 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
         for r in sqlrows.fetch_all(con.execute("SELECT error FROM runs ORDER BY id DESC LIMIT ?", (window,)))
     ]
     latest_error: str | None = runs[0] if runs else None
-    if latest_error is not None and needs_human(latest_error):
+    if latest_error is not None and _RESTRICTED in latest_error:
+        found[RESTRICTED] = (
+            f"leave the account alone for a day or more, then `scraper.py unlock`: {short_error(latest_error, 300)}"
+        )
+    elif latest_error is not None and needs_human(latest_error):
         found[LOGIN] = f"finish it in scrcpy: {short_error(latest_error, 300)}"
     if config.ALERT_FAILED_RUNS > 0 and len(runs) >= config.ALERT_FAILED_RUNS and all(runs):
         found[FAILING] = (
@@ -98,7 +107,7 @@ def notify(kind: str, message: str, resolved: bool = False) -> str | None:
         headers={
             "Title": title,
             "Tags": "white_check_mark" if resolved else "warning",
-            "Priority": "default" if resolved or kind != LOGIN else "high",
+            "Priority": "high" if not resolved and kind in (LOGIN, RESTRICTED) else "default",
             "Content-Type": "text/plain; charset=utf-8",
         },
     )

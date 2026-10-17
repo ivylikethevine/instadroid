@@ -63,6 +63,18 @@ def test_a_login_challenge_is_an_alert_straight_away(con: sqlite3.Connection) ->
     assert set(alerts.conditions(con, NOW)) == {alerts.LOGIN}
 
 
+def test_a_restriction_is_its_own_high_priority_alert(
+    con: sqlite3.Connection, sent: list[urllib.request.Request]
+) -> None:
+    error: str = "RuntimeError(\"Instagram restricted the account: 'Try again later' screen; see /debug\")"
+    assert alerts.needs_human(error)
+    _run(con, 1, error)
+    assert set(alerts.conditions(con, NOW)) == {alerts.RESTRICTED}
+    alerts.update(con, NOW)
+    assert sent[0].get_header("Title") == "instadroid: Instagram is limiting the account"
+    assert sent[0].get_header("Priority") == "high"
+
+
 def test_consecutive_failures_are_an_alert(con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch) -> None:
     hours: int
     for hours in (3, 2, 1):

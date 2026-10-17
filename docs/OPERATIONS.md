@@ -44,8 +44,8 @@ same as `GET /control`, `POST`/`DELETE /control/lock` and `POST /control/scrape-
 that call those routes.
 
 **The scraper holds itself when Instagram needs a person.** A run that ends on a challenge
-("confirm it's you", a code), a login form it couldn't recognise or get past, or missing
-credentials writes `local/data/db/needs-human.hold` (the error is its text) and no further run
+("confirm it's you", a code), a login form it couldn't recognise or get past, missing credentials,
+or Instagram restricting the account ("Try again later", a locked or suspended account) writes `local/data/db/needs-human.hold` (the error is its text) and no further run
 starts, not on the schedule, not from `scrape-now`, not after a restart, until you clear it:
 
 ```bash
@@ -54,15 +54,24 @@ docker compose exec app python scraper.py unlock    # or: DELETE /control/lock, 
 
 Unlike the manual lock it never expires. Without it the loop would relaunch Instagram, and retype a
 wrong password, every poll interval: the kind of repetition that gets an account flagged. `/status`, `/control` and the alert below all show the hold and its reason.
-Finish the challenge in scrcpy (or fix the credentials) first, then unlock.
+Finish the challenge in scrcpy (or fix the credentials) first, then unlock. A restriction is checked
+for at launch, before any dialog is dismissed, and on every feed screen, and the run stops there with
+a `restricted` debug dump; leave the account alone for a day or more before unlocking, since runs
+that keep meeting a block are what turn it into a ban. Its wording isn't confirmed on a device yet
+(`restriction_texts` in `app/igprofiles/v424/selectors.py`).
 
-**Failure alerts**: after each run the scraper raises an alert for a login challenge, for
-`ALERT_FAILED_RUNS` (default 3) failed runs in a row, optionally for no new post in
-`ALERT_NO_POSTS_HOURS`, and for an account that seems to have renamed itself (the alert names the
+**Failure alerts**: after each run the scraper raises an alert for a login challenge, for Instagram
+restricting the account, for `ALERT_FAILED_RUNS` (default 3) failed runs in a row, optionally for
+no new post in `ALERT_NO_POSTS_HOURS`, and for an account that seems to have renamed itself (the alert names the
 `scraper.py rename` command; it clears once that's run, the suspicion is dismissed with `rename --dismiss`, or the post behind it is pruned). Each one is announced once when it's raised and once when it clears, as a
 POST to `ALERT_URL` (an [ntfy](https://ntfy.sh) topic URL works as is). With or without that, open
 alerts appear as the first entry of `/instagram.xml` and on `/status`, so the feed reader you already
 check shows them.
+
+**Heartbeat**: no alert can report a host, Docker or scraper that is down. `HEARTBEAT_URL` is fetched
+with a GET after every successful run, so a dead-man's-switch monitor (a
+[healthchecks.io](https://healthchecks.io) check, an Uptime Kuma push monitor) notices when the pings stop. Give it a grace period longer than
+`POLL_MAX_HOURS` plus a run; a lock, a hold and the failure backoff stop the pings too.
 
 A run that fails for a device reason — adb offline, redroid still booting so the uiautomator server
 can't start, Instagram refusing to come to the foreground — is retried after `RETRY_DELAYS_MINUTES`

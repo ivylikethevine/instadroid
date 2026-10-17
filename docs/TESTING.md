@@ -46,7 +46,7 @@ served by `pages.yml`; the badge turns bright green at that same `fail_under`.
   reach a live redroid;
 - `no_profile_capture` keeps capture mode off whatever the environment says;
 - `backups_in_tmp` and `control_files_in_tmp` put database backups and the poll loop's control files
-  in throwaway directories, and `no_alert_delivery` blanks `ALERT_URL`;
+  in throwaway directories, and `no_alert_delivery` blanks `ALERT_URL` and `HEARTBEAT_URL`;
 - `close_databases` closes every connection `db_init()` opened at the test's teardown, rather than
   leaving it to garbage collection and a `ResourceWarning`;
 - `no_permalink_backfill` turns the permalink backfill off; its own tests turn it back on.

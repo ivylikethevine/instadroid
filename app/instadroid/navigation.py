@@ -29,6 +29,17 @@ def _challenge_present(d: uidevice.Device) -> str | None:
     return None
 
 
+def check_restricted(d: uidevice.Device, xml: str | None = None) -> None:
+    """Raise, for a person, when Instagram is limiting the account (parsing.restriction_text()), before
+    anything else is tapped: dismissing the dialog and carrying on is what turns a block into a ban.
+    Pass `xml` when the caller already has a fresh dump."""
+    xml = xml if xml is not None else d.dump_hierarchy()
+    t: str | None
+    if t := parsing.restriction_text(xml):
+        diagnostics.dump_debug(d, "restricted", xml=xml)
+        raise RuntimeError(f"Instagram restricted the account: '{t}' screen; see {config.DEBUG_DIR}")
+
+
 @versioned
 def _update_required(d: uidevice.Device) -> str | None:
     """The title of the forced-update screen when that is what's in front: one of update_texts, with no
@@ -81,6 +92,7 @@ def _update_instagram(d: uidevice.Device, title: str) -> None:
 @versioned
 def _dismiss_interstitials(d: uidevice.Device, rounds: int = 4) -> None:
     for _ in range(rounds):
+        check_restricted(d)  # a block's dialog has an "OK" too
         btn: uidevice.Selector | None = device.first(d, text=SELECTORS["dismiss_texts"])
         if not btn:
             return
@@ -145,6 +157,7 @@ def ensure_logged_in(d: uidevice.Device) -> None:
         # session is live" — a false positive that leaves the caller thinking it's logged in.
         diagnostics.dump_debug(d, "login")
         raise DeviceNotReady(f"could not bring {config.IG_PKG} to the foreground; see {config.DEBUG_DIR}")
+    check_restricted(d)  # before the stray-alert "OK" below can dismiss a block's dialog
     # Stray "Enter your password" style alert from a previous attempt.
     ok: uidevice.Selector = d(text=SELECTORS["stray_alert_ok_text"])
     if ok.exists(timeout=1):

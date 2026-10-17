@@ -117,7 +117,7 @@ same by hand, e.g. after a `/data/system` reset.
 
 The password doesn't have to live in `.env`: `IG_PASSWORD_FILE` (and `IG_USERNAME_FILE`) read the value
 from a file instead, such as a Docker secret mounted at `/run/secrets/` — `docker-compose.yml` has a
-commented `secrets:` example. `FEED_TOKEN`, `ALERT_URL` and `FRESHRSS_REFRESH_URL` accept a `_FILE`
+commented `secrets:` example. `FEED_TOKEN`, `ALERT_URL`, `HEARTBEAT_URL` and `FRESHRSS_REFRESH_URL` accept a `_FILE`
 variant the same way. Setting both forms of one, or a file the app can't read, stops the process with an error.
 
 The `app` container installs Instagram on the device itself the first time it finds it missing:
@@ -338,8 +338,8 @@ and running FreshRSS on the same host.
 
 The services restart on their own, `/health` turns the container `unhealthy` when scraping looks
 stuck or keeps failing, and `scraper.py lock`/`unlock`/`scrape-now` hold or trigger runs while you
-drive the device yourself. A run that ends on a login challenge holds every later run until you
-`unlock`, so the scraper never retries a login on its own; repeated failures widen the poll
+drive the device yourself. A run that ends on a login challenge or Instagram restricting the
+account holds every later run until you `unlock`, so the scraper never retries a login on its own; repeated failures widen the poll
 interval, and `MAX_RUNS_PER_DAY` caps how often Instagram is launched at all. [docs/OPERATIONS.md](docs/OPERATIONS.md) covers that plus failure alerts,
 device-failure retries, the selector-drift canary and memory management.
 

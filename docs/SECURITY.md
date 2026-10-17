@@ -41,7 +41,7 @@ track those). They are:
   site (cross-site POST/DELETE requests are refused), a media signature that opens a file it wasn't
   issued for, path traversal out of the media directory, injection through captions or usernames
   into the Atom/HTML output, or reading the database or `.env`.
-- **Secrets in logs.** `FRESHRSS_REFRESH_URL` and `ALERT_URL` can carry tokens and are logged without
+- **Secrets in logs.** `FRESHRSS_REFRESH_URL`, `ALERT_URL` and `HEARTBEAT_URL` can carry tokens and are logged without
   their query string or credentials, and a `?token=` feed token is blanked in the access log. A way to
   get either token into a log is in scope.
 - **The release pipeline and image**: the GitHub Actions workflows, the release tag signing check,

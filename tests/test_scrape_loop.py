@@ -41,7 +41,7 @@ from tests.deviceflows import (
     top_card_id,
 )
 from tests.fakedevice import FakeDevice, Node, node
-from tests.support import fetch_row, record_run_ago, row_dict
+from tests.support import UrlResponse, fetch_row, record_run_ago, row_dict
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
@@ -482,6 +482,77 @@ def test_an_unreachable_reader_is_a_warning_not_a_failed_run(monkeypatch: pytest
     warning: str | None = stats["metrics"].get("warning")
     assert stats["new"] == 2 and warning is not None
     assert "FreshRSS refresh ping to http://127.0.0.1:9/i/ failed" in warning and "token" not in warning
+
+
+BLOCK_DIALOG: Node = node(
+    cls="android.widget.FrameLayout",
+    bounds=(80, 900, 1000, 1500),
+    children=[
+        node(cls="android.widget.TextView", text="Try Again Later", bounds=(120, 950, 960, 1020)),
+        node(cls="android.widget.Button", text="OK", bounds=(120, 1350, 960, 1450), goto="following"),
+    ],
+)
+
+
+def test_a_restriction_mid_run_stops_and_holds_without_dismissing_it(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
+    monkeypatch.setattr(config, "HEARTBEAT_URL", "https://hc.example/ping/uuid")
+    pings: list[str | urllib.request.Request] = []
+
+    def urlopen(request: str | urllib.request.Request, timeout: float) -> None:
+        pings.append(request)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    d: FakeDevice = feed_device()
+    d.screens["older"] = following_screen(sheet=BLOCK_DIALOG)  # met on the second screen
+
+    def connect() -> FakeDevice:
+        return d
+
+    monkeypatch.setattr(device, "connect_device", connect)
+    con: sqlite3.Connection = db.db_init()
+    stats: scrape.RunStats | None
+    exc: Exception | None
+    stats, exc = scrape.run_recorded(con)
+    assert stats is None and "restricted the account: 'Try again later'" in str(exc)
+    assert "following" not in d.history[d.history.index("older") :]  # its OK was never tapped
+    assert (fast_offline / "debug" / "restricted_hierarchy.xml").exists()
+    assert control.hold_reason() is not None
+    message: SqlValue = sqlrows.scalar(con.execute("SELECT message FROM alerts WHERE kind = 'restricted'"))
+    assert isinstance(message, str) and message.startswith("leave the account alone for a day or more")
+    assert pings == []  # a failed run sends no heartbeat
+
+
+def test_a_successful_run_sends_a_heartbeat(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(config, "HEARTBEAT_URL", "https://hc.example/ping/uuid?token=secret")
+    pings: list[str | urllib.request.Request] = []
+
+    def urlopen(request: str | urllib.request.Request, timeout: float) -> UrlResponse:
+        pings.append(request)
+        if len(pings) > 1:
+            raise OSError("connection refused")
+        return UrlResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(device, "connect_device", feed_device)
+    stats: scrape.RunStats = {"new": 0, "metrics": {}}
+
+    def fake_scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> scrape.RunStats:
+        return stats
+
+    monkeypatch.setattr(scrape, "scrape_once", fake_scrape_once)
+    con: sqlite3.Connection = db.db_init()
+    assert scrape.run_recorded(con) == (stats, None)
+    assert scrape.run_recorded(con) == (stats, None)  # an unreachable monitor doesn't fail it
+    assert pings == ["https://hc.example/ping/uuid?token=secret"] * 2
+    out: str = capsys.readouterr().out
+    assert "pinged heartbeat (https://hc.example/ping/uuid)" in out
+    assert "heartbeat to https://hc.example/ping/uuid failed" in out and "secret" not in out
 
 
 def test_run_recorded_survives_an_alert_bookkeeping_failure(

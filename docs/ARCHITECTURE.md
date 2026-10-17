@@ -72,6 +72,7 @@ flowchart LR
     feed -->|"/instagram.xml, /stories.xml, /opml, /media"| reader["FreshRSS or<br/>another reader"]
     scraper -.->|"FRESHRSS_REFRESH_URL ping"| reader
     scraper -.->|"ALERT_URL"| alerts["ntfy or a webhook"]
+    scraper -.->|"HEARTBEAT_URL"| monitor["healthchecks.io or<br/>Uptime Kuma"]
 ```
 
 1. The scraper connects to the device over ADB with `uiautomator2`, installs Instagram if it's missing,
@@ -101,7 +102,7 @@ flowchart LR
   state-changing requests (`feedserver.auth`). With `FEED_TOKEN`, every path but `/health` needs the
   token and media URLs carry a per-file HMAC signature instead. Without it, anyone who can reach the
   port reads everything scraped and can lock or trigger runs.
-- **The app ↔ outbound webhooks.** `ALERT_URL` and `FRESHRSS_REFRESH_URL` can carry tokens; they're
+- **The app ↔ outbound webhooks.** `ALERT_URL`, `HEARTBEAT_URL` and `FRESHRSS_REFRESH_URL` can carry tokens; they're
   never logged with their query string or credentials (`instadroid.common.redact_url`).
 
 ## Where state lives

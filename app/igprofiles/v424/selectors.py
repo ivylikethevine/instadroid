@@ -110,6 +110,20 @@ SELECTORS: Selectors = {
         "We Detected An Unusual Login",
         "Help us confirm it's you",
     ],
+    # Instagram limiting the account itself: the "Try again later" action block, or a locked, suspended
+    # or disabled account. Matched at the start of a node's text or description, ignoring case
+    # (parsing.restriction_text()). Not seen on a device yet: these are the wordings Instagram is known
+    # to use, to be replaced by the text of a real dump (saved as "restricted").
+    "restriction_texts": [
+        "Try again later",
+        "We restrict certain activity",
+        "We limit how often you can do certain things",
+        "Your account has been temporarily locked",
+        "We suspended your account",
+        "Your account has been suspended",
+        "Your account has been disabled",
+        "We disabled your account",
+    ],
     # The title of the screen an outdated build shows in place of everything else until it's updated.
     # Not seen on a device yet: these are the wordings the screen is known by, to be replaced by the
     # text of a real dump (navigation._update_required() saves one as "update").

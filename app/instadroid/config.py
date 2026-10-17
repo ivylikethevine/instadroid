@@ -209,4 +209,8 @@ ALERT_URL: str = env_secret("ALERT_URL")
 ALERT_FAILED_RUNS: int = int(os.environ.get("ALERT_FAILED_RUNS", "3"))
 ALERT_NO_POSTS_HOURS: float = float(os.environ.get("ALERT_NO_POSTS_HOURS", "0"))
 ALERT_TIMEOUT: float = float(os.environ.get("ALERT_TIMEOUT", "10.0"))
+# A dead-man's switch: GETed after every successful run (a healthchecks.io check, an Uptime Kuma push
+# monitor), so a monitor that stops hearing from it notices a host, Docker or scraper that's down, which
+# ALERT_URL can't report. Bounded by ALERT_TIMEOUT. It can carry a token, so HEARTBEAT_URL_FILE works too.
+HEARTBEAT_URL: str = env_secret("HEARTBEAT_URL")
 FRESHRSS_REFRESH_TIMEOUT: float = float(os.environ.get("FRESHRSS_REFRESH_TIMEOUT", "10.0"))

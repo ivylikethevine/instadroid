@@ -141,6 +141,18 @@ def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
     return None
 
 
+def _ping_heartbeat() -> str | None:
+    """GET HEARTBEAT_URL after a successful run. Best-effort like _ping_freshrss(): returns a short error
+    rather than raising. None when disabled or delivered."""
+    if not config.HEARTBEAT_URL:
+        return None
+    error: str | None
+    if error := common.send_best_effort("heartbeat", config.HEARTBEAT_URL, config.ALERT_TIMEOUT):
+        return error
+    log(f"pinged heartbeat ({common.redact_url(config.HEARTBEAT_URL)})")
+    return None
+
+
 def scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> RunStats:
     """One scrape run. Starts and ends with Instagram and the cached system apps force-stopped
     (_free_device_memory), the end in a `finally` so a run that raises halfway doesn't leave
@@ -422,6 +434,7 @@ def _scrape_feed(
             warnings.append(f"stopped early: {reason}")
             break
         xml: str = d.dump_hierarchy()
+        navigation.check_restricted(d, xml)
         diagnostics.capture_screen(d, "feed", xml)
         raw_posts: list[parsing.Post] = parsing.parse_hierarchy(xml)
         stat_dumps += 1
@@ -619,6 +632,8 @@ def run_recorded(con: sqlite3.Connection) -> tuple[RunStats | None, Exception | 
     metrics: db.RunMetrics
     new_posts, metrics = (stats["new"], stats["metrics"]) if stats is not None else (0, db.RunMetrics())
     db.record_run(con, started_at, datetime.now(UTC).isoformat(), new_posts, error, snapshot, **metrics)
+    if error is None:
+        _ping_heartbeat()  # a failure is logged; the run it would report on is already recorded
     if alerts.needs_human(error):
         control.set_hold(error or "")  # no retry until a person has dealt with it
     try:

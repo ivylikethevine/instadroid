@@ -65,8 +65,9 @@ def backups_in_tmp(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest
 
 @pytest.fixture(autouse=True)
 def no_alert_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No test posts a real alert, whatever ALERT_URL the environment has."""
+    """No test posts a real alert or heartbeat, whatever ALERT_URL or HEARTBEAT_URL the environment has."""
     monkeypatch.setattr(config, "ALERT_URL", "")
+    monkeypatch.setattr(config, "HEARTBEAT_URL", "")
 
 
 @pytest.fixture(autouse=True)

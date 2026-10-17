@@ -87,6 +87,27 @@ def test_login_failures_raise_with_a_debug_dump(
     assert (fast_offline / "debug" / "login_hierarchy.xml").exists()
 
 
+def block_dialog() -> str:
+    return hierarchy(
+        node(cls="android.widget.TextView", text="Try Again Later", bounds=(0, 900, 1080, 980)),
+        node(cls="android.widget.Button", text="OK", bounds=(0, 1200, 1080, 1300), goto="home"),
+    )
+
+
+@pytest.mark.parametrize("start", ["blocked", "login"])  # at launch, or right after logging in
+def test_a_restriction_raises_before_its_ok_is_tapped(start: str, fast_offline: Path) -> None:
+    screens: dict[str, str] = {
+        "blocked": block_dialog(),
+        "login": login_screen(button_goto="blocked"),
+        "home": home_screen(),
+    }
+    d: FakeDevice = FakeDevice(screens, start)
+    with pytest.raises(RuntimeError, match="restricted the account: 'Try again later'"):
+        navigation.ensure_logged_in(d)
+    assert d.screen == "blocked" and "home" not in d.history
+    assert (fast_offline / "debug" / "restricted_hierarchy.xml").exists()
+
+
 def test_login_without_credentials_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "IG_PASSWORD", "")
     with pytest.raises(RuntimeError, match="not set"):
