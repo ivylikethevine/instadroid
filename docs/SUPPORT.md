@@ -17,6 +17,8 @@ issue.
 For anything that goes wrong on the device (a slow or looping boot, adb stuck `offline`, Instagram
 pushed back to the launcher, a run that parses nothing):
 
+- for a stack that never got going on a new host, the output of `scripts/preflight.sh` (Docker,
+  binder, memory and ports, checked without starting anything);
 - the output of `docker compose exec app python scraper.py doctor`: the control state (a lock or a
   hold), the last runs, the device as plain adb sees it, and the device's logcat checked for the
   crash patterns this project has already hit, with the matching fix when one is known. It never

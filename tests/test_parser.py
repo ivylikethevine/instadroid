@@ -9,6 +9,8 @@ import pytest
 from igprofiles.screens import id_matches
 from instadroid import capture, common, config, device, parsing, stories, versioning
 
+from tests.fakedevice import hierarchy, node
+
 FIXTURE: str = igprofiles.fixture("v424", "feed_445.xml").read_text()
 
 
@@ -538,3 +540,24 @@ def test_same_post_needs_a_time_on_both_sides() -> None:
     dated: parsing.PostIdentity = {"username": "u", "caption": "", "posted_at": NOW}
     undated: parsing.PostIdentity = {"username": "u", "caption": "", "posted_at": None}
     assert parsing.same_post(dated, undated) is False and parsing.same_post(undated, dated) is False
+
+
+@pytest.mark.parametrize(
+    ("text", "desc", "expected"),
+    [
+        ("Try Again Later", "", "Try again later"),
+        ("", "We  restrict certain activity to protect our community.", "We restrict certain activity"),
+        ("YOUR ACCOUNT HAS BEEN DISABLED", "", "Your account has been disabled"),
+        ("someone Try again later, the shop opens at 9", "", None),  # a caption starts with its author
+        ("Not now", "", None),
+    ],
+)  # fmt: skip
+def test_restriction_text_matches_a_node_that_starts_with_one(
+    text: str, desc: str, expected: str | None
+) -> None:
+    xml: str = hierarchy(node(cls="android.widget.TextView", text=text, desc=desc))
+    assert parsing.restriction_text(xml) == expected
+
+
+def test_no_feed_fixture_reads_as_a_restriction() -> None:
+    assert parsing.restriction_text(FIXTURE) is None

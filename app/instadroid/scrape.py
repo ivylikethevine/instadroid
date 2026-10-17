@@ -22,6 +22,7 @@ from . import (
     db,
     device,
     diagnostics,
+    install,
     navigation,
     parsing,
     reshare,
@@ -138,6 +139,18 @@ def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
         return error
     # FRESHRSS_REFRESH_URL carries an auth token
     log(f"pinged FreshRSS refresh ({common.redact_url(config.FRESHRSS_REFRESH_URL)})")
+    return None
+
+
+def _ping_heartbeat() -> str | None:
+    """GET HEARTBEAT_URL after a successful run. Best-effort like _ping_freshrss(): returns a short error
+    rather than raising. None when disabled or delivered."""
+    if not config.HEARTBEAT_URL:
+        return None
+    error: str | None
+    if error := common.send_best_effort("heartbeat", config.HEARTBEAT_URL, config.ALERT_TIMEOUT):
+        return error
+    log(f"pinged heartbeat ({common.redact_url(config.HEARTBEAT_URL)})")
     return None
 
 
@@ -363,14 +376,18 @@ def _scrape_feed(
 ) -> RunStats:
     config.DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     capture.reset_last_url(d)
+    install.take_warnings()  # a run that failed after an update leaves its warning behind
     navigation.open_target_feed(d)
     # Read after opening the feed, not from run_recorded()'s snapshot: opening it can install Instagram
     # (ensure_logged_in's auto-install), which re-reads the version and would leave the snapshot's
     # stale or empty.
     ig_version: str | None = device.instagram_version(d)
+    warnings: list[str] = [*install.take_warnings()]  # an update while opening the feed
+    held: str | None
     if config.FOLLOWING_REFRESH_DAYS and db.needs_following_refresh(con):
         try:
-            navigation.refresh_following_list(d, con)
+            if held := navigation.refresh_following_list(d, con):
+                warnings.append(held)
         except Exception as e:  # a profile/list-navigation surprise must not sink the whole run
             log("WARN: following-list refresh failed, continuing with the existing list:", repr(e))
         navigation.open_target_feed(d)  # back onto the feed screen the post loop expects
@@ -379,7 +396,6 @@ def _scrape_feed(
         rows: list[sqlite3.Row] = sqlrows.fetch_all(con.execute("SELECT username FROM following"))
         if rows:  # empty/never-refreshed means "not initialized yet" -> filter nothing
             followed = {sqlrows.must_str(r, 0) for r in rows}
-    warnings: list[str] = []
     new_stories: int = 0
     stories_from: str = datetime.now(UTC).isoformat()
     reason: str | None
@@ -422,6 +438,7 @@ def _scrape_feed(
             warnings.append(f"stopped early: {reason}")
             break
         xml: str = d.dump_hierarchy()
+        navigation.check_restricted(d, xml)
         diagnostics.capture_screen(d, "feed", xml)
         raw_posts: list[parsing.Post] = parsing.parse_hierarchy(xml)
         stat_dumps += 1
@@ -619,6 +636,8 @@ def run_recorded(con: sqlite3.Connection) -> tuple[RunStats | None, Exception | 
     metrics: db.RunMetrics
     new_posts, metrics = (stats["new"], stats["metrics"]) if stats is not None else (0, db.RunMetrics())
     db.record_run(con, started_at, datetime.now(UTC).isoformat(), new_posts, error, snapshot, **metrics)
+    if error is None:
+        _ping_heartbeat()  # a failure is logged; the run it would report on is already recorded
     if alerts.needs_human(error):
         control.set_hold(error or "")  # no retry until a person has dealt with it
     try:
@@ -652,6 +671,7 @@ def _poll_loop(con: sqlite3.Connection) -> None:
             )
             control.wait(con, wait)
             continue  # re-check the lock and the budget: a scrape-now may have cut the wait short
+        control.set_next_run()
         exc: Exception | None = run_recorded(con)[1]
         failures = failures + 1 if exc else 0
         seconds: float

@@ -21,13 +21,19 @@ A config flag, one function, a CI tweak, or docs.
   every tracked file and every added line of history, and also flags what no list can know: any
   `<user> posted a`, `<user>'s story` or `<user> and N others` text and any Instagram URL whose
   name or shortcode isn't one of the placeholders the fixtures use.
+- **Refresh pings for other readers**: `FRESHRSS_REFRESH_URL` generalized to a list of URLs with a
+  configurable method, covering Miniflux's feed-refresh API, with a short section per reader.
+- **Alerts through Apprise**: `ALERT_URL` POSTs to ntfy or a webhook; Apprise URLs would add
+  Discord, Telegram, Matrix, Gotify and email behind the one setting.
+- **Continuous fuzzing**: `tests/fuzz/fuzz_parsing.py` under ClusterFuzzLite instead of by hand
+  ([OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md)).
 
 Done: Markdown lint and format checks, a link check (relative links on pull
 requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:
 advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
 (import-linter), hashed dependency locks (pip-compile), a `no_media_node` debug dump on the
 "media node not found" path, whole story frames, story frames matched across accounts, a retake of a
-dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration, `/opml?aggregate=0`, an unreachable upstream host counted as tool-version drift, a story that only reshares a stored post dropped, a resource-id report in the new-builds issue and an in-place update when Instagram demands one. Earlier: credentials from a file, caption hashtag/mention links, optional feed
+dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration, `/opml?aggregate=0`, an unreachable upstream host counted as tool-version drift, a story that only reshares a stored post dropped, a resource-id report in the new-builds issue, an in-place update when Instagram demands one, a hold on an action block or restricted account, a heartbeat URL, a host preflight and a deploy bundle on each release, a snapshot check before an Instagram update, a held-back shrunk Following list, a newer-validated-build alert, the schedule and disk use on `/status`, JSON Feed and feed filters. Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
 
@@ -40,6 +46,28 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   screen is recognised by wording no device run has shown yet (`update_texts` in
   `app/igprofiles/v424/selectors.py`). Replace it with the text of a real `update` debug dump, and
   promote that dump to a fixture, the first time one turns up.
+- **Confirm the restriction screens**: a run holds itself on an action block or a locked, suspended
+  or disabled account ([OPERATIONS.md](OPERATIONS.md#health-and-restarts)), recognised by wording no
+  device run has shown yet (`restriction_texts` in `app/igprofiles/v424/selectors.py`). Replace it
+  with the text of a real `restricted` debug dump, and promote that dump to a fixture.
+- **Back up and restore the login alone**: save `/data/data/com.instagram.android` (with `adb root`)
+  so a fresh `/data` volume, another Android version's included, or a `/data/system` reset gets a
+  working login without a new challenge. A device run has to show the session survives the copy:
+  Instagram may tie it to Android's keystore or device id.
+- **Solve challenges from a browser**: an optional compose profile running ws-scrcpy on loopback, so
+  a "confirm it's you" challenge on a headless server needs only an SSH tunnel, not adb and scrcpy
+  on a desktop.
+- **Type authenticator codes at login**: `IG_TOTP_SECRET` (with a `_FILE` variant) enters a 2FA code
+  when the login form asks for one. It bends the rule that a failure needing a person holds the
+  scraper ([ARCHITECTURE.md](ARCHITECTURE.md#design-principles)): a routine 2FA prompt on the
+  account's own login is arguably not a suspicious-login challenge, so it's the owner's call first.
+- **Account groups**: a config file mapping accounts to groups, served as `?group=` feeds and OPML
+  categories.
+- **Search and a browse page**: SQLite FTS5 over captions and a `/browse` page of each account's
+  timeline, so the stored history works as an archive and not only a feed; `scraper.py export` to
+  static HTML or JSON keeps posts past `RETAIN_DAYS`.
+- **Readable text-only stories**: OCR of story frames into the entry text, searchable with the
+  above. Opt-in, and measured first against the app container's 256m limit.
 
 ## Large
 
@@ -81,3 +109,5 @@ Open investigations, new capture mechanisms, or changes to the container/process
   code natively — no NDK translation, sidestepping the whole compatibility matrix
   ([`COMPATIBILITY.md`](COMPATIBILITY.md)). Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in
   the kernel).
+- **Several Instagram accounts**: one redroid and app pair per account through compose profiles,
+  each with its own `/data` volume and guard, ports, and 3g of memory.

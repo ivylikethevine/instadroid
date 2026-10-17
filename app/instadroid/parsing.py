@@ -61,6 +61,27 @@ def is_weak_caption(caption: str | None) -> bool:
     return not caption or bool(_WEAK_CAPTION.match(caption))
 
 
+@versioned
+def restriction_text(xml: str) -> str | None:
+    """The restriction_texts entry the screen shows, if any: Instagram limiting the account itself
+    (an action block, a locked or suspended account). Only a node whose text or description starts
+    with one counts, ignoring case and spacing, so a caption quoting it (which starts with its
+    author's name) doesn't."""
+    wanted: list[tuple[str, str]] = [
+        (" ".join(t.casefold().split()), t) for t in SELECTORS["restriction_texts"]
+    ]
+    root: etree._Element = etree.fromstring(xml.encode())
+    n: etree._Element
+    value: str | None
+    for n in root.iter("node"):
+        for value in (n.get("text"), n.get("content-desc")):
+            shown: str = " ".join((value or "").casefold().split())
+            match: str | None = next((t for key, t in wanted if shown.startswith(key)), None)
+            if match:
+                return match
+    return None
+
+
 class PostIdentity(TypedDict):
     """What same_post() compares: a stored post, or a freshly parsed card with its time's precision."""
 

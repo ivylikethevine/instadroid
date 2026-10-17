@@ -83,6 +83,11 @@ IG_PROFILE: str = os.environ.get("IG_PROFILE", "").strip()
 IG_APK_VERSION: str = os.environ.get("IG_APK_VERSION", "").strip()
 APK_CACHE_DIR: Path = Path(os.environ.get("APK_CACHE_DIR", "/apk"))
 APK_FETCH_TIMEOUT: float = float(os.environ.get("APK_FETCH_TIMEOUT", "300"))  # apkeep's own download
+# redroid's /data snapshots (scripts/snapshot-android-data.sh), mounted read-only. `scraper.py install`
+# refuses, and the forced-update replace warns, when the newest is older than SNAPSHOT_MAX_DAYS or
+# there is none. 0 disables the check.
+SNAPSHOT_DIR: Path = Path(os.environ.get("SNAPSHOT_DIR", "/snapshots"))
+SNAPSHOT_MAX_DAYS: float = float(os.environ.get("SNAPSHOT_MAX_DAYS", "7"))
 DEBUG_KEEP: int = 12  # debug dump pairs to retain; older ones are pruned on every new dump
 # Profile development (`new-profile baseline`): when set, every screen the scraper visits
 # is also saved here as a numbered hierarchy + screenshot pair (up to CAPTURE_PER_SCREEN of each
@@ -151,6 +156,10 @@ EMPTY_SCREEN_LIMIT: int = int(os.environ.get("EMPTY_SCREEN_LIMIT", "3"))
 # only takes effect after the first successful refresh — an empty/never-populated list means "not
 # initialized yet," not "you follow nobody," so nothing is dropped until real data exists.
 FOLLOWING_REFRESH_DAYS: int = int(os.environ.get("FOLLOWING_REFRESH_DAYS", "0"))
+# A refresh that finds fewer than this percent of the stored list's accounts is held back, not stored,
+# with an alert (db.store_following()): a partial scroll or a restricted account looks like a mass
+# unfollow. `scraper.py following --accept` takes it if it's real. 0 disables.
+FOLLOWING_SHRINK_PERCENT: float = float(os.environ.get("FOLLOWING_SHRINK_PERCENT", "50"))
 # Higher than MAX_SCROLLS: device.human_scroll_list()'s deliberately shorter swipe (see its docstring)
 # means more screens are needed to cover the same list.
 MAX_FOLLOWING_SCROLLS: int = int(os.environ.get("MAX_FOLLOWING_SCROLLS", "60"))
@@ -170,7 +179,7 @@ FAILURE_BACKOFF_MAX_HOURS: float = float(os.environ.get("FAILURE_BACKOFF_MAX_HOU
 # whatever started them (the schedule, retries, scrape-now, `scraper.py once`, restarts). At the
 # ceiling the loop waits for the oldest run in the window to age out. The default leaves room for the
 # schedule (up to ~10 runs a day at POLL_MIN_HOURS=2.5) plus a retry ladder or two. 0 disables.
-MAX_RUNS_PER_DAY: int = int(os.environ.get("MAX_RUNS_PER_DAY", "12"))
+MAX_RUNS_PER_DAY: int = env.env_max_runs_per_day()
 # 0 (default): on startup, wait out whatever's left of the poll interval since the last recorded run
 # before scraping, so a `docker compose up`, recreate or crash-restart isn't an extra off-schedule
 # scrape (see scrape._startup_wait_seconds()). 1: scrape immediately on every start, the old behavior.
@@ -209,4 +218,8 @@ ALERT_URL: str = env_secret("ALERT_URL")
 ALERT_FAILED_RUNS: int = int(os.environ.get("ALERT_FAILED_RUNS", "3"))
 ALERT_NO_POSTS_HOURS: float = float(os.environ.get("ALERT_NO_POSTS_HOURS", "0"))
 ALERT_TIMEOUT: float = float(os.environ.get("ALERT_TIMEOUT", "10.0"))
+# A dead-man's switch: GETed after every successful run (a healthchecks.io check, an Uptime Kuma push
+# monitor), so a monitor that stops hearing from it notices a host, Docker or scraper that's down, which
+# ALERT_URL can't report. Bounded by ALERT_TIMEOUT. It can carry a token, so HEARTBEAT_URL_FILE works too.
+HEARTBEAT_URL: str = env_secret("HEARTBEAT_URL")
 FRESHRSS_REFRESH_TIMEOUT: float = float(os.environ.get("FRESHRSS_REFRESH_TIMEOUT", "10.0"))

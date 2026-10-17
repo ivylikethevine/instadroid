@@ -10,7 +10,7 @@
     "/instagram.xml": {
       "get": {
         "summary": "Posts feed",
-        "description": "Stored posts as Atom, newest first. `user` narrows it to one account; `limit` is capped at\n500.",
+        "description": "Stored posts as Atom, newest first. `user` narrows it to one account, and `kind`, `since` and\n`q` narrow it further; `limit` is capped at 500.",
         "operationId": "feed_instagram_xml_get",
         "parameters": [
           {
@@ -30,6 +30,60 @@
             }
           },
           {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated: photo, carousel, reel (or video), post.",
+              "title": "Kind"
+            },
+            "description": "Comma-separated: photo, carousel, reel (or video), post."
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Posts from this ISO date or time on; without an offset, in the TZ setting's zone.",
+              "title": "Since"
+            },
+            "description": "Posts from this ISO date or time on; without an offset, in the TZ setting's zone."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Posts whose caption contains this text (case-insensitive for ASCII).",
+              "title": "Q"
+            },
+            "description": "Posts whose caption contains this text (case-insensitive for ASCII)."
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -45,6 +99,116 @@
             "description": "An Atom feed.",
             "content": {
               "application/atom+xml": {}
+            }
+          },
+          "304": {
+            "description": "Not Modified"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/instagram.json": {
+      "get": {
+        "summary": "Posts feed, as JSON Feed",
+        "description": "/instagram.xml's entries, with the same parameters, as JSON Feed 1.1.",
+        "operationId": "json_feed_instagram_json_get",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated: photo, carousel, reel (or video), post.",
+              "title": "Kind"
+            },
+            "description": "Comma-separated: photo, carousel, reel (or video), post."
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Posts from this ISO date or time on; without an offset, in the TZ setting's zone.",
+              "title": "Since"
+            },
+            "description": "Posts from this ISO date or time on; without an offset, in the TZ setting's zone."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Posts whose caption contains this text (case-insensitive for ASCII).",
+              "title": "Q"
+            },
+            "description": "Posts whose caption contains this text (case-insensitive for ASCII)."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A JSON Feed 1.1 document.",
+            "content": {
+              "application/feed+json": {}
             }
           },
           "304": {
@@ -85,6 +249,46 @@
             "description": "An Atom feed.",
             "content": {
               "application/atom+xml": {}
+            }
+          },
+          "304": {
+            "description": "Not Modified"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stories.json": {
+      "get": {
+        "summary": "Stories feed, as JSON Feed",
+        "description": "/stories.xml's entries as JSON Feed 1.1.",
+        "operationId": "stories_json_feed_stories_json_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A JSON Feed 1.1 document.",
+            "content": {
+              "application/feed+json": {}
             }
           },
           "304": {

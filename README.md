@@ -101,11 +101,22 @@ follow before running redroid on a host you haven't personally tested it on.
 
 ```bash
 cp .env.example .env                 # fill in IG_USERNAME / IG_PASSWORD (or IG_PASSWORD_FILE)
+scripts/preflight.sh                 # checks the host first: binder, Docker, memory, ports
 docker compose pull                  # a bad image tag fails here, cheaply
 docker compose up -d --build         # redroid boots (1-9 min; `docker ps` shows it healthy once it has)
 docker compose exec app python scraper.py login      # types the .env credentials into the login form
 docker compose exec app python scraper.py once        # first scrape, watch the output
 ```
+
+That builds the app image from a clone. To run a release without one, download its
+`instadroid-<tag>.tar.gz` from the [releases page](https://github.com/ivylikethevine/instadroid/releases):
+the same compose file with the published image pinned by digest, `.env.example` and the host scripts.
+Extract it and run the same commands from its folder, `--build` left out.
+
+`scripts/preflight.sh` changes nothing and starts nothing. It fails on what would stop redroid or
+harm the host: two binder drivers on one kernel (the kernel panic in
+[docs/INCIDENTS.md](docs/INCIDENTS.md)), no binder at all, rootless Docker, too little memory for
+`REDROID_MEM_LIMIT`, a port already taken, or a `/data` volume from another Android version.
 
 On its first connect after each app start (a restart of redroid alone doesn't count; run
 `scripts/tune-android.sh` then, or restart the app) the app waits for Android to finish booting and
@@ -117,7 +128,7 @@ same by hand, e.g. after a `/data/system` reset.
 
 The password doesn't have to live in `.env`: `IG_PASSWORD_FILE` (and `IG_USERNAME_FILE`) read the value
 from a file instead, such as a Docker secret mounted at `/run/secrets/` — `docker-compose.yml` has a
-commented `secrets:` example. `FEED_TOKEN`, `ALERT_URL` and `FRESHRSS_REFRESH_URL` accept a `_FILE`
+commented `secrets:` example. `FEED_TOKEN`, `ALERT_URL`, `HEARTBEAT_URL` and `FRESHRSS_REFRESH_URL` accept a `_FILE`
 variant the same way. Setting both forms of one, or a file the app can't read, stops the process with an error.
 
 The `app` container installs Instagram on the device itself the first time it finds it missing:
@@ -140,7 +151,7 @@ whatever APKPure has newest. Each pinned version is cached in its own `local/dat
 `.env.example`.
 
 Auto-install only runs when Instagram is missing, so a newer validated build doesn't replace an
-installed version by itself. The one exception is an installed build Instagram refuses to run until
+installed version by itself; an alert names it instead, unless `IG_APK_VERSION` is set. The one exception is an installed build Instagram refuses to run until
 it's updated: when that screen is all there is, the scraper replaces the build in place with the
 default build, or the newest validated one, whichever is newer than what's installed, and carries on
 (`update` and `updated` debug dumps record the screen before and after). It stops and waits for a
@@ -161,6 +172,11 @@ docker compose exec app python scraper.py install 444.0.0.46.85
 
 The saved login lives in `/data` and survives the replace, but an older Instagram may not accept
 data written by a newer one, so a downgrade can still need a fresh login.
+
+`install` refuses while the newest `/data` snapshot in `local/data/backups` is older than
+`SNAPSHOT_MAX_DAYS` (default 7), or there is none: stop redroid, run
+`scripts/snapshot-android-data.sh`, start it again, then install (`--force` skips the check). The
+forced-update replace above can't stop for one, so it goes ahead with a run warning.
 
 The device tuning disables a curated list of unused system apps (`app/instadroid/tune_packages.txt`)
 to cut idle memory. One package must never be added to that list: `com.android.packageinstaller`. Disabling it crash-loops
@@ -306,7 +322,11 @@ safe to turn on at any point: filtering only takes effect after the list has act
 something at least once (an empty/never-populated list means "not initialized yet," not "you follow
 nobody"), and a refresh that fails outright (selectors broken, navigation never reached the list)
 leaves whatever list is already stored alone rather than replacing it with nothing — it just retries
-on the next run. `scraper.py rename` keeps a renamed account's allowlist entry in sync along with
+on the next run. A refresh that finds fewer than `FOLLOWING_SHRINK_PERCENT` (default 50) of the stored
+list's accounts is treated the same way, since a partial scroll or a restricted account looks like a
+mass unfollow: the stored list stays in use, the short one is held back with an alert, and the next
+scheduled refresh that agrees with the stored list clears it. If you did unfollow those accounts,
+`scraper.py following --accept` stores it (`scraper.py following` shows both). `scraper.py rename` keeps a renamed account's allowlist entry in sync along with
 everything else it reconciles. Each run's `/status` page shows how many posts a run filtered.
 
 ### Known limitations of v1
@@ -331,15 +351,15 @@ containers and the device. The ones worth knowing about first:
 
 Subscribe to `http://<host>:8000/instagram.xml` (per account: `?user=somebody`; stories:
 `/stories.xml`), or import `/opml` to subscribe to everything at once. Set `FEED_TOKEN` before exposing
-the feed beyond loopback. [docs/FRESHRSS.md](docs/FRESHRSS.md) covers feed auth, OPML, push refresh
-and running FreshRSS on the same host.
+the feed beyond loopback. [docs/FRESHRSS.md](docs/FRESHRSS.md) covers feed auth, OPML, the
+`kind`/`since`/`q` filters, JSON Feed, push refresh and running FreshRSS on the same host.
 
 ### Health and restarts
 
 The services restart on their own, `/health` turns the container `unhealthy` when scraping looks
 stuck or keeps failing, and `scraper.py lock`/`unlock`/`scrape-now` hold or trigger runs while you
-drive the device yourself. A run that ends on a login challenge holds every later run until you
-`unlock`, so the scraper never retries a login on its own; repeated failures widen the poll
+drive the device yourself. A run that ends on a login challenge or Instagram restricting the
+account holds every later run until you `unlock`, so the scraper never retries a login on its own; repeated failures widen the poll
 interval, and `MAX_RUNS_PER_DAY` caps how often Instagram is launched at all. [docs/OPERATIONS.md](docs/OPERATIONS.md) covers that plus failure alerts,
 device-failure retries, the selector-drift canary and memory management.
 

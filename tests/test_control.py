@@ -12,6 +12,7 @@ from devtools.jsonvalues import JSON
 from fastapi.testclient import TestClient
 from httpx2 import Response
 from instadroid import config, control, device, scrape
+from shared import control as files
 
 from tests.feedclient import make_app
 from tests.support import json_body, json_object, record_run_ago
@@ -141,6 +142,31 @@ def test_wait_sleeps_in_steps_and_ends_early_for_scrape_now(
     monkeypatch.setattr(time, "sleep", sleeps.append)
     control.wait(con, 75)
     assert sleeps == [30, 30, 15]
+
+
+def test_wait_and_the_poll_loop_record_the_next_run(
+    con: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    before: datetime = datetime.now(UTC)
+    control.wait(con, 3600)
+    at: datetime | None = files.next_run(tmp_path)
+    assert at is not None and timedelta(minutes=59) < at - before <= timedelta(hours=1, seconds=5)
+    control.set_next_run()
+    at = files.next_run(tmp_path)
+    assert at is not None and at - before < timedelta(minutes=1)
+
+
+def test_an_unwritable_next_run_file_is_only_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    blocker: Path = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    monkeypatch.setattr(config, "CONTROL_DIR", blocker)
+    control.set_next_run(60)
+    assert "could not record the next run's time" in capsys.readouterr().out
+    assert files.next_run(blocker) is None
 
 
 def test_the_poll_loop_holds_while_locked(

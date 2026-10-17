@@ -21,8 +21,11 @@ contributor's part is the pull request's `## Release note` section
 One container image, `ghcr.io/ivylikethevine/instadroid`, built from `app/`: the scraper and the
 feed server. Nothing is published to PyPI; `pyproject.toml` only exists for the dev venv. The redroid
 image and FreshRSS are third-party images pulled by `docker-compose.yml`, not part of a release.
-`docker-compose.yml` builds the app image locally by default; each GitHub Release's notes show how to
-pin the published one instead.
+`docker-compose.yml` builds the app image locally; each GitHub Release also attaches a deploy bundle,
+`instadroid-<tag>.tar.gz` (`.github/scripts/release_bundle.sh`): that compose file with the app image
+pulled by the release's digest, `.env.example`, and the host scripts, so a host runs a release
+without a clone or a build. `scripts/check.sh compose` builds one with a placeholder digest and
+checks it with `docker compose config`.
 
 ## The tag scheme
 
@@ -87,11 +90,12 @@ jobs themselves:
    which has no required reviewer. It tags the already-scanned digest with `vX.Y.Z`, `vX.Y` and
    `latest` (no rebuild), and pushes two signed attestations to the registry beside it: build
    provenance, and the SBOM from the build (SPDX), attested as the image already carries it.
-5. **`release`** creates the GitHub Release with `gh release`. Its "What changed" is the
+5. **`release`** creates the GitHub Release with `gh release` and uploads the deploy bundle,
+   timestamped with the tagged commit so a re-run builds the same archive. Its "What changed" is the
    `## Release note` section of each pull request merged since the previous non-prerelease tag
    (`.github/scripts/release_notes.sh`), skipping `none`; only when no pull request wrote a note does
    GitHub's generated list of merged pull requests stand in. Below that: the image digest and tags,
-   the pull command, a compose snippet that pins the published image, and the commands to verify the
+   the pull command, how to run the deploy bundle, and the commands to verify the
    provenance and the SBOM. A re-run edits the release an earlier attempt created.
 
 Every job starts with `step-security/harden-runner`. In `publish` and `release`, which hold the

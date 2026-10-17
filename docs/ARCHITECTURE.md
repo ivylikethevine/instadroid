@@ -72,6 +72,7 @@ flowchart LR
     feed -->|"/instagram.xml, /stories.xml, /opml, /media"| reader["FreshRSS or<br/>another reader"]
     scraper -.->|"FRESHRSS_REFRESH_URL ping"| reader
     scraper -.->|"ALERT_URL"| alerts["ntfy or a webhook"]
+    scraper -.->|"HEARTBEAT_URL"| monitor["healthchecks.io or<br/>Uptime Kuma"]
 ```
 
 1. The scraper connects to the device over ADB with `uiautomator2`, installs Instagram if it's missing,
@@ -101,24 +102,24 @@ flowchart LR
   state-changing requests (`feedserver.auth`). With `FEED_TOKEN`, every path but `/health` needs the
   token and media URLs carry a per-file HMAC signature instead. Without it, anyone who can reach the
   port reads everything scraped and can lock or trigger runs.
-- **The app ↔ outbound webhooks.** `ALERT_URL` and `FRESHRSS_REFRESH_URL` can carry tokens; they're
+- **The app ↔ outbound webhooks.** `ALERT_URL`, `HEARTBEAT_URL` and `FRESHRSS_REFRESH_URL` can carry tokens; they're
   never logged with their query string or credentials (`instadroid.common.redact_url`).
 
 ## Where state lives
 
 Everything the stack writes is under `local/` (gitignored), bind-mounted into the containers:
 
-| Host path                  | In the container | Holds                                                                                                                                                                                                                |
-| -------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `local/data/android`       | redroid `/data`  | Android's own state, the installed Instagram, and **the logged-in session**. One Android major version only ([COMPATIBILITY.md](COMPATIBILITY.md#one-android-version-per-data-volume)).                              |
-| `local/data/android.image` | init `/data/…`   | The guard's marker: the redroid image that last used the volume.                                                                                                                                                     |
-| `local/data/db`            | app `/db`        | `posts.sqlite` (`DB_PATH`): tables `posts`, `media`, `accounts`, `stories`, `alerts`, `following`, `runs`. Also `backups/` and the control files `manual.lock`, `needs-human.hold` and `scrape-now` (`CONTROL_DIR`). |
-| `local/data/media`         | app `/media`     | Post crops and carousel slides, `avatars/` and `stories/` (`MEDIA_DIR`).                                                                                                                                             |
-| `local/data/debug`         | app `/debug`     | Hierarchy dumps, screenshots, failure logcats, and `profile-dev/` captures (`DEBUG_DIR`).                                                                                                                            |
-| `local/data/apk`           | app `/apk`       | The downloaded Instagram bundles, one folder per build (`APK_CACHE_DIR`).                                                                                                                                            |
-| `local/data/backups`       | —                | `/data` snapshots from `scripts/snapshot-android-data.sh`, taken with redroid stopped.                                                                                                                               |
-| `local/data/freshrss`      | freshrss         | FreshRSS's own data and extensions, when that service runs.                                                                                                                                                          |
-| `.env`                     | app environment  | Every setting, including the credentials unless they come from files.                                                                                                                                                |
+| Host path                  | In the container | Holds                                                                                                                                                                                                                                                 |
+| -------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `local/data/android`       | redroid `/data`  | Android's own state, the installed Instagram, and **the logged-in session**. One Android major version only ([COMPATIBILITY.md](COMPATIBILITY.md#one-android-version-per-data-volume)).                                                               |
+| `local/data/android.image` | init `/data/…`   | The guard's marker: the redroid image that last used the volume.                                                                                                                                                                                      |
+| `local/data/db`            | app `/db`        | `posts.sqlite` (`DB_PATH`): tables `posts`, `media`, `accounts`, `stories`, `alerts`, `following`, `following_pending`, `runs`. Also `backups/` and the control files `manual.lock`, `needs-human.hold`, `scrape-now` and `next-run` (`CONTROL_DIR`). |
+| `local/data/media`         | app `/media`     | Post crops and carousel slides, `avatars/` and `stories/` (`MEDIA_DIR`).                                                                                                                                                                              |
+| `local/data/debug`         | app `/debug`     | Hierarchy dumps, screenshots, failure logcats, and `profile-dev/` captures (`DEBUG_DIR`).                                                                                                                                                             |
+| `local/data/apk`           | app `/apk`       | The downloaded Instagram bundles, one folder per build (`APK_CACHE_DIR`).                                                                                                                                                                             |
+| `local/data/backups`       | app `/snapshots` | `/data` snapshots from `scripts/snapshot-android-data.sh`, taken with redroid stopped; read-only to the app (`SNAPSHOT_DIR`).                                                                                                                         |
+| `local/data/freshrss`      | freshrss         | FreshRSS's own data and extensions, when that service runs.                                                                                                                                                                                           |
+| `.env`                     | app environment  | Every setting, including the credentials unless they come from files.                                                                                                                                                                                 |
 
 The feed server keeps no state of its own: it reads its settings once at import and everything else
 from the database and the media directory. [OPERATIONS.md](OPERATIONS.md#storage-and-retention) has

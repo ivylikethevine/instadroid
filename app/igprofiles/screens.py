@@ -81,11 +81,12 @@ SCREENS: dict[str, Screen] = {
     ),
 }
 
-# Not tied to one screen: interstitials and challenges that may appear anywhere, the logged-out
-# welcome screen, a leftover alert, the clipboard's permalink, and a lookup table.
+# Not tied to one screen: interstitials, challenges and restrictions that may appear anywhere, the
+# logged-out welcome screen, a leftover alert, the clipboard's permalink, and a lookup table.
 SITUATIONAL: tuple[str, ...] = (
     "dismiss_texts",
     "challenge_texts",
+    "restriction_texts",
     "update_texts",
     "welcome_existing_profile_text",
     "stray_alert_ok_text",

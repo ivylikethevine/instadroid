@@ -65,8 +65,9 @@ def backups_in_tmp(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest
 
 @pytest.fixture(autouse=True)
 def no_alert_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No test posts a real alert, whatever ALERT_URL the environment has."""
+    """No test posts a real alert or heartbeat, whatever ALERT_URL or HEARTBEAT_URL the environment has."""
     monkeypatch.setattr(config, "ALERT_URL", "")
+    monkeypatch.setattr(config, "HEARTBEAT_URL", "")
 
 
 @pytest.fixture(autouse=True)
@@ -105,6 +106,13 @@ def no_permalink_backfill(monkeypatch: pytest.MonkeyPatch) -> None:
     """Flow tests seed stored hash-id posts without expecting a Copy link attempt on them; the backfill
     tests (test_permalink_backfill.py) turn it back on."""
     monkeypatch.setattr(config, "PERMALINK_BACKFILL_PER_RUN", 0)
+
+
+@pytest.fixture(autouse=True)
+def no_snapshot_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test machine has redroid's /data snapshots; the snapshot tests (test_snapshot_check.py) turn
+    the check back on."""
+    monkeypatch.setattr(config, "SNAPSHOT_MAX_DAYS", 0)
 
 
 @pytest.fixture

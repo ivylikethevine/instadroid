@@ -1,9 +1,11 @@
 """Read-only access to the scraper's database: every query the feeds and the status page run, and the
 row accessors they read results with. A route opens one connection() and passes it to each query."""
 
+import re
 import sqlite3
 from collections.abc import Callable, Generator, Sequence
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from shared import sqlrows
@@ -74,12 +76,43 @@ def limit(requested: int) -> int:
 # --- posts and stories ----------------------------------------------------------------------------
 
 
-def posts(con: sqlite3.Connection, user: str | None, requested: int) -> list[sqlite3.Row]:
-    where: str = " WHERE username = ?" if user else ""
+@dataclass(frozen=True)
+class PostFilter:
+    """What a posts feed is narrowed to: one account, stored kinds, a start time (an ISO timestamp in
+    UTC, compared with the posted time, else the saved time) and caption text."""
+
+    user: str | None = None
+    kinds: tuple[str, ...] = ()
+    since: str | None = None
+    q: str | None = None
+
+    def where(self) -> tuple[str, list[SqlValue]]:
+        """(" WHERE ..." or "", its arguments)."""
+        clauses: list[str] = []
+        args: list[SqlValue] = []
+        if self.user:
+            clauses.append("username = ?")
+            args.append(self.user)
+        if self.kinds:
+            clauses.append(f"kind IN ({','.join('?' * len(self.kinds))})")
+            args.extend(self.kinds)
+        if self.since:
+            clauses.append("COALESCE(posted_at, scraped_at) >= ?")
+            args.append(self.since)
+        if self.q:
+            clauses.append("caption LIKE ? ESCAPE '\\'")
+            args.append("%" + re.sub(r"([\\%_])", r"\\\1", self.q) + "%")
+        return (" WHERE " + " AND ".join(clauses) if clauses else ""), args
+
+
+def posts(con: sqlite3.Connection, where: PostFilter, requested: int) -> list[sqlite3.Row]:
+    sql: str
+    args: list[SqlValue]
+    sql, args = where.where()
     return all_rows(
         con,
-        f"SELECT * FROM posts{where} ORDER BY COALESCE(posted_at, scraped_at) DESC LIMIT ?",
-        (*([user] if user else []), limit(requested)),
+        f"SELECT * FROM posts{sql} ORDER BY COALESCE(posted_at, scraped_at) DESC LIMIT ?",
+        (*args, limit(requested)),
     )
 
 
@@ -189,3 +222,23 @@ def run_times(con: sqlite3.Connection) -> tuple[str | None, str | None, str | No
         " (SELECT started_at FROM runs ORDER BY id LIMIT 1)",
     )
     return (text(row, 0), text(row, 1), text(row, 2)) if row else (None, None, None)
+
+
+def starts_since(con: sqlite3.Connection, cutoff: str) -> list[str]:
+    """Every run's started_at from `cutoff` (an ISO timestamp) on, oldest first: MAX_RUNS_PER_DAY's window."""
+    rows: list[sqlite3.Row] = all_rows(
+        con, "SELECT started_at FROM runs WHERE started_at >= ? ORDER BY started_at", (cutoff,)
+    )
+    return [string(r, 0) for r in rows]
+
+
+def following_state(con: sqlite3.Connection) -> tuple[int, str | None, int]:
+    """(accounts on the stored Following list, when it was last refreshed, accounts in a refresh held
+    back for being far shorter); zeros before those tables exist."""
+    row: sqlite3.Row | None = one_row(con, "SELECT COUNT(*), MAX(updated_at) FROM following")
+    held: sqlite3.Row | None = one_row(con, "SELECT COUNT(*) FROM following_pending")
+    return (
+        (sqlrows.cell_int(row, 0) or 0) if row else 0,
+        text(row, 1) if row else None,
+        (sqlrows.cell_int(held, 0) or 0) if held else 0,
+    )

@@ -3,7 +3,9 @@
     once                     one scrape run (recorded in the runs table like a scheduled one)
     login                    log in (or confirm the session is live), then stop Instagram
     profiles                 list the Instagram version profiles, what each covers and has validated
-    install [VERSION|latest] install an Instagram build (default: igprofiles.DEFAULT_BUILD)
+    install [--force] [VERSION|latest]
+                             install an Instagram build (default: igprofiles.DEFAULT_BUILD); refused
+                             without a /data snapshot younger than SNAPSHOT_MAX_DAYS unless --force
     dump                     save the current screen's hierarchy + screenshot to DEBUG_DIR
     doctor                   one report: control state, recent runs, device over plain adb, logcat
                              crash signatures with their fixes (never drives the device)
@@ -12,6 +14,8 @@
     lock / unlock            hold scheduled runs while driving the device by hand, then release
                              (unlock also clears the hold a login challenge raised)
     scrape-now               ask the poll loop to run now (rate-limited, see instadroid/control.py)
+    following [--accept]     the stored Following list, and a refresh held back for being far
+                             shorter; --accept stores that refresh instead
     rename OLD NEW           move an account's history to its new username
     rename --dismiss OLD NEW   OLD did not become NEW: drop that suspicion for good
 
@@ -44,6 +48,7 @@ from instadroid.scrape import RunStats
 
 if __name__ == "__main__":
     version: list[str]
+    args: list[str]
     action: str
     old: str
     new: str
@@ -89,11 +94,20 @@ if __name__ == "__main__":
                     f"  verified (suspected, between confirmed builds): {suspected}"
                 )
             print("default install:", default_build() or "latest")
-        case ["install", *version] if len(version) <= 1:
+        case ["install", *args] if len([a for a in args if a != "--force"]) <= 1:
+            version = [a for a in args if a != "--force"]
+            snapshot: str | None
+            if (snapshot := install.snapshot_problem()) and "--force" not in args:
+                sys.exit(
+                    f"{snapshot}. Stop redroid and run scripts/snapshot-android-data.sh first,"
+                    " or pass --force to replace Instagram without one."
+                )
             d = device.connect_device()
             print("installed:", install.install_instagram_version(d, version[0] if version else None))
         case ["install", *_]:
-            print("usage: scraper.py install [VERSION|latest]   (default: igprofiles.DEFAULT_BUILD)")
+            print(
+                "usage: scraper.py install [--force] [VERSION|latest]   (default: igprofiles.DEFAULT_BUILD)"
+            )
             sys.exit(1)
         case ["dump", *_]:
             d = device.connect_device()
@@ -130,6 +144,14 @@ if __name__ == "__main__":
         case ["backup", *_]:
             with closing(db.db_init()) as con:
                 print("wrote", backup.backup_database(con, force=True))
+        case ["following", *args] if args in ([], ["--accept"]):
+            with closing(db.db_init()) as con:
+                if args:
+                    print(f"stored the held refresh: {db.accept_following(con)} account(s)")
+                print(db.following_summary(con))
+        case ["following", *_]:
+            print("usage: scraper.py following [--accept]")
+            sys.exit(1)
         case ["rename", old, new] if not old.startswith("-"):
             n: int
             with closing(db.db_init()) as con:

@@ -16,6 +16,7 @@ import sqlite3
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
+import igprofiles
 from shared import sqlrows
 from shared.errors import short_error
 from shared.timestamps import parse_iso
@@ -24,18 +25,27 @@ from . import common, config, db
 from .common import log
 
 LOGIN: str = "login"
+RESTRICTED: str = "restricted"
 FAILING: str = "failing"
 NO_POSTS: str = "no_posts"
 RENAME: str = "rename"
+FOLLOWING: str = "following"
+NEWER_BUILD: str = "newer_build"
 TITLES: dict[str, str] = {
     RENAME: "an account seems to have a new username",
+    FOLLOWING: "the Following list came back much shorter",
+    NEWER_BUILD: "a newer validated Instagram build exists",
     LOGIN: "Instagram wants a human",
+    RESTRICTED: "Instagram is limiting the account",
     FAILING: "scrape runs keep failing",
     NO_POSTS: "no new posts",
 }
-# Errors navigation.ensure_logged_in() raises when a person has to step in: a challenge, a login form
-# it couldn't fill or get past, or missing credentials.
-_NEEDS_HUMAN: tuple[str, str, str, str] = (
+# The error navigation.check_restricted() raises when Instagram is limiting the account.
+_RESTRICTED: str = "restricted the account"
+# Errors that need a person to step in: a restriction, and what navigation.ensure_logged_in() raises
+# for a challenge, a login form it couldn't fill or get past, or missing credentials.
+_NEEDS_HUMAN: tuple[str, ...] = (
+    _RESTRICTED,
     "wants a human",
     "login page shown",
     "login screen shown",
@@ -59,7 +69,11 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
         for r in sqlrows.fetch_all(con.execute("SELECT error FROM runs ORDER BY id DESC LIMIT ?", (window,)))
     ]
     latest_error: str | None = runs[0] if runs else None
-    if latest_error is not None and needs_human(latest_error):
+    if latest_error is not None and _RESTRICTED in latest_error:
+        found[RESTRICTED] = (
+            f"leave the account alone for a day or more, then `scraper.py unlock`: {short_error(latest_error, 300)}"
+        )
+    elif latest_error is not None and needs_human(latest_error):
         found[LOGIN] = f"finish it in scrcpy: {short_error(latest_error, 300)}"
     if config.ALERT_FAILED_RUNS > 0 and len(runs) >= config.ALERT_FAILED_RUNS and all(runs):
         found[FAILING] = (
@@ -76,6 +90,15 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
         # Only once the scraper has been running for the whole window, so a fresh install is quiet.
         if first_run and first_run < cutoff and (newest_post is None or newest_post < cutoff):
             found[NO_POSTS] = f"no new post stored in {config.ALERT_NO_POSTS_HOURS:g}h"
+    held: tuple[int, int] | None
+    if held := db.held_following(con):
+        found[FOLLOWING] = (
+            f"a refresh found {held[0]} of the {held[1]} stored accounts, so the stored list was kept;"
+            " if you did unfollow them, `scraper.py following --accept`"
+        )
+    newer: str | None
+    if newer := _newer_validated(con):
+        found[NEWER_BUILD] = newer
     renames: list[tuple[str, str, int]] = db.rename_candidates(con)
     if renames:
         found[RENAME] = "; ".join(
@@ -83,6 +106,27 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
             for old, new, n in renames
         )
     return found
+
+
+def _newer_validated(con: sqlite3.Connection) -> str | None:
+    """The alert text when the installed Instagram (the latest run's) is older than the newest validated
+    build, or None. Quiet when IG_APK_VERSION pins a build, or asks for the latest from APKPure."""
+    if config.IG_APK_VERSION:
+        return None
+    installed: sqlrows.SqlValue = sqlrows.scalar(
+        con.execute("SELECT ig_version FROM runs WHERE ig_version IS NOT NULL ORDER BY id DESC LIMIT 1")
+    )
+    newest: str | None = igprofiles.newest_build()
+    if (
+        not isinstance(installed, str)
+        or not newest
+        or igprofiles.version_key(newest) <= igprofiles.version_key(installed)
+    ):
+        return None
+    return (
+        f"Instagram {installed} is installed and {newest} is validated: snapshot /data"
+        f" (scripts/snapshot-android-data.sh), then `scraper.py install {newest}`"
+    )
 
 
 def notify(kind: str, message: str, resolved: bool = False) -> str | None:
@@ -98,7 +142,7 @@ def notify(kind: str, message: str, resolved: bool = False) -> str | None:
         headers={
             "Title": title,
             "Tags": "white_check_mark" if resolved else "warning",
-            "Priority": "default" if resolved or kind != LOGIN else "high",
+            "Priority": "high" if not resolved and kind in (LOGIN, RESTRICTED) else "default",
             "Content-Type": "text/plain; charset=utf-8",
         },
     )

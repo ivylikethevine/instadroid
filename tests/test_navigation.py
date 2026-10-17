@@ -258,6 +258,35 @@ def test_scrape_once_filters_posts_from_accounts_not_on_the_refreshed_following_
     assert sqlrows.fetch_one(con.execute("SELECT 1 FROM accounts WHERE username='other_user'")) is None
 
 
+def test_scrape_once_holds_back_a_following_list_far_shorter_than_the_stored_one(
+    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 7)
+    monkeypatch.setattr(config, "FOLLOWING_SHRINK_PERCENT", 50)
+    monkeypatch.setattr(config, "FOLLOWING_LIST_EMPTY_LIMIT", 1)
+    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
+    monkeypatch.setattr(config, "MAX_SCROLLS", 2)
+    con: sqlite3.Connection = db.db_init()
+    con.executemany(
+        "INSERT INTO following (username, updated_at) VALUES (?, '2020-01-01')",
+        [("someone_nice",), ("other_user",), ("third",)],
+    )
+    d: FakeDevice = feed_device_with_following([["someone_nice"]], main_scroll={})
+
+    stats: scrape.RunStats = scrape.scrape_once(d, con)
+
+    assert "Following list refresh found 1 of 3 stored accounts" in (stats["metrics"].get("warning") or "")
+    assert set(sql_column(con.execute("SELECT username FROM following"))) == {
+        "someone_nice",
+        "other_user",
+        "third",
+    }
+    assert sql_column(con.execute("SELECT username FROM following_pending")) == ["someone_nice"]
+    assert not db.needs_following_refresh(con)  # the stored list's schedule moved on
+    assert "other_user" in sql_column(con.execute("SELECT username FROM posts"))  # still followed
+
+
 def test_scrape_once_does_not_filter_before_the_first_successful_refresh(
     fast_offline: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

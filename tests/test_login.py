@@ -87,6 +87,27 @@ def test_login_failures_raise_with_a_debug_dump(
     assert (fast_offline / "debug" / "login_hierarchy.xml").exists()
 
 
+def block_dialog() -> str:
+    return hierarchy(
+        node(cls="android.widget.TextView", text="Try Again Later", bounds=(0, 900, 1080, 980)),
+        node(cls="android.widget.Button", text="OK", bounds=(0, 1200, 1080, 1300), goto="home"),
+    )
+
+
+@pytest.mark.parametrize("start", ["blocked", "login"])  # at launch, or right after logging in
+def test_a_restriction_raises_before_its_ok_is_tapped(start: str, fast_offline: Path) -> None:
+    screens: dict[str, str] = {
+        "blocked": block_dialog(),
+        "login": login_screen(button_goto="blocked"),
+        "home": home_screen(),
+    }
+    d: FakeDevice = FakeDevice(screens, start)
+    with pytest.raises(RuntimeError, match="restricted the account: 'Try again later'"):
+        navigation.ensure_logged_in(d)
+    assert d.screen == "blocked" and "home" not in d.history
+    assert (fast_offline / "debug" / "restricted_hierarchy.xml").exists()
+
+
 def test_login_without_credentials_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "IG_PASSWORD", "")
     with pytest.raises(RuntimeError, match="not set"):
@@ -406,6 +427,19 @@ def test_an_update_screen_installs_a_newer_validated_build_in_place(
     assert (fast_offline / "debug" / "update_hierarchy.xml").exists()
     assert (fast_offline / "debug" / "updated_hierarchy.xml").exists()
     assert "updated Instagram 446.0.0.49.77 -> 450.0.0.50.77" in capsys.readouterr().out
+
+
+def test_an_update_without_a_recent_snapshot_goes_ahead_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, fast_offline: Path
+) -> None:
+    monkeypatch.setattr(config, "SNAPSHOT_MAX_DAYS", 7)
+    monkeypatch.setattr(config, "SNAPSHOT_DIR", fast_offline / "snapshots")
+    d: FakeDevice = _outdated(monkeypatch, [])
+    navigation.ensure_logged_in(d)
+    assert d.screen == "home"
+    warnings: list[str] = install.take_warnings()
+    assert len(warnings) == 1 and "updating Instagram with no /data snapshot" in warnings[0]
+    assert install.take_warnings() == []
 
 
 def test_latest_as_the_pinned_version_updates_to_the_newest_on_apkpure(

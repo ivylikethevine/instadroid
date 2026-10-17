@@ -15,7 +15,7 @@
 #   shell      shellcheck, shfmt                                                        (shell job)
 #   docs       markdownlint, prettier, lychee --offline, typos, docs-drift              (docs job)
 #   workflows  actionlint, lint-workflows, zizmor                          (actionlint + zizmor jobs)
-#   docker     hadolint (advisory), compose (`docker compose config`)                  (docker job)
+#   docker     hadolint (advisory), compose (`docker compose config` + bundle)         (docker job)
 # Each name on the right of a group is a subcommand too. The image build, smoke test and Trivy scan
 # stay CI-only, as do gitleaks and dependency review.
 #
@@ -337,6 +337,21 @@ check_compose() {
   }
   run "docker compose config" compose_config
   [ -z "$made" ] || rm -f .env
+  # The deploy bundle a release attaches (.github/scripts/release_bundle.sh), with a placeholder digest.
+  # shellcheck disable=SC2329 # called through run
+  bundle_config() {
+    local work archive status=0
+    work="$(mktemp -d "${TMPDIR:-/tmp}/bundle-check.XXXXXX")"
+    archive="$(.github/scripts/release_bundle.sh "ghcr.io/example/instadroid@sha256:$(printf '%064d' 0)" \
+      check "$work")" &&
+      tar -xzf "$archive" -C "$work" &&
+      cp "$work/instadroid-check/.env.example" "$work/instadroid-check/.env" &&
+      docker compose --project-directory "$work/instadroid-check" \
+        --env-file "$work/instadroid-check/.env.example" config -q || status=$?
+    case "$work" in */bundle-check.??????) rm -r -- "$work" ;; esac
+    return "$status"
+  }
+  run "release bundle config" bundle_config
 }
 
 # --- dispatch ------------------------------------------------------------------------------------

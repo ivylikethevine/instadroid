@@ -8,10 +8,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import igprofiles
 import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
-from instadroid import alerts, config
+from instadroid import alerts, config, db
 from shared.sqlrows import SqlValue
 
 from tests.feedclient import make_app
@@ -61,6 +62,18 @@ def test_no_conditions_on_a_healthy_history(con: sqlite3.Connection) -> None:
 def test_a_login_challenge_is_an_alert_straight_away(con: sqlite3.Connection) -> None:
     _run(con, 1, CHALLENGE)
     assert set(alerts.conditions(con, NOW)) == {alerts.LOGIN}
+
+
+def test_a_restriction_is_its_own_high_priority_alert(
+    con: sqlite3.Connection, sent: list[urllib.request.Request]
+) -> None:
+    error: str = "RuntimeError(\"Instagram restricted the account: 'Try again later' screen; see /debug\")"
+    assert alerts.needs_human(error)
+    _run(con, 1, error)
+    assert set(alerts.conditions(con, NOW)) == {alerts.RESTRICTED}
+    alerts.update(con, NOW)
+    assert sent[0].get_header("Title") == "instadroid: Instagram is limiting the account"
+    assert sent[0].get_header("Priority") == "high"
 
 
 def test_consecutive_failures_are_an_alert(con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -157,3 +170,22 @@ def test_an_open_alert_whose_message_changes_is_updated_quietly(
     assert len(sent) == 1  # the same alert is still open: no second notification
     messages: list[SqlValue] = sql_column(con.execute("SELECT message FROM alerts"))
     assert len(messages) == 1 and isinstance(messages[0], str) and "Enter the code" in messages[0]
+
+
+def test_an_installed_build_older_than_the_newest_validated_is_an_alert(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "IG_APK_VERSION", "")
+    assert alerts.NEWER_BUILD not in alerts.conditions(con, NOW)  # no run has read the version yet
+    at: str = (NOW - timedelta(hours=1)).isoformat()
+    db.record_run(con, at, at, 0, None, {"ig_version": "424.0.0.49.64"})
+    _run(con, 0.5)  # a later run that never reached the device leaves no version
+    newest: str | None = igprofiles.newest_build()
+    message: str = alerts.conditions(con, NOW)[alerts.NEWER_BUILD]
+    assert f"Instagram 424.0.0.49.64 is installed and {newest} is validated" in message
+    assert f"`scraper.py install {newest}`" in message
+    monkeypatch.setattr(config, "IG_APK_VERSION", "424.0.0.49.64")  # a pinned build is a choice
+    assert alerts.NEWER_BUILD not in alerts.conditions(con, NOW)
+    monkeypatch.setattr(config, "IG_APK_VERSION", "")
+    db.record_run(con, at, at, 0, None, {"ig_version": newest})
+    assert alerts.NEWER_BUILD not in alerts.conditions(con, NOW)

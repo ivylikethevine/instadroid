@@ -2,11 +2,10 @@
 
 import sqlite3
 import time
-from datetime import UTC, datetime
 
 import igprofiles
 
-from . import config, device, diagnostics, install, parsing, uidevice
+from . import config, db, device, diagnostics, install, parsing, uidevice
 from .common import log
 from .device import DeviceNotReady
 from .versioning import SELECTORS, versioned
@@ -27,6 +26,17 @@ def _challenge_present(d: uidevice.Device) -> str | None:
         if d(textContains=t).exists(timeout=0.5):
             return t
     return None
+
+
+def check_restricted(d: uidevice.Device, xml: str | None = None) -> None:
+    """Raise, for a person, when Instagram is limiting the account (parsing.restriction_text()), before
+    anything else is tapped: dismissing the dialog and carrying on is what turns a block into a ban.
+    Pass `xml` when the caller already has a fresh dump."""
+    xml = xml if xml is not None else d.dump_hierarchy()
+    t: str | None
+    if t := parsing.restriction_text(xml):
+        diagnostics.dump_debug(d, "restricted", xml=xml)
+        raise RuntimeError(f"Instagram restricted the account: '{t}' screen; see {config.DEBUG_DIR}")
 
 
 @versioned
@@ -64,6 +74,10 @@ def _update_instagram(d: uidevice.Device, title: str) -> None:
             f" see {config.DEBUG_DIR}"
         )
     log(f"Instagram {current} asks for an update ('{title}'); installing {target}")
+    snapshot: str | None
+    if snapshot := install.snapshot_problem():
+        # Not a refusal: the installed build won't run at all, and a snapshot needs redroid stopped.
+        install.warn(f"updating Instagram with {snapshot}; take one with scripts/snapshot-android-data.sh")
     installed: str | None = install.install_instagram(d, target, downgrade=True)
     device.launch_app(d)
     device.human_pause(4, 6)
@@ -81,6 +95,7 @@ def _update_instagram(d: uidevice.Device, title: str) -> None:
 @versioned
 def _dismiss_interstitials(d: uidevice.Device, rounds: int = 4) -> None:
     for _ in range(rounds):
+        check_restricted(d)  # a block's dialog has an "OK" too
         btn: uidevice.Selector | None = device.first(d, text=SELECTORS["dismiss_texts"])
         if not btn:
             return
@@ -145,6 +160,7 @@ def ensure_logged_in(d: uidevice.Device) -> None:
         # session is live" — a false positive that leaves the caller thinking it's logged in.
         diagnostics.dump_debug(d, "login")
         raise DeviceNotReady(f"could not bring {config.IG_PKG} to the foreground; see {config.DEBUG_DIR}")
+    check_restricted(d)  # before the stray-alert "OK" below can dismiss a block's dialog
     # Stray "Enter your password" style alert from a previous attempt.
     ok: uidevice.Selector = d(text=SELECTORS["stray_alert_ok_text"])
     if ok.exists(timeout=1):
@@ -421,26 +437,30 @@ def scrape_following_list(d: uidevice.Device) -> list[str] | None:
     return list(collected) if collected else None
 
 
-def refresh_following_list(d: uidevice.Device, con: sqlite3.Connection) -> None:
+def refresh_following_list(d: uidevice.Device, con: sqlite3.Connection) -> str | None:
     """Navigate to the own Following list, scrape it in full, and replace the stored allowlist
     with exactly what was found — so an unfollow is reflected simply by that username's row no
     longer existing after this runs. If the refresh fails (nothing collected, or navigation never
     reached the list), the existing stored list (if any) is left untouched rather than wiped, and
-    db.needs_following_refresh() will keep returning True so the next run tries again."""
+    db.needs_following_refresh() will keep returning True so the next run tries again. A refresh far
+    shorter than the stored list is held back (db.store_following()); the run warning for it is
+    returned."""
     if not open_own_following_list(d):
-        return
+        return None
     usernames: list[str] | None = scrape_following_list(d)
     if not usernames:
         log("WARN: following-list refresh collected nothing; keeping the existing list")
-        return
-    now_iso: str = datetime.now(UTC).isoformat()
-    con.execute("DELETE FROM following")
-    con.executemany(
-        "INSERT INTO following (username, updated_at) VALUES (?, ?)",
-        [(u, now_iso) for u in usernames],
-    )
-    con.commit()
+        return None
+    held: tuple[int, int] | None
+    if held := db.store_following(con, usernames):
+        warning: str = (
+            f"Following list refresh found {held[0]} of {held[1]} stored accounts; kept the stored list"
+            " (`scraper.py following --accept` takes the new one)"
+        )
+        log(f"WARN: {warning}")
+        return warning
     log(f"following list refreshed: {len(usernames)} accounts")
+    return None
 
 
 @versioned
