@@ -97,12 +97,13 @@ services:
     env_file: .env
     environment:
       REDROID_IMAGE: *redroid_image # recorded with each run, shown on /status
-    # The app's defaults for DB_PATH, MEDIA_DIR, DEBUG_DIR and APK_CACHE_DIR are these mounts.
+    # The app's defaults for DB_PATH, MEDIA_DIR, DEBUG_DIR, APK_CACHE_DIR and SNAPSHOT_DIR are these mounts.
     volumes:
       - ./local/data/db:/db
       - ./local/data/media:/media
       - ./local/data/debug:/debug
       - ./local/data/apk:/apk
+      - ./local/data/backups:/snapshots:ro # /data snapshots, checked before Instagram is replaced
     # Peak ~125MiB while scraping. No swap, same reason as redroid.
     mem_limit: 256m
     memswap_limit: 256m

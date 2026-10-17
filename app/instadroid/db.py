@@ -193,6 +193,15 @@ def db_init() -> sqlite3.Connection:
         )"""
     )
     con.execute(
+        # A refresh that came back far shorter than the stored list (store_following()), held back
+        # for a person: the stored list stays in use until a refresh agrees with it again or
+        # `scraper.py following --accept` takes this one.
+        """CREATE TABLE IF NOT EXISTS following_pending (
+            username TEXT PRIMARY KEY,
+            seen_at TEXT NOT NULL
+        )"""
+    )
+    con.execute(
         # A stored post seen again under another username (scrape.py): evidence of a rename, kept
         # until rename_account() moves the history or the post is pruned.
         """CREATE TABLE IF NOT EXISTS rename_candidates (
@@ -406,6 +415,71 @@ def needs_following_refresh(con: sqlite3.Connection) -> bool:
     return common.older_than(
         sqlrows.scalar(con.execute("SELECT MAX(updated_at) FROM following")), config.FOLLOWING_REFRESH_DAYS
     )
+
+
+def store_following(
+    con: sqlite3.Connection, usernames: list[str], force: bool = False
+) -> tuple[int, int] | None:
+    """Replace the stored Following list with a refresh's `usernames`, unless the refresh found fewer
+        than FOLLOWING_SHRINK_PERCENT of the stored count: a partial scroll or a restricted account
+        looks like that, and replacing the list would filter out accounts still followed. Such a refresh
+        is held in following_pending, the stored list's refresh time moves on so the schedule doesn't
+        retry it every run, and (found, stored) is returned. None when the list was replaced; `force`
+    always replaces it."""
+    now_iso: str = datetime.now(UTC).isoformat()
+    stored: int = sqlrows.scalar_int(con.execute("SELECT COUNT(*) FROM following")) or 0
+    shrink: float = config.FOLLOWING_SHRINK_PERCENT
+    if not force and shrink > 0 and len(usernames) * 100 < stored * shrink:
+        con.execute("DELETE FROM following_pending")
+        con.executemany(
+            "INSERT INTO following_pending (username, seen_at) VALUES (?, ?)",
+            [(u, now_iso) for u in usernames],
+        )
+        con.execute("UPDATE following SET updated_at = ?", (now_iso,))
+        con.commit()
+        return len(usernames), stored
+    con.execute("DELETE FROM following")
+    con.executemany(
+        "INSERT INTO following (username, updated_at) VALUES (?, ?)", [(u, now_iso) for u in usernames]
+    )
+    con.execute("DELETE FROM following_pending")
+    con.commit()
+    return None
+
+
+def held_following(con: sqlite3.Connection) -> tuple[int, int] | None:
+    """(found, stored) for a refresh store_following() held back, or None when there's none."""
+    found: int = sqlrows.scalar_int(con.execute("SELECT COUNT(*) FROM following_pending")) or 0
+    if not found:
+        return None
+    return found, sqlrows.scalar_int(con.execute("SELECT COUNT(*) FROM following")) or 0
+
+
+def accept_following(con: sqlite3.Connection) -> int:
+    """`scraper.py following --accept`: make the held refresh the stored Following list. Returns its
+    size, 0 when nothing was held."""
+    usernames: list[str] = [
+        sqlrows.must_str(r, 0)
+        for r in sqlrows.fetch_all(con.execute("SELECT username FROM following_pending"))
+    ]
+    if usernames:
+        _: tuple[int, int] | None = store_following(con, usernames, force=True)
+    return len(usernames)
+
+
+def following_summary(con: sqlite3.Connection) -> str:
+    """`scraper.py following`: the stored list's size and refresh time, and any held refresh."""
+    stored: int = sqlrows.scalar_int(con.execute("SELECT COUNT(*) FROM following")) or 0
+    if not stored:
+        return "no Following list stored (FOLLOWING_REFRESH_DAYS turns the allowlist on)"
+    refreshed: sqlrows.SqlValue = sqlrows.scalar(con.execute("SELECT MAX(updated_at) FROM following"))
+    lines: list[str] = [f"{stored} account(s) stored, refreshed {str(refreshed)[:16]}"]
+    held: tuple[int, int] | None
+    if held := held_following(con):
+        lines.append(
+            f"held back: a refresh that found {held[0]} account(s); `scraper.py following --accept` stores it"
+        )
+    return "\n".join(lines)
 
 
 def rename_account(con: sqlite3.Connection, old: str, new: str) -> int:

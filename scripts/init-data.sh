@@ -13,7 +13,7 @@ set -eu
 
 sh "$(dirname "$0")/guard-android-data.sh" "${1:?usage: $0 <redroid image>}" /data/android.image
 
-for d in db media debug apk; do
+for d in db media debug apk backups; do
   mkdir -p "/data/$d"
   if [ "$(stat -c %u "/data/$d")" = 0 ]; then
     chown 1000:1000 "/data/$d"

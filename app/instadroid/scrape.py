@@ -22,6 +22,7 @@ from . import (
     db,
     device,
     diagnostics,
+    install,
     navigation,
     parsing,
     reshare,
@@ -375,14 +376,18 @@ def _scrape_feed(
 ) -> RunStats:
     config.DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     capture.reset_last_url(d)
+    install.take_warnings()  # a run that failed after an update leaves its warning behind
     navigation.open_target_feed(d)
     # Read after opening the feed, not from run_recorded()'s snapshot: opening it can install Instagram
     # (ensure_logged_in's auto-install), which re-reads the version and would leave the snapshot's
     # stale or empty.
     ig_version: str | None = device.instagram_version(d)
+    warnings: list[str] = [*install.take_warnings()]  # an update while opening the feed
+    held: str | None
     if config.FOLLOWING_REFRESH_DAYS and db.needs_following_refresh(con):
         try:
-            navigation.refresh_following_list(d, con)
+            if held := navigation.refresh_following_list(d, con):
+                warnings.append(held)
         except Exception as e:  # a profile/list-navigation surprise must not sink the whole run
             log("WARN: following-list refresh failed, continuing with the existing list:", repr(e))
         navigation.open_target_feed(d)  # back onto the feed screen the post loop expects
@@ -391,7 +396,6 @@ def _scrape_feed(
         rows: list[sqlite3.Row] = sqlrows.fetch_all(con.execute("SELECT username FROM following"))
         if rows:  # empty/never-refreshed means "not initialized yet" -> filter nothing
             followed = {sqlrows.must_str(r, 0) for r in rows}
-    warnings: list[str] = []
     new_stories: int = 0
     stories_from: str = datetime.now(UTC).isoformat()
     reason: str | None
@@ -667,6 +671,7 @@ def _poll_loop(con: sqlite3.Connection) -> None:
             )
             control.wait(con, wait)
             continue  # re-check the lock and the budget: a scrape-now may have cut the wait short
+        control.set_next_run()
         exc: Exception | None = run_recorded(con)[1]
         failures = failures + 1 if exc else 0
         seconds: float

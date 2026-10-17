@@ -6,6 +6,15 @@ FreshRSS can reach so image links resolve). Per-account feeds: `/instagram.xml?u
 story frames, kept for `RETAIN_DAYS` like posts (see the README's "Stories") — subscribe to it separately if you want it. In each post,
 @mentions and #hashtags in the caption link to that account's or hashtag's Instagram page.
 
+**Filters**: `/instagram.xml` also takes `?kind=` (comma-separated `photo`, `carousel`, `reel`,
+`post`; `video` is the same as `reel`), `?since=` (an ISO date or time; without an offset it's in
+the `TZ` zone, compared with the posted time, else the saved one) and `?q=` (caption text,
+case-insensitive for ASCII), alone or together and with `?user=`: `/instagram.xml?kind=reel&q=recipe`.
+An unknown kind or an unreadable `since` is a 422.
+
+**JSON Feed**: `/instagram.json` (the same parameters) and `/stories.json` serve the same entries as
+[JSON Feed 1.1](https://www.jsonfeed.org/version/1.1/), for readers and scripts that prefer it.
+
 **Feed auth**: the feed server is open to anything that can reach it, which is fine on the default
 `FEED_HOST=127.0.0.1`. Before setting `FEED_HOST=0.0.0.0`, set `FEED_TOKEN` (or `FEED_TOKEN_FILE`):
 every path except `/health` then needs the token, as `Authorization: Bearer <token>`, as the

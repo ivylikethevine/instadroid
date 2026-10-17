@@ -429,6 +429,19 @@ def test_an_update_screen_installs_a_newer_validated_build_in_place(
     assert "updated Instagram 446.0.0.49.77 -> 450.0.0.50.77" in capsys.readouterr().out
 
 
+def test_an_update_without_a_recent_snapshot_goes_ahead_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, fast_offline: Path
+) -> None:
+    monkeypatch.setattr(config, "SNAPSHOT_MAX_DAYS", 7)
+    monkeypatch.setattr(config, "SNAPSHOT_DIR", fast_offline / "snapshots")
+    d: FakeDevice = _outdated(monkeypatch, [])
+    navigation.ensure_logged_in(d)
+    assert d.screen == "home"
+    warnings: list[str] = install.take_warnings()
+    assert len(warnings) == 1 and "updating Instagram with no /data snapshot" in warnings[0]
+    assert install.take_warnings() == []
+
+
 def test_latest_as_the_pinned_version_updates_to_the_newest_on_apkpure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

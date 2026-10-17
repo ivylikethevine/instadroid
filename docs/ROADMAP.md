@@ -21,22 +21,8 @@ A config flag, one function, a CI tweak, or docs.
   every tracked file and every added line of history, and also flags what no list can know: any
   `<user> posted a`, `<user>'s story` or `<user> and N others` text and any Instagram URL whose
   name or shortcode isn't one of the placeholders the fixtures use.
-- **A snapshot check before an Instagram update**: `scraper.py install` and the in-place
-  forced-update replace warn, or refuse, when the newest `/data` snapshot
-  (`scripts/snapshot-android-data.sh`) is older than a set number of days.
-- **An alert on a sharply shrunk Following list**: a refresh that returns far fewer accounts than the
-  stored list may be a partial scroll or an account restriction, and today it replaces the list
-  silently.
-- **An alert when a newer validated build exists**: `check_new_builds` runs only in CI; a local alert
-  would say when the installed build is behind the newest validated one.
-- **More on `/status`**: the next run's time, the runs left in the `MAX_RUNS_PER_DAY` window, the
-  allowlist's size and disk use.
-- **JSON Feed**: `/instagram.json` and `/stories.json` (JSON Feed 1.1), from the same queries as the
-  Atom feeds.
 - **Refresh pings for other readers**: `FRESHRSS_REFRESH_URL` generalized to a list of URLs with a
   configurable method, covering Miniflux's feed-refresh API, with a short section per reader.
-- **Feed filters**: `?kind=` (photo, carousel, reel), `?since=` and `?q=` (caption text) on
-  `/instagram.xml`.
 - **Alerts through Apprise**: `ALERT_URL` POSTs to ntfy or a webhook; Apprise URLs would add
   Discord, Telegram, Matrix, Gotify and email behind the one setting.
 - **Continuous fuzzing**: `tests/fuzz/fuzz_parsing.py` under ClusterFuzzLite instead of by hand
@@ -47,7 +33,7 @@ requests, external links after merge and weekly), spell check (typos), container
 advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
 (import-linter), hashed dependency locks (pip-compile), a `no_media_node` debug dump on the
 "media node not found" path, whole story frames, story frames matched across accounts, a retake of a
-dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration, `/opml?aggregate=0`, an unreachable upstream host counted as tool-version drift, a story that only reshares a stored post dropped, a resource-id report in the new-builds issue, an in-place update when Instagram demands one, a hold on an action block or restricted account, a heartbeat URL, a host preflight and a deploy bundle on each release. Earlier: credentials from a file, caption hashtag/mention links, optional feed
+dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration, `/opml?aggregate=0`, an unreachable upstream host counted as tool-version drift, a story that only reshares a stored post dropped, a resource-id report in the new-builds issue, an in-place update when Instagram demands one, a hold on an action block or restricted account, a heartbeat URL, a host preflight and a deploy bundle on each release, a snapshot check before an Instagram update, a held-back shrunk Following list, a newer-validated-build alert, the schedule and disk use on `/status`, JSON Feed and feed filters. Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
 

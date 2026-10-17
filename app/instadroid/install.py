@@ -1,6 +1,7 @@
 """Fetching Instagram with apkeep and installing it over adb."""
 
 import subprocess
+import time
 import zipfile
 from pathlib import Path
 
@@ -11,6 +12,46 @@ from .common import log
 from .device import DeviceNotReady
 
 NOTIFICATION_PERMISSION: str = "android.permission.POST_NOTIFICATIONS"
+SNAPSHOT_GLOB: str = "android-*.tar.gz"  # what scripts/snapshot-android-data.sh writes
+# Warnings an in-run update leaves for the run's record (navigation's forced-update replace), drained
+# by take_warnings().
+_WARNINGS: list[str] = []
+
+
+def snapshot_problem(now: float | None = None) -> str | None:
+    """Why replacing Instagram now would be riskier than it needs to be: no /data snapshot in
+    SNAPSHOT_DIR, or the newest is more than SNAPSHOT_MAX_DAYS old. None when there's a recent one, or
+    the check is off (0)."""
+    if config.SNAPSHOT_MAX_DAYS <= 0:
+        return None
+    mtimes: list[float] = []
+    p: Path
+    for p in config.SNAPSHOT_DIR.glob(SNAPSHOT_GLOB):
+        try:
+            mtimes.append(p.stat().st_mtime)
+        except OSError:
+            continue
+    if not mtimes:
+        return f"no /data snapshot in {config.SNAPSHOT_DIR}"
+    days: float = ((now or time.time()) - max(mtimes)) / 86400
+    if days <= config.SNAPSHOT_MAX_DAYS:
+        return None
+    return (
+        f"the newest /data snapshot is {days:.0f} days old (SNAPSHOT_MAX_DAYS={config.SNAPSHOT_MAX_DAYS:g})"
+    )
+
+
+def warn(message: str) -> None:
+    """Log a warning and keep it for the current run's record."""
+    log(f"WARN: {message}")
+    _WARNINGS.append(message)
+
+
+def take_warnings() -> list[str]:
+    """The warnings kept since the last call, which clears them."""
+    taken: list[str] = _WARNINGS.copy()
+    _WARNINGS.clear()
+    return taken
 
 
 def _apk_version(version: str | None = None) -> str:

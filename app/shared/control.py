@@ -5,8 +5,9 @@ Three plain files in a control directory (the database directory by default): ma
 scheduled runs back until it's removed or LOCK_MAX_HOURS old; needs-human.hold does the same but
 never expires, written by the scraper itself when Instagram wants a person (a challenge, a login
 form it couldn't get past) and cleared only by an unlock; and scrape-now asks the poll loop to start
-a run once RUN_NOW_MIN_MINUTES have passed since the last one finished. Each process reads its own
-settings from the environment; the functions here take them as arguments."""
+a run once RUN_NOW_MIN_MINUTES have passed since the last one finished. A fourth, next-run, is the
+poll loop telling /status when it means to start the next run. Each process reads its own settings
+from the environment; the functions here take them as arguments."""
 
 import os
 import time
@@ -20,6 +21,7 @@ from .timestamps import parse_iso
 LOCK: str = "manual.lock"
 HOLD: str = "needs-human.hold"  # its text is the error that raised it
 RUN_NOW: str = "scrape-now"
+NEXT_RUN: str = "next-run"  # its text is an ISO timestamp
 
 
 def env_control_dir(db_path: str, environ: Mapping[str, str] = os.environ) -> Path:
@@ -91,6 +93,21 @@ def request_run_now(control_dir: str | Path) -> None:
 
 def run_now_requested(control_dir: str | Path) -> bool:
     return (Path(control_dir) / RUN_NOW).exists()
+
+
+def set_next_run(control_dir: str | Path, at: datetime) -> None:
+    """Record when the poll loop means to start its next run (now, when one is starting)."""
+    path: Path = Path(control_dir) / NEXT_RUN
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(at.isoformat() + "\n")
+
+
+def next_run(control_dir: str | Path) -> datetime | None:
+    """When the poll loop last said its next run starts, or None when it hasn't said."""
+    try:
+        return parse_iso((Path(control_dir) / NEXT_RUN).read_text().strip())
+    except OSError:
+        return None
 
 
 def minutes_since(finished_at: SqlValue, now: datetime | None = None) -> float | None:

@@ -22,7 +22,7 @@ the password, every poll interval until someone noticed. `scraper.py unlock` cle
 
 import sqlite3
 import time
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shared import control as files
@@ -71,8 +71,18 @@ def take_run_now(con: sqlite3.Connection) -> bool:
     return True
 
 
+def set_next_run(seconds: float = 0) -> None:
+    """Tell /status the next run starts `seconds` from now (0: one is starting). Best-effort: a
+    read-only control directory must not stop the loop."""
+    try:
+        files.set_next_run(config.CONTROL_DIR, datetime.now(UTC) + timedelta(seconds=seconds))
+    except OSError as e:
+        log("WARN: could not record the next run's time:", repr(e))
+
+
 def wait(con: sqlite3.Connection, seconds: float) -> None:
     """Sleep up to `seconds`, in CONTROL_POLL_SECONDS steps, returning early for a scrape-now request."""
+    set_next_run(seconds)
     remaining: float = seconds
     while remaining > 0:
         if take_run_now(con):

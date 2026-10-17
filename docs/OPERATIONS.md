@@ -12,7 +12,9 @@ redroid incidents referred to below are written up in [INCIDENTS.md](INCIDENTS.m
 ## Health and restarts
 
 Every long-running service uses `restart: unless-stopped`, so they come back after a host reboot or a crash;
-`docker compose stop` (or `down`) keeps them down. `/status` is a plain-HTML page of recent runs.
+`docker compose stop` (or `down`) keeps them down. `/status` is a plain-HTML page of recent runs,
+with the next run's time, the runs `MAX_RUNS_PER_DAY` still allows in the 24h window, the
+allowlist's size and last refresh, and the disk used by media and the database.
 `/health` returns 503 — which the compose healthcheck turns into `unhealthy` in `docker ps` — when
 no run has finished within `POLL_MAX_HOURS` + 30min of the last one (the loop looks stuck), or no
 run has _succeeded_ for 2 × `POLL_MAX_HOURS` + 1h (e.g. a login challenge is waiting for you).
@@ -62,8 +64,11 @@ that keep meeting a block are what turn it into a ban. Its wording isn't confirm
 
 **Failure alerts**: after each run the scraper raises an alert for a login challenge, for Instagram
 restricting the account, for `ALERT_FAILED_RUNS` (default 3) failed runs in a row, optionally for
-no new post in `ALERT_NO_POSTS_HOURS`, and for an account that seems to have renamed itself (the alert names the
-`scraper.py rename` command; it clears once that's run, the suspicion is dismissed with `rename --dismiss`, or the post behind it is pruned). Each one is announced once when it's raised and once when it clears, as a
+no new post in `ALERT_NO_POSTS_HOURS`, for an account that seems to have renamed itself (the alert names the
+`scraper.py rename` command; it clears once that's run, the suspicion is dismissed with `rename --dismiss`, or the post behind it is pruned),
+for a Following-list refresh held back for being far shorter than the stored list (README.md's
+"Followed-accounts allowlist"), and for an installed Instagram older than the newest validated build
+(it names the build; quiet while `IG_APK_VERSION` is set). Each one is announced once when it's raised and once when it clears, as a
 POST to `ALERT_URL` (an [ntfy](https://ntfy.sh) topic URL works as is). With or without that, open
 alerts appear as the first entry of `/instagram.xml` and on `/status`, so the feed reader you already
 check shows them.
@@ -165,7 +170,9 @@ scraper writes a consistent copy of the database to `BACKUP_DIR` (default `local
 and keeps the newest `BACKUP_KEEP` (default 7); `docker compose exec app python scraper.py backup`
 takes one now. The expensive thing to lose is redroid's `/data`, with the logged-in session: stop
 redroid and run `scripts/snapshot-android-data.sh [--keep N]` before changing the redroid image or
-Instagram build, or a risky recovery step. It writes `local/data/backups/android-<time>.tar.gz`.
+Instagram build, or a risky recovery step. It writes `local/data/backups/android-<time>.tar.gz`. The app
+container sees that folder read-only at `SNAPSHOT_DIR`, so `scraper.py install` can refuse while the
+newest snapshot is more than `SNAPSHOT_MAX_DAYS` old.
 
 Stories live in their own `stories` table and `media/stories` subdirectory, but share `RETAIN_DAYS`
 with posts (`MEDIA_MAX_MB`'s size cap only ever considers posts, not stories) — see the README's

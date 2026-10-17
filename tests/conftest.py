@@ -108,6 +108,13 @@ def no_permalink_backfill(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "PERMALINK_BACKFILL_PER_RUN", 0)
 
 
+@pytest.fixture(autouse=True)
+def no_snapshot_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test machine has redroid's /data snapshots; the snapshot tests (test_snapshot_check.py) turn
+    the check back on."""
+    monkeypatch.setattr(config, "SNAPSHOT_MAX_DAYS", 0)
+
+
 @pytest.fixture
 def fast_offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The device-flow setup: databases and files under tmp_path, no pauses or sleeps, test credentials.

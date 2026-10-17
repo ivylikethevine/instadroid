@@ -2,8 +2,9 @@
 and imports nothing from the scraper: the database is the only thing the two share.
 
 /instagram.xml            -> everything
-/instagram.xml?user=NAME  -> one account
+/instagram.xml?user=NAME  -> one account (also ?kind=, ?since=, ?q=)
 /stories.xml              -> stored stories
+/instagram.json, /stories.json -> the same, as JSON Feed 1.1
 /opml                     -> one-step bulk subscribe: every feed above, as an OPML outline
 /media/<file>             -> cropped post images
 /status                   -> plain-HTML health/status page
@@ -16,7 +17,8 @@ FEED_TOKEN (or FEED_TOKEN_FILE) turns on auth for everything except /health, see
     auth       the token, signed media URLs, the cross-site refusal, access-log redaction
     queries    every read of the database, and typed row accessors
     render     timestamps, ETags, media URLs and images, captions
-    feeds      /instagram.xml, /stories.xml, /users, /opml
+    entries    what each post, story and alert says, for either feed format
+    feeds      /instagram.xml and .json, /stories.xml and .json, /users, /opml
     control    /control
     status     /health, /status
 """

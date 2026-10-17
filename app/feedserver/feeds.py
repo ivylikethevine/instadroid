@@ -1,24 +1,175 @@
-"""The subscription routes: /instagram.xml, /stories.xml, /users and /opml."""
+"""The subscription routes: /instagram.xml and /stories.xml, the same as JSON Feed (/instagram.json,
+/stories.json), /users and /opml."""
 
+import json
 import sqlite3
 from datetime import UTC, datetime
-from html import escape
-from urllib.parse import quote
+from typing import Annotated
+from urllib.parse import quote, urlencode
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from feedgen.entry import FeedEntry
 from feedgen.feed import FeedGenerator
-from shared.sqlrows import opt_str
-from shared.timestamps import parse_iso
+from shared import env
 
 from . import queries, render, settings
-from .queries import string, text
+from .entries import Entry, alert_entries, post_entries, story_entries
 
 router: APIRouter = APIRouter()
 
 
-# responses= for the Atom feed routes, written out on each: FastAPI types that parameter as
+KINDS: dict[str, str] = {
+    "photo": "photo",
+    "carousel": "carousel",
+    "reel": "video",
+    "video": "video",
+    "post": "post",
+}
+JSON_FEED: str = "application/feed+json"
+
+type Json = str | int | float | bool | None | list[Json] | dict[str, Json]
+
+
+def _kinds(kind: str | None) -> tuple[str, ...]:
+    """?kind=photo,reel as the stored kinds it selects; 422 for a name not in KINDS."""
+    names: list[str] = [k.strip().lower() for k in (kind or "").split(",") if k.strip()]
+    unknown: list[str] = [k for k in names if k not in KINDS]
+    if unknown:
+        raise HTTPException(422, f"unknown kind {', '.join(unknown)} (one of: {', '.join(KINDS)})")
+    return tuple(sorted({KINDS[k] for k in names}))
+
+
+def _since(since: str | None) -> str | None:
+    """?since= as a UTC ISO timestamp. A date is its midnight, and a time without an offset is read, in
+    the TZ setting's zone; 422 when it's neither a date nor a time."""
+    if not since:
+        return None
+    parsed: datetime
+    try:
+        parsed = datetime.fromisoformat(since.strip())
+    except ValueError:
+        raise HTTPException(422, f"since={since!r} is not an ISO date or time") from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=env.zone(settings.TIMEZONE))
+    return parsed.astimezone(UTC).isoformat()
+
+
+def _self_url(path: str, **params: str | None) -> str:
+    query: dict[str, str] = {k: v for k, v in params.items() if v}
+    return f"{settings.PUBLIC_URL}{path}" + (f"?{urlencode(query, quote_via=quote)}" if query else "")
+
+
+def _atom(feed_url: str, title: str, entries: list[Entry], etag: str) -> Response:
+    fg: FeedGenerator = render.new_feed(feed_url, title)
+    fe: FeedEntry
+    e: Entry
+    for e in entries:
+        fe = fg.add_entry(order="append")
+        fe.id(e.id)
+        fe.title(e.title)
+        fe.link(href=e.url)
+        if e.author:
+            fe.author(name=e.author)
+        fe.updated(e.updated)
+        if e.published:
+            fe.published(e.published)
+        if e.image:
+            render.thumbnail(fe, e.image)
+        fe.content(e.html, type="html")
+    return Response(fg.atom_str(pretty=True), media_type="application/atom+xml", headers={"ETag": etag})
+
+
+def _json_item(e: Entry) -> dict[str, Json]:
+    item: dict[str, Json] = {
+        "id": e.id,
+        "url": e.url,
+        "title": e.title,
+        "content_html": e.html,
+        "date_modified": e.updated.isoformat(),
+    }
+    if e.published:
+        item["date_published"] = e.published.isoformat()
+    if e.image:
+        item["image"] = render.media_url(e.image)
+    if e.author:
+        author: dict[str, Json] = {"name": e.author, "url": e.author_url}
+        if e.avatar:
+            author["avatar"] = render.media_url(e.avatar)
+        item["authors"] = [author]
+    return item
+
+
+def _json(feed_url: str, title: str, home: str, entries: list[Entry], etag: str) -> Response:
+    """A JSON Feed 1.1 document (https://www.jsonfeed.org/version/1.1/)."""
+    body: dict[str, Json] = {
+        "version": "https://jsonfeed.org/version/1.1",
+        "title": title,
+        "home_page_url": home,
+        "feed_url": feed_url,
+        "items": [_json_item(e) for e in entries],
+    }
+    return Response(json.dumps(body, ensure_ascii=False), media_type=JSON_FEED, headers={"ETag": etag})
+
+
+def _posts_feed(
+    request: Request,
+    fmt: str,
+    user: str | None,
+    kind: str | None,
+    since: str | None,
+    q: str | None,
+    limit: int,
+) -> Response:
+    where: queries.PostFilter = queries.PostFilter(user, _kinds(kind), _since(since), q or None)
+    con: sqlite3.Connection
+    etag: str
+    not_modified: Response | None
+    with queries.connection() as con:
+        # Open failure alerts go first in the aggregate feed, where a reader is already looking.
+        alerts: list[sqlite3.Row] = [] if user else queries.open_alerts(con)
+        etag, not_modified = render.cached(
+            request,
+            fmt,
+            user,
+            where.kinds,
+            where.since,
+            where.q,
+            limit,
+            *queries.feed_signal(con, user, alerts),
+        )
+        if not_modified:
+            return not_modified
+        entries: list[Entry] = alert_entries(alerts) + post_entries(con, queries.posts(con, where, limit))
+    feed_url: str = _self_url(f"/instagram.{fmt}", user=user, kind=kind, since=since, q=q)
+    title: str = f"Instagram — {user}" if user else "Instagram — Following"
+    if fmt == "json":
+        home: str = f"https://www.instagram.com/{quote(user)}/" if user else "https://www.instagram.com/"
+        return _json(feed_url, title, home, entries, etag)
+    return _atom(feed_url, title, entries, etag)
+
+
+def _stories_feed(request: Request, fmt: str, limit: int) -> Response:
+    con: sqlite3.Connection
+    etag: str
+    not_modified: Response | None
+    with queries.connection() as con:
+        etag, not_modified = render.cached(request, fmt, limit, *queries.stories_stats(con))
+        if not_modified:
+            return not_modified
+        entries: list[Entry] = story_entries(queries.stories(con, limit))
+    feed_url: str = f"{settings.PUBLIC_URL}/stories.{fmt}"
+    if fmt == "json":
+        return _json(feed_url, "Instagram — Stories", "https://www.instagram.com/", entries, etag)
+    return _atom(feed_url, "Instagram — Stories", entries, etag)
+
+
+_KIND_HELP: str = "Comma-separated: photo, carousel, reel (or video), post."
+_SINCE_HELP: str = "Posts from this ISO date or time on; without an offset, in the TZ setting's zone."
+_Q_HELP: str = "Posts whose caption contains this text (case-insensitive for ASCII)."
+
+
+# responses= for each feed route, written out on each: FastAPI types that parameter as
 # dict[int | str, dict[str, Any]], which only a literal in place matches without an Any of our own.
 @router.get(
     "/instagram.xml",
@@ -26,96 +177,38 @@ router: APIRouter = APIRouter()
     responses={200: {"content": {"application/atom+xml": {}}, "description": "An Atom feed."}, 304: {}},
     summary="Posts feed",
 )
-def feed(request: Request, user: str | None = None, limit: int = 200) -> Response:
-    """Stored posts as Atom, newest first. `user` narrows it to one account; `limit` is capped at
-    500."""
-    con: sqlite3.Connection
-    etag: str
-    not_modified: Response | None
-    with queries.connection() as con:
-        # Open failure alerts go first in the aggregate feed, where a reader is already looking.
-        alerts: list[sqlite3.Row] = [] if user else queries.open_alerts(con)
-        etag, not_modified = render.cached(request, user, limit, *queries.feed_signal(con, user, alerts))
-        if not_modified:
-            return not_modified
-        entries: list[sqlite3.Row] = queries.posts(con, user, limit)
-        extra_slides: dict[str, list[str]] = queries.extra_slides(con, [string(r, "id") for r in entries])
-        avatars: dict[str, str] = queries.avatar_files(con)
+def feed(
+    request: Request,
+    user: str | None = None,
+    kind: Annotated[str | None, Query(description=_KIND_HELP)] = None,
+    since: Annotated[str | None, Query(description=_SINCE_HELP)] = None,
+    q: Annotated[str | None, Query(description=_Q_HELP)] = None,
+    limit: int = 200,
+) -> Response:
+    """Stored posts as Atom, newest first. `user` narrows it to one account, and `kind`, `since` and
+    `q` narrow it further; `limit` is capped at 500."""
+    return _posts_feed(request, "xml", user, kind, since, q, limit)
 
-    public_url: str = settings.PUBLIC_URL
-    fg: FeedGenerator = render.new_feed(
-        f"{public_url}/instagram.xml" + (f"?user={user}" if user else ""),
-        f"Instagram — {user}" if user else "Instagram — Following",
-    )
 
-    # Each alert gets a new id per raise, so a reader shows it again if it's resolved and raised later.
-    fe: FeedEntry
-    alert: sqlite3.Row
-    for alert in alerts:
-        message: str = string(alert, "message")
-        fe = fg.add_entry(order="append")
-        fe.id(f"{public_url}/alert/{string(alert, 'kind')}/{string(alert, 'raised_at')}")
-        fe.title(f"⚠ instadroid needs attention: {message[:90]}")
-        fe.link(href=f"{public_url}/status")
-        raised: datetime = parse_iso(text(alert, "raised_at")) or datetime.now(UTC)
-        fe.updated(raised)
-        fe.published(raised)
-        fe.content(
-            f"<p>{escape(message)}</p><p><small>since {render.local(raised)} · "
-            f'<a href="{public_url}/status">status page</a></small></p>',
-            type="html",
-        )
-
-    username: str
-    kind: str | None
-    media_file: str | None
-    posted_date: str | None
-    place: str | None
-    scraped_abs: datetime | None
-    r: sqlite3.Row
-    for r in entries:
-        username, kind, media_file = string(r, "username"), text(r, "kind"), text(r, "media_file")
-        fe = fg.add_entry(order="append")
-        fe.id(f"{public_url}/post/{string(r, 'id')}")
-        caption: str = text(r, "caption") or ""
-        first_line: str = caption.split("\n", 1)[0][:90] or kind or "post"
-        marker: str = "▶ " if kind == "video" else ""  # Reels and videos are stored as kind "video"
-        fe.title(f"{marker}{username}: {first_line}")
-        url: str = opt_str(r, "url") or f"https://www.instagram.com/{username}/"
-        fe.link(href=url)
-        fe.author(name=username)
-        fe.updated(parse_iso(text(r, "scraped_at")) or datetime.now(UTC))
-        posted_abs: datetime | None = parse_iso(opt_str(r, "posted_at"))
-        if posted_abs:
-            fe.published(posted_abs)
-        html: str = ""
-        avatar: str | None = avatars.get(username)
-        if avatar:
-            html += f'<p><img src="{render.media_url(avatar)}" alt="" width="48" height="48" /></p>'
-        slide: str
-        for slide in ([media_file] if media_file else []) + extra_slides.get(string(r, "id"), []):
-            html += f"<p>{render.img(slide)}</p>"
-        if media_file:
-            render.thumbnail(fe, media_file)
-        html += f"<p>{render.caption_html(caption)}</p>"
-        # Both dates are also on the entry itself (<published>/<updated>) for readers that sort by
-        # those, but spelling them out here means sorting-by-eye works in any reader.
-        meta: list[str] = []
-        if posted_date := text(r, "posted_date"):
-            meta.append(
-                f"Posted {escape(posted_date)}" + (f" ({render.local(posted_abs)})" if posted_abs else "")
-            )
-        elif posted_abs:
-            meta.append(f"Posted {render.local(posted_abs)}")
-        if place := opt_str(r, "place"):
-            meta.append(f"at {escape(place)}")
-        if scraped_abs := parse_iso(text(r, "scraped_at")):
-            meta.append(f"saved {render.local(scraped_abs)}")
-        meta.append(f'<a href="{escape(url)}">open on Instagram</a>')
-        html += f"<p><small>{' · '.join(meta)}</small></p>"
-        fe.content(html, type="html")
-
-    return Response(fg.atom_str(pretty=True), media_type="application/atom+xml", headers={"ETag": etag})
+@router.get(
+    "/instagram.json",
+    response_class=Response,
+    responses={
+        200: {"content": {"application/feed+json": {}}, "description": "A JSON Feed 1.1 document."},
+        304: {},
+    },
+    summary="Posts feed, as JSON Feed",
+)
+def json_feed(
+    request: Request,
+    user: str | None = None,
+    kind: Annotated[str | None, Query(description=_KIND_HELP)] = None,
+    since: Annotated[str | None, Query(description=_SINCE_HELP)] = None,
+    q: Annotated[str | None, Query(description=_Q_HELP)] = None,
+    limit: int = 200,
+) -> Response:
+    """/instagram.xml's entries, with the same parameters, as JSON Feed 1.1."""
+    return _posts_feed(request, "json", user, kind, since, q, limit)
 
 
 @router.get(
@@ -126,37 +219,21 @@ def feed(request: Request, user: str | None = None, limit: int = 200) -> Respons
 )
 def stories_feed(request: Request, limit: int = 200) -> Response:
     """Stored story frames as Atom, newest first; `limit` is capped at 500."""
-    con: sqlite3.Connection
-    etag: str
-    not_modified: Response | None
-    with queries.connection() as con:
-        etag, not_modified = render.cached(request, limit, *queries.stories_stats(con))
-        if not_modified:
-            return not_modified
-        entries: list[sqlite3.Row] = queries.stories(con, limit)
-    fg: FeedGenerator = render.new_feed(f"{settings.PUBLIC_URL}/stories.xml", "Instagram — Stories")
+    return _stories_feed(request, "xml", limit)
 
-    username: str
-    media_file: str | None
-    fe: FeedEntry
-    r: sqlite3.Row
-    for r in entries:
-        username, media_file = string(r, "username"), text(r, "media_file")
-        fe = fg.add_entry(order="append")
-        fe.id(f"{settings.PUBLIC_URL}/story/{string(r, 'id')}")
-        fe.title(f"{username}'s story")
-        fe.link(href=f"https://www.instagram.com/{username}/")
-        fe.author(name=username)
-        scraped: datetime = parse_iso(text(r, "scraped_at")) or datetime.now(UTC)
-        fe.updated(scraped)
-        fe.published(scraped)
-        html: str = f"<p>{render.img(media_file)}</p>" if media_file else ""
-        if media_file:
-            render.thumbnail(fe, media_file)
-        html += f"<p><small>saved {render.local(scraped)}</small></p>"
-        fe.content(html, type="html")
 
-    return Response(fg.atom_str(pretty=True), media_type="application/atom+xml", headers={"ETag": etag})
+@router.get(
+    "/stories.json",
+    response_class=Response,
+    responses={
+        200: {"content": {"application/feed+json": {}}, "description": "A JSON Feed 1.1 document."},
+        304: {},
+    },
+    summary="Stories feed, as JSON Feed",
+)
+def stories_json_feed(request: Request, limit: int = 200) -> Response:
+    """/stories.xml's entries as JSON Feed 1.1."""
+    return _stories_feed(request, "json", limit)
 
 
 @router.get("/users", summary="Accounts with stored posts")

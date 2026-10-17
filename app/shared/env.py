@@ -23,6 +23,11 @@ def env_poll_max_hours(environ: Mapping[str, str] = os.environ) -> float:
     return float(environ.get("POLL_MAX_HOURS", "4.5"))
 
 
+def env_max_runs_per_day(environ: Mapping[str, str] = os.environ) -> int:
+    """MAX_RUNS_PER_DAY: the ceiling on runs started in any 24h window, which /status counts down; 0 = off."""
+    return int(environ.get("MAX_RUNS_PER_DAY", "12"))
+
+
 def _zone(name: str, value: str) -> str:
     """`value` when it's an IANA zone this system knows (a leading ":", libc's spelling of a zone file,
     is dropped); otherwise "", with a warning for a value that isn't."""

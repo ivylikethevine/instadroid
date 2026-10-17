@@ -16,6 +16,7 @@ import sqlite3
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
+import igprofiles
 from shared import sqlrows
 from shared.errors import short_error
 from shared.timestamps import parse_iso
@@ -28,8 +29,12 @@ RESTRICTED: str = "restricted"
 FAILING: str = "failing"
 NO_POSTS: str = "no_posts"
 RENAME: str = "rename"
+FOLLOWING: str = "following"
+NEWER_BUILD: str = "newer_build"
 TITLES: dict[str, str] = {
     RENAME: "an account seems to have a new username",
+    FOLLOWING: "the Following list came back much shorter",
+    NEWER_BUILD: "a newer validated Instagram build exists",
     LOGIN: "Instagram wants a human",
     RESTRICTED: "Instagram is limiting the account",
     FAILING: "scrape runs keep failing",
@@ -85,6 +90,15 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
         # Only once the scraper has been running for the whole window, so a fresh install is quiet.
         if first_run and first_run < cutoff and (newest_post is None or newest_post < cutoff):
             found[NO_POSTS] = f"no new post stored in {config.ALERT_NO_POSTS_HOURS:g}h"
+    held: tuple[int, int] | None
+    if held := db.held_following(con):
+        found[FOLLOWING] = (
+            f"a refresh found {held[0]} of the {held[1]} stored accounts, so the stored list was kept;"
+            " if you did unfollow them, `scraper.py following --accept`"
+        )
+    newer: str | None
+    if newer := _newer_validated(con):
+        found[NEWER_BUILD] = newer
     renames: list[tuple[str, str, int]] = db.rename_candidates(con)
     if renames:
         found[RENAME] = "; ".join(
@@ -92,6 +106,27 @@ def conditions(con: sqlite3.Connection, now: datetime | None = None) -> dict[str
             for old, new, n in renames
         )
     return found
+
+
+def _newer_validated(con: sqlite3.Connection) -> str | None:
+    """The alert text when the installed Instagram (the latest run's) is older than the newest validated
+    build, or None. Quiet when IG_APK_VERSION pins a build, or asks for the latest from APKPure."""
+    if config.IG_APK_VERSION:
+        return None
+    installed: sqlrows.SqlValue = sqlrows.scalar(
+        con.execute("SELECT ig_version FROM runs WHERE ig_version IS NOT NULL ORDER BY id DESC LIMIT 1")
+    )
+    newest: str | None = igprofiles.newest_build()
+    if (
+        not isinstance(installed, str)
+        or not newest
+        or igprofiles.version_key(newest) <= igprofiles.version_key(installed)
+    ):
+        return None
+    return (
+        f"Instagram {installed} is installed and {newest} is validated: snapshot /data"
+        f" (scripts/snapshot-android-data.sh), then `scraper.py install {newest}`"
+    )
 
 
 def notify(kind: str, message: str, resolved: bool = False) -> str | None:

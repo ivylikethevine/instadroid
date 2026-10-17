@@ -1,17 +1,22 @@
 """Is the scraper healthy: /health for the compose healthcheck, /status for a person."""
 
+import os
+import shutil
 import sqlite3
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from html import escape
+from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+from shared import control as files
 from shared.errors import short_error
 from shared.sqlrows import cell_int, has_column, opt_int, opt_str
 from shared.timestamps import parse_iso
 
-from . import control, queries, settings
+from . import control, queries, render, settings
 from .queries import string, text
 
 router: APIRouter = APIRouter()
@@ -117,6 +122,85 @@ def _run_result(run: sqlite3.Row) -> tuple[str, str]:
     return "", "ok"
 
 
+def _in(delta: timedelta) -> str:
+    """ "2h 05m" or "12m" for a wait."""
+    h: int
+    m: int
+    h, m = divmod(max(int(delta.total_seconds()) // 60, 0), 60)
+    return f"{h}h {m:02d}m" if h else f"{m}m"
+
+
+def _next_run(state: control.ControlState, now: datetime) -> str:
+    if state.locked:
+        return "held while locked"
+    at: datetime | None = files.next_run(settings.CONTROL_DIR)
+    if at is None:
+        return "not scheduled yet"
+    if at <= now:
+        return "starting now, or in progress"
+    return f"{render.local(at)} (in {_in(at - now)})"
+
+
+def _budget(starts: list[str], now: datetime) -> str:
+    """The runs MAX_RUNS_PER_DAY still allows in the 24h window, and when the next is allowed at 0."""
+    limit: int = settings.MAX_RUNS_PER_DAY
+    if limit <= 0:
+        return "no daily run limit (MAX_RUNS_PER_DAY=0)"
+    cutoff: datetime = now - timedelta(days=1)
+    started: list[datetime] = [t for t in map(parse_iso, starts) if t is not None and t >= cutoff]
+    left: int = max(limit - len(started), 0)
+    line: str = f"{left} of {limit} left in the last 24h"
+    if not left:
+        line += f"; the next is allowed at {render.local(started[-limit] + timedelta(days=1))}"
+    return line
+
+
+def _allowlist(stored: int, refreshed: str | None, held: int) -> str:
+    if not stored:
+        return "not in use (FOLLOWING_REFRESH_DAYS)"
+    when: datetime | None = parse_iso(refreshed)
+    line: str = f"{stored} account(s)" + (f", refreshed {render.local(when)}" if when else "")
+    if held:
+        line += f"; a refresh that found {held} is held back (`scraper.py following --accept`)"
+    return line
+
+
+def _tree_size(root: Path) -> tuple[int, int]:
+    """(bytes, files) under `root`; zeros when it's missing."""
+    size: int = 0
+    count: int = 0
+    names: list[str]
+    folder: str
+    for folder, _, names in os.walk(root):
+        name: str
+        for name in names:
+            with suppress(OSError):
+                size += (Path(folder) / name).stat().st_size
+                count += 1
+    return size, count
+
+
+def _mib(size: float) -> str:
+    return f"{size / 2**30:.1f} GiB" if size >= 2**30 else f"{size / 2**20:.0f} MiB"
+
+
+def _disk() -> str:
+    """Media and database sizes, and the free space where the database lives."""
+    media: int
+    files_n: int
+    media, files_n = _tree_size(settings.MEDIA_DIR)
+    db: Path = Path(settings.DB_PATH)
+    database: int = 0
+    suffix: str
+    for suffix in ("", "-wal", "-shm"):
+        with suppress(OSError):
+            database += Path(f"{db}{suffix}").stat().st_size
+    line: str = f"media {_mib(media)} ({files_n} file(s)), database {_mib(database)}"
+    with suppress(OSError):
+        line += f", {_mib(shutil.disk_usage(db.parent).free)} free"
+    return line
+
+
 @router.get("/status", response_class=HTMLResponse, summary="Status page")
 def status_page() -> HTMLResponse:
     """A plain-HTML page of recent runs, the device, and per-account totals."""
@@ -130,6 +214,8 @@ def status_page() -> HTMLResponse:
         device: sqlite3.Row | None = queries.latest_device(con)
         alerts: list[sqlite3.Row] = queries.open_alerts(con)
         health_label, health_reason = scraper_health(con)  # same verdict /health gives the healthcheck
+        starts: list[str] = queries.starts_since(con, (datetime.now(UTC) - timedelta(days=1)).isoformat())
+        following: tuple[int, str | None, int] = queries.following_state(con)
     total: int = sum(cell_int(u, "n") or 0 for u in users)
     latest: sqlite3.Row | None = runs[0] if runs else None
 
@@ -200,6 +286,14 @@ def status_page() -> HTMLResponse:
         "</p>"
     )
 
+    now: datetime = datetime.now(UTC)
+    schedule_html: str = (
+        f"<p>Next run: {escape(_next_run(state, now))}<br>"
+        f"Runs: {escape(_budget(starts, now))}<br>"
+        f"Allowlist: {escape(_allowlist(*following))}<br>"
+        f"Disk: {escape(_disk())}</p>"
+    )
+
     def _result_cell(r: sqlite3.Row) -> str:
         css: str
         cell_text: str
@@ -259,6 +353,8 @@ async function control(method, path) {{
 <p>{device_line}</p>
 <h2>Last scrape</h2>
 {latest_html}
+<h2>Schedule and storage</h2>
+{schedule_html}
 <h2>Recent runs</h2>
 <table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Filtered</th><th>Link fails</th><th>Instagram</th><th>Peak mem</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="9">none</td></tr>'}</table>
 <h2>Totals</h2>
