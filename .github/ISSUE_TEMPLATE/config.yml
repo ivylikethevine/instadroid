@@ -10,8 +10,13 @@ contact_links:
     about: >-
       What's in scope, what's out of scope, and how reports are handled -
       worth reading before deciding something is a bug.
+  - name: Ask a question
+    url: https://github.com/ivylikethevine/instadroid/discussions
+    about: >-
+      Questions, setup help, and ideas that aren't a bug report or a concrete
+      feature request.
   - name: Getting help
     url: https://github.com/ivylikethevine/instadroid/blob/main/docs/SUPPORT.md
     about: >-
-      Where to ask, what to include (`scraper.py doctor` output), and what to expect
-      from a one-maintainer project.
+      Where to ask, what to include, and what to expect from a one-maintainer
+      project.
