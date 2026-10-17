@@ -101,11 +101,22 @@ follow before running redroid on a host you haven't personally tested it on.
 
 ```bash
 cp .env.example .env                 # fill in IG_USERNAME / IG_PASSWORD (or IG_PASSWORD_FILE)
+scripts/preflight.sh                 # checks the host first: binder, Docker, memory, ports
 docker compose pull                  # a bad image tag fails here, cheaply
 docker compose up -d --build         # redroid boots (1-9 min; `docker ps` shows it healthy once it has)
 docker compose exec app python scraper.py login      # types the .env credentials into the login form
 docker compose exec app python scraper.py once        # first scrape, watch the output
 ```
+
+That builds the app image from a clone. To run a release without one, download its
+`instadroid-<tag>.tar.gz` from the [releases page](https://github.com/ivylikethevine/instadroid/releases):
+the same compose file with the published image pinned by digest, `.env.example` and the host scripts.
+Extract it and run the same commands from its folder, `--build` left out.
+
+`scripts/preflight.sh` changes nothing and starts nothing. It fails on what would stop redroid or
+harm the host: two binder drivers on one kernel (the kernel panic in
+[docs/INCIDENTS.md](docs/INCIDENTS.md)), no binder at all, rootless Docker, too little memory for
+`REDROID_MEM_LIMIT`, a port already taken, or a `/data` volume from another Android version.
 
 On its first connect after each app start (a restart of redroid alone doesn't count; run
 `scripts/tune-android.sh` then, or restart the app) the app waits for Android to finish booting and

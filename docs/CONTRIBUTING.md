@@ -143,6 +143,8 @@ Parts of this project drive a real redroid container and a real Instagram accoun
 time, including a kernel panic, `/data` corruption from mixing Android versions, and a whole-host
 freeze from a scrape that ran out of memory. The rules that came out of them:
 
+- On a host redroid hasn't run on before, run `scripts/preflight.sh` first: it fails on two binder
+  drivers on one kernel, the cause of the kernel panic.
 - Before a device-driving run (`scraper.py login`, `once`, `scrape-now`, `install`, `new-profile baseline` or
   `restore`), check `docker stats` headroom and force-stop Instagram. Keep scrape test runs short
   (`MAX_SCROLLS=5`, `MAX_STORIES_PER_RUN=2`), and don't interleave manual `adb`/`am` commands with a
@@ -178,7 +180,8 @@ until v1.0: every added pin is upkeep.
   `.github/scripts/docs_drift.py`: `.env.example` names every setting the app and compose read,
   every long doc's `## Contents` matches its headings, and no page on the site links into a path the
   site leaves out;
-- a build and smoke test of the image and `docker compose config`, with hadolint and a Trivy scan of
+- a build and smoke test of the image, and `docker compose config` on the compose file and on the
+  release's deploy bundle, with hadolint and a Trivy scan of
   the image as **advisory** steps: a finding is a warning and a step summary (Trivy's also goes to
   the Security tab), never a failed job;
 - gitleaks, actionlint (with `.github/scripts/lint_workflows.sh`'s structural rules) and zizmor.

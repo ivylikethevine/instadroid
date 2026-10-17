@@ -21,9 +21,6 @@ A config flag, one function, a CI tweak, or docs.
   every tracked file and every added line of history, and also flags what no list can know: any
   `<user> posted a`, `<user>'s story` or `<user> and N others` text and any Instagram URL whose
   name or shortcode isn't one of the placeholders the fixtures use.
-- **A host preflight**: `scripts/preflight.sh`, run before redroid's first start, checking the
-  binder drivers (two on one kernel panicked a host; [INCIDENTS.md](INCIDENTS.md)), free RAM,
-  privileged Docker and the kernel. `scripts/diagnose.sh` only looks once something has failed.
 - **A snapshot check before an Instagram update**: `scraper.py install` and the in-place
   forced-update replace warn, or refuse, when the newest `/data` snapshot
   (`scripts/snapshot-android-data.sh`) is older than a set number of days.
@@ -32,9 +29,6 @@ A config flag, one function, a CI tweak, or docs.
   silently.
 - **An alert when a newer validated build exists**: `check_new_builds` runs only in CI; a local alert
   would say when the installed build is behind the newest validated one.
-- **A compose file that pulls the published image**: `docker-compose.yml` builds `./app` locally.
-  One attached to each release, naming the GHCR image by the digest `publish.yml` just pushed, makes
-  installing a download rather than a clone and a build.
 - **More on `/status`**: the next run's time, the runs left in the `MAX_RUNS_PER_DAY` window, the
   allowlist's size and disk use.
 - **JSON Feed**: `/instagram.json` and `/stories.json` (JSON Feed 1.1), from the same queries as the
@@ -53,7 +47,7 @@ requests, external links after merge and weekly), spell check (typos), container
 advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
 (import-linter), hashed dependency locks (pip-compile), a `no_media_node` debug dump on the
 "media node not found" path, whole story frames, story frames matched across accounts, a retake of a
-dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration, `/opml?aggregate=0`, an unreachable upstream host counted as tool-version drift, a story that only reshares a stored post dropped, a resource-id report in the new-builds issue, an in-place update when Instagram demands one, a hold on an action block or restricted account, and a heartbeat URL. Earlier: credentials from a file, caption hashtag/mention links, optional feed
+dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration, `/opml?aggregate=0`, an unreachable upstream host counted as tool-version drift, a story that only reshares a stored post dropped, a resource-id report in the new-builds issue, an in-place update when Instagram demands one, a hold on an action block or restricted account, a heartbeat URL, a host preflight and a deploy bundle on each release. Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
 

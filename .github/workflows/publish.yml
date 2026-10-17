@@ -2,9 +2,10 @@ name: Publish
 
 # A pushed v* tag releases the app image unattended: gate (signed tag on main, green CI) -> build and push
 # by digest -> scan that digest (fixable HIGH/CRITICAL blocks) -> publish: promote it to its release tags
-# with signed provenance and SBOM attestations -> release: the GitHub Release. Each job needs the one
-# before it (and any whose outputs it reads), and a job whose need failed or was skipped is skipped too, so
-# nothing is promoted unless gate, build and scan all passed. Only the jobs that push, attest or upload take
+# with signed provenance and SBOM attestations -> release: the GitHub Release, with the deploy bundle
+# (.github/scripts/release_bundle.sh) attached. Each job needs the one before it (and any whose outputs it
+# reads), and a job whose need failed or was skipped is skipped too, so nothing is promoted unless gate,
+# build and scan all passed. Only the jobs that push, attest or upload take
 # write permissions, each scoped to what it does.
 #
 # A manual dispatch is a rehearsal of the same pipeline on the dispatched commit: gate (green CI only),
@@ -371,22 +372,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # generate the notes and create the release
+      contents: write # generate the notes, create the release and upload the deploy bundle
       pull-requests: read # each merged pull request's body, for its release note
     steps:
-      # Block, not audit: this job holds a contents-write token. It reaches github.com (the checkout) and
-      # the GitHub API (tags, generated notes, pull request bodies, the release itself), nothing else; it
-      # uploads no assets, so not uploads.github.com. Tighten or extend this from the audit insights of a run.
+      # Block, not audit: this job holds a contents-write token. It reaches github.com (the checkout), the
+      # GitHub API (tags, generated notes, pull request bodies, the release itself) and uploads.github.com
+      # (the deploy bundle), nothing else. Tighten or extend this from the audit insights of a run.
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >-
             api.github.com:443
             github.com:443
+            uploads.github.com:443
+      # Cone mode always includes the root's files (docker-compose.yml, .env.example) besides these.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            scripts
+            app/instadroid
+      # docker-compose.yml with the app image pulled by this release's digest, .env.example and the host
+      # scripts, so a host runs the release without a clone or a build. Timestamped with the tagged
+      # commit, so a re-run builds the same archive.
+      - name: Build the deploy bundle
+        id: bundle
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            .github/scripts/release_bundle.sh "$IMAGE@$DIGEST" "$TAG" "$RUNNER_TEMP/bundle" >"$RUNNER_TEMP/bundle-path"
+          echo "path=$(cat "$RUNNER_TEMP/bundle-path")" >>"$GITHUB_OUTPUT"
       # "What changed" is each merged pull request's `## Release note` section (the pull request template's;
       # optional, release-note.yml only warns without one), skipping `none` and pull requests with no section.
       # The pull requests are the ones GitHub's generate-notes endpoint lists between the previous
@@ -443,15 +463,16 @@ jobs:
             echo "# or by tag: docker pull $first_tag"
             echo '```'
             echo
-            echo "### Compose quickstart"
+            echo "### Run it without a clone"
             echo
-            echo "\`docker-compose.yml\` builds the app image locally (\`build: ./app\`) rather than"
-            echo "pulling this published one. To use this release instead, override the app service:"
+            echo "\`instadroid-$TAG.tar.gz\` below holds \`docker-compose.yml\` with this image pinned by"
+            echo "digest, \`.env.example\` and the host scripts. No checkout or image build needed:"
             echo
-            echo '```yaml'
-            echo "services:"
-            echo "  app:"
-            echo "    image: $IMAGE@$DIGEST"
+            echo '```bash'
+            echo "tar -xzf instadroid-$TAG.tar.gz && cd instadroid-$TAG"
+            echo "cp .env.example .env    # fill in IG_USERNAME / IG_PASSWORD"
+            echo "scripts/preflight.sh    # checks the host before redroid's first start"
+            echo "docker compose pull && docker compose up -d"
             echo '```'
             echo
             echo "### Verify provenance"
@@ -478,6 +499,7 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
           PRERELEASE: ${{ needs.gate.outputs.prerelease }}
+          BUNDLE: ${{ steps.bundle.outputs.path }}
         run: |
           set -euo pipefail
           # a release is left to GitHub's own choice of latest (by date and version), so a patch to an
@@ -490,3 +512,4 @@ jobs:
           else
             gh release create "$TAG" --repo "$REPO" --verify-tag --title "$TAG" --notes-file "$notes" "${flags[@]}"
           fi
+          gh release upload "$TAG" "$BUNDLE" --repo "$REPO" --clobber
