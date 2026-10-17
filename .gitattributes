@@ -9,6 +9,6 @@
 *.gif binary
 *.png binary
 *.jpg binary
-*.webp binary
 *.jpeg binary
+*.webp binary
 *.apk binary
