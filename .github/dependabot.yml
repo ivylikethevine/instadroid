@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # Names what dependabot could move: the SHA-pinned `uses:` in the workflows
 # and composite actions, the Markdown tools' npm lock, the hashed pip locks,
 # and the digest-pinned images.
