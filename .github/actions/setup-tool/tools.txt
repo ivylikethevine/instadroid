@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: MIT
 # The pinned CI tools, one row per tool - installed by ./install.sh (through
 # ./action.yml or ../setup-tools) and drift-checked by
 # ../../scripts/check_tool_versions.sh. Both read it through ./lib.sh, so a
@@ -65,7 +64,7 @@ actionlint|1.7.12|tar.gz|https://github.com/rhysd/actionlint/releases/download/v
 hadolint|2.15.1|raw|https://github.com/hadolint/hadolint/releases/download/v%v/hadolint-linux-x86_64|--version|github:hadolint/hadolint||c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
 # Pinning the binary does not stale the scan: trivy downloads its vulnerability
 # database on every run, whatever this pin is.
-trivy|0.75.0|tar.gz|https://github.com/aquasecurity/trivy/releases/download/v%v/trivy_%v_Linux-64bit.tar.gz|--version|github:aquasecurity/trivy||c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
+trivy|0.76.0|tar.gz|https://github.com/aquasecurity/trivy/releases/download/v%v/trivy_%v_Linux-64bit.tar.gz|--version|github:aquasecurity/trivy||e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7
 # Tags are "lychee-v<version>"; the tag-prefix column strips that so the drift
 # check compares versions, not strings.
 lychee|0.24.2|tar.gz|https://github.com/lycheeverse/lychee/releases/download/lychee-v%v/lychee-x86_64-unknown-linux-gnu.tar.gz|--version|github:lycheeverse/lychee|lychee-v|1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a
