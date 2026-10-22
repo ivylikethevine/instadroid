@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # What's new
 
 ## What changed and why
