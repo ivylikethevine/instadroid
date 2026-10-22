@@ -175,7 +175,7 @@ jobs:
       # tree, from .github/package-lock.json. Both read .markdownlint.yaml and .prettierrc.yaml.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: .github/package-lock.json
       - uses: ./.github/actions/setup-tool
@@ -260,7 +260,7 @@ jobs:
           heading: Trivy image scan
           body: Fixable HIGH and CRITICAL findings in the built app image. Advisory in CI; publish.yml's scan blocks a release on them.
           report-file: ${{ runner.temp }}/trivy.txt
-      - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           sarif_file: trivy-image.sarif
