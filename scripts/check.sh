@@ -12,12 +12,14 @@
 #   python     ruff (check + format), basedpyright, lint-imports, constricter         (lint job)
 #   test       pytest with coverage; the floor is pyproject.toml's fail_under          (test job)
 #   audit      pip-audit over both hashed locks (needs the network)                    (audit job)
+#   osv        osv-scanner over every lockfile (needs the network)                     (scorecard.yml)
 #   shell      shellcheck, shfmt                                                        (shell job)
 #   docs       markdownlint, prettier, lychee --offline, typos, docs-drift              (docs job)
 #   workflows  actionlint, lint-workflows, zizmor                          (actionlint + zizmor jobs)
 #   docker     hadolint (advisory), compose (`docker compose config` + bundle)         (docker job)
 # Each name on the right of a group is a subcommand too. The image build, smoke test and Trivy scan
-# stay CI-only, as do gitleaks and dependency review.
+# stay CI-only, as do gitleaks and dependency review. No ci.yml job runs osv: Scorecard's
+# Vulnerabilities check scans the same lockfiles after a merge, and this runs it before one.
 #
 # Tools come from the dev venv (local/.venv, activated or not; CONTRIBUTING's development setup),
 # .github/node_modules (`npm ci`, run here when the lock is newer), and PATH, with local/ci-tools
@@ -31,7 +33,7 @@ cd "$root" || exit 2
 
 tools_dir="${CHECK_TOOLS_DIR:-$root/local/ci-tools}"
 roster_tools=(actionlint shellcheck hadolint lychee)
-all_groups=(python test audit shell docs workflows docker)
+all_groups=(python test audit osv shell docs workflows docker)
 
 usage() {
   sed -n '2,/^set -uo/{/^set -uo/d;s/^# \{0,1\}//;p}' "$0"
@@ -242,6 +244,13 @@ check_audit() {
     --strict "${extra[@]}"
 }
 
+# Every lockfile git doesn't ignore, as Scorecard's Vulnerabilities check reads them; an osv-scanner.toml
+# beside a lockfile (.github's) accepts the advisories it lists for that lockfile alone.
+check_osv() {
+  need osv-scanner osv-scanner || return
+  run osv-scanner osv-scanner scan source --recursive .
+}
+
 check_shellcheck() {
   need shellcheck shellcheck || return
   pin_note shellcheck
@@ -367,6 +376,7 @@ for sub in "${selected[@]}"; do
     ;;
   test) check_test ;;
   audit) check_audit ;;
+  osv) check_osv ;;
   shell)
     check_shellcheck
     check_shfmt
