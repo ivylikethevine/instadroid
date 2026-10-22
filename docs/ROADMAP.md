@@ -27,6 +27,12 @@ A config flag, one function, a CI tweak, or docs.
   Discord, Telegram, Matrix, Gotify and email behind the one setting.
 - **Continuous fuzzing**: `tests/fuzz/fuzz_parsing.py` under ClusterFuzzLite instead of by hand
   ([OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md)).
+- **The per-file SPDX headers come out**: `REUSE.toml` (`path = "**"`) and `LICENSES/MIT.txt`
+  arrive with the next sync of the shared CI files and cover every file, and Scorecard's License
+  check reads only `LICENSE.md`, so the `SPDX-License-Identifier` comment at the top of each file
+  is redundant. Strip it from this repository's own files and stop adding it; the synced CI files
+  change in their source, which the sync carries. Done when
+  `git grep -l SPDX-License-Identifier` lists `REUSE.toml` alone.
 
 Done: Markdown lint and format checks, a link check (relative links on pull
 requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:
