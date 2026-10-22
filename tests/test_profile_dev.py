@@ -288,6 +288,7 @@ def test_baseline_runs_the_working_tree_against_a_scratch_database() -> None:
     assert env["DB_PATH"] == "/debug/profile-dev/444/posts.sqlite"
     assert env["MEDIA_DIR"] == "/debug/profile-dev/444/media"
     assert (env["MAX_SCROLLS"], env["MAX_STORIES_PER_RUN"], env["FOLLOWING_REFRESH_DAYS"]) == ("5", "2", "0")
+    assert env["READER_REFRESH_URLS"] == env["READER_REFRESH_URLS_FILE"] == ""
     assert env["FRESHRSS_REFRESH_URL"] == env["FRESHRSS_REFRESH_URL_FILE"] == ""
     cmd: list[str] = new_profile.compose_run(["once"], env, root=Path("/repo"))
     assert cmd[:7] == ["docker", "compose", "--project-directory", "/repo", "run", "--rm", "--no-deps"]

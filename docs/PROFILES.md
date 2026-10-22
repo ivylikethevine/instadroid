@@ -232,3 +232,26 @@ intentional.
 Removing them means rewriting published history, e.g. `git filter-repo --replace-text` with a
 replacements file, then a force-push and re-cloning everywhere. That's the repository owner's call;
 it hasn't been done ([ROADMAP.md](ROADMAP.md)).
+
+### Repeating the scan
+
+That scan only knew the identifiers on the machine it ran on, and a followed account's handle in
+`tests/test_parser.py`'s Following-list fixture outlasted it. `leak-scan` (`app/devtools/leak_scan.py`)
+repeats it with every deployment's data: give it each one's data directory (a copy works) and `.env`.
+
+```bash
+leak-scan --data local/data --data /mnt/other-host/local/data --env .env --env /mnt/other-host/.env
+leak-scan --no-history   # the working tree alone
+```
+
+From each data directory it collects the usernames, captions, places and shortcodes in every SQLite
+database (backups and profile-dev scratch databases included, so accounts since unfollowed or pruned
+count too), avatar and post media file names, and what `promote-dump`'s scrubbing finds in every raw
+dump under `debug/` (names only in a Following list included); from each `.env`, `IG_USERNAME`. It
+searches every tracked file and every line any commit added, and, needing no list, flags
+`<user> posted a`, `<user>'s story`, `<user> and N others` and Instagram profile and post URLs whose
+name or shortcode isn't a placeholder: promote-dump's (`user1`, `Place 2`, ...) or one in
+`app/devtools/leak_allowlist.txt`, the tests' made-up names. A new made-up name in a test goes in that
+list; a real one gets replaced. It exits 1 on any finding, and the findings quote what they found, so
+keep its output out of issues and logs. Identifiers under four characters, and caption lines under 20,
+aren't searched for.

@@ -74,8 +74,10 @@ def fixture_problems(profile: BaseProfile, recorded: Path) -> list[str]:
     return problems
 
 
-def pseudonymize(xml: str) -> str:
-    """Replace every account, display name, place and caption the parsers find with a placeholder."""
+def identifiers(xml: str) -> dict[str, str]:
+    """{value: placeholder} for every account, display name, place, caption and other personal text the
+    parsers find in a dump, or that sits where one would (the active profile's selectors). leak-scan
+    reads real dumps through this too, to know what to search the repository for."""
     found: parsing.ScreenParse = parsing.parse_screen(xml)
     names: dict[str, str] = {}
 
@@ -152,10 +154,20 @@ def pseudonymize(xml: str) -> str:
             r"[a-z0-9_.]{3,30}", n.get("text") or ""
         ):
             alias(n.get("text") or "", "user")
+    return names
+
+
+def pseudonymize(xml: str) -> str:
+    """Replace every account, display name, place and caption the parsers find with a placeholder."""
+    names: dict[str, str] = identifiers(xml)
+    root: etree._Element = etree.fromstring(xml.encode())
     ordered: list[str] = sorted(names, key=len, reverse=True)  # "ab_c" before "ab"
     pattern: re.Pattern[str] | None = (
         re.compile("|".join(rf"(?<![\w.]){re.escape(v)}(?![\w])" for v in ordered)) if ordered else None
     )
+    n: etree._Element
+    attr: str
+    value: str | None
     for n in root.iter("node"):
         for attr in ("text", "content-desc", "hint"):
             if pattern and (value := n.get(attr)):

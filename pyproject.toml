@@ -12,6 +12,7 @@ promote-dump = "devtools.promote_dump:main"
 check-new-builds = "devtools.check_new_builds:main"
 resource-id-report = "devtools.resource_ids:main"
 export-openapi = "devtools.export_openapi:main"
+leak-scan = "devtools.leak_scan:main"
 
 [build-system]
 requires = ["setuptools>=84"]
@@ -98,7 +99,7 @@ include_external_packages = true
 name = "The feed server runs as its own process and doesn't import the scraper"
 type = "forbidden"
 source_modules = ["feedserver"]
-forbidden_modules = ["instadroid", "igprofiles", "devtools", "uiautomator2", "adbutils"]
+forbidden_modules = ["instadroid", "igprofiles", "devtools", "uiautomator2", "adbutils", "apprise"]
 
 [[tool.importlinter.contracts]]
 name = "The scraper doesn't import the feed server"

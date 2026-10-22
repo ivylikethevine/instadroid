@@ -472,7 +472,7 @@ def test_a_failed_backup_is_a_warning_not_a_failed_run(monkeypatch: pytest.Monke
 
 def test_an_unreachable_reader_is_a_warning_not_a_failed_run(monkeypatch: pytest.MonkeyPatch) -> None:
     _one_screen(monkeypatch)
-    monkeypatch.setattr(config, "FRESHRSS_REFRESH_URL", "http://127.0.0.1:9/i/?c=feed&a=actualize&token=t")
+    monkeypatch.setattr(config, "READER_REFRESH_URLS", ["http://127.0.0.1:9/i/?c=feed&a=actualize&token=t"])
 
     def refused(request: str | urllib.request.Request, timeout: float) -> NoReturn:
         raise OSError("connection refused")
@@ -481,7 +481,7 @@ def test_an_unreachable_reader_is_a_warning_not_a_failed_run(monkeypatch: pytest
     stats: scrape.RunStats = scrape.scrape_once(feed_device(), db.db_init())
     warning: str | None = stats["metrics"].get("warning")
     assert stats["new"] == 2 and warning is not None
-    assert "FreshRSS refresh ping to http://127.0.0.1:9/i/ failed" in warning and "token" not in warning
+    assert "reader refresh ping to http://127.0.0.1:9/i/ failed" in warning and "token" not in warning
 
 
 BLOCK_DIALOG: Node = node(

@@ -128,7 +128,7 @@ same by hand, e.g. after a `/data/system` reset.
 
 The password doesn't have to live in `.env`: `IG_PASSWORD_FILE` (and `IG_USERNAME_FILE`) read the value
 from a file instead, such as a Docker secret mounted at `/run/secrets/` — `docker-compose.yml` has a
-commented `secrets:` example. `FEED_TOKEN`, `ALERT_URL`, `HEARTBEAT_URL` and `FRESHRSS_REFRESH_URL` accept a `_FILE`
+commented `secrets:` example. `FEED_TOKEN`, `ALERT_URL`, `HEARTBEAT_URL` and `READER_REFRESH_URLS` accept a `_FILE`
 variant the same way. Setting both forms of one, or a file the app can't read, stops the process with an error.
 
 The `app` container installs Instagram on the device itself the first time it finds it missing:

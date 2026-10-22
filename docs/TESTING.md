@@ -158,12 +158,22 @@ docs, the image, workflows) is in [CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs
 The one input from outside the project that gets parsed is the hierarchy XML a device returns, and
 its parsers in `instadroid.parsing` are pure by contract (above). `tests/fuzz/fuzz_parsing.py` runs
 them all (`parse_screen()`) under atheris, seeded with the replay fixtures; anything raised other
-than lxml's syntax error on input that isn't XML is a finding. Run by hand, not in CI:
+than lxml's syntax error on input that isn't XML is a finding.
+
+ClusterFuzzLite runs it continuously (`cflite.yml`, in
+[CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs)): briefly on each pull request that touches the app,
+and for half an hour daily, keeping its corpus and any crash as the workflow's artifacts.
+`.clusterfuzzlite/` is the build: OSS-Fuzz's Python builder image with a pinned Python 3.14 added
+(the image's own is 3.11), the app's lock plus `.clusterfuzzlite/requirements.txt` (atheris and
+PyInstaller), and `build.sh`, which packages every `tests/fuzz/fuzz_*.py` with the profile fixtures
+as its seed corpus. By hand:
 
 ```bash
 python tests/fuzz/fuzz_parsing.py -max_total_time=60 local/fuzz-corpus app/igprofiles/v424/fixtures
 ```
 
-libFuzzer writes the inputs it keeps into the first directory, so the fixtures go second. Captions
+libFuzzer writes the inputs it keeps into the first directory, so the fixtures go second. A new
+fuzzer in `tests/fuzz/` is picked up by the ClusterFuzzLite build as is; one that imports a module
+reading a data file next to it needs that file added to `build.sh`'s `--add-data` list. Captions
 reach the feed through `feedserver.render.caption_html()`, which escapes them. See
 [OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md).

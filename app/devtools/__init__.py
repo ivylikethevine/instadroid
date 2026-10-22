@@ -4,6 +4,7 @@
     promote-dump       a real hierarchy dump -> a scrubbed replay fixture
     check-new-builds   Instagram builds on APKPure newer than anything validated
     export-openapi     the feed server's spec -> docs/openapi.json
+    leak-scan          search the tree and its history for real Instagram identifiers
 
 `pip install --no-deps -e .` from the repository root (after the hashed locks) installs these commands (pyproject.toml's
 [project.scripts]); `python -m devtools.new_profile` works too.

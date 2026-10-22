@@ -1,0 +1,8 @@
+# The fuzz build's own tools, on top of app/requirements.txt (the code under test needs the app's
+# dependencies to import). requirements.txt is the hashed lock compiled from this file, constrained to the
+# app lock; regenerate it after editing here (from .clusterfuzzlite/, with pip-tools):
+#   pip-compile --allow-unsafe --generate-hashes --strip-extras requirements.in
+-c ../app/requirements.txt
+# The first release with a Python 3.14 wheel.
+atheris==3.1.0
+pyinstaller>=6.16

@@ -1,24 +1,26 @@
 # shellcheck shell=bash
-# SPDX-License-Identifier: MIT
 # The instadroid specifics for ./check_tool_versions.sh, which sources this file (the hook contract is
 # in that script's header). Nothing here runs on its own.
 
 # Inline pins the script can't find by itself: name|file-glob|sed-BRE-with-one-\(capture\)|check|tag-prefix
 # apkeep: app/Dockerfile's ADD URL (the checksum next to it changes with the version).
 # just-the-docs: the Pages theme, `_config.yml`'s `remote_theme:`.
+# python-build-standalone: the fuzz build's Python, .clusterfuzzlite/Dockerfile's ADD URL (a dated release).
 # shellcheck disable=SC2034 # read by check_tool_versions.sh
 CI_WORKFLOW_ROSTER='apkeep|app/Dockerfile|/EFForg/apkeep/releases/download/\([0-9][0-9.]*\)/|github:EFForg/apkeep|
-just-the-docs|_config.yml|remote_theme: just-the-docs/just-the-docs@v\([0-9][0-9.]*\)|github:just-the-docs/just-the-docs|'
+just-the-docs|_config.yml|remote_theme: just-the-docs/just-the-docs@v\([0-9][0-9.]*\)|github:just-the-docs/just-the-docs|
+python-build-standalone|.clusterfuzzlite/Dockerfile|/python-build-standalone/releases/download/\([0-9]*\)/|github:astral-sh/python-build-standalone|'
 
 # The digest-pinned base image and the compose services' images.
 # shellcheck disable=SC2034 # read by check_tool_versions.sh
 CI_IMAGE_GLOBS='app/Dockerfile docker-compose.yml'
 
-# The Markdown tools' npm manifest and the two pip-compile inputs, each read at its hashed lock's versions.
+# The Markdown tools' npm manifest and the three pip-compile inputs, each read at its hashed lock's versions.
 # shellcheck disable=SC2034 # read by check_tool_versions.sh
 CI_MANIFESTS='npm|.github/package.json
 pip|app/requirements.in
-pip|requirements-dev.in'
+pip|requirements-dev.in
+pip|.clusterfuzzlite/requirements.in'
 
 # _id_first <sed-BRE> <file> - the first capture in <file>, or nothing. The BRE is matched as written
 # (unlike _ci_extract, no leading .* is added), so every pattern here starts with ^.
@@ -56,6 +58,8 @@ function ci_local_checks() {
     _python_matches "$want" "basedpyright pythonVersion" "$v" "pyproject.toml [tool.basedpyright]"
     v="$(_id_first '^FROM python:\([0-9][0-9.]*\)-' app/Dockerfile)"
     _python_matches "$want" "app/Dockerfile FROM python" "$v" app/Dockerfile
+    v="$(_id_first '^ *https://.*/cpython-\([0-9]*\.[0-9]*\)\.' .clusterfuzzlite/Dockerfile)"
+    _python_matches "$want" "fuzz build cpython" "$v" .clusterfuzzlite/Dockerfile
     for f in .github/workflows/*.yml; do
       while IFS= read -r v; do
         _python_matches "$want" "setup-python python-version" "$v" "$f"

@@ -9,8 +9,8 @@ body:
         has the private reporting channel for that.
 
         Debug dumps, screenshots and logs can hold real usernames, captions and photos from
-        your feed. Scrub them before pasting, and never paste `.env`, `FRESHRSS_REFRESH_URL`
-        (it carries a token), or anything from `local/data/android`.
+        your feed. Scrub them before pasting, and never paste `.env`, `READER_REFRESH_URLS`
+        (it carries tokens), or anything from `local/data/android`.
 
   - type: textarea
     id: what
