@@ -1,6 +1,7 @@
 """Small pure helpers shared by every module: logging, timestamps, bounds, hashing, filenames, URLs.
 SQLite row accessors live in shared/sqlrows.py, which the feed server uses too."""
 
+import base64
 import hashlib
 import re
 import urllib.error
@@ -8,7 +9,7 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Protocol, Self
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult, unquote, urlsplit, urlunsplit
 
 from shared.sqlrows import SqlValue
 from shared.timestamps import parse_iso
@@ -106,6 +107,21 @@ def redact_url(url: str) -> str:
     carry tokens that must never land in the shared container log."""
     parts: SplitResult = urlsplit(url)
     return f"{parts.scheme}://{parts.hostname or ''}{f':{parts.port}' if parts.port else ''}{parts.path}"
+
+
+def web_request(url: str, method: str = "GET") -> urllib.request.Request:
+    """A request for `url`, with any user:password in it moved into a basic-auth header: urllib sends a
+    URL's credentials as part of the host otherwise, and a reader's API (Miniflux's) takes them this way."""
+    parts: SplitResult = urlsplit(url)
+    if parts.username is None:
+        return urllib.request.Request(url, method=method)
+    netloc: str = f"{parts.hostname or ''}{f':{parts.port}' if parts.port else ''}"
+    credentials: bytes = f"{unquote(parts.username)}:{unquote(parts.password or '')}".encode()
+    return urllib.request.Request(
+        urlunsplit(parts._replace(netloc=netloc)),
+        method=method,
+        headers={"Authorization": f"Basic {base64.b64encode(credentials).decode()}"},
+    )
 
 
 def send_best_effort(what: str, request: str | urllib.request.Request, timeout: float) -> str | None:

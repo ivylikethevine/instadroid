@@ -31,7 +31,7 @@ pushed back to the launcher, a run that parses nothing):
 - the host OS and kernel (`uname -r`).
 
 Scrub account content first: logs, debug dumps and screenshots can contain real usernames, captions
-and photos. Never paste `.env`, `FRESHRSS_REFRESH_URL` or anything from `local/data/android`.
+and photos. Never paste `.env`, `READER_REFRESH_URLS` or anything from `local/data/android`.
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-bug) has more on debug dumps.
 
 ## Unsupported setups

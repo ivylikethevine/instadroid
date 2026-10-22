@@ -176,7 +176,7 @@ def baseline_env(
     build: str, scrolls: int = DEFAULT_SCROLLS, stories: int = DEFAULT_STORIES, following: bool = False
 ) -> dict[str, str]:
     """Container environment for a baseline: automatic profile selection, capture mode, a scratch
-    database and media directory, the run caps, and no FreshRSS ping (nothing it stores belongs in the
+    database and media directory, the run caps, and no reader refresh ping (nothing it stores belongs in the
     real feed)."""
     base: str = f"{CONTAINER_DEV_DIR}/{parse_version(build, below_floor=True)}"
     return {
@@ -188,6 +188,8 @@ def baseline_env(
         "MAX_SCROLLS": str(scrolls),
         "MAX_STORIES_PER_RUN": str(stories),
         "FOLLOWING_REFRESH_DAYS": "1" if following else "0",
+        "READER_REFRESH_URLS": "",
+        "READER_REFRESH_URLS_FILE": "",
         "FRESHRSS_REFRESH_URL": "",
         "FRESHRSS_REFRESH_URL_FILE": "",
     }

@@ -14,24 +14,11 @@ A config flag, one function, a CI tweak, or docs.
   sat in `tests/test_parser.py`'s Following-list fixture from commit
   `53886eda962c5bf816ed449310238dbb048d3f4b` until it was replaced in the working tree, so the
   replacements file needs it too.
-- **A wider leak search**: a search for real identifiers only knows the ones in the local data of
-  the machine it runs on, which is how a followed account's handle outlasted the 2026-09-14 scan.
-  Make it a script that collects identifiers from every deployment's database, media folder names
-  and raw dumps (including accounts since unfollowed and names only in a Following list), searches
-  every tracked file and every added line of history, and also flags what no list can know: any
-  `<user> posted a`, `<user>'s story` or `<user> and N others` text and any Instagram URL whose
-  name or shortcode isn't one of the placeholders the fixtures use.
-- **Refresh pings for other readers**: `FRESHRSS_REFRESH_URL` generalized to a list of URLs with a
-  configurable method, covering Miniflux's feed-refresh API, with a short section per reader.
-- **Alerts through Apprise**: `ALERT_URL` POSTs to ntfy or a webhook; Apprise URLs would add
-  Discord, Telegram, Matrix, Gotify and email behind the one setting.
-- **Continuous fuzzing**: `tests/fuzz/fuzz_parsing.py` under ClusterFuzzLite instead of by hand
-  ([OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md)).
 - **The per-file SPDX headers come out**: `REUSE.toml` (`path = "**"`) and `LICENSES/MIT.txt`
   arrive with the next sync of the shared CI files and cover every file, and Scorecard's License
   check reads only `LICENSE.md`, so the `SPDX-License-Identifier` comment at the top of each file
-  is redundant. Strip it from this repository's own files and stop adding it; the synced CI files
-  change in their source, which the sync carries. Done when
+  is redundant. This repository's own files no longer carry it (don't add it to new ones); the rest
+  are the synced CI files, which change in their source and arrive with the sync. Done when
   `git grep -l SPDX-License-Identifier` lists `REUSE.toml` alone.
 
 Done: Markdown lint and format checks, a link check (relative links on pull
@@ -39,7 +26,7 @@ requests, external links after merge and weekly), spell check (typos), container
 advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
 (import-linter), hashed dependency locks (pip-compile), a `no_media_node` debug dump on the
 "media node not found" path, whole story frames, story frames matched across accounts, a retake of a
-dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration, `/opml?aggregate=0`, an unreachable upstream host counted as tool-version drift, a story that only reshares a stored post dropped, a resource-id report in the new-builds issue, an in-place update when Instagram demands one, a hold on an action block or restricted account, a heartbeat URL, a host preflight and a deploy bundle on each release, a snapshot check before an Instagram update, a held-back shrunk Following list, a newer-validated-build alert, the schedule and disk use on `/status`, JSON Feed and feed filters. Earlier: credentials from a file, caption hashtag/mention links, optional feed
+dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration, `/opml?aggregate=0`, an unreachable upstream host counted as tool-version drift, a story that only reshares a stored post dropped, a resource-id report in the new-builds issue, an in-place update when Instagram demands one, a hold on an action block or restricted account, a heartbeat URL, a host preflight and a deploy bundle on each release, a snapshot check before an Instagram update, a held-back shrunk Following list, a newer-validated-build alert, the schedule and disk use on `/status`, JSON Feed and feed filters, refresh pings for other readers (Miniflux), alerts through Apprise, continuous fuzzing (ClusterFuzzLite) and a leak search across deployments (`leak-scan`). Earlier: credentials from a file, caption hashtag/mention links, optional feed
 auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
 spec.
 

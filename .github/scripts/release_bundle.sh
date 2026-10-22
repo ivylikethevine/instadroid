@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
 # The deploy bundle a release attaches: everything a host needs to run that release without a clone or
 # an image build. publish.yml's release job builds it from the tagged tree; `scripts/check.sh compose`
 # builds one with a placeholder digest and runs `docker compose config` on it, so a change to

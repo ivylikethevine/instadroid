@@ -6,15 +6,20 @@ the `alerts` table in step: a condition that just became true is inserted and an
 longer holds is deleted and announced as resolved, and one still open stays quiet. So a login
 challenge that nobody answers for a day notifies once, not every retry.
 
-Announcements are a plain HTTP POST to ALERT_URL: the message as the body, and ntfy's Title, Tags
-and Priority headers, so an ntfy topic URL (https://ntfy.sh/<topic>, or self-hosted) works as is and
-any other webhook still gets the text. With no ALERT_URL, open alerts still show up where someone
-already looks: an entry at the top of /instagram.xml and a line on /status (feedserver reads the table).
+Announcements go to each URL in ALERT_URL (whitespace-separated). An http(s) URL gets a plain POST:
+the message as the body, and ntfy's Title, Tags and Priority headers, so an ntfy topic URL
+(https://ntfy.sh/<topic>, or self-hosted) works as is and any other webhook still gets the text. Any
+other scheme is an Apprise URL (discord://, tgram://, matrix://, gotify://, mailto://, ...), sent
+through Apprise. With no ALERT_URL, open alerts still show up where someone already looks: an entry at
+the top of /instagram.xml and a line on /status (feedserver reads the table).
 """
 
+import logging
 import sqlite3
 import urllib.request
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
+from urllib.parse import urlsplit
 
 import igprofiles
 from shared import sqlrows
@@ -130,27 +135,74 @@ def _newer_validated(con: sqlite3.Connection) -> str | None:
 
 
 def notify(kind: str, message: str, resolved: bool = False) -> str | None:
-    """POST one announcement to ALERT_URL. Best-effort: returns a short error instead of raising, and
-    never logs the URL's query string or credentials. None when disabled or delivered."""
-    if not config.ALERT_URL:
-        return None
+    """Send one announcement to every ALERT_URL entry. Best-effort: returns the failures as one short
+    error instead of raising, and never logs a URL's query string, credentials or, for an Apprise URL,
+    anything past its scheme. None when disabled or delivered."""
     title: str = f"instadroid: {'resolved: ' if resolved else ''}{TITLES[kind]}"
-    request: urllib.request.Request = urllib.request.Request(
-        config.ALERT_URL,
-        data=message.encode(),
-        method="POST",
-        headers={
-            "Title": title,
-            "Tags": "white_check_mark" if resolved else "warning",
-            "Priority": "high" if not resolved and kind in (LOGIN, RESTRICTED) else "default",
-            "Content-Type": "text/plain; charset=utf-8",
-        },
-    )
-    error: str | None
-    if error := common.send_best_effort("alert", request, config.ALERT_TIMEOUT):
-        return error
-    log(f"sent alert: {title}")
-    return None
+    errors: list[str] = []
+    url: str
+    for url in config.ALERT_URL.split():
+        error: str | None = (
+            _post(url, kind, title, message, resolved)
+            if urlsplit(url).scheme in ("http", "https")
+            else _apprise(url, title, message, resolved)
+        )
+        if error:
+            errors.append(error)
+    if config.ALERT_URL and not errors:
+        log(f"sent alert: {title}")
+    return "; ".join(errors) or None
+
+
+def _post(url: str, kind: str, title: str, message: str, resolved: bool) -> str | None:
+    """POST the announcement to a web URL: the message as the body, with ntfy's Title, Tags and Priority
+    headers, so an ntfy topic URL works as is and any other webhook still gets the text. A user:password
+    in the URL is sent as basic auth, which an access-controlled ntfy topic takes."""
+    request: urllib.request.Request = common.web_request(url, "POST")
+    request.data = message.encode()
+    request.add_header("Title", title)
+    request.add_header("Tags", "white_check_mark" if resolved else "warning")
+    request.add_header("Priority", "high" if not resolved and kind in (LOGIN, RESTRICTED) else "default")
+    request.add_header("Content-Type", "text/plain; charset=utf-8")
+    return common.send_best_effort("alert", request, config.ALERT_TIMEOUT)
+
+
+class _Sender(Protocol):
+    """The part of apprise.Apprise used here, typed (its signatures carry untyped dicts)."""
+
+    def add(self, services: str) -> bool: ...
+
+    def notify(self, body: str, *, title: str, notify_type: str, timeout: float) -> object: ...
+
+
+def _sender() -> _Sender:
+    """A new apprise.Apprise, typed by the Protocol. Imported here, not at the top: Apprise costs the
+    memory-capped app container ~18MB, which only a setup that uses it should pay."""
+    import apprise
+
+    return apprise.Apprise()
+
+
+def _apprise(url: str, title: str, message: str, resolved: bool) -> str | None:
+    """Send the announcement through Apprise, for any other scheme it knows (discord://, tgram://,
+    matrix://, gotify://, mailto://, ...). Apprise's own log is silenced, since its messages can quote
+    the URL, and this one names the scheme alone."""
+    logging.getLogger("apprise").setLevel(logging.CRITICAL + 1)
+    where: str = f"{urlsplit(url).scheme}://"
+    sender: _Sender = _sender()
+    if not sender.add(url):
+        error: str = f"alert to {where} failed: not a URL Apprise can send to"
+    elif not sender.notify(
+        body=message,
+        title=title,
+        notify_type="success" if resolved else "warning",
+        timeout=config.ALERT_TIMEOUT,
+    ):
+        error = f"alert to {where} failed"
+    else:
+        return None
+    log("WARN:", error)
+    return error
 
 
 def update(con: sqlite3.Connection, now: datetime | None = None) -> list[str]:

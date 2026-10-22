@@ -68,8 +68,11 @@ no new post in `ALERT_NO_POSTS_HOURS`, for an account that seems to have renamed
 `scraper.py rename` command; it clears once that's run, the suspicion is dismissed with `rename --dismiss`, or the post behind it is pruned),
 for a Following-list refresh held back for being far shorter than the stored list (README.md's
 "Followed-accounts allowlist"), and for an installed Instagram older than the newest validated build
-(it names the build; quiet while `IG_APK_VERSION` is set). Each one is announced once when it's raised and once when it clears, as a
-POST to `ALERT_URL` (an [ntfy](https://ntfy.sh) topic URL works as is). With or without that, open
+(it names the build; quiet while `IG_APK_VERSION` is set). Each one is announced once when it's raised and once when it clears, to every URL in `ALERT_URL`
+(whitespace-separated): an http(s) URL gets a POST (an [ntfy](https://ntfy.sh) topic URL works as is,
+and `user:password@` in it is sent as basic auth), and any other scheme is an
+[Apprise](https://github.com/caronc/apprise/wiki) URL, so `discord://`, `tgram://`, `matrix://`,
+`gotify://` and `mailto://` work too. With or without that, open
 alerts appear as the first entry of `/instagram.xml` and on `/status`, so the feed reader you already
 check shows them.
 

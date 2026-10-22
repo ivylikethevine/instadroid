@@ -46,12 +46,21 @@ a feed, not across feeds: subscribed to all of it, every post shows up twice. `/
 leaves the aggregate feed out; to keep only the aggregate, subscribe to `/instagram.xml` and
 `/stories.xml` directly.
 
-**Push instead of poll**: by default FreshRSS finds new posts on its own poll interval. To have
-the scraper tell it instead, set `FRESHRSS_REFRESH_URL` in `.env` to FreshRSS's "online cron"
-actualize URL (`http://<freshrss-host>/i/?c=feed&a=actualize&user=<name>&token=<token>` — the
-token comes from the user you create below); after any run that stores something new, the scraper
-GETs that URL so FreshRSS fetches immediately. A reader being unreachable is logged as a run
-warning (shows yellow on `/status`), never fails the scrape.
+**Push instead of poll**: by default a reader finds new posts on its own poll interval. To have
+the scraper tell it instead, set `READER_REFRESH_URLS` in `.env` to the reader's refresh URL; after
+any run that stores something new, the scraper requests each URL listed (whitespace-separated, so
+one scraper can wake several readers), so the reader fetches immediately. A URL is a GET unless
+it starts with its method, `PUT:` or `POST:`, and a `user:password@` in it is sent as HTTP basic
+auth. A reader being unreachable is logged as a run warning (shows yellow on `/status`), never
+fails the scrape. `FRESHRSS_REFRESH_URL`, the setting's older name, still works and joins the list.
+
+- **FreshRSS**: its "online cron" actualize URL,
+  `http://<freshrss-host>/i/?c=feed&a=actualize&user=<name>&token=<token>`, with the token of the
+  user you create below. The scraper adds `ajax=1`, so FreshRSS answers without rendering a page.
+- **Miniflux**: its refresh-all API, `PUT:http://<user>:<password>@<miniflux-host>/v1/feeds/refresh`.
+  Miniflux's API takes basic auth with the account's own login, and the call queues a refresh of
+  every feed, the Instagram ones included.
+- **Another reader**: any URL that a plain GET, PUT or POST makes refresh.
 
 **Running FreshRSS on this host**: an optional `freshrss` service in `docker-compose.yml`, off by
 default (`docker compose --profile freshrss up -d freshrss`). One-time setup after it's up:
@@ -68,7 +77,7 @@ docker compose exec freshrss ./cli/create-user.php \
 docker compose exec --user root freshrss ./cli/access-permissions.sh
 ```
 
-That token is what `FRESHRSS_REFRESH_URL` above is built from. FreshRSS listens on
+That token is what the FreshRSS URL in `READER_REFRESH_URLS` above is built from. FreshRSS listens on
 `127.0.0.1:8080` by default (`FRESHRSS_LISTEN`) — loopback only, matching `FEED_HOST`, since the
 feed itself has no auth unless `FEED_TOKEN` is set (see "Feed auth" above). It needs
 `FRESHRSS_INTERNAL_HOST_ALLOWLIST` (defaulted in compose) to be allowed to fetch a feed on

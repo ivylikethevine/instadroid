@@ -2,6 +2,7 @@
 
 import re
 import sqlite3
+import urllib.request
 from collections import Counter
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -123,27 +124,46 @@ class RunStats(TypedDict):
 type StoreResult = Literal["new", "merged", "skipped"]  # what _store_post() did with a card
 
 
-def _ping_freshrss(new_posts: int, new_stories: int) -> str | None:
-    """GET FRESHRSS_REFRESH_URL after a run that stored something new, so FreshRSS (or any reader
-    with an equivalent refresh webhook) fetches immediately instead of waiting out its own poll
-    interval. No-op when disabled or nothing new was stored. Best-effort like device.force_stop():
-    returns a short error string rather than raising — a reader being unreachable must not fail a
-    scrape that already succeeded. Returns None on a no-op or success."""
-    if not config.FRESHRSS_REFRESH_URL or (new_posts + new_stories) == 0:
-        return None
-    url: str = config.FRESHRSS_REFRESH_URL
-    if "ajax=" not in url:
+# The methods a READER_REFRESH_URLS entry can name as its prefix (`PUT:https://...`).
+_REFRESH_METHODS: tuple[str, ...] = ("GET", "POST", "PUT")
+
+
+def _refresh_request(entry: str) -> urllib.request.Request:
+    """The request for one READER_REFRESH_URLS entry: its method prefix, if any, split off, and
+    FreshRSS's actualize URL given `ajax=1`, which makes it answer without rendering a page."""
+    method: str
+    sep: str
+    url: str
+    method, sep, url = entry.partition(":")
+    if not sep or method not in _REFRESH_METHODS:
+        method, url = "GET", entry
+    if "a=actualize" in url and "ajax=" not in url:
         url += ("&" if "?" in url else "?") + "ajax=1"
-    error: str | None
-    if error := common.send_best_effort("FreshRSS refresh ping", url, config.FRESHRSS_REFRESH_TIMEOUT):
-        return error
-    # FRESHRSS_REFRESH_URL carries an auth token
-    log(f"pinged FreshRSS refresh ({common.redact_url(config.FRESHRSS_REFRESH_URL)})")
-    return None
+    return common.web_request(url, method)
+
+
+def _ping_readers(new_posts: int, new_stories: int) -> str | None:
+    """Request each READER_REFRESH_URLS entry after a run that stored something new, so the readers
+    fetch immediately instead of waiting out their own poll intervals. No-op when none is set or nothing
+    new was stored. Best-effort like device.force_stop(): returns the failures as one short error string
+    rather than raising — a reader being unreachable must not fail a scrape that already succeeded.
+    Returns None on a no-op or success."""
+    if not config.READER_REFRESH_URLS or (new_posts + new_stories) == 0:
+        return None
+    errors: list[str] = []
+    entry: str
+    for entry in config.READER_REFRESH_URLS:
+        request: urllib.request.Request = _refresh_request(entry)
+        error: str | None
+        if error := common.send_best_effort("reader refresh ping", request, config.READER_REFRESH_TIMEOUT):
+            errors.append(error)
+        else:  # the URL carries an auth token
+            log(f"pinged reader refresh ({request.get_method()} {common.redact_url(request.full_url)})")
+    return "; ".join(errors) or None
 
 
 def _ping_heartbeat() -> str | None:
-    """GET HEARTBEAT_URL after a successful run. Best-effort like _ping_freshrss(): returns a short error
+    """GET HEARTBEAT_URL after a successful run. Best-effort like _ping_readers(): returns a short error
     rather than raising. None when disabled or delivered."""
     if not config.HEARTBEAT_URL:
         return None
@@ -584,7 +604,7 @@ def _scrape_feed(
     # Leave the app in a natural state (scrape_once() force-stops it right after)
     d.press("home")
     push_error: str | None
-    if push_error := _ping_freshrss(new, new_stories):
+    if push_error := _ping_readers(new, new_stories):
         warnings.append(push_error)
     if versioning.PROFILE_WARNING:  # read at the end: an auto-install mid-run re-resolves the profile
         warnings.append(versioning.PROFILE_WARNING)

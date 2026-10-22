@@ -184,12 +184,15 @@ MAX_RUNS_PER_DAY: int = env.env_max_runs_per_day()
 # before scraping, so a `docker compose up`, recreate or crash-restart isn't an extra off-schedule
 # scrape (see scrape._startup_wait_seconds()). 1: scrape immediately on every start, the old behavior.
 SCRAPE_ON_STARTUP: bool = os.environ.get("SCRAPE_ON_STARTUP", "0").strip().lower() in ("1", "true", "yes")
-# FreshRSS's own "online cron" actualize URL (https://.../i/?c=feed&a=actualize&user=...&token=...),
-# GETed after a run stores something new so it fetches now instead of waiting out its own poll
-# interval or per-feed TTL. Empty disables. Any reader with an equivalent plain-GET refresh webhook
-# works here too, not just FreshRSS.
-# It carries an API token, so it can come from FRESHRSS_REFRESH_URL_FILE instead.
-FRESHRSS_REFRESH_URL: str = env_secret("FRESHRSS_REFRESH_URL")
+# Readers' refresh URLs, whitespace-separated, each requested after a run stores something new so the
+# reader fetches now instead of waiting out its own poll interval or per-feed TTL (see
+# scrape._ping_readers()). A URL is a GET unless prefixed with its method, `PUT:` or `POST:`, and a
+# user:password in it is sent as basic auth: FreshRSS's "online cron" actualize URL as is, Miniflux's
+# `PUT:https://user:password@host/v1/feeds/refresh`. Empty disables. FRESHRSS_REFRESH_URL, the older
+# single-URL name, is still read and joins the list. Both carry tokens, so both take a _FILE variant.
+READER_REFRESH_URLS: list[str] = (
+    env_secret("READER_REFRESH_URLS").split() + env_secret("FRESHRSS_REFRESH_URL").split()
+)
 # Selector-drift canary: every run records cards/screen, the share of cards with a real (non-weak)
 # caption, and the share flagged "complete" (see parsing.is_weak_caption(), post["complete"]). If a run's
 # numbers fall below SELECTOR_DRIFT_THRESHOLD of the rolling average over the last
@@ -209,8 +212,10 @@ MEMORY_GUARD_PERCENT: float = float(os.environ.get("MEMORY_GUARD_PERCENT", "85")
 # stories and before every screen), so a degraded device (slow dumps, taps swallowed, every sheet
 # retried) can't stretch one run across hours of Instagram use. A normal run takes 5-15 minutes. 0 disables.
 RUN_MAX_MINUTES: float = float(os.environ.get("RUN_MAX_MINUTES", "30"))
-# Failure alerts (instadroid/alerts.py). ALERT_URL receives a POST per alert raised or resolved (an ntfy
-# topic URL works as is); it can carry a token, so ALERT_URL_FILE works too. Empty = no push, but open
+# Failure alerts (instadroid/alerts.py). ALERT_URL is one or more whitespace-separated URLs, each sent an
+# announcement per alert raised or resolved: an http(s) URL gets a POST (an ntfy topic URL works as is),
+# any other scheme goes through Apprise (discord://, tgram://, matrix://, gotify://, mailto://, ...).
+# They can carry tokens, so ALERT_URL_FILE works too. Empty = no push, but open
 # alerts still appear in /instagram.xml and on /status. An alert is raised for a login challenge, for
 # ALERT_FAILED_RUNS failed runs in a row (0 disables), and for no new post in ALERT_NO_POSTS_HOURS
 # (0, the default, disables: a quiet feed isn't necessarily a broken one).
@@ -222,4 +227,7 @@ ALERT_TIMEOUT: float = float(os.environ.get("ALERT_TIMEOUT", "10.0"))
 # monitor), so a monitor that stops hearing from it notices a host, Docker or scraper that's down, which
 # ALERT_URL can't report. Bounded by ALERT_TIMEOUT. It can carry a token, so HEARTBEAT_URL_FILE works too.
 HEARTBEAT_URL: str = env_secret("HEARTBEAT_URL")
-FRESHRSS_REFRESH_TIMEOUT: float = float(os.environ.get("FRESHRSS_REFRESH_TIMEOUT", "10.0"))
+# Per refresh URL; FRESHRSS_REFRESH_TIMEOUT is the older name.
+READER_REFRESH_TIMEOUT: float = float(
+    os.environ.get("READER_REFRESH_TIMEOUT") or os.environ.get("FRESHRSS_REFRESH_TIMEOUT") or "10.0"
+)

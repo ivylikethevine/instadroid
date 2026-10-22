@@ -32,7 +32,7 @@ which asks for the output of `scraper.py doctor` (or `scripts/diagnose.sh`) alon
   and friends). **Scrub it first**: dumps and screenshots contain real usernames, captions and
   photos from your feed.
 
-Never paste `.env`, `FRESHRSS_REFRESH_URL` (it carries a token), or anything from
+Never paste `.env`, `READER_REFRESH_URLS` (it carries tokens), or anything from
 `local/data/android`.
 
 ## Development setup
@@ -218,6 +218,10 @@ The other workflows:
   still queued or in progress, so they don't hold runners after the merge.
 - `codeql.yml`: CodeQL for Python and GitHub Actions, on pushes to `main`, pull requests and weekly on
   Tuesday.
+- `cflite.yml`: ClusterFuzzLite over `tests/fuzz/` ([TESTING.md](TESTING.md#fuzzing)): five minutes
+  of code-change fuzzing on a pull request that touches `app/`, the fuzzers or their build, and a
+  30-minute batch run daily that grows the corpus. ClusterFuzzLite's images are called directly,
+  pinned by digest, since its actions carry only a `v1` tag. A crash fails the job.
 - `advisories.yml`: `pip-audit` over both Python locks and `npm audit` over
   `.github/package-lock.json`, after every green CI run on a push to `main` and weekly. Advisory: a
   finding opens or refreshes one `advisories` tracking issue, which the next clean run closes.

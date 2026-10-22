@@ -43,7 +43,7 @@ app/                 the app image's build context
   igprofiles/        per-Instagram-version profiles (docs/PROFILES.md)
   feedserver/        the feed server, served as uvicorn feedserver:app
   shared/            the leaf both sides import: settings, control files, secrets from files, typed SQLite rows
-  devtools/          dev commands, not in the image: new-profile, promote-dump, check-new-builds, resource-id-report, export-openapi
+  devtools/          dev commands, not in the image: new-profile, promote-dump, check-new-builds, resource-id-report, export-openapi, leak-scan
 tests/               the test suite
 scripts/             host and device shell scripts (tune-android.sh, diagnose.sh, ...)
 typings/             stubs for untyped libraries
@@ -70,8 +70,8 @@ flowchart LR
     db --> feed["feed server<br/>app/feedserver"]
     media --> feed
     feed -->|"/instagram.xml, /stories.xml, /opml, /media"| reader["FreshRSS or<br/>another reader"]
-    scraper -.->|"FRESHRSS_REFRESH_URL ping"| reader
-    scraper -.->|"ALERT_URL"| alerts["ntfy or a webhook"]
+    scraper -.->|"READER_REFRESH_URLS ping"| reader
+    scraper -.->|"ALERT_URL"| alerts["ntfy, a webhook<br/>or Apprise"]
     scraper -.->|"HEARTBEAT_URL"| monitor["healthchecks.io or<br/>Uptime Kuma"]
 ```
 
@@ -102,8 +102,9 @@ flowchart LR
   state-changing requests (`feedserver.auth`). With `FEED_TOKEN`, every path but `/health` needs the
   token and media URLs carry a per-file HMAC signature instead. Without it, anyone who can reach the
   port reads everything scraped and can lock or trigger runs.
-- **The app ↔ outbound webhooks.** `ALERT_URL`, `HEARTBEAT_URL` and `FRESHRSS_REFRESH_URL` can carry tokens; they're
-  never logged with their query string or credentials (`instadroid.common.redact_url`).
+- **The app ↔ outbound webhooks.** `ALERT_URL`, `HEARTBEAT_URL` and `READER_REFRESH_URLS` can carry tokens; they're
+  never logged with their query string or credentials (`instadroid.common.redact_url`), and an Apprise
+  `ALERT_URL`, whose tokens sit in its host and path, is logged by its scheme alone.
 
 ## Where state lives
 

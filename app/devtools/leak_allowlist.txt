@@ -1,0 +1,44 @@
+# leak-scan's placeholders beyond `userN`: made-up names and shortcodes the fixtures and tests use, and
+# ordinary words that leak-shaped text matches in prose. Case doesn't matter. A real identifier never
+# goes here; replace it where it was found instead.
+
+# made-up accounts
+alice
+another.artist
+artist
+bob
+bob_99
+club
+example
+ghostuser
+jane.doe
+me.myself
+new_user
+old_user
+other
+other_user
+photog
+showcase.live
+some.artist
+some.one
+some_club
+someone
+someone_nice
+suggested.acct
+text_user
+
+# made-up shortcodes
+ABC
+AbCdEf12345
+CAR
+EARLIER
+OTHER1
+TOP123
+ZyXwVu98765
+
+# prose: "the account's story", "the feed's story", "someone else's story", ...
+account
+else
+feed
+item
+myself
