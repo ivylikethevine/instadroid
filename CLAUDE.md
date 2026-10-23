@@ -25,7 +25,7 @@ From the repository root, with the dev venv set up
 commands CI's blocking jobs run, grouped as those jobs are (`scripts/check.sh --help` lists them):
 
 ```bash
-scripts/check.sh --install   # once: tools.txt's pinned actionlint, shellcheck, hadolint, lychee
+scripts/check.sh --install   # once: tools.txt's pinned actionlint, shellcheck, hadolint, lychee, zizmor
 scripts/check.sh             # everything: python, test, audit, shell, docs, workflows, docker
 scripts/check.sh --fast      # python + test, the inner loop for a Python change
 scripts/check.sh docs        # one group (or one check, e.g. `typos`)
