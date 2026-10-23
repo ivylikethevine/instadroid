@@ -32,7 +32,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root" || exit 2
 
 tools_dir="${CHECK_TOOLS_DIR:-$root/local/ci-tools}"
-roster_tools=(actionlint shellcheck hadolint lychee)
+roster_tools=(actionlint shellcheck hadolint lychee zizmor)
 all_groups=(python test audit osv shell docs workflows docker)
 
 usage() {
@@ -309,6 +309,7 @@ check_lint_workflows() {
 
 check_zizmor() {
   need zizmor zizmor || return
+  pin_note zizmor
   local -a offline=()
   # with no token zizmor can't reach the API for its online audits, so say so rather than half-try
   [ -n "${GH_TOKEN:-}" ] || offline=(--offline)
