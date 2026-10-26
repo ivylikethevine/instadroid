@@ -2,6 +2,19 @@
 
 Ordered by scope, smallest first.
 
+## Contents
+
+- [Small](#small)
+- [Medium](#medium)
+- [Large](#large)
+- [Cleanup](#cleanup)
+  - [Device and scrape](#device-and-scrape)
+  - [Support modules and shared](#support-modules-and-shared)
+  - [Feed server](#feed-server)
+  - [Profiles and devtools](#profiles-and-devtools)
+  - [Tests](#tests)
+  - [CI and scripts](#ci-and-scripts)
+
 ## Small
 
 A config flag, one function, a CI tweak, or docs.
@@ -20,6 +33,18 @@ A config flag, one function, a CI tweak, or docs.
   is redundant. This repository's own files no longer carry it (don't add it to new ones); the rest
   are the synced CI files, which change in their source and arrive with the sync. Done when
   `git grep -l SPDX-License-Identifier` lists `REUSE.toml` alone.
+- **Boolean settings read `no` and `off` as on**: `IG_AUTO_INSTALL`, `TUNE_ON_CONNECT` and
+  `RENAME_AUTO_APPLY` (`app/instadroid/config.py`) are on unless the value is `0`, `false` or empty,
+  so `RENAME_AUTO_APPLY=no` turns on the account-merging rename. One parser for all four flags,
+  `SCRAPE_ON_STARTUP`'s included.
+- **The run budget's wait disagrees with `/status`**: with more runs than `MAX_RUNS_PER_DAY` in the
+  window (the limit lowered mid-day), `budget_wait_seconds` (`app/instadroid/scrape.py`) waits for
+  the oldest run to age out (`starts[0]`) while `/status` reports the earlier time at which the count
+  drops under the limit (`started[-limit]`). The latter is right.
+- **Recording misses the device caches**: with `RECORD_DIR` set, `connect_device`
+  (`app/instadroid/device.py`) fills the window-size and Instagram-version caches keyed on the raw
+  device, then returns a `recording.Recorder` wrapping it, so later lookups miss and repeat the
+  `window_size` and `dumpsys package` calls.
 
 Done: Markdown lint and format checks, a link check (relative links on pull
 requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:
@@ -104,3 +129,159 @@ Open investigations, new capture mechanisms, or changes to the container/process
   the kernel).
 - **Several Instagram accounts**: one redroid and app pair per account through compose profiles,
   each with its own `/data` volume and guard, ports, and 3g of memory.
+
+## Cleanup
+
+Simplifications from a whole-repository review. Each keeps behavior unless marked otherwise, and is
+small unless sized. Items that change what users or CI see say so.
+
+### Device and scrape
+
+- **One selector query per candidate list**: `_challenge_present`, `_update_required`,
+  `_sheet_open` (`app/instadroid/navigation.py`) and the `device.first()` callers run one
+  `exists(timeout)` per candidate string, and every miss waits out its timeout (about 20 calls per
+  `_prepare_app`). One `textMatches`/`descriptionMatches` query with N times the timeout keeps the
+  worst case and returns on the first hit; an instant per-candidate check then picks the match in
+  list order. `tests/fakedevice.py` needs `textMatches`. Medium.
+- **`device.by_id(d, key, anchored=...)`** for the nine hand-built `resourceIdMatches=f".*:id/…"`
+  selectors in `navigation.py` and `stories.py`, each keeping its current anchoring.
+- **`ensure_logged_in`'s failure paths**: a `_raise_if_challenge` for the duplicated challenge block
+  and a `_login_failure(...) -> NoReturn` for the seven dump-then-raise pairs.
+- **`close_sheets` checks twice when nothing is open**: reuse the last `_sheet_open` result unless
+  Back was pressed or the app relaunched (about 0.9 s, twice per card).
+- **`fetch_permalink` re-checks "Copy link"** right after finding it (`app/instadroid/capture.py`).
+- **`fetch_permalink` reports where it left the device**, so `_reopen_feed_if_left`
+  (`app/instadroid/scrape.py`) checks only the feed mode instead of re-running `on_feed`.
+- **One adb round trip for a device snapshot**: `device_snapshot` runs a `getprop` shell per
+  property and doctor's `_device_section` five separate shells; batch each into one, and share a
+  `device.parse_version_name` with `instagram_version`.
+- **`_scrape_feed`'s loop state**: about 20 mutable locals across 236 lines; a `_FeedRun` dataclass
+  and a `_handle_card` returning an enum in place of nested `break`/`continue`. Medium.
+- **`capture.py` duplicates**: a `_card_on_screen(d, key)` for the two find-the-card-in-a-new-dump
+  expressions, and `permalink_code(url)` as `_code_of(url) or url`.
+- **Following queries**: a `db.following_set(con)` for the two allowlist reads, and one
+  `COUNT(*), MAX(updated_at)` helper for the five copies in `app/instadroid/db.py`.
+- **One `_add_columns` call for `posts`** in `db.py` instead of three, each with its own
+  `PRAGMA table_info`.
+- **Retry loops**: a `_wait_until(pred)` for navigation's two six-try polling loops and a
+  `_reach_home(d, recover)` for the two Home-feed retry loops in `stories.py`.
+
+### Support modules and shared
+
+- **Cache reshare thumbnails across runs**: `drop_reshared_stories` (`app/instadroid/reshare.py`)
+  decodes every stored cover and slide on each run that stored a story, thousands of WebP decodes in
+  the 256m app container. Key a module-level cache on file name and mtime; measure its memory first.
+  Medium.
+- **One `adb_run` helper** for the four hand-rolled `subprocess.run(["adb", "-s", …])` calls in
+  `doctor.py`, `diagnostics.py` and `tune.py` (`install._run_checked` stays).
+- **`shared/control.py`'s file protocol**: private `_read`/`_write` helpers for the repeated
+  mkdir-and-write and read-or-None blocks, and a `clear_run_now` so `instadroid/control.py` stops
+  unlinking the request file itself.
+- **`shared.control.minutes_since_last_run(con)`** for the latest-run query both processes run
+  (`feedserver/queries.py`, `feedserver/control.py`, `instadroid/control.py`).
+- **A shared run duration and result** for `/status` and `scraper.py doctor` (`status.py`,
+  `doctor.py`), each keeping its own format; doctor's `has_column` plus `cell_str` is `opt_str`.
+- **Retention in a few queries**: `prune_old_posts` reads each expired post's files separately; one
+  `UNION` query and subquery deletes do it, and a `retain_cutoff()` replaces the three copies of the
+  cutoff (`retention.py`, `db.py`).
+- **One `tree_size()`** in `shared/` for `/status` and retention (retention then tolerates a file
+  vanishing mid-walk), and one PRAGMA query for the database size.
+- **`diagnostics.signatures_in(text)`** for the two crash-signature matches (`doctor.py`,
+  `diagnostics.py`), and `short_error` for the logcat header's hand-trimmed error.
+- **One `resized()` Pillow helper** for the `_Resizable` typing workaround copied in `stories.py`
+  and `reshare.py`.
+- **A `_flag()` setting parser** in `config.py`, together with the boolean-settings fix under Small.
+- **`tune_device` reads `tune_packages.txt` twice**; load it once.
+- **One run-budget window**: a shared `window_starts()` for the parse-and-filter `status.py` and
+  `scrape.py` both do, each keeping its arithmetic; and one `now` per `status_page`.
+
+### Feed server
+
+- **Per-account ETags count every account's slides**: `feed_signal` (`app/feedserver/queries.py`)
+  counts the whole `media` table, so any new carousel turns every `?user=` feed's 304 into a 200.
+  Scope the count to the user. Changes ETag values only.
+- **A `count(con, sql)` helper** for the five "COUNT, or 0 before the table exists" copies in
+  `queries.py`.
+- **`render.feed_url(..., token=False)`** replaces `feeds._self_url`, byte-identical.
+- **One `_respond(fmt, ...)`** for the Atom-or-JSON branch both feed builders repeat.
+- **Avatars for the feed's accounts only**: `post_entries` reads every account's avatar; filter by
+  the posts' usernames.
+- **`render.profile_url(username)`** for the seven profile URLs, quoted in `feeds.py` and
+  `render.py` but not in `entries.py`; quoting is a no-op for valid usernames.
+- **`settings.ZONE`** computed once instead of an `env.zone()` lookup per timestamp.
+
+### Profiles and devtools
+
+- **One placeholder table**: `promote_dump`'s placeholder kinds are spelled out again in
+  `leak_scan`'s `_PLACEHOLDER` regex and `_DUMP_KINDS`; define them once and derive both.
+- **leak-scan loads the newest profile per dump file**; load it once in `collect`.
+- **`igprofiles.fixtures_dir(name)` and a public `ROOT`** replace the `fixture(name, "")` workaround
+  in `promote_dump.py` and `new_profile.py`, and `new_profile.PROFILES_DIR`.
+- **`major_of` in `igprofiles/base.py`**, re-exported, instead of base's inline copies.
+
+### Tests
+
+- **A shell seam on `FakeDevice`**: `shell_replies={prefix: output or exception}` replaces about ten
+  subclasses that only override `shell()`; `VersionedDevice` is redundant with the defaults.
+- **`FakeDevice.fail_taps` and `clipboard_error`** replace the three tap-failing subclasses in
+  `test_navigation.py` and the class-level clipboard patch in `test_capture.py`.
+- **Feed database helpers**: a `feedclient.feed_sql()` and a shared `add_runs(db, runs, columns)`
+  for about 27 connect-execute-commit blocks and eight hand copies of the legacy `runs` schema
+  (`test_feed`, `test_health`, `test_status_page`, `test_alerts`, `test_control`); the legacy
+  schemas stay hand-built.
+- **`deviceflows.run_caps(...)`** for about 25 sites setting `MAX_STORIES_PER_RUN`, `MAX_SCROLLS`
+  and `MAX_CAROUSEL_SLIDES` by hand, and the two local `one_screen` helpers.
+- **One `support.insert_post`**, a keyword superset of `seed_post`, `insert_post` and
+  `test_db._add_post`; a shared story-row helper; `db.store_following` in place of
+  `test_post_identity`'s `_follow`.
+- **`support.record_urlopen(monkeypatch, fail=...)`** for the eight or more fake `urlopen` handlers.
+- **`fake_run(monkeypatch, stdout=, returncode=, raises=)`** for about nine nested
+  `subprocess.run` fakes, with the missing/hanging pair parametrized.
+- **Poll-loop stubs in `deviceflows`**: `stop_at_first_run` (three local `StopLoop` copies),
+  `scrape_returns` and `recorded_run` (four copies), `connect_returns` (three copies).
+- **`V424` and `FEED_445` defined once** in `support.py` instead of in seven files.
+- **Shared CLI scaffolding**: `new_profile`'s host state, decline prompt, `dev_dir` and baseline
+  fixtures between `test_profile_dev` and `test_scripts_cli`; the scraper CLI harness between
+  `test_snapshot_check` and `test_scraper_cli`.
+- **`test_db`'s setup**: `_legacy_db` for four inline copies, the `con` fixture and `_reopen_at` for
+  five migration round trips, `sqlrows.scalar` for 19 `.fetchone()[0]` reads, and a
+  `_fully_migrated` helper.
+- **Parametrize near-copies** in `test_db` (record-run stats, refresh trios, the rename pair),
+  `test_feed` (the 304 tests, the image pair) and `test_parser` (quiet hours, time distribution).
+- **`test_feed` helpers**: an `unescaped()` for six `replace` chains, an `_add_story`, and three
+  redundant in-function ElementTree imports removed.
+- **`test_login` and `test_capture` helpers**: `_missing_ig`, `_first(calls, tool)`, `_cached_apk`,
+  `_caption_device` and `deviceflows.top_card`.
+- **Patches conftest already applies** (`TUNE_ON_CONNECT`, `wait_for_boot`, `DEVICE_TIMEZONE=""`)
+  removed from `test_recording`, `test_tune` and `test_parser`, plus an `untuned` fixture.
+- **Fixtures for repeated setup** in `test_permalink_backfill` (five tests) and the selector-drift
+  baseline (`test_selector_drift`, `test_resilience`).
+- **`test_leak_scan`'s git repository built once per module**: 12 git spawns down to 4.
+- **Lesser test cleanups**: an in-process `FEED_MODE` fallback check instead of a subprocess, the
+  unused `fast_offline` parameters in `test_navigation`, `test_stories`' repeated screenshot setup,
+  and a `MEMINFO` constant in `new_profile.py` to patch instead of `Path`.
+
+### CI and scripts
+
+- **The suite runs twice on main**: `coverage.yml` re-runs what `ci.yml`'s test job just ran. Build
+  the badge and HTML report in the test job and have `coverage.yml` download them; the pull-request
+  comment half restructures triggers and can follow later. Medium.
+- **One matrix job for lint and test** in `ci.yml`, which differ only in name and check group.
+- **One copy of the `/data` version rule**: `scripts/preflight.sh` copies `android_major()` and the
+  mismatch check from `guard-android-data.sh`; a read-only `--check` mode there replaces it.
+  Preflight also fails when either version is empty and the guard doesn't, so `--check` keeps that.
+- **One basedpyright run**: an explicit `include`/`exclude` in `pyproject.toml` stops pyright's
+  default dot-directory exclude, so `check.sh` drops its second pass over `.github/scripts`.
+- **`publish.yml`'s release notes as one heredoc** instead of about 35 `echo` lines.
+- **`snapshot-android-data.sh` pruning in one container** instead of one per old snapshot, and one
+  `tar` pass when `android.image` is missing.
+- **Job-level `env:` in `cflite.yml`** for the four keys both steps repeat (`GITHUB_TOKEN` stays per
+  step).
+- **`ci.yml`'s Trivy step through `trivy_scan.sh`**, the third copy of its flags. Drops secret
+  results from that job's advisory SARIF, so the owner's call.
+- **`check.sh docker` once** in `ci.yml`'s docker job instead of `hadolint` and `compose` apart; a
+  compose failure would then skip the build and smoke test.
+- **Preflight sizing from `docker compose config`** instead of parsing `.env` and repeating
+  compose's defaults.
+- **`docs_drift.py` lists and reads the Markdown once** for both checks.
+- **The `scratch/` scripts drop their `app/` `sys.path` entry**, which the editable install covers.
