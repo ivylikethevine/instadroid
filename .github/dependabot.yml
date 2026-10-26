@@ -73,7 +73,7 @@ updates:
     cooldown:
       default-days: 7
 
-  # requirements-dev.in -> the hashed requirements-dev.txt (ruff, basedpyright, ...)
+  # requirements-dev.in -> the hashed requirements-dev.txt, the dev tools
   - package-ecosystem: pip
     directory: /
     schedule:
