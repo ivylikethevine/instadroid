@@ -20,4 +20,4 @@ shfmt-py==4.2.0
 typos==1.51.1
 # The build backend for `pip install --no-build-isolation --no-deps -e .`: from this lock, hashed, instead of
 # the unhashed copy an isolated build would fetch. Keep it within pyproject.toml's [build-system] requires.
-setuptools==84.0.0
+setuptools==84.1.0

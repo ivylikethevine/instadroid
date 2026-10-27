@@ -1,0 +1,12 @@
+# Maintainer annotations for OpenSSF Scorecard (.github/workflows/scorecard.yml);
+# https://github.com/ossf/scorecard/blob/main/config/README.md. Display only:
+# they never change the score, so a finding this repository will not fix reads
+# as decided rather than unnoticed. Annotate only a finding a run reports; one
+# that matches nothing misleads.
+annotations:
+  - checks:
+      - contributors
+    reasons:
+      - reason: not-applicable
+        # Wants >=2 contributing organizations among recent contributors.
+        # Single maintainer.
