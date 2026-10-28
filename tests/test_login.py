@@ -158,7 +158,7 @@ def _apk_run(
         if fail_on and cmd[0] == fail_on:
             raise subprocess.CalledProcessError(1, cmd, output="", stderr="boom")
         if cmd[0] == "apkeep":
-            out_dir: Path = Path(cmd[cmd.index("-d") + 2])
+            out_dir: Path = Path(cmd[-1])
             out_dir.mkdir(parents=True, exist_ok=True)
             xapk: Path = out_dir / f"{config.IG_PKG}@1.0.0.xapk"
             with zipfile.ZipFile(xapk, "w") as zf:
@@ -179,6 +179,7 @@ def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch: pytest.Mo
     navigation.ensure_logged_in(d)
     apkeep_call: list[str] = next(c for c in calls if c[0] == "apkeep")
     assert apkeep_call[:3] == ["apkeep", "-a", config.IG_PKG]
+    assert apkeep_call[-3:-1] == ["-o", "acknowledge_dangers=true"]
     install_call: list[str] = next(c for c in calls if c[0] == "adb")
     assert install_call[3] == "install-multiple"
     assert install_call[4].endswith(f"{config.IG_PKG}.apk")

@@ -18,6 +18,18 @@ def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
     return value
 
 
+def _flag(name: str, default: bool) -> bool:
+    """The environment variable `name` as a switch: on for 1/true/yes/on, off for 0/false/no/off or
+    empty (any case); otherwise `default`, with a warning for a value that is neither."""
+    value: str = os.environ.get(name, "1" if default else "0").strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off", ""):
+        return False
+    print(f"WARN: unknown {name} {value!r}; falling back to {int(default)}", flush=True)
+    return default
+
+
 ADB_ADDR: str = os.environ.get("ADB_ADDR", "127.0.0.1:5555")  # redroid's forwarded ADB port
 DB_PATH: str = env.env_db_path()  # the feed server reads DB_PATH, MEDIA_DIR and POLL_MAX_HOURS the same way
 # Manual control files (instadroid/control.py): manual.lock holds scheduled runs back, scrape-now cuts
@@ -67,12 +79,12 @@ IG_PKG: str = "com.instagram.android"
 # the image, see Dockerfile) and adb-installs it, instead of just raising — this is what lets the
 # service recover on its own from a fresh /data volume or the /data/system-reset scenario in
 # docs/INCIDENTS.md, where Instagram's package registration was orphaned but the app itself wasn't touched.
-# 0/false/empty falls back to the original behavior: raise and require a manual `adb install`.
-IG_AUTO_INSTALL: bool = os.environ.get("IG_AUTO_INSTALL", "1").strip().lower() not in ("0", "false", "")
+# Off (0/false/no) falls back to the original behavior: raise and require a manual `adb install`.
+IG_AUTO_INSTALL: bool = _flag("IG_AUTO_INSTALL", True)
 # On the first connect after a start, wait for Android to finish booting (up to BOOT_WAIT_SECONDS) and
 # tune the device the way scripts/tune-android.sh does (instadroid/tune.py): idempotent, one adb round
-# trip. 0/false skips the tuning; the boot wait always runs.
-TUNE_ON_CONNECT: bool = os.environ.get("TUNE_ON_CONNECT", "1").strip().lower() not in ("0", "false", "")
+# trip. Off (0/false/no) skips the tuning; the boot wait always runs.
+TUNE_ON_CONNECT: bool = _flag("TUNE_ON_CONNECT", True)
 BOOT_WAIT_SECONDS: float = float(os.environ.get("BOOT_WAIT_SECONDS", "600"))
 # Force one Instagram version profile: a directory under igprofiles/ ("v424", or just "424"). Empty (the
 # default) = the highest profile at or below the installed Instagram version, chosen on every connect.
@@ -134,7 +146,7 @@ BACKUP_KEEP: int = int(os.environ.get("BACKUP_KEEP", "7"))
 # Apply a suspected rename without a person, once the Following list bears it out (db.confirmed_renames()):
 # the new username is on the list and the old one isn't. Off by default: a wrong merge joins two accounts'
 # histories for good, and no rename has been seen on a device yet. Needs FOLLOWING_REFRESH_DAYS.
-RENAME_AUTO_APPLY: bool = os.environ.get("RENAME_AUTO_APPLY", "0").strip().lower() not in ("0", "false", "")
+RENAME_AUTO_APPLY: bool = _flag("RENAME_AUTO_APPLY", False)
 MAX_STORIES_PER_RUN: int = int(os.environ.get("MAX_STORIES_PER_RUN", "10"))
 TIME_DISTRIBUTION: str = os.environ.get("TIME_DISTRIBUTION", "uniform")  # uniform | lognormal | daynight
 # The device's timezone: DEVICE_TIMEZONE, else TZ (the zone the feeds show times in). Tuning applies it
@@ -183,7 +195,7 @@ MAX_RUNS_PER_DAY: int = env.env_max_runs_per_day()
 # 0 (default): on startup, wait out whatever's left of the poll interval since the last recorded run
 # before scraping, so a `docker compose up`, recreate or crash-restart isn't an extra off-schedule
 # scrape (see scrape._startup_wait_seconds()). 1: scrape immediately on every start, the old behavior.
-SCRAPE_ON_STARTUP: bool = os.environ.get("SCRAPE_ON_STARTUP", "0").strip().lower() in ("1", "true", "yes")
+SCRAPE_ON_STARTUP: bool = _flag("SCRAPE_ON_STARTUP", False)
 # Readers' refresh URLs, whitespace-separated, each requested after a run stores something new so the
 # reader fetches now instead of waiting out its own poll interval or per-feed TTL (see
 # scrape._ping_readers()). A URL is a GET unless prefixed with its method, `PUT:` or `POST:`, and a
