@@ -136,7 +136,12 @@ def connect_device() -> uidevice.Device:
     if config.RECORD_DIR:
         tape: Path = Path(config.RECORD_DIR) / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         log("recording this run to", tape)
-        return recording.Recorder(d, tape)
+        recorder: recording.Recorder = recording.Recorder(d, tape)
+        # The caches are keyed on the device object, so the wrapper inherits what was read above.
+        _window_sizes[recorder] = window_size(d)
+        if d in _ig_versions:
+            _ig_versions[recorder] = _ig_versions[d]
+        return recorder
     return d
 
 

@@ -44,3 +44,33 @@ def test_a_choice_setting_falls_back_to_its_default_with_a_warning(
     assert "WARN: unknown IG_TEST_CHOICE 'sideways'; falling back to following" in capsys.readouterr().out
     monkeypatch.delenv("IG_TEST_CHOICE")
     assert config._choice("IG_TEST_CHOICE", "following", ("following", "chrono")) == "following"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", True),
+        (" Yes ", True),
+        ("on", True),
+        ("TRUE", True),
+        ("0", False),
+        ("no", False),
+        ("Off", False),
+        ("", False),
+    ],
+)
+def test_a_flag_setting_reads_the_usual_spellings(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
+) -> None:
+    monkeypatch.setenv("IG_TEST_FLAG", value)
+    assert config._flag("IG_TEST_FLAG", not expected) is expected
+
+
+def test_a_flag_setting_falls_back_to_its_default_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("IG_TEST_FLAG", "maybe")
+    assert config._flag("IG_TEST_FLAG", False) is False
+    assert "WARN: unknown IG_TEST_FLAG 'maybe'; falling back to 0" in capsys.readouterr().out
+    monkeypatch.delenv("IG_TEST_FLAG")
+    assert config._flag("IG_TEST_FLAG", True) is True

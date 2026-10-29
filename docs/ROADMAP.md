@@ -19,34 +19,17 @@ Ordered by scope, smallest first.
 
 A config flag, one function, a CI tweak, or docs.
 
-- **Rewrite git history to remove leaked identifiers**: the working tree was scrubbed, but older
-  commits still carry real usernames, captions and places (the list is in [PROFILES.md](PROFILES.md)'s
-  leak scan). `git filter-repo --replace-text` with a replacements file, then a force-push and a
-  fresh clone everywhere. The repository owner's call; not done yet. The maintainer has an offline
-  runbook for it, kept outside the repository. One followed account's handle that the scan missed
-  sat in `tests/test_parser.py`'s Following-list fixture from commit
-  `53886eda962c5bf816ed449310238dbb048d3f4b` until it was replaced in the working tree, so the
-  replacements file needs it too.
-- **The per-file SPDX headers come out**: `REUSE.toml` (`path = "**"`) and `LICENSES/MIT.txt`
-  arrive with the next sync of the shared CI files and cover every file, and Scorecard's License
-  check reads only `LICENSE.md`, so the `SPDX-License-Identifier` comment at the top of each file
-  is redundant. This repository's own files no longer carry it (don't add it to new ones); the rest
-  are the synced CI files, which change in their source and arrive with the sync. Done when
-  `git grep -l SPDX-License-Identifier` lists `REUSE.toml` alone.
-- **Boolean settings read `no` and `off` as on**: `IG_AUTO_INSTALL`, `TUNE_ON_CONNECT` and
-  `RENAME_AUTO_APPLY` (`app/instadroid/config.py`) are on unless the value is `0`, `false` or empty,
-  so `RENAME_AUTO_APPLY=no` turns on the account-merging rename. One parser for all four flags,
-  `SCRAPE_ON_STARTUP`'s included.
-- **The run budget's wait disagrees with `/status`**: with more runs than `MAX_RUNS_PER_DAY` in the
-  window (the limit lowered mid-day), `budget_wait_seconds` (`app/instadroid/scrape.py`) waits for
-  the oldest run to age out (`starts[0]`) while `/status` reports the earlier time at which the count
-  drops under the limit (`started[-limit]`). The latter is right.
-- **Recording misses the device caches**: with `RECORD_DIR` set, `connect_device`
-  (`app/instadroid/device.py`) fills the window-size and Instagram-version caches keyed on the raw
-  device, then returns a `recording.Recorder` wrapping it, so later lookups miss and repeat the
-  `window_size` and `dumpsys package` calls.
+Nothing open.
 
-Done: Markdown lint and format checks, a link check (relative links on pull
+Not doing: rewriting git history to remove leaked identifiers. The working tree was scrubbed (the
+list is in [PROFILES.md](PROFILES.md)'s leak scan), but older commits keep real usernames, captions
+and places; removing them would take a force-push and a fresh clone everywhere, which the owner
+decided against.
+
+Done: boolean settings that read `no`/`off` as on (one `_flag()` parser), the run budget's wait
+matching `/status`, recording keeping the device caches, per-file SPDX headers replaced by
+`REUSE.toml` (the synced code of conduct keeps its CC-BY-4.0 header, which changes at its source;
+don't add one to new files), Markdown lint and format checks, a link check (relative links on pull
 requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:
 advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
 (import-linter), hashed dependency locks (pip-compile), a `no_media_node` debug dump on the
@@ -125,8 +108,8 @@ Open investigations, new capture mechanisms, or changes to the container/process
   on every screen and in the copied links, before one can go in a profile's `fixtures/`.
 - **arm64 host support**: on an arm64 host, official `redroid/redroid` images run Instagram's arm64
   code natively — no NDK translation, sidestepping the whole compatibility matrix
-  ([`COMPATIBILITY.md`](COMPATIBILITY.md)). Needs a multi-arch app image (`platforms:` in `publish.yml`) and host docs (binder in
-  the kernel).
+  ([`COMPATIBILITY.md`](COMPATIBILITY.md)). Needs a multi-arch app image (`platforms:` in `publish.yml`), and README.md's
+  "Kernel modules (Linux)" checked against an arm64 host's kernel.
 - **Several Instagram accounts**: one redroid and app pair per account through compose profiles,
   each with its own `/data` volume and guard, ports, and 3g of memory.
 
@@ -172,8 +155,8 @@ small unless sized. Items that change what users or CI see say so.
   decodes every stored cover and slide on each run that stored a story, thousands of WebP decodes in
   the 256m app container. Key a module-level cache on file name and mtime; measure its memory first.
   Medium.
-- **One `adb_run` helper** for the four hand-rolled `subprocess.run(["adb", "-s", …])` calls in
-  `doctor.py`, `diagnostics.py` and `tune.py` (`install._run_checked` stays).
+- **`doctor.adb_run` shared**: move it where `diagnostics.py` and `tune.py` can use it for their
+  hand-rolled `subprocess.run(["adb", "-s", …])` calls (`install._run_checked` stays).
 - **`shared/control.py`'s file protocol**: private `_read`/`_write` helpers for the repeated
   mkdir-and-write and read-or-None blocks, and a `clear_run_now` so `instadroid/control.py` stops
   unlinking the request file itself.
@@ -190,7 +173,6 @@ small unless sized. Items that change what users or CI see say so.
   `diagnostics.py`), and `short_error` for the logcat header's hand-trimmed error.
 - **One `resized()` Pillow helper** for the `_Resizable` typing workaround copied in `stories.py`
   and `reshare.py`.
-- **A `_flag()` setting parser** in `config.py`, together with the boolean-settings fix under Small.
 - **`tune_device` reads `tune_packages.txt` twice**; load it once.
 - **One run-budget window**: a shared `window_starts()` for the parse-and-filter `status.py` and
   `scrape.py` both do, each keeping its arithmetic; and one `now` per `status_page`.

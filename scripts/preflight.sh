@@ -107,7 +107,7 @@ elif [ -z "$kconfig" ]; then
     "driver this kernel has; make sure there is exactly one"
 else
   fail "no binder driver: redroid can't boot without one (a kernel with CONFIG_ANDROID_BINDER_IPC=y," \
-    "or the binder_linux module, never both)"
+    "or the binder_linux module, never both; README.md, Kernel modules)"
 fi
 
 # --- memory, CPUs, disk ---------------------------------------------------------------------------

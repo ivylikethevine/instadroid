@@ -30,7 +30,7 @@ fi
 dump() {
   local build="$1" work base
   work="$(mktemp -d "$tmp/apk.XXXXXX")"
-  if timeout 600 "$apkeep" -a "$package@$build" -d apk-pure "$work" >/dev/null 2>&1; then
+  if timeout 600 "$apkeep" -a "$package@$build" -d apk-pure -o acknowledge_dangers=true "$work" >/dev/null 2>&1; then
     # apkeep hands back an .xapk bundle holding the base APK, or the APK itself
     if compgen -G "$work/*.xapk" >/dev/null; then
       unzip -q -o "$work"/*.xapk "$package.apk" -d "$work" || true

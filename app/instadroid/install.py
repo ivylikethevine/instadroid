@@ -92,8 +92,10 @@ def _fetch_instagram_apk(version: str | None = None) -> list[Path]:
     if not cached:
         spec: str = f"{config.IG_PKG}@{version}" if version else config.IG_PKG
         log(f"fetching {spec} via apkeep (apk-pure)")
+        # apkeep refuses an APKPure download until its malware warning is acknowledged.
         _run_checked(
-            ["apkeep", "-a", spec, "-d", "apk-pure", str(cache_dir)], f"apkeep fetch of {config.IG_PKG}"
+            ["apkeep", "-a", spec, "-d", "apk-pure", "-o", "acknowledge_dangers=true", str(cache_dir)],
+            f"apkeep fetch of {config.IG_PKG}",
         )
         cached = _cached_apks(cache_dir)
     if not cached:

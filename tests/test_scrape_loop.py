@@ -297,6 +297,8 @@ def test_the_daily_budget_holds_the_loop_until_the_oldest_run_ages_out(
     assert scrape.budget_wait_seconds(con) == pytest.approx(3600 + 1, abs=5)
     monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 4)
     assert scrape.budget_wait_seconds(con) == 0  # under the ceiling
+    monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 2)  # lowered mid-day: the 12h-old one has to age out
+    assert scrape.budget_wait_seconds(con) == pytest.approx(12 * 3600 + 1, abs=5)
     monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 3)
     con.close()
     connects: list[int] = []

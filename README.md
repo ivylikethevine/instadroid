@@ -35,6 +35,7 @@ driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom 
 - [What it does](#what-it-does)
   - [Which Android?](#which-android)
 - [Host requirements](#host-requirements)
+  - [Kernel modules (Linux)](#kernel-modules-linux)
 - [First-time setup](#first-time-setup)
 - [How a scrape works](#how-a-scrape-works)
   - [Stories](#stories)
@@ -89,6 +90,7 @@ follow before running redroid on a host you haven't personally tested it on.
 
 ## Host requirements
 
+- A Linux host kernel with exactly one binder driver ([Kernel modules](#kernel-modules-linux)).
 - Docker + compose, privileged containers allowed, for redroid and the `app` container. `app` uses
   host networking to reach redroid's ADB port.
 - `adb` on the host. `scrcpy` is optional; `adb exec-out screencap -p > shot.png` is enough for checks.
@@ -96,6 +98,34 @@ follow before running redroid on a host you haven't personally tested it on.
   (`REDROID_MEM_LIMIT`) and 4 CPUs (`REDROID_CPUS`); the app container at 256m and 1.5 CPUs. Scrapes
   have peaked at up to 2.4GiB ([docs/RUNLOG.md](docs/RUNLOG.md)), and at the old 2g limit a run
   OOM-killed Android processes and froze the host (see [docs/INCIDENTS.md](docs/INCIDENTS.md)).
+
+### Kernel modules (Linux)
+
+redroid uses the host kernel's binder driver, through binderfs. The compose file boots it with
+`androidboot.use_memfd=true`, so ashmem (`ashmem_linux`) isn't needed. Check what the kernel has:
+
+```bash
+grep -w binder /proc/filesystems                          # binderfs is available
+zgrep -E 'ANDROID_BINDER(FS|_IPC|_IPC_RUST)=' /proc/config.gz \
+  || grep -E 'ANDROID_BINDER(FS|_IPC|_IPC_RUST)=' "/boot/config-$(uname -r)"
+```
+
+- **`=y` (built in, as on Arch's `linux-lts`):** nothing to load. Don't install `binder_linux-dkms` or
+  `redroid-modules` as well: two binder drivers on one kernel panicked a host
+  ([docs/INCIDENTS.md](docs/INCIDENTS.md#kernel-panic-from-two-binder-drivers-2026-09-10)).
+- **`=m` (a module, as on Ubuntu's kernels):** load it, and have it load at boot:
+
+  ```bash
+  sudo apt install "linux-modules-extra-$(uname -r)"      # Ubuntu, where binder_linux ships
+  sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+  echo binder_linux | sudo tee /etc/modules-load.d/redroid.conf
+  echo 'options binder_linux devices=binder,hwbinder,vndbinder' | sudo tee /etc/modprobe.d/redroid.conf
+  ```
+
+- **Neither:** build the module out of tree (the `binder_linux-dkms` package, or
+  [redroid-modules](https://github.com/remote-android/redroid-modules)), then load it as above.
+
+`scripts/preflight.sh` (below) fails on no binder driver and on two.
 
 ## First-time setup
 
@@ -138,7 +168,7 @@ The `app` container installs Instagram on the device itself the first time it fi
 it. Set `IG_AUTO_INSTALL=0` in `.env` to disable this and fall back to a manual install instead:
 
 ```bash
-apkeep -a com.instagram.android -d apk-pure local
+apkeep -a com.instagram.android -d apk-pure -o acknowledge_dangers=true local
 unzip -o local/com.instagram.android.xapk -d local/xapk
 adb -s 127.0.0.1:5555 install-multiple local/xapk/com.instagram.android.apk local/xapk/config.*.apk
 ```

@@ -64,6 +64,8 @@ These are known and documented, not vulnerabilities in themselves:
   treated as a compromise of the host.
 - **The Instagram APK comes from APKPure**, a third-party mirror, via `apkeep`. Android checks an
   update's signature against the installed app, but a fresh install trusts whatever APKPure served.
+  apkeep refuses APKPure downloads without `-o acknowledge_dangers=true`, citing modified APKs found
+  there; the app and the new-builds check pass it.
 - **`local/data/` is sensitive.** `local/data/android` holds the logged-in Instagram session, and
   `db/`, `media/` and `debug/` hold scraped content and screenshots of your feed.
 - **Instagram account enforcement** (challenges, locks, bans) is a terms-of-service risk of

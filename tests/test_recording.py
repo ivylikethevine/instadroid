@@ -152,6 +152,15 @@ def test_connecting_with_a_record_dir_wraps_the_device(
     recorded.dump_hierarchy()
     assert len(list(tmp_path.glob("*/tape.json"))) == 1
 
+    def no_second_read() -> tuple[int, int]:
+        raise AssertionError("window_size read again through the recorder")
+
+    monkeypatch.setattr(d, "window_size", no_second_read)
+    shell_calls: int = len(d.shell_calls)
+    assert device.window_size(recorded) == device.window_size(d)
+    assert device.instagram_version(recorded) == d.ig_version
+    assert len(d.shell_calls) == shell_calls  # no second dumpsys package
+
 
 # --- the replay device ---------------------------------------------------------------------------
 

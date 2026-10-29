@@ -68,8 +68,9 @@ def _startup_wait_seconds(con: sqlite3.Connection, now: datetime | None = None) 
 
 def budget_wait_seconds(con: sqlite3.Connection, now: datetime | None = None) -> float:
     """Seconds until another run is allowed under MAX_RUNS_PER_DAY: 0 when fewer runs than that
-    started in the last 24h (or the budget is off), else the time until the oldest of them is a day
-    old. The last line of defence against every loop at once: nothing that starts a run gets past it."""
+    started in the last 24h (or the budget is off), else the time until enough of them are a day old
+    to leave the count under the limit, as /status reports it. The last line of defence against every
+    loop at once: nothing that starts a run gets past it."""
     if config.MAX_RUNS_PER_DAY <= 0:
         return 0.0
     at: datetime = now or datetime.now(UTC)
@@ -85,7 +86,7 @@ def budget_wait_seconds(con: sqlite3.Connection, now: datetime | None = None) ->
     starts: list[datetime] = [t for t in parsed if t is not None and t >= cutoff]
     if len(starts) < config.MAX_RUNS_PER_DAY:
         return 0.0
-    return max(0.0, (starts[0] + timedelta(days=1) - at).total_seconds()) + 1
+    return max(0.0, (starts[-config.MAX_RUNS_PER_DAY] + timedelta(days=1) - at).total_seconds()) + 1
 
 
 def poll_interval_seconds(failures: int = 0) -> float:
