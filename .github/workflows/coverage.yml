@@ -47,7 +47,7 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        !github.event.pull_request.draft)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
@@ -92,7 +92,7 @@ jobs:
     name: coverage (comment)
     needs: coverage
     if: always() && github.event_name == 'pull_request' && needs.coverage.result != 'skipped'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     continue-on-error: true
     concurrency:

@@ -33,7 +33,7 @@ jobs:
   # passed on that commit. A rehearsal has no tag, so it only checks CI.
   gate:
     name: gate (signed tag on main + green CI)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     permissions:
       contents: read # fetch the tag and allowed_signers, compare the tagged commit with main
@@ -137,7 +137,7 @@ jobs:
   build:
     name: build and push by digest (buildx)
     needs: gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       contents: read # checkout: the build context
@@ -205,7 +205,7 @@ jobs:
   scan:
     name: scan release image (trivy)
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read # checkout: setup-tool, trivy_scan.sh and .trivyignore
@@ -264,7 +264,7 @@ jobs:
     # A pushed tag only (push fires on v* tags alone): this condition is what keeps a dispatch rehearsal
     # from promoting anything.
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     # The deployment record and the scope for this job's permissions. It has no required reviewer:
     # releases run unattended, and the gate job above is the check.
@@ -369,7 +369,7 @@ jobs:
     name: create GitHub Release (release notes)
     # No `if:` of its own: publish is skipped on a rehearsal, so this is too, and it never creates a release.
     needs: [gate, build, publish]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write # generate the notes, create the release and upload the deploy bundle
