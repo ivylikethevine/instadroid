@@ -36,7 +36,7 @@ jobs:
   changes:
     if: github.event.pull_request.draft != true
     name: Changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -71,7 +71,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     name: Lint (ruff + basedpyright)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
@@ -95,7 +95,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     name: Unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
@@ -117,7 +117,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     name: Dependency audit (pip-audit)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
@@ -138,7 +138,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     name: Shell scripts (shellcheck)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
@@ -162,7 +162,7 @@ jobs:
   docs:
     if: github.event.pull_request.draft != true
     name: Docs (markdownlint + prettier + links + typos)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
@@ -196,7 +196,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     name: Docker (hadolint + build + compose config)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -271,7 +271,7 @@ jobs:
   dependency-review:
     if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
     name: Dependency review
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
@@ -285,7 +285,7 @@ jobs:
   secrets:
     if: github.event.pull_request.draft != true
     name: Secret scan (gitleaks)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -305,7 +305,7 @@ jobs:
   actionlint:
     if: github.event.pull_request.draft != true
     name: Workflow lint (actionlint)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
@@ -325,7 +325,7 @@ jobs:
   zizmor:
     if: github.event.pull_request.draft != true
     name: Workflow security lint (zizmor)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
@@ -352,7 +352,7 @@ jobs:
     if: always() && github.event.pull_request.draft != true
     needs: [changes, lint, test, audit, shell, docs, docker, dependency-review, secrets, actionlint, zizmor]
     name: CI result
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
