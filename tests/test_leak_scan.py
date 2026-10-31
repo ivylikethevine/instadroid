@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import igprofiles
@@ -149,23 +150,25 @@ def _git(root: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
 
 
-@pytest.fixture
-def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A repository whose history added a leak that a later commit removed."""
-    name: str
-    for name in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
-        monkeypatch.setenv(name, "test@example.invalid" if "EMAIL" in name else "test")
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
-    root: Path = tmp_path / "repo"
-    root.mkdir()
-    _git(root, "init", "-q")
-    (root / "notes.md").write_text("thanks to real.poster\nreal.poster again\n")
-    (root / "image.bin").write_bytes(b"\0real.poster")
-    _git(root, "add", ".")
-    _git(root, "commit", "-q", "-m", "one")
-    (root / "notes.md").write_text("thanks to user1\n")
-    _git(root, "commit", "-q", "-am", "two")
-    return root
+@pytest.fixture(scope="module")
+def repo(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    """A repository whose history added a leak that a later commit removed. Built once: the tests only
+    read it. The git settings last as long as it does."""
+    env: pytest.MonkeyPatch
+    with pytest.MonkeyPatch.context() as env:
+        name: str
+        for name in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+            env.setenv(name, "test@example.invalid" if "EMAIL" in name else "test")
+        env.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        root: Path = tmp_path_factory.mktemp("repo")
+        _git(root, "init", "-q")
+        (root / "notes.md").write_text("thanks to real.poster\nreal.poster again\n")
+        (root / "image.bin").write_bytes(b"\0real.poster")
+        _git(root, "add", ".")
+        _git(root, "commit", "-q", "-m", "one")
+        (root / "notes.md").write_text("thanks to user1\n")
+        _git(root, "commit", "-q", "-am", "two")
+        yield root
 
 
 def test_the_tree_and_the_history_are_searched(repo: Path) -> None:

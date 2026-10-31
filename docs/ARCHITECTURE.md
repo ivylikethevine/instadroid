@@ -135,7 +135,7 @@ decision is recorded elsewhere, the entry links to it.
   slower boot ([COMPATIBILITY.md](COMPATIBILITY.md#weighed-and-not-shipped)).
 - **One profile per Instagram version**: the first profile design, replaced by profiles only at the
   points where Instagram changed something, once 441-446 all ran on the same selectors
-  ([PROFILES.md](PROFILES.md#why), [RUNLOG.md](RUNLOG.md)).
+  ([PROFILES.md](PROFILES.md#why), [RUNS.md](RUNS.md)).
 - **A versioned post identity**: `_post_key()` is deliberately not `@versioned`, so stored posts
   dedupe across Instagram upgrades ([PROFILES.md](PROFILES.md#swapping-behavior-not-just-data)).
 - **Advancing through a story by tapping**: it ejected Instagram to the launcher, so only a story's

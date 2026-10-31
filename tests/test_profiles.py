@@ -14,8 +14,10 @@ from igprofiles import BaseProfile, major_of, version_key
 from igprofiles.base import Selectors, _check_key_groups
 from instadroid import config, install, parsing, versioning
 
+from tests.support import FEED_445, V424
+
 ROOT: BaseProfile = igprofiles.load(igprofiles.available()[0])
-FEED_XML: str = igprofiles.fixture("v424", "feed_445.xml").read_text()
+FEED_XML: str = FEED_445.read_text()
 
 # --- discovery and loading ---------------------------------------------------------------------
 
@@ -273,7 +275,7 @@ def test_activate_profile_follows_the_installed_version(monkeypatch: pytest.Monk
 
 class _Gapped(BaseProfile):
     major: int = 500
-    selectors: Selectors = igprofiles.load("v424").selectors
+    selectors: Selectors = V424.selectors
     validated: tuple[str, ...] = ("500.0.0.1.1", "501.0.0.1.1", "505.0.0.1.1", "507.0.0.1.1")
 
 
@@ -294,7 +296,7 @@ def test_a_suspected_build_runs_without_a_warning(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     low: int
-    low, _ = igprofiles.load("v424").suspected()[0]
+    low, _ = V424.suspected()[0]
     monkeypatch.setattr(config, "IG_PROFILE", "")
     versioning.activate_profile(f"{low}.0.0.1.1")
     assert versioning.PROFILE_WARNING is None

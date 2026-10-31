@@ -8,6 +8,13 @@ from typing import Literal
 # the value types below rather than `object`. typing.TypedDict only accepts it from Python 3.15.
 from typing_extensions import TypedDict
 
+
+def major_of(version: str | None) -> int | None:
+    """446 for "446.0.0.49.77"; None when there's no version (not installed) or it's unparseable."""
+    m: re.Match[str] | None = re.match(r"(\d+)\.", version or "")
+    return int(m.group(1)) if m else None
+
+
 # How a major version stands with a profile (BaseProfile.verification()).
 type Verification = Literal["confirmed", "suspected"]
 
@@ -167,7 +174,7 @@ class BaseProfile:
     def suspected(self) -> list[tuple[int, int]]:
         """The ranges of major versions between two validated ones, inclusive: both ends ran on this
         profile unchanged, so the builds between them are taken to, without a run of their own."""
-        majors: list[int] = sorted({int(b.split(".", 1)[0]) for b in self.own_validated})
+        majors: list[int] = sorted(set(filter(None, map(major_of, self.own_validated))))
         return [(low + 1, high - 1) for low, high in pairwise(majors) if high - low > 1]
 
     def verification(self, major: int | None) -> Verification | None:
@@ -175,7 +182,7 @@ class BaseProfile:
         "suspected" when it lies between two that are, None when nothing says it works."""
         if major is None:
             return None
-        if any(b.split(".", 1)[0] == str(major) for b in self.own_validated):
+        if any(major_of(b) == major for b in self.own_validated):
             return "confirmed"
         return "suspected" if any(low <= major <= high for low, high in self.suspected()) else None
 

@@ -123,7 +123,7 @@ and ask before starting one.
   fixtures, `validate` records the build as validated, and `restore` reinstalls the default build.
   [PROFILES.md](PROFILES.md#adding-a-version) walks through every step.
 
-Every dated device run, with its caps, result and peak memory, goes in [RUNLOG.md](RUNLOG.md), and a
+Every dated device run, with its caps, result and peak memory, goes in [RUNS.md](RUNS.md), and a
 new image and build pair in [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Fixtures

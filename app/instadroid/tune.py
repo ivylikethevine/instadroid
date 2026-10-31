@@ -51,7 +51,8 @@ def tune_device(d: uidevice.Device, *, force: bool = False) -> bool:
         return False
     if not config.TUNE_ON_CONNECT and not force:
         return False
-    commands: list[str] = tune_commands(config.DEVICE_TIMEZONE)
+    packages: list[str] = load_packages()
+    commands: list[str] = tune_commands(config.DEVICE_TIMEZONE, packages)
     # Each command echoes + or - so the device's own exit statuses come back in one round trip.
     script: str = "; ".join(f"({c} >/dev/null 2>&1 && echo +) || echo -" for c in commands)
     try:
@@ -63,9 +64,7 @@ def tune_device(d: uidevice.Device, *, force: bool = False) -> bool:
     marks: list[str] = out.split()
     applied: int = marks.count("+")
     failed: list[str] = [c for c, mark in zip(commands, marks, strict=False) if mark == "-"]
-    log(
-        f"device tuned: {applied} of {len(commands)} commands applied ({len(load_packages())} packages in the list)"
-    )
+    log(f"device tuned: {applied} of {len(commands)} commands applied ({len(packages)} packages in the list)")
     if failed:
         log("WARN: tuning commands that failed on the device:", "; ".join(failed[:8]))
     return True

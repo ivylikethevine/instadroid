@@ -48,7 +48,7 @@ jobs:
        github.event.pull_request.head.repo.full_name == github.repository &&
        !github.event.pull_request.draft)
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:

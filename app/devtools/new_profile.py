@@ -50,7 +50,7 @@ from shared.errors import short_error
 
 from devtools import ROOT, promote_dump
 
-PROFILES_DIR: Path = ROOT / "app" / "igprofiles"
+PROFILES_DIR: Path = igprofiles.ROOT
 DEV_DIR: Path = ROOT / "local" / "data" / "debug" / "profile-dev"  # /debug/profile-dev in the container
 CONTAINER_DEV_DIR: str = "/debug/profile-dev"
 # Screens whose dumps the parsers read, so a fixture of them checks parse output, not just selectors.
@@ -625,7 +625,7 @@ def validation_problems(profile: BaseProfile, build: str, run: RunSummary | None
     """What still stands between `build` and validated with `profile`."""
     problems: list[str] = []
     major: int = parse_version(build)
-    fixtures: list[Path] = sorted(igprofiles.fixture(profile.name, "").glob(f"*_{major}.expected.json"))
+    fixtures: list[Path] = sorted(igprofiles.fixtures_dir(profile.name).glob(f"*_{major}.expected.json"))
     if not fixtures:
         problems.append(f"no replay fixtures for {major}: `new-profile promote {build}`")
     recorded: Path
@@ -682,7 +682,7 @@ def validate(build: str) -> int:
     add_validated(PROFILES_DIR / profile.name / "__init__.py", build)
     assert run is not None
     print(f"added {build} to {profile.name}'s validated builds. Still by hand:")
-    print("  - add a row to docs/COMPATIBILITY.md and a run log entry to docs/RUNLOG.md:")
+    print("  - add a row to docs/COMPATIBILITY.md and a run log entry to docs/RUNS.md:")
     print(
         f"    | `{run.redroid_image or '?'}` | {run.android_release or '?'} | {build} | `{profile.name}` | ✅ works"
         f" | {date.today().isoformat()} | {run.new_posts} post(s), {run.new_stories} stor(ies) in the baseline run. |"

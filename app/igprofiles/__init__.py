@@ -15,7 +15,7 @@ import importlib
 import re
 from pathlib import Path
 
-from .base import BaseProfile
+from .base import BaseProfile, major_of
 
 MIN_MAJOR: int = 424  # oldest Instagram version this project supports: the lowest profile's major
 # The build installed when nothing more specific is asked for (auto-install, `scraper.py install`,
@@ -25,13 +25,7 @@ DEFAULT_BUILD: str | None = "450.0.0.50.77"
 # A full build, "446.0.0.49.77"; group 1 is its major.
 BUILD: re.Pattern[str] = re.compile(r"\b(\d{3})\.\d+\.\d+\.\d+\.\d+\b")
 _NAME: re.Pattern[str] = re.compile(r"^v(\d{3})$")
-_ROOT: Path = Path(__file__).parent
-
-
-def major_of(version: str | None) -> int | None:
-    """446 for "446.0.0.49.77"; None when there's no version (not installed) or it's unparseable."""
-    m: re.Match[str] | None = re.match(r"(\d+)\.", version or "")
-    return int(m.group(1)) if m else None
+ROOT: Path = Path(__file__).parent
 
 
 def version_key(build: str) -> tuple[int, ...]:
@@ -49,7 +43,7 @@ def available() -> list[str]:
     """Profile directory names at or above MIN_MAJOR, ascending: every vXYZ/ with an __init__.py."""
     names: list[str] = []
     d: Path
-    for d in _ROOT.iterdir():
+    for d in ROOT.iterdir():
         m: re.Match[str] | None = _NAME.match(d.name)
         if m and (d / "__init__.py").is_file() and int(m.group(1)) >= MIN_MAJOR:
             names.append(d.name)
@@ -146,6 +140,11 @@ def select(requested: str = "", installed: str | None = None) -> tuple[BaseProfi
     return load(name), warning
 
 
+def fixtures_dir(name: str) -> Path:
+    """The directory of the test fixtures shipped with a profile."""
+    return ROOT / normalize(name) / "fixtures"
+
+
 def fixture(name: str, filename: str) -> Path:
     """Path to a test fixture shipped with a profile, e.g. fixture("v424", "feed_445.xml")."""
-    return _ROOT / normalize(name) / "fixtures" / filename
+    return fixtures_dir(name) / filename

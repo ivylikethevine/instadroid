@@ -5,13 +5,11 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from typing import Annotated
-from urllib.parse import quote, urlencode
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from feedgen.entry import FeedEntry
 from feedgen.feed import FeedGenerator
-from shared import env
 
 from . import queries, render, settings
 from .entries import Entry, alert_entries, post_entries, story_entries
@@ -51,13 +49,8 @@ def _since(since: str | None) -> str | None:
     except ValueError:
         raise HTTPException(422, f"since={since!r} is not an ISO date or time") from None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=env.zone(settings.TIMEZONE))
+        parsed = parsed.replace(tzinfo=settings.ZONE)
     return parsed.astimezone(UTC).isoformat()
-
-
-def _self_url(path: str, **params: str | None) -> str:
-    query: dict[str, str] = {k: v for k, v in params.items() if v}
-    return f"{settings.PUBLIC_URL}{path}" + (f"?{urlencode(query, quote_via=quote)}" if query else "")
 
 
 def _atom(feed_url: str, title: str, entries: list[Entry], etag: str) -> Response:
@@ -112,6 +105,13 @@ def _json(feed_url: str, title: str, home: str, entries: list[Entry], etag: str)
     return Response(json.dumps(body, ensure_ascii=False), media_type=JSON_FEED, headers={"ETag": etag})
 
 
+def _respond(fmt: str, feed_url: str, title: str, home: str, entries: list[Entry], etag: str) -> Response:
+    """`entries` as JSON Feed for "json", else as Atom."""
+    if fmt == "json":
+        return _json(feed_url, title, home, entries, etag)
+    return _atom(feed_url, title, entries, etag)
+
+
 def _posts_feed(
     request: Request,
     fmt: str,
@@ -141,12 +141,10 @@ def _posts_feed(
         if not_modified:
             return not_modified
         entries: list[Entry] = alert_entries(alerts) + post_entries(con, queries.posts(con, where, limit))
-    feed_url: str = _self_url(f"/instagram.{fmt}", user=user, kind=kind, since=since, q=q)
+    feed_url: str = render.feed_url(f"/instagram.{fmt}", token=False, user=user, kind=kind, since=since, q=q)
     title: str = f"Instagram — {user}" if user else "Instagram — Following"
-    if fmt == "json":
-        home: str = f"https://www.instagram.com/{quote(user)}/" if user else "https://www.instagram.com/"
-        return _json(feed_url, title, home, entries, etag)
-    return _atom(feed_url, title, entries, etag)
+    home: str = render.profile_url(user) if user else "https://www.instagram.com/"
+    return _respond(fmt, feed_url, title, home, entries, etag)
 
 
 def _stories_feed(request: Request, fmt: str, limit: int) -> Response:
@@ -159,9 +157,7 @@ def _stories_feed(request: Request, fmt: str, limit: int) -> Response:
             return not_modified
         entries: list[Entry] = story_entries(queries.stories(con, limit))
     feed_url: str = f"{settings.PUBLIC_URL}/stories.{fmt}"
-    if fmt == "json":
-        return _json(feed_url, "Instagram — Stories", "https://www.instagram.com/", entries, etag)
-    return _atom(feed_url, "Instagram — Stories", entries, etag)
+    return _respond(fmt, feed_url, "Instagram — Stories", "https://www.instagram.com/", entries, etag)
 
 
 _KIND_HELP: str = "Comma-separated: photo, carousel, reel (or video), post."
@@ -293,9 +289,7 @@ def opml(request: Request, aggregate: bool = True) -> Response:
     )
     u: str
     for u in usernames:
-        _feed_outline(
-            category, u, render.feed_url("/instagram.xml", user=u), f"https://www.instagram.com/{quote(u)}/"
-        )
+        _feed_outline(category, u, render.feed_url("/instagram.xml", user=u), render.profile_url(u))
 
     xml_bytes: bytes = (
         b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="unicode").encode()

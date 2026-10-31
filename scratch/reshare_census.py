@@ -14,11 +14,10 @@ import sys
 import time
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "app"))
+from instadroid import reshare
+from PIL import Image, ImageDraw
 
-from instadroid import reshare  # noqa: E402
-from PIL import Image, ImageDraw  # noqa: E402
+REPO = Path(__file__).resolve().parent.parent
 
 root = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "local/private"
 out = REPO / "local/reshare-census"

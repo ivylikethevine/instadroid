@@ -26,7 +26,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shared import control as files
-from shared import sqlrows
 
 from . import config
 from .common import log
@@ -60,13 +59,9 @@ def take_run_now(con: sqlite3.Connection) -> bool:
     RUN_NOW_MIN_MINUTES ago. A request that's too early stays for a later check."""
     if not files.run_now_requested(config.CONTROL_DIR):
         return False
-    # Runs are inserted as they finish, so the newest id is the latest finish (feedserver/queries.py).
-    finished_at: sqlrows.SqlValue = sqlrows.scalar(
-        con.execute("SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1")
-    )
-    if not files.run_now_due(files.minutes_since(finished_at), config.RUN_NOW_MIN_MINUTES):
+    if not files.run_now_due(files.minutes_since_last_run(con), config.RUN_NOW_MIN_MINUTES):
         return False
-    (config.CONTROL_DIR / files.RUN_NOW).unlink(missing_ok=True)
+    files.clear_run_now(config.CONTROL_DIR)
     log("scrape-now requested; starting a run")
     return True
 

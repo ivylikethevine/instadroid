@@ -1,6 +1,5 @@
 """Is the scraper healthy: /health for the compose healthcheck, /status for a person."""
 
-import os
 import shutil
 import sqlite3
 from contextlib import suppress
@@ -12,9 +11,10 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from shared import control as files
+from shared.disk import tree_size
 from shared.errors import short_error
 from shared.sqlrows import cell_int, has_column, opt_int, opt_str
-from shared.timestamps import parse_iso
+from shared.timestamps import parse_iso, window_starts
 
 from . import control, queries, render, settings
 from .queries import string, text
@@ -146,8 +146,7 @@ def _budget(starts: list[str], now: datetime) -> str:
     limit: int = settings.MAX_RUNS_PER_DAY
     if limit <= 0:
         return "no daily run limit (MAX_RUNS_PER_DAY=0)"
-    cutoff: datetime = now - timedelta(days=1)
-    started: list[datetime] = [t for t in map(parse_iso, starts) if t is not None and t >= cutoff]
+    started: list[datetime] = window_starts(starts, now)
     left: int = max(limit - len(started), 0)
     line: str = f"{left} of {limit} left in the last 24h"
     if not left:
@@ -165,21 +164,6 @@ def _allowlist(stored: int, refreshed: str | None, held: int) -> str:
     return line
 
 
-def _tree_size(root: Path) -> tuple[int, int]:
-    """(bytes, files) under `root`; zeros when it's missing."""
-    size: int = 0
-    count: int = 0
-    names: list[str]
-    folder: str
-    for folder, _, names in os.walk(root):
-        name: str
-        for name in names:
-            with suppress(OSError):
-                size += (Path(folder) / name).stat().st_size
-                count += 1
-    return size, count
-
-
 def _mib(size: float) -> str:
     return f"{size / 2**30:.1f} GiB" if size >= 2**30 else f"{size / 2**20:.0f} MiB"
 
@@ -188,7 +172,7 @@ def _disk() -> str:
     """Media and database sizes, and the free space where the database lives."""
     media: int
     files_n: int
-    media, files_n = _tree_size(settings.MEDIA_DIR)
+    media, files_n = tree_size(settings.MEDIA_DIR)
     db: Path = Path(settings.DB_PATH)
     database: int = 0
     suffix: str
@@ -207,14 +191,15 @@ def status_page() -> HTMLResponse:
     con: sqlite3.Connection
     health_label: str
     health_reason: str
+    now: datetime = datetime.now(UTC)
     with queries.connection() as con:
         users: list[sqlite3.Row] = queries.user_counts(con)
         stories_count: int = queries.stories_stats(con)[0]
         runs: list[sqlite3.Row] = queries.recent_runs(con)
         device: sqlite3.Row | None = queries.latest_device(con)
         alerts: list[sqlite3.Row] = queries.open_alerts(con)
-        health_label, health_reason = scraper_health(con)  # same verdict /health gives the healthcheck
-        starts: list[str] = queries.starts_since(con, (datetime.now(UTC) - timedelta(days=1)).isoformat())
+        health_label, health_reason = scraper_health(con, now)  # same verdict /health gives the healthcheck
+        starts: list[str] = queries.starts_since(con, (now - timedelta(days=1)).isoformat())
         following: tuple[int, str | None, int] = queries.following_state(con)
     total: int = sum(cell_int(u, "n") or 0 for u in users)
     latest: sqlite3.Row | None = runs[0] if runs else None
@@ -286,7 +271,6 @@ def status_page() -> HTMLResponse:
         "</p>"
     )
 
-    now: datetime = datetime.now(UTC)
     schedule_html: str = (
         f"<p>Next run: {escape(_next_run(state, now))}<br>"
         f"Runs: {escape(_budget(starts, now))}<br>"

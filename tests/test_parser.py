@@ -4,14 +4,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import igprofiles
 import pytest
 from igprofiles.screens import id_matches
 from instadroid import capture, common, config, device, parsing, stories, versioning
 
 from tests.fakedevice import hierarchy, node
+from tests.support import FEED_445
 
-FIXTURE: str = igprofiles.fixture("v424", "feed_445.xml").read_text()
+FIXTURE: str = FEED_445.read_text()
 
 
 def test_parse_hierarchy_finds_both_cards_and_skips_sponsored() -> None:
@@ -495,7 +495,6 @@ def test_sample_duration_daynight_widens_the_top_of_the_range_during_quiet_hours
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(config, "TIME_DISTRIBUTION", "daynight")
-    monkeypatch.setattr(config, "DEVICE_TIMEZONE", "")
     monkeypatch.setattr(config, "DAYNIGHT_QUIET_START", 0)
     monkeypatch.setattr(config, "DAYNIGHT_QUIET_END", 6)
     quiet: datetime = datetime(2026, 1, 1, 3, tzinfo=UTC)

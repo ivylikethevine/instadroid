@@ -21,6 +21,7 @@ import subprocess
 import sys
 from collections import Counter
 from collections.abc import Callable
+from functools import cache
 from pathlib import Path
 
 ROOT: Path = Path(__file__).resolve().parents[2]
@@ -44,6 +45,12 @@ def _repo_files(*patterns: str) -> list[Path]:
         sys.exit("docs_drift: needs git and a checkout to list the Markdown files")
     names: list[str] = sorted({name for name in result.stdout.decode().split("\0") if name})
     return [ROOT / name for name in names if (ROOT / name).is_file()]
+
+
+@cache
+def _markdown() -> list[tuple[Path, list[str]]]:
+    """Every Markdown file with its lines, read once for both checks that need them."""
+    return [(path, path.read_text().splitlines()) for path in _repo_files("*.md")]
 
 
 # --- .env.example vs the settings the code reads -------------------------------------------------
@@ -206,8 +213,7 @@ def _unfenced(lines: list[str]) -> list[tuple[int, str]]:
     return kept
 
 
-def _contents_problems(path: Path) -> list[str]:
-    lines: list[str] = path.read_text().splitlines()
+def _contents_problems(lines: list[str]) -> list[str]:
     body: list[tuple[int, str]] = _unfenced(lines)
     h2: list[str] = []
     anchors: set[str] = set()
@@ -249,8 +255,8 @@ def _contents_problems(path: Path) -> list[str]:
 def contents_problems() -> list[str]:
     return [
         f"{path.relative_to(ROOT)}: {problem}"
-        for path in _repo_files("*.md")
-        for problem in _contents_problems(path)
+        for path, lines in _markdown()
+        for problem in _contents_problems(lines)
     ]
 
 
@@ -301,15 +307,16 @@ def link_problems() -> list[str]:
     files, dirs = _site_exclusions()
     problems: list[str] = []
     path: Path
+    lines: list[str]
     number: int
     line: str
     target: str
-    for path in _repo_files("*.md"):
+    for path, lines in _markdown():
         rel_file: str = path.relative_to(ROOT).as_posix()
         if _off_site(rel_file, files, dirs):
             continue  # not a page on the site, so its links never render there
         base: str = posixpath.dirname(rel_file)
-        for number, line in _unfenced(path.read_text().splitlines()):
+        for number, line in _unfenced(lines):
             line = _CODE_SPAN.sub("", line)
             targets: list[str] = _captures(_LINK, line) + _captures(_REFERENCE, line)
             for target in targets:

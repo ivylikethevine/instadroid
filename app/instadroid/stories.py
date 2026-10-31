@@ -6,7 +6,7 @@ import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol, TypedDict
+from typing import TypedDict
 
 from igprofiles.screens import id_matches
 from lxml import etree
@@ -260,20 +260,9 @@ _STORY_AGE: re.Pattern[str] = re.compile(r"^\d+ ?[smhdw]$")
 DARK_FRAME_MEAN: float = 25.0
 
 
-class _Resizable(Protocol):
-    """Image.resize() as _dhash() calls it. Pillow annotates `size` as also accepting a numpy array,
-    a type left unknown when numpy isn't installed, so the method is read through this instead."""
-
-    def resize(self, size: tuple[int, int]) -> Image.Image: ...
-
-
-def _resized(img: _Resizable, size: tuple[int, int]) -> Image.Image:
-    return img.resize(size)
-
-
 def _dhash(img: Image.Image) -> str:
     """64-bit difference hash: survives re-encoding and small overlays, unlike a byte hash."""
-    px: bytes = _resized(img.convert("L"), (9, 8)).tobytes()
+    px: bytes = common.resized(img.convert("L"), (9, 8)).tobytes()
     bits: int = 0
     i: int
     for i in range(72):
@@ -290,7 +279,7 @@ def _is_blank_frame(img: Image.Image) -> bool:
 
 def _brightness(img: Image.Image) -> float:
     """Mean luminance of a frame, from a thumbnail: cheap enough for capture_story()'s timed path."""
-    return ImageStat.Stat(_resized(img.convert("L"), (32, 32))).mean[0]
+    return ImageStat.Stat(common.resized(img.convert("L"), (32, 32))).mean[0]
 
 
 def _find_story_duplicate(con: sqlite3.Connection, username: str, phash: str) -> bool:

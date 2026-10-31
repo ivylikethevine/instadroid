@@ -11,8 +11,30 @@ from types import TracebackType
 from typing import Protocol, Self
 from urllib.parse import SplitResult, unquote, urlsplit, urlunsplit
 
+from PIL import Image
 from shared.sqlrows import SqlValue
 from shared.timestamps import parse_iso
+
+
+class _Resizable(Protocol):
+    """Image.resize() as resized() calls it. Pillow annotates `size` as also accepting a numpy array, a
+    type left unknown when numpy isn't installed, so the method is read through this instead."""
+
+    def resize(
+        self,
+        size: tuple[int, int],
+        resample: int | None = None,
+        box: tuple[float, float, float, float] | None = None,
+    ) -> Image.Image: ...
+
+
+def resized(
+    img: _Resizable,
+    size: tuple[int, int],
+    resample: int | None = None,
+    box: tuple[float, float, float, float] | None = None,
+) -> Image.Image:
+    return img.resize(size, resample, box)
 
 
 def log(*a: object) -> None:

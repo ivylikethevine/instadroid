@@ -127,13 +127,17 @@ def db_init() -> sqlite3.Connection:
     )
     # ig_version: the Instagram versionName that scraped the post, so a parsing quirk can be traced
     # to the app build that produced it. NULL for posts stored before this column existed.
-    _add_columns(
-        con, "posts", dict.fromkeys(("hash", "url", "place", "posted_at", "updated_at", "ig_version"), "TEXT")
-    )
     # permalink_attempts: Copy link tries spent backfilling a hash-id post (scrape._backfill_permalink()).
-    _add_columns(con, "posts", {"permalink_attempts": "INTEGER NOT NULL DEFAULT 0"})
     # alt_hash: the card's hash under its other caption form, so a post is recognised collapsed or expanded.
-    _add_columns(con, "posts", {"alt_hash": "TEXT"})
+    _add_columns(
+        con,
+        "posts",
+        {
+            **dict.fromkeys(("hash", "url", "place", "posted_at", "updated_at", "ig_version"), "TEXT"),
+            "permalink_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "alt_hash": "TEXT",
+        },
+    )
     # Backfill for rows written before updated_at existed, and a no-op once that's done.
     con.execute("UPDATE posts SET updated_at = scraped_at WHERE updated_at IS NULL")
     con.execute("CREATE INDEX IF NOT EXISTS posts_hash ON posts(hash)")
@@ -408,13 +412,24 @@ def needs_avatar_refresh(con: sqlite3.Connection, username: str) -> bool:
     )
 
 
+def _following_state(con: sqlite3.Connection) -> tuple[int, sqlrows.SqlValue]:
+    """(accounts on the stored Following list, when it was last refreshed)."""
+    row: sqlite3.Row | None = sqlrows.fetch_one(
+        con.execute("SELECT COUNT(*), MAX(updated_at) FROM following")
+    )
+    return (sqlrows.cell_int(row, 0) or 0, sqlrows.cell(row, 1)) if row else (0, None)
+
+
+def following_set(con: sqlite3.Connection) -> set[str]:
+    """The usernames on the stored Following list."""
+    return {sqlrows.must_str(r, 0) for r in sqlrows.fetch_all(con.execute("SELECT username FROM following"))}
+
+
 def needs_following_refresh(con: sqlite3.Connection) -> bool:
     """Unlike needs_avatar_refresh(), this is a single global check, not per-account: the whole
     Following list is captured (and replaced) in one pass, so there's one "when was this last
     done" timestamp, not one per row. No rows at all means never successfully refreshed."""
-    return common.older_than(
-        sqlrows.scalar(con.execute("SELECT MAX(updated_at) FROM following")), config.FOLLOWING_REFRESH_DAYS
-    )
+    return common.older_than(_following_state(con)[1], config.FOLLOWING_REFRESH_DAYS)
 
 
 def store_following(
@@ -427,7 +442,7 @@ def store_following(
         retry it every run, and (found, stored) is returned. None when the list was replaced; `force`
     always replaces it."""
     now_iso: str = datetime.now(UTC).isoformat()
-    stored: int = sqlrows.scalar_int(con.execute("SELECT COUNT(*) FROM following")) or 0
+    stored: int = _following_state(con)[0]
     shrink: float = config.FOLLOWING_SHRINK_PERCENT
     if not force and shrink > 0 and len(usernames) * 100 < stored * shrink:
         con.execute("DELETE FROM following_pending")
@@ -452,7 +467,7 @@ def held_following(con: sqlite3.Connection) -> tuple[int, int] | None:
     found: int = sqlrows.scalar_int(con.execute("SELECT COUNT(*) FROM following_pending")) or 0
     if not found:
         return None
-    return found, sqlrows.scalar_int(con.execute("SELECT COUNT(*) FROM following")) or 0
+    return found, _following_state(con)[0]
 
 
 def accept_following(con: sqlite3.Connection) -> int:
@@ -469,10 +484,11 @@ def accept_following(con: sqlite3.Connection) -> int:
 
 def following_summary(con: sqlite3.Connection) -> str:
     """`scraper.py following`: the stored list's size and refresh time, and any held refresh."""
-    stored: int = sqlrows.scalar_int(con.execute("SELECT COUNT(*) FROM following")) or 0
+    stored: int
+    refreshed: sqlrows.SqlValue
+    stored, refreshed = _following_state(con)
     if not stored:
         return "no Following list stored (FOLLOWING_REFRESH_DAYS turns the allowlist on)"
-    refreshed: sqlrows.SqlValue = sqlrows.scalar(con.execute("SELECT MAX(updated_at) FROM following"))
     lines: list[str] = [f"{stored} account(s) stored, refreshed {str(refreshed)[:16]}"]
     held: tuple[int, int] | None
     if held := held_following(con):
@@ -564,9 +580,7 @@ def confirmed_renames(con: sqlite3.Connection) -> list[tuple[str, str]]:
     it and the old one no longer is. A list refreshed before the rename still has the old name, so a
     stale one can only hold a rename back. Empty without a stored list. An old name suspected of
     becoming two accounts, or two old names of becoming one, is left for a person."""
-    following: set[str] = {
-        sqlrows.must_str(r, 0) for r in sqlrows.fetch_all(con.execute("SELECT username FROM following"))
-    }
+    following: set[str] = following_set(con)
     pairs: list[tuple[str, str]] = [(old, new) for old, new, _ in rename_candidates(con)]
     olds: list[str] = [old for old, _ in pairs]
     news: list[str] = [new for _, new in pairs]
@@ -787,9 +801,7 @@ def _find_same_caption(
     shown: str = parsing.flat_caption(caption)
     if parsing.is_weak_caption(caption) or len(shown) < parsing.CAPTION_KEY_CHARS:
         return None
-    since: str = (
-        (datetime.now(UTC) - timedelta(days=config.RETAIN_DAYS)).isoformat() if config.RETAIN_DAYS > 0 else ""
-    )
+    since: str = retention.retain_cutoff()
     r: sqlite3.Row
     for r in sqlrows.fetch_all(
         con.execute(

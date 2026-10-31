@@ -2,6 +2,7 @@
 re-import the package under a different environment (tests/feedclient.py)."""
 
 import os
+from datetime import tzinfo
 from pathlib import Path
 
 from shared import control, env
@@ -13,6 +14,7 @@ PUBLIC_URL: str = os.environ.get("PUBLIC_URL", "http://localhost:8000").rstrip("
 POLL_MAX_HOURS: float = env.env_poll_max_hours()
 MAX_RUNS_PER_DAY: int = env.env_max_runs_per_day()
 TIMEZONE: str = env.env_timezone()  # TZ: the zone the feeds spell times out in; "" = UTC
+ZONE: tzinfo = env.zone(TIMEZONE)
 FEED_HOST: str = os.environ.get("FEED_HOST", "127.0.0.1")
 # Required on every request except /health once set: as a bearer token, as the password of HTTP
 # basic auth (any username), or as ?token=. Media URLs in the feeds are signed with it instead of

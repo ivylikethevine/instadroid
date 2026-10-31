@@ -53,7 +53,7 @@ def alert_entries(alerts: list[sqlite3.Row]) -> list[Entry]:
 
 def post_entries(con: sqlite3.Connection, posts: list[sqlite3.Row]) -> list[Entry]:
     extra_slides: dict[str, list[str]] = queries.extra_slides(con, [string(r, "id") for r in posts])
-    avatars: dict[str, str] = queries.avatar_files(con)
+    avatars: dict[str, str] = queries.avatar_files(con, sorted({string(r, "username") for r in posts}))
     out: list[Entry] = []
     username: str
     kind: str | None
@@ -67,7 +67,7 @@ def post_entries(con: sqlite3.Connection, posts: list[sqlite3.Row]) -> list[Entr
         caption: str = text(r, "caption") or ""
         first_line: str = caption.split("\n", 1)[0][:90] or kind or "post"
         marker: str = "▶ " if kind == "video" else ""  # Reels and videos are stored as kind "video"
-        url: str = opt_str(r, "url") or f"https://www.instagram.com/{username}/"
+        url: str = opt_str(r, "url") or render.profile_url(username)
         posted_abs: datetime | None = parse_iso(opt_str(r, "posted_at"))
         html: str = ""
         avatar: str | None = avatars.get(username)
@@ -101,7 +101,7 @@ def post_entries(con: sqlite3.Connection, posts: list[sqlite3.Row]) -> list[Entr
                 updated=scraped_abs or datetime.now(UTC),
                 published=posted_abs,
                 author=username,
-                author_url=f"https://www.instagram.com/{username}/",
+                author_url=render.profile_url(username),
                 avatar=avatar,
                 image=media_file,
             )
@@ -123,12 +123,12 @@ def story_entries(stories: list[sqlite3.Row]) -> list[Entry]:
             Entry(
                 id=f"{settings.PUBLIC_URL}/story/{string(r, 'id')}",
                 title=f"{username}'s story",
-                url=f"https://www.instagram.com/{username}/",
+                url=render.profile_url(username),
                 html=html,
                 updated=scraped,
                 published=scraped,
                 author=username,
-                author_url=f"https://www.instagram.com/{username}/",
+                author_url=render.profile_url(username),
                 image=media_file,
             )
         )
