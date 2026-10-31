@@ -72,7 +72,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     name: Lint (ruff + basedpyright)
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
@@ -96,7 +96,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     name: Unit tests
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
@@ -118,7 +118,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
@@ -139,7 +139,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     name: Shell scripts (shellcheck)
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
@@ -163,7 +163,7 @@ jobs:
     if: github.event.pull_request.draft != true
     name: Docs (markdownlint + prettier + links + typos)
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
@@ -197,7 +197,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     name: Docker (hadolint + build + compose config)
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write # upload the image scan to code scanning
@@ -272,7 +272,7 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
     name: Dependency review
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
@@ -286,7 +286,7 @@ jobs:
     if: github.event.pull_request.draft != true
     name: Secret scan (gitleaks)
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read # gitleaks lists the PR's commits via the API when scanning a PR
@@ -306,7 +306,7 @@ jobs:
     if: github.event.pull_request.draft != true
     name: Workflow lint (actionlint)
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
@@ -326,7 +326,7 @@ jobs:
     if: github.event.pull_request.draft != true
     name: Workflow security lint (zizmor)
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
