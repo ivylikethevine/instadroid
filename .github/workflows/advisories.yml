@@ -39,12 +39,12 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push')
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write # open, refresh or close the tracking issue
     steps:
-      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+      - uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -52,7 +52,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
           cache: pip
@@ -124,7 +124,8 @@ jobs:
               while IFS= read -r id; do echo "- $id"; done <<<"$open"
               echo
               echo '````'
-              npm audit --prefix .github || true
+              jq -r '.vulnerabilities[] | .name as $name | .via[] | objects
+                | [$name, .severity, .title, .url] | @tsv' "$RUNNER_TEMP/npm-audit.json"
               echo '````'
             } >>"$report"
           fi
