@@ -190,10 +190,23 @@ until v1.0: every added pin is upkeep.
 cancelled, and passes when each passed or was skipped, so jobs can be renamed or skipped by the
 change filter without touching branch protection.
 
+The checks that compile and install nothing (Markdown, shell, gitleaks, actionlint, zizmor) share one
+job, `Quick lint`, each running even when another failed; Lint, Unit tests, the audit and Docker wait
+on it. `pip-audit` runs when a lock, `.in` file or `pyproject.toml` changes, and on the weekly run:
+`advisories.yml` reports a new advisory against a tree nobody touched.
+
+**A push to `main` whose tree a green pull request run already tested isn't tested twice.** When a
+same-repository run passes with no job skipped, `CI result` records the tree it tested. The push
+landing that tree on `main` (merging an up-to-date pull request) finds the record in `Changes`, skips
+every other job, and copies that run's passing checks onto the pushed commit. The push run still
+concludes `success`, which is what `publish.yml`'s gate asks of it. A tree that run never saw runs in
+full, as does a dispatch.
+
 Every job in every workflow starts with `step-security/harden-runner`, which records the runner's
 network egress (and blocks all but an allowlist in the jobs that hold a write token for packages or
-releases: `publish.yml`'s `publish` and `release`, and `prune-images.yml`);
-`lint_workflows.sh` fails a job whose first step isn't it. The same script requires a
+releases: `publish.yml`'s `publish` and `release`, and `prune-images.yml`, each of which first refuses
+a runner in GitHub's DNS experiment, where `block` never lets the job finish);
+`lint_workflows.sh` fails a job whose first step isn't one of those two. The same script requires a
 `timeout-minutes` on every job, top-level `permissions:`, `persist-credentials: false` on every
 checkout, a success gate on every `workflow_run` job, and a commit SHA with a version comment on
 every third-party action.
@@ -212,15 +225,14 @@ The other workflows:
 - `pages.yml`: builds the [project site](https://ivylikethevine.github.io/instadroid/) with Jekyll
   from the repository root (`_config.yml`), fetches the newest `coverage-badge` artifact from `main`
   and serves it as `badges/coverage.json` and `badges/tests.json`, so no coverage service, token or
-  badge branch is involved. Runs when Coverage finishes on `main`, on a push to `main` that changes
-  the site's sources, and on dispatch.
+  badge branch is involved. Runs when Coverage finishes on `main`, and on dispatch.
 - `cancel-closed-pr.yml`: when a same-repository pull request is merged or closed, cancels its runs
   still queued or in progress, so they don't hold runners after the merge.
 - `codeql.yml`: CodeQL for Python and GitHub Actions, on pushes to `main`, pull requests and weekly on
   Tuesday.
 - `cflite.yml`: ClusterFuzzLite over `tests/fuzz/` ([TESTING.md](TESTING.md#fuzzing)): five minutes
-  of code-change fuzzing on a pull request that touches `app/`, the fuzzers or their build, and a
-  30-minute batch run daily that grows the corpus. ClusterFuzzLite's images are called directly,
+  of code-change fuzzing on a pull request that touches the parsers and what they import, the app's
+  lock, the fuzzers or their build, and a 30-minute batch run weekly that grows the corpus. ClusterFuzzLite's images are called directly,
   pinned by digest, since its actions carry only a `v1` tag. A crash fails the job.
 - `advisories.yml`: `pip-audit` over both Python locks and `npm audit` over
   `.github/package-lock.json`, after every green CI run on a push to `main` and weekly. Advisory: a

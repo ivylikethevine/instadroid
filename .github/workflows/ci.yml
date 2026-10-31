@@ -8,8 +8,10 @@ name: CI
 # passed, a failed or cancelled one fails it. The individual job names are informational.
 #
 # `changes` skips the Python, shell and Docker jobs when a push or pull request touches only Markdown,
-# docs/, or workflow files. The docs job and the workflow linters (actionlint, zizmor) always run, and
-# the schedule and a manual dispatch always run everything.
+# docs/, or workflow files. `Quick lint` always runs, and the schedule and a manual dispatch always run
+# everything. It also finds a push whose tree a green same-repository pull request run already took
+# (the usual squash merge): that run recorded the tree (`CI result`), the push finds the record, and
+# every other job skips. The push run still concludes success, which is all publish.yml's gate asks.
 on:
   push:
     branches: [main]
@@ -41,10 +43,14 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # the paths filter lists a pull request's files through the API
-    # A schedule or dispatch has no diff to filter (the filter step is skipped, its output empty), so it
-    # counts as a change to everything.
+      actions: read # find_tree_run.sh reads other runs and their artifacts
+      checks: write # the mirrored check runs of a reused run
+    # A schedule or dispatch has no diff to filter (the filter step is skipped), so it counts as a change
+    # to everything, and a reused run as a change to nothing.
     outputs:
-      code: ${{ steps.filter.outputs.code || 'true' }}
+      code: ${{ steps.gate.outputs.code }}
+      deps: ${{ steps.gate.outputs.deps }}
+      reuse-run: ${{ steps.reuse.outputs.run }}
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
@@ -66,9 +72,120 @@ jobs:
               - '!**/*.md'
               - '!docs/**'
               - '!.github/workflows/**'
+            deps:
+              - 'app/requirements.*'
+              - 'requirements-dev.*'
+              - 'pyproject.toml'
+      # continue-on-error: a failed lookup is a full run, never a skipped one
+      - id: reuse
+        if: github.event_name == 'push'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TREE: ${{ github.event.head_commit.tree_id }}
+        run: .github/scripts/find_tree_run.sh ci.yml "ci-tree-$TREE" | tee -a "$GITHUB_OUTPUT"
+      - id: gate
+        env:
+          FILTERED: ${{ steps.filter.outcome == 'success' }}
+          CODE: ${{ steps.filter.outputs.code }}
+          DEPS: ${{ steps.filter.outputs.deps }}
+          REUSE_RUN: ${{ steps.reuse.outputs.run }}
+        run: |
+          set -eu
+          if [ -n "$REUSE_RUN" ]; then
+            CODE=false DEPS=false
+          elif [ "$FILTERED" != true ]; then
+            CODE=true DEPS=true
+          fi
+          printf 'code=%s\ndeps=%s\n' "$CODE" "$DEPS" >>"$GITHUB_OUTPUT"
+      # What a reused run hands the pushed commit: one completed check run per job that passed there,
+      # linking back to it.
+      - name: Mirror the pull request run's checks onto this commit
+        if: steps.reuse.outputs.run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ steps.reuse.outputs.run }}
+        run: |
+          set -euo pipefail
+          echo "Reusing pull request run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN - this commit's tree is the one it tested." >>"$GITHUB_STEP_SUMMARY"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "success") | [.name, .html_url] | @tsv' |
+            while IFS=$'\t' read -r name url; do
+              gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" \
+                -f name="$name" -f head_sha="$GITHUB_SHA" -f status=completed \
+                -f conclusion=success -f details_url="$url" \
+                -f "output[title]=Reused from pull request run $RUN" \
+                -f "output[summary]=This commit's tree is the one that run tested." >/dev/null
+              printf 'success  %s\n' "$name"
+            done
+
+  # Every check that compiles and installs nothing, one job, one runner. Each runs even when an earlier
+  # one failed, so one push shows every finding; the jobs below wait on this one, so a stray blank line
+  # costs seconds and not a build. Not gated on `code`, whose filter ignores most of what these read.
+  quick-lint:
+    needs: changes
+    if: needs.changes.outputs.reuse-run == ''
+    name: Quick lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # gitleaks lists the PR's commits via the API when scanning a PR
+    steps:
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # From tools.txt (sha256-verified): lychee, zizmor, actionlint and the pinned shellcheck it runs over
+      # `run:` blocks. .shellcheckrc lets shellcheck follow `source` lines.
+      - id: tools
+        uses: ./.github/actions/setup-tools
+        with:
+          tools: shellcheck actionlint zizmor lychee
+      # check.sh runs `npm ci` in .github: markdownlint-cli2 and prettier, with their whole dependency
+      # tree, from .github/package-lock.json. Both read .markdownlint.yaml and .prettierrc.yaml.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: .github/package-lock.json
+      # typos (.typos.toml) and shfmt, which reads its style from .editorconfig, from the pinned dev
+      # requirements; the same Python runs the docs drift check.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - id: python-tools
+        run: ./.github/scripts/pip-install-locked.sh requirements-dev.txt typos shfmt-py
+      # shellcheck over every tracked script, then shfmt
+      - if: ${{ !cancelled() && steps.tools.outcome == 'success' && steps.python-tools.outcome == 'success' }}
+        run: scripts/check.sh shell
+      # markdownlint, prettier, lychee (lychee.toml) on relative links and #fragments only (so a flaky
+      # external site can't fail a pull request; link-check.yml checks external links after merge and
+      # weekly), typos, and .github/scripts/docs_drift.py (.env.example, Contents blocks, links the site
+      # can't follow)
+      - if: ${{ !cancelled() && steps.tools.outcome == 'success' && steps.python-tools.outcome == 'success' }}
+        run: scripts/check.sh docs
+      - if: ${{ !cancelled() }}
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # actionlint, then .github/scripts/lint_workflows.sh's structural rules (timeouts, checkout
+      # credentials, top-level permissions, workflow_run gates, SHA pins); yq and jq are on the runner.
+      - if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: scripts/check.sh actionlint lint-workflows
+      # workflows, composite actions and dependabot.yml
+      - if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: scripts/check.sh zizmor
+        env:
+          # Lets zizmor run its online audits (e.g. checking action pins against the real repo)
+          # instead of falling back to offline-only checks.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   lint:
-    needs: changes
+    needs: [changes, quick-lint]
     if: needs.changes.outputs.code == 'true'
     name: Lint (ruff + basedpyright)
     runs-on: ubuntu-26.04
@@ -92,7 +209,7 @@ jobs:
       - run: scripts/check.sh python
 
   test:
-    needs: changes
+    needs: [changes, quick-lint]
     if: needs.changes.outputs.code == 'true'
     name: Unit tests
     runs-on: ubuntu-26.04
@@ -113,9 +230,11 @@ jobs:
       # README's coverage and test-count badges come from coverage.yml, which pages.yml publishes.
       - run: scripts/check.sh test
 
+  # A change to a lock or to what they compile from; advisories.yml reports a new advisory against a tree
+  # nobody touched. The schedule runs it regardless.
   audit:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
+    needs: [changes, quick-lint]
+    if: needs.changes.outputs.deps == 'true'
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-26.04
     timeout-minutes: 5
@@ -134,66 +253,8 @@ jobs:
       - run: pip install --require-hashes -r requirements-dev.txt
       - run: scripts/check.sh audit
 
-  shell:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    name: Shell scripts (shellcheck)
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    steps:
-      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # shellcheck from tools.txt (sha256-verified); .shellcheckrc lets it follow `source` lines.
-      - uses: ./.github/actions/setup-tool
-        with:
-          tool: shellcheck
-      # shfmt comes from the pinned dev requirements and reads its style from .editorconfig.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.14"
-      - run: ./.github/scripts/pip-install-locked.sh requirements-dev.txt shfmt-py
-      # shellcheck over every tracked script, then shfmt
-      - run: scripts/check.sh shell
-
-  docs:
-    if: github.event.pull_request.draft != true
-    name: Docs (markdownlint + prettier + links + typos)
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    steps:
-      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # check.sh runs `npm ci` in .github: markdownlint-cli2 and prettier, with their whole dependency
-      # tree, from .github/package-lock.json. Both read .markdownlint.yaml and .prettierrc.yaml.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: .github/package-lock.json
-      - uses: ./.github/actions/setup-tool
-        with:
-          tool: lychee
-      # typos (.typos.toml) from the pinned dev requirements; the same Python runs the docs drift check.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.14"
-      - run: ./.github/scripts/pip-install-locked.sh requirements-dev.txt typos
-      # markdownlint, prettier, lychee (lychee.toml) on relative links and #fragments only (so a flaky
-      # external site can't fail a pull request; link-check.yml checks external links after merge and
-      # weekly), typos, and .github/scripts/docs_drift.py (.env.example, Contents blocks, links the site
-      # can't follow)
-      - run: scripts/check.sh docs
-
   docker:
-    needs: changes
+    needs: [changes, quick-lint]
     if: needs.changes.outputs.code == 'true'
     name: Docker (hadolint + build + compose config)
     runs-on: ubuntu-26.04
@@ -282,75 +343,12 @@ jobs:
         with:
           fail-on-severity: high
 
-  secrets:
-    if: github.event.pull_request.draft != true
-    name: Secret scan (gitleaks)
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read # gitleaks lists the PR's commits via the API when scanning a PR
-    steps:
-      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  actionlint:
-    if: github.event.pull_request.draft != true
-    name: Workflow lint (actionlint)
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    steps:
-      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # From tools.txt (sha256-verified): actionlint, plus the pinned shellcheck it runs over `run:` blocks.
-      - uses: ./.github/actions/setup-tools
-        with:
-          tools: actionlint shellcheck
-      # actionlint, then .github/scripts/lint_workflows.sh's structural rules (timeouts, checkout
-      # credentials, top-level permissions, workflow_run gates, SHA pins); yq and jq are on the runner.
-      - run: scripts/check.sh actionlint lint-workflows
-
-  zizmor:
-    if: github.event.pull_request.draft != true
-    name: Workflow security lint (zizmor)
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    steps:
-      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # From tools.txt (sha256-verified): the version the shared workflows' inline ignores hold on.
-      - uses: ./.github/actions/setup-tool
-        with:
-          tool: zizmor
-      # workflows, composite actions and dependabot.yml
-      - run: scripts/check.sh zizmor
-        env:
-          # Lets zizmor run its online audits (e.g. checking action pins against the real repo)
-          # instead of falling back to offline-only checks.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   # The required check (see the header). always(), so it reports even when a job it needs failed or
   # was skipped; it fails only on a failure or cancellation.
   result:
     # skipped on a draft like the jobs it needs; a skipped required check still passes
     if: always() && github.event.pull_request.draft != true
-    needs: [changes, lint, test, audit, shell, docs, docker, dependency-review, secrets, actionlint, zizmor]
+    needs: [changes, quick-lint, lint, test, audit, docker, dependency-review]
     name: CI result
     runs-on: ubuntu-26.04
     timeout-minutes: 5
@@ -369,3 +367,22 @@ jobs:
               exit 1
               ;;
           esac
+      # The tree a same-repository run tested, recorded only when no job skipped: a docs-only diff against
+      # `dev` skips the heavy jobs and still goes green, and that must not vouch for a push whose diff is
+      # code. find_tree_run.sh's header says why a fork's run never counts.
+      - if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          !contains(needs.*.result, 'skipped')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/mark-tree
+          sparse-checkout-cone-mode: false
+      - if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          !contains(needs.*.result, 'skipped')
+        uses: ./.github/actions/mark-tree
+        with:
+          prefix: ci-tree

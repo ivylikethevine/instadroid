@@ -1,10 +1,10 @@
 name: ClusterFuzzLite
 
 # Continuous fuzzing of the hierarchy parsers (tests/fuzz/, built by .clusterfuzzlite/): a short
-# code-change run on each pull request that touches the app, the fuzzers or their build, and a longer
-# batch run daily that grows the corpus. The corpus and any crash are stored as this workflow's
-# artifacts (ClusterFuzzLite's github-actions filestore), so a pull request's run starts from the
-# batch runs' corpus. A crash fails the job.
+# code-change run on each pull request that touches the parsers, their seeds, the locks their build
+# installs, the fuzzers or their build, and a longer batch run weekly that grows the corpus. The corpus
+# and any crash are stored as this workflow's artifacts (ClusterFuzzLite's github-actions filestore), so
+# a pull request's run starts from the batch runs' corpus. A crash fails the job.
 #
 # ClusterFuzzLite's own actions (google/clusterfuzzlite/actions/*) are thin wrappers that only carry
 # a `v1` tag and run their images by the mutable `:v1` tag, so this calls those images directly,
@@ -14,12 +14,18 @@ on:
   pull_request:
     branches: [main, dev]
     paths:
-      - "app/**"
+      # parsing.py and what it imports from this repository
+      - "app/instadroid/parsing.py"
+      - "app/instadroid/common.py"
+      - "app/instadroid/config.py"
+      - "app/instadroid/versioning.py"
+      - "app/igprofiles/**"
+      - "app/requirements.txt"
       - "tests/fuzz/**"
       - ".clusterfuzzlite/**"
       - ".github/workflows/cflite.yml"
   schedule:
-    - cron: "41 4 * * *"
+    - cron: "41 4 * * 1"
   workflow_dispatch:
 
 permissions:

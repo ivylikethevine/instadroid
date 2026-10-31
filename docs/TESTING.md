@@ -161,8 +161,8 @@ them all (`parse_screen()`) under atheris, seeded with the replay fixtures; anyt
 than lxml's syntax error on input that isn't XML is a finding.
 
 ClusterFuzzLite runs it continuously (`cflite.yml`, in
-[CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs)): briefly on each pull request that touches the app,
-and for half an hour daily, keeping its corpus and any crash as the workflow's artifacts.
+[CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs)): briefly on each pull request that touches what the
+parsers run on, and for half an hour weekly, keeping its corpus and any crash as the workflow's artifacts.
 `.clusterfuzzlite/` is the build: OSS-Fuzz's Python builder image with a pinned Python 3.14 added
 (the image's own is 3.11), the app's lock plus `.clusterfuzzlite/requirements.txt` (atheris and
 PyInstaller), and `build.sh`, which packages every `tests/fuzz/fuzz_*.py` with the profile fixtures
