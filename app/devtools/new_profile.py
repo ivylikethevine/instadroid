@@ -682,7 +682,7 @@ def validate(build: str) -> int:
     add_validated(PROFILES_DIR / profile.name / "__init__.py", build)
     assert run is not None
     print(f"added {build} to {profile.name}'s validated builds. Still by hand:")
-    print("  - add a row to docs/COMPATIBILITY.md and a run log entry to docs/RUNLOG.md:")
+    print("  - add a row to docs/COMPATIBILITY.md and a run log entry to docs/RUNS.md:")
     print(
         f"    | `{run.redroid_image or '?'}` | {run.android_release or '?'} | {build} | `{profile.name}` | ✅ works"
         f" | {date.today().isoformat()} | {run.new_posts} post(s), {run.new_stories} stor(ies) in the baseline run. |"

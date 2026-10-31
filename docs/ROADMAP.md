@@ -267,3 +267,5 @@ small unless sized. Items that change what users or CI see say so.
   compose's defaults.
 - **`docs_drift.py` lists and reads the Markdown once** for both checks.
 - **The `scratch/` scripts drop their `app/` `sys.path` entry**, which the editable install covers.
+- **Keep or delete `scratch/reshare_census.py`**: no tracked file names it, and it last changed on
+  2026-10-09. The docstring says what it answers; delete it if that question is settled.

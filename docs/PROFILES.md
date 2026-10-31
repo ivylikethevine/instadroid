@@ -1,6 +1,6 @@
 # Instagram version profiles
 
-The dated device runs behind the decisions here are in the [run log](RUNLOG.md).
+The dated device runs behind the decisions here are in the [run log](RUNS.md).
 
 ## Contents
 
@@ -32,7 +32,7 @@ Not every version gets a run either. A profile's builds are verified in two ways
   (`BaseProfile.verification()`).
 
 - **Floor:** 424 (`igprofiles.MIN_MAJOR`), the root profile `v424`, the oldest Instagram that runs on
-  this image ([run log](RUNLOG.md)). Named `v440` until 2026-09-15; run log entries before then use the old name.
+  this image ([run log](RUNS.md)). Named `v440` until 2026-09-15; run log entries before then use the old name.
 - **Default install:** `igprofiles.DEFAULT_BUILD`, pinned to 450.0.0.50.77
   (`igprofiles.default_build()`; `None` would mean the newest validated build). It was 445.0.0.45.83
   from 2026-09-15, when 446 crashed on launch, until 2026-10-07.
@@ -177,7 +177,7 @@ what a changed selector or override should be.
 6. **Validate**: `new-profile validate 447.0.0.x.y`. It checks for that version's
    fixtures replaying, and a baseline run of exactly that build that stored posts without an error.
    Then it adds the build to the covering profile's `validated` tuple and prints a
-   `docs/COMPATIBILITY.md` row. Add an entry to the [run log](RUNLOG.md).
+   `docs/COMPATIBILITY.md` row. Add an entry to the [run log](RUNS.md).
 7. **Restore** the device before restarting the app service:
    `new-profile restore` installs the default build again.
 
@@ -192,14 +192,14 @@ what a changed selector or override should be.
 - [x] Profiles only where something changes (2026-09-14): one root profile, `v424`; the covering
       profile is chosen automatically; `validated` lists builds; fixtures per version.
 - [x] Validated with `v424`: 424.0.0.49.64, 440.1.0.46.86, 441.0.0.43.81, 442.0.0.46.79, 443.0.0.48.82,
-      444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77, 450.0.0.50.77 (see the [run log](RUNLOG.md)). Replay fixtures for 424,
+      444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77, 450.0.0.50.77 (see the [run log](RUNS.md)). Replay fixtures for 424,
       440-446 and 450 (450 also has the Following list, and the Home feed with its tray floating).
       425-439 and 447-449 are suspected to work, between confirmed builds.
 - [x] Own profile, Following list and login form checked on 450 (2026-10-07): every required key present.
 - [x] Floor moved to 424 and the default install pinned to 445 (2026-09-15).
 - [x] Retried 446 (2026-10-07): it runs on a new `/data`, and its fixtures are recorded.
 - [x] Default install moved to 450 (2026-10-07).
-- [x] Old-build probe, `400.0.0.49.68`: installs, but crashes at native startup on every launch ([run log](RUNLOG.md)).
+- [x] Old-build probe, `400.0.0.49.68`: installs, but crashes at native startup on every launch ([run log](RUNS.md)).
 - [x] Leak scan of fixtures, tests, docs and git history (below); working tree cleaned, history not rewritten.
 
 ## Leak scan (2026-09-14)
@@ -220,7 +220,7 @@ It also checked for committed images, databases, APKs or raw dumps: none, ever.
 - account names and places from real posts in `v440/selectors.py` (now `v424/`) comments and in `test_parser.py`
   (four usernames, a display name, a venue, two permalink shortcodes);
 - a real city and state in the 445 feed fixture and two tests;
-- an account name in the run log (then part of this file, now [RUNLOG.md](RUNLOG.md)).
+- an account name in the run log (then part of this file, now [RUNS.md](RUNS.md)).
 
 None of the scrubbing misses found during the backfill (the own account's story tray item,
 suggested-post headers, @mentions, collab headers, audio credits) ever reached git: the committed

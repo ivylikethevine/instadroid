@@ -23,7 +23,7 @@ needs a doc update, [CONTRIBUTING.md](CONTRIBUTING.md#which-docs-change-with-wha
 | [Architecture](ARCHITECTURE.md) | The component map, how a scrape reaches a feed reader, trust boundaries, where state lives, and designs declined. |
 | [Security policy](SECURITY.md)  | The threat model, the assurance case, supported versions, and how to report a vulnerability.                      |
 | [Incidents](INCIDENTS.md)       | Dated write-ups of redroid incidents on the maintainer's host: symptoms, root causes, recovery, and measurements. |
-| [Run log](RUNLOG.md)            | Dated device runs behind the version profiles: baselines, validations and probes, with peak memory.               |
+| [Run log](RUNS.md)              | Dated device runs behind the version profiles: baselines, validations and probes, with peak memory.               |
 
 ## Changing it
 

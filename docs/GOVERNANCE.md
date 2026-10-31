@@ -11,7 +11,7 @@ person to appeal a decision to. [`.github/CODEOWNERS`](https://github.com/ivylik
 names one owner for the whole tree because there's nobody yet to split ownership with.
 
 Decisions are still made in public: planned work is in the [roadmap](ROADMAP.md), the dated device
-runs behind each version profile are in the [run log](RUNLOG.md), and the incidents behind the
+runs behind each version profile are in the [run log](RUNS.md), and the incidents behind the
 host-safety rules are in [INCIDENTS.md](INCIDENTS.md).
 
 ## Roles

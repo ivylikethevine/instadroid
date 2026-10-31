@@ -152,7 +152,7 @@ freeze from a scrape that ran out of memory. The rules that came out of them:
 - Never point two different Android major-version redroid images at the same `/data` volume
   ([COMPATIBILITY.md](COMPATIBILITY.md#one-android-version-per-data-volume)).
 - Don't lower redroid's `mem_limit` without remeasuring peak memory first; the numbers are in
-  [RUNLOG.md](RUNLOG.md) and [INCIDENTS.md](INCIDENTS.md).
+  [RUNS.md](RUNS.md) and [INCIDENTS.md](INCIDENTS.md).
 - Never disable `com.android.packageinstaller`, and test any other `pm disable-user` change against a
   full cold restart, not just the running instance.
 - When boot is slow or adb is stuck, run `scripts/diagnose.sh` (it reads logcat and host `dmesg`)
@@ -261,7 +261,7 @@ rather than restating it elsewhere.
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | a setting in compose or the app's environment                         | its commented default in `.env.example` (**enforced** by `docs_drift.py`), and [OPERATIONS.md](OPERATIONS.md) when it changes day-to-day operation |
 | a feed server route                                                   | `docs/openapi.json` via `export-openapi` (**enforced** by the test suite), and [FRESHRSS.md](FRESHRSS.md) if readers see it                        |
-| a new Instagram build checked on a device                             | [COMPATIBILITY.md](COMPATIBILITY.md)'s table, [PROFILES.md](PROFILES.md)'s Status, and a [RUNLOG.md](RUNLOG.md) entry                              |
+| a new Instagram build checked on a device                             | [COMPATIBILITY.md](COMPATIBILITY.md)'s table, [PROFILES.md](PROFILES.md)'s Status, and a [RUNS.md](RUNS.md) entry                                  |
 | a redroid image tried                                                 | [COMPATIBILITY.md](COMPATIBILITY.md), including "Weighed and not shipped" when it's declined                                                       |
 | an incident on a real device                                          | an [INCIDENTS.md](INCIDENTS.md) write-up, and a short rule in [Running against a real device](#running-against-a-real-device) and `CLAUDE.md`      |
 | what a scrape does, as a user sees it                                 | the README's "How a scrape works"                                                                                                                  |

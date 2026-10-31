@@ -278,4 +278,4 @@ debug dumps (10:18:40-41) contain nothing but a 22px-tall, empty Instagram `cont
 the feed switcher's menu opened a window that never filled in (the known guest-GPU-mode switcher
 quirk above, possibly worsened by the OOM kills). While that popup had focus, `dump_hierarchy()` saw
 only the popup, even though the screenshot shows a normal Home feed, so every screen parsed zero
-posts. A clean 445 baseline was taken later that day at the 3g limit (see the [run log](RUNLOG.md)).
+posts. A clean 445 baseline was taken later that day at the 3g limit (see the [run log](RUNS.md)).

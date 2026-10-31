@@ -96,7 +96,7 @@ follow before running redroid on a host you haven't personally tested it on.
 - `adb` on the host. `scrcpy` is optional; `adb exec-out screencap -p > shot.png` is enough for checks.
 - About 3.5GB of free RAM and a few spare cores. redroid is capped at 3g of memory with no swap
   (`REDROID_MEM_LIMIT`) and 4 CPUs (`REDROID_CPUS`); the app container at 256m and 1.5 CPUs. Scrapes
-  have peaked at up to 2.4GiB ([docs/RUNLOG.md](docs/RUNLOG.md)), and at the old 2g limit a run
+  have peaked at up to 2.4GiB ([docs/RUNS.md](docs/RUNS.md)), and at the old 2g limit a run
   OOM-killed Android processes and froze the host (see [docs/INCIDENTS.md](docs/INCIDENTS.md)).
 
 ### Kernel modules (Linux)

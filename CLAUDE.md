@@ -57,7 +57,7 @@ The rules and the incidents behind them are in
   stalls a host), `cpus: 4` (`REDROID_CPUS`), and the app container 256m with `memswap_limit: 256m`.
   redroid's `shm_size: 1g` is deliberately generous: under-provisioning it risks screenshot and
   graphics-buffer failures much harder to diagnose than a plain OOM kill. Peaks are in
-  [docs/RUNLOG.md](docs/RUNLOG.md).
+  [docs/RUNS.md](docs/RUNS.md).
 - **Never disable `com.android.packageinstaller`.** `PackageManagerService` requires exactly one
   enabled installer and crash-loops on the next cold boot without it.
 - **Don't use host GPU mode** (`androidboot.redroid_gpu_mode=host`). `docker-compose.yml` stays on
@@ -171,7 +171,7 @@ stops each OOM kill from dumping every process to the kernel log.
   it, this file included.
 - Image compatibility history lives in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), dated incident
   write-ups in [docs/INCIDENTS.md](docs/INCIDENTS.md), and dated device runs (with peak memory) in
-  [docs/RUNLOG.md](docs/RUNLOG.md), newest at the bottom. A new rule from an incident goes in
+  [docs/RUNS.md](docs/RUNS.md), newest at the bottom. A new rule from an incident goes in
   CONTRIBUTING's device-run rules and here, kept short, with the story in INCIDENTS.
 - No Jekyll front matter in any Markdown file: the site is built from the repository root
   (`_config.yml`), with `README.md` as its home page.
