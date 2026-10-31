@@ -5,9 +5,17 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shared import sqlrows
+from shared.disk import tree_size
 
 from . import config
 from .common import log
+
+
+def retain_cutoff() -> str:
+    """The ISO time RETAIN_DAYS back, or "" when RETAIN_DAYS is 0 and nothing expires."""
+    if config.RETAIN_DAYS <= 0:
+        return ""
+    return (datetime.now(UTC) - timedelta(days=config.RETAIN_DAYS)).isoformat()
 
 
 def _post_files(con: sqlite3.Connection, post_id: str) -> set[str]:
@@ -55,13 +63,16 @@ def _media_and_db_size_mb(con: sqlite3.Connection) -> float:
     DB_PATH would overcount once rows have been deleted — SQLite returns freed pages to an internal
     freelist rather than shrinking the file — which would make the size cap below keep deleting
     posts chasing a floor the file can never reach."""
-    page_count: int = sqlrows.scalar_int(con.execute("PRAGMA page_count")) or 0
-    freelist: int = sqlrows.scalar_int(con.execute("PRAGMA freelist_count")) or 0
-    page_size: int = sqlrows.scalar_int(con.execute("PRAGMA page_size")) or 0
-    total: int = (page_count - freelist) * page_size
-    if config.MEDIA_DIR.exists():
-        total += sum(f.stat().st_size for f in config.MEDIA_DIR.rglob("*") if f.is_file())
-    return total / (1024 * 1024)
+    live: int = (
+        sqlrows.scalar_int(
+            con.execute(
+                "SELECT (page_count - freelist_count) * page_size"
+                " FROM pragma_page_count, pragma_freelist_count, pragma_page_size"
+            )
+        )
+        or 0
+    )
+    return (live + tree_size(config.MEDIA_DIR)[0]) / (1024 * 1024)
 
 
 def _enforce_size_cap(con: sqlite3.Connection) -> None:
@@ -98,9 +109,9 @@ def _enforce_size_cap(con: sqlite3.Connection) -> None:
 def prune_expired_stories(con: sqlite3.Connection) -> None:
     """Stories share RETAIN_DAYS with posts (0 disables deletion) rather than expiring on their own
     schedule — once captured, a story is kept exactly as long as everything else."""
-    if config.RETAIN_DAYS <= 0:
+    cutoff: str = retain_cutoff()
+    if not cutoff:
         return
-    cutoff: str = (datetime.now(UTC) - timedelta(days=config.RETAIN_DAYS)).isoformat()
     gone: list[sqlite3.Row] = sqlrows.fetch_all(
         con.execute("SELECT media_file FROM stories WHERE scraped_at < ?", (cutoff,))
     )
@@ -115,17 +126,22 @@ def prune_old_posts(con: sqlite3.Connection) -> None:
     """Delete posts older than RETAIN_DAYS (0 disables), any media file no row references any
     more, and (if MEDIA_MAX_MB is set) additional oldest posts until total size is back under the
     cap — in that order, so disk use stays flat instead of growing forever."""
-    if config.RETAIN_DAYS > 0:
-        cutoff: str = (datetime.now(UTC) - timedelta(days=config.RETAIN_DAYS)).isoformat()
-        old_ids: list[str] = [
-            sqlrows.must_str(r, 0)
-            for r in sqlrows.fetch_all(
-                con.execute("SELECT id FROM posts WHERE COALESCE(posted_at, scraped_at) < ?", (cutoff,))
+    cutoff: str = retain_cutoff()
+    if cutoff:
+        expired: str = "FROM posts WHERE COALESCE(posted_at, scraped_at) < ?"
+        files: list[sqlite3.Row] = sqlrows.fetch_all(
+            con.execute(
+                f"SELECT media_file {expired} AND media_file IS NOT NULL"
+                f" UNION SELECT file FROM media WHERE post_id IN (SELECT id {expired})",
+                (cutoff, cutoff),
             )
-        ]
-        _delete_posts(con, old_ids, set[str]().union(*(_post_files(con, pid) for pid in old_ids)))
-        if old_ids:
-            log(f"retention: removed {len(old_ids)} post(s) older than {config.RETAIN_DAYS}d")
+        )
+        con.execute(f"DELETE FROM media WHERE post_id IN (SELECT id {expired})", (cutoff,))
+        removed: int = con.execute(f"DELETE {expired}", (cutoff,)).rowcount
+        con.commit()
+        discard_media(*(sqlrows.cell_str(r, 0) for r in files))
+        if removed:
+            log(f"retention: removed {removed} post(s) older than {config.RETAIN_DAYS}d")
     if config.MEDIA_DIR.exists():
         kept: set[str | None] = {
             sqlrows.cell_str(r, 0)

@@ -55,6 +55,12 @@ def one_row(con: sqlite3.Connection, sql: str, args: Sequence[SqlValue] = ()) ->
     return _query(con, sql, args, sqlrows.fetch_one, None)
 
 
+def count(con: sqlite3.Connection, sql: str, args: Sequence[SqlValue] = ()) -> int:
+    """The COUNT(*) a query selects, or 0 before the database or table exists."""
+    row: sqlite3.Row | None = one_row(con, sql, args)
+    return (sqlrows.cell_int(row, 0) or 0) if row else 0
+
+
 # --- reading rows ---------------------------------------------------------------------------------
 
 
@@ -128,10 +134,11 @@ def extra_slides(con: sqlite3.Connection, post_ids: list[str]) -> dict[str, list
     return out
 
 
-def avatar_files(con: sqlite3.Connection) -> dict[str, str]:
-    """{username: avatar_file} for every account with a captured avatar."""
-    sql: str = "SELECT username, avatar_file FROM accounts WHERE avatar_file IS NOT NULL"
-    return {string(row, 0): string(row, 1) for row in all_rows(con, sql)}
+def avatar_files(con: sqlite3.Connection, usernames: list[str]) -> dict[str, str]:
+    """{username: avatar_file} for the given accounts that have a captured avatar."""
+    placeholders: str = ",".join("?" * len(usernames))
+    sql: str = f"SELECT username, avatar_file FROM accounts WHERE avatar_file IS NOT NULL AND username IN ({placeholders})"
+    return {string(row, 0): string(row, 1) for row in all_rows(con, sql, usernames)}
 
 
 def feed_signal(con: sqlite3.Connection, user: str | None, alerts: list[sqlite3.Row]) -> tuple[EtagPart, ...]:
@@ -142,16 +149,16 @@ def feed_signal(con: sqlite3.Connection, user: str | None, alerts: list[sqlite3.
     where: str
     args: tuple[str, ...]
     where, args = (" WHERE username = ?", (user,)) if user else ("", ())
+    slides: str = f" WHERE post_id IN (SELECT id FROM posts{where})" if user else ""
     counts: sqlite3.Row | None = one_row(
         con, f"SELECT COUNT(*), COALESCE(MAX(COALESCE(updated_at, scraped_at)), '') FROM posts{where}", args
     )
-    media: sqlite3.Row | None = one_row(con, "SELECT COUNT(*) FROM media")
     avatar: sqlite3.Row | None = one_row(
         con, f"SELECT COALESCE(MAX(avatar_updated_at), '') FROM accounts{where}", args
     )
     return (
         *(sqlrows.values(counts) if counts else (0, "")),
-        sqlrows.cell(media, 0) if media else 0,
+        count(con, f"SELECT COUNT(*) FROM media{slides}", args),
         sqlrows.cell(avatar, 0) if avatar else "",
         *(sqlrows.values(a) for a in alerts),
     )
@@ -163,8 +170,7 @@ def open_alerts(con: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def post_count(con: sqlite3.Connection) -> int:
-    row: sqlite3.Row | None = one_row(con, "SELECT COUNT(*) FROM posts")
-    return (sqlrows.cell_int(row, 0) or 0) if row else 0
+    return count(con, "SELECT COUNT(*) FROM posts")
 
 
 def stories(con: sqlite3.Connection, requested: int) -> list[sqlite3.Row]:
@@ -207,12 +213,6 @@ def latest_device(con: sqlite3.Connection) -> sqlite3.Row | None:
 # read the rows at either end by id rather than MAX/MIN over a table that's never pruned.
 
 
-def last_finished(con: sqlite3.Connection) -> str | None:
-    """When the latest run finished, or None before any has."""
-    row: sqlite3.Row | None = one_row(con, "SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1")
-    return text(row, 0) if row else None
-
-
 def run_times(con: sqlite3.Connection) -> tuple[str | None, str | None, str | None]:
     """(latest finished_at, latest successful finished_at, first started_at) over every run."""
     row: sqlite3.Row | None = one_row(
@@ -236,9 +236,8 @@ def following_state(con: sqlite3.Connection) -> tuple[int, str | None, int]:
     """(accounts on the stored Following list, when it was last refreshed, accounts in a refresh held
     back for being far shorter); zeros before those tables exist."""
     row: sqlite3.Row | None = one_row(con, "SELECT COUNT(*), MAX(updated_at) FROM following")
-    held: sqlite3.Row | None = one_row(con, "SELECT COUNT(*) FROM following_pending")
     return (
         (sqlrows.cell_int(row, 0) or 0) if row else 0,
         text(row, 1) if row else None,
-        (sqlrows.cell_int(held, 0) or 0) if held else 0,
+        count(con, "SELECT COUNT(*) FROM following_pending"),
     )

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path[:0] = [str(REPO / "app"), str(REPO)]
+sys.path.insert(0, str(REPO))  # for tests/, which the editable install leaves out
 
 from instadroid import capture, config, db, device, scrape, versioning  # noqa: E402
 

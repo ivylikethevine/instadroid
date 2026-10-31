@@ -6,7 +6,9 @@ import igprofiles
 import pytest
 from devtools import check_new_builds, resource_ids
 
-_WANTED: dict[str, tuple[str, ...]] = resource_ids.selector_ids(igprofiles.load("v424").selectors)
+from tests.support import V424
+
+_WANTED: dict[str, tuple[str, ...]] = resource_ids.selector_ids(V424.selectors)
 _ALL: list[str] = sorted({name for names in _WANTED.values() for name in names})
 
 

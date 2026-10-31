@@ -39,6 +39,18 @@ _CHROME: re.Pattern[str] = re.compile(
 )
 
 
+# The placeholders identifiers() writes: each prefix, before a number, and what it stands for.
+PLACEHOLDER_KINDS: dict[str, str] = {
+    "user": "username",
+    "Place ": "place",
+    "Display ": "display name",
+    "Caption ": "caption",
+    "Note ": "note",
+    "Artist ": "audio credit",
+    "Track ": "audio credit",
+}
+
+
 def expected(xml: str) -> JSON:
     return jsonvalues.loads(json.dumps(parsing.parse_screen(xml)))  # plain JSON types, as stored
 
@@ -226,7 +238,7 @@ def rerecord(profile_name: str) -> list[Path]:
     with versioning.using(igprofiles.load(profile_name)):
         return [
             write_expected(xml_path, parsing.parse_screen(xml_path.read_text()))
-            for xml_path in sorted(igprofiles.fixture(profile_name, "").glob("*.xml"))
+            for xml_path in sorted(igprofiles.fixtures_dir(profile_name).glob("*.xml"))
         ]
 
 

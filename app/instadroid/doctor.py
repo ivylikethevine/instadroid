@@ -136,17 +136,10 @@ def _logcat_section(adb: Adb) -> list[str]:
     text: str | None = adb(["logcat", "-d", "-v", "threadtime"])
     if not text:
         return [*lines, "could not read logcat"]
-    found: bool = False
-    signature: str
-    fix: str
-    for signature, fix in diagnostics.CRASH_SIGNATURES.items():
-        count: int = text.count(signature)
-        if count:
-            found = True
-            lines.append(f"{count}x {signature!r}\n   fix: {fix}")
+    found: dict[str, str] = diagnostics.signatures_in(text)
     if not found:
-        lines.append("none of the known crash-loop signatures in the current logcat")
-    return lines
+        return [*lines, "none of the known crash-loop signatures in the current logcat"]
+    return lines + [f"{text.count(sig)}x {sig!r}\n   fix: {fix}" for sig, fix in found.items()]
 
 
 def report(con: sqlite3.Connection, adb: Adb = adb_run, now: datetime | None = None) -> str:

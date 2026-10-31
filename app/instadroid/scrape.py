@@ -11,7 +11,7 @@ from typing import Literal, TypedDict
 
 from lxml import etree
 from shared import env, sqlrows
-from shared.timestamps import parse_iso
+from shared.timestamps import parse_iso, window_starts
 
 from . import (
     alerts,
@@ -74,16 +74,13 @@ def budget_wait_seconds(con: sqlite3.Connection, now: datetime | None = None) ->
     if config.MAX_RUNS_PER_DAY <= 0:
         return 0.0
     at: datetime = now or datetime.now(UTC)
-    cutoff: datetime = at - timedelta(days=1)
-    parsed: list[datetime | None] = [
-        parse_iso(sqlrows.cell(r, 0))
-        for r in sqlrows.fetch_all(
-            con.execute(
-                "SELECT started_at FROM runs WHERE started_at >= ? ORDER BY id", (cutoff.isoformat(),)
-            )
+    rows: list[sqlite3.Row] = sqlrows.fetch_all(
+        con.execute(
+            "SELECT started_at FROM runs WHERE started_at >= ? ORDER BY id",
+            ((at - timedelta(days=1)).isoformat(),),
         )
-    ]
-    starts: list[datetime] = [t for t in parsed if t is not None and t >= cutoff]
+    )
+    starts: list[datetime] = window_starts((sqlrows.cell(r, 0) for r in rows), at)
     if len(starts) < config.MAX_RUNS_PER_DAY:
         return 0.0
     return max(0.0, (starts[-config.MAX_RUNS_PER_DAY] + timedelta(days=1) - at).total_seconds()) + 1
@@ -414,9 +411,8 @@ def _scrape_feed(
         navigation.open_target_feed(d)  # back onto the feed screen the post loop expects
     followed: set[str] | None = None
     if config.FOLLOWING_REFRESH_DAYS:
-        rows: list[sqlite3.Row] = sqlrows.fetch_all(con.execute("SELECT username FROM following"))
-        if rows:  # empty/never-refreshed means "not initialized yet" -> filter nothing
-            followed = {sqlrows.must_str(r, 0) for r in rows}
+        # empty/never-refreshed means "not initialized yet" -> filter nothing
+        followed = db.following_set(con) or None
     new_stories: int = 0
     stories_from: str = datetime.now(UTC).isoformat()
     reason: str | None

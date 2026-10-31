@@ -12,7 +12,7 @@ import igprofiles
 import pytest
 from devtools import check_new_builds, export_openapi, new_profile, promote_dump, resource_ids
 
-FEED_445: Path = igprofiles.fixture("v424", "feed_445.xml")
+from tests.support import FEED_445
 
 
 @pytest.mark.parametrize(

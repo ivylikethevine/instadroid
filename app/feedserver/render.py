@@ -13,7 +13,6 @@ from fastapi import Request, Response
 from feedgen.entry import FeedEntry
 from feedgen.feed import FeedGenerator
 from PIL import Image, ImageFile
-from shared import env
 
 from . import auth, settings
 from .queries import EtagPart
@@ -21,7 +20,7 @@ from .queries import EtagPart
 
 def local(dt: datetime) -> str:
     """`dt` in the TZ setting's zone, named by its abbreviation: "2026-09-08 01:00 PDT"."""
-    return dt.astimezone(env.zone(settings.TIMEZONE)).strftime("%Y-%m-%d %H:%M %Z")
+    return dt.astimezone(settings.ZONE).strftime("%Y-%m-%d %H:%M %Z")
 
 
 def cached(request: Request, *parts: EtagPart) -> tuple[str, Response | None]:
@@ -37,12 +36,17 @@ def media_url(file: str) -> str:
     return f"{url}?sig={auth.media_sig(file)}" if settings.FEED_TOKEN else url
 
 
-def feed_url(path: str, **params: str | None) -> str:
+def feed_url(path: str, *, token: bool = True, **params: str | None) -> str:
     """A feed URL for a subscription list (/opml), carrying the token when auth is on: whoever
-    fetched the list already presented it, and the reader will need it for each feed."""
-    token: str = settings.FEED_TOKEN
-    query: dict[str, str] = {k: v for k, v in params.items() if v} | ({"token": token} if token else {})
+    fetched the list already presented it, and the reader will need it for each feed. `token=False`
+    leaves it out, for a feed's link to itself."""
+    secret: str = settings.FEED_TOKEN if token else ""
+    query: dict[str, str] = {k: v for k, v in params.items() if v} | ({"token": secret} if secret else {})
     return f"{settings.PUBLIC_URL}{path}" + (f"?{urlencode(query, quote_via=quote)}" if query else "")
+
+
+def profile_url(username: str) -> str:
+    return f"https://www.instagram.com/{quote(username)}/"
 
 
 def new_feed(feed_id: str, title: str) -> FeedGenerator:
@@ -120,7 +124,7 @@ def caption_html(caption: str) -> str:
     for m in _CAPTION_LINK.finditer(caption):
         out.append(escape(caption[pos : m.start()]))
         if user := m["user"]:
-            href = f"https://www.instagram.com/{quote(user)}/"
+            href = profile_url(user)
         else:
             href = f"https://www.instagram.com/explore/tags/{quote(m['tag'])}/"
         out.append(f'<a href="{escape(href)}">{escape(m[0])}</a>')

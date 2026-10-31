@@ -136,16 +136,11 @@ def test_connecting_with_a_record_dir_wraps_the_device(
     def connect(addr: str, timeout: float = 0) -> str:
         return "connected"
 
-    def booted(addr: str, timeout: float) -> bool:
-        return True
-
     def fake_u2(addr: str) -> FakeDevice:
         return d
 
     monkeypatch.setattr(device.adbutils.adb, "connect", connect)
-    monkeypatch.setattr(device.tune, "wait_for_boot", booted)
     monkeypatch.setattr(device.u2, "connect", fake_u2)
-    monkeypatch.setattr(config, "TUNE_ON_CONNECT", False)
     monkeypatch.setattr(config, "RECORD_DIR", str(tmp_path))
     recorded: uidevice.Device = device.connect_device()
     assert isinstance(recorded, recording.Recorder)

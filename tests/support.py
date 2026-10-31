@@ -1,18 +1,23 @@
 """Typed reads of what the tests get back, JSON bodies and SQLite rows (json.loads and sqlite3 both hand
-back Any; the row reads build on shared.sqlrows), database seeding, and a fake urlopen() response, shared
-across test modules."""
+back Any; the row reads build on shared.sqlrows), database seeding, a fake urlopen() response, and the
+root profile with its feed fixture, shared across test modules."""
 
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Self, Unpack
 
+import igprofiles
 from devtools.jsonvalues import JSON as Json
 from devtools.jsonvalues import loads
 from httpx2 import Response
+from igprofiles import BaseProfile
 from instadroid import db
 from shared import sqlrows
 from shared.sqlrows import SqlValue
+
+V424: BaseProfile = igprofiles.load("v424")
+FEED_445: Path = igprofiles.fixture("v424", "feed_445.xml")
 
 
 def parse_json(text: str | bytes) -> Json:

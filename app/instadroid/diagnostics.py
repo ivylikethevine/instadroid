@@ -9,6 +9,7 @@ from pathlib import Path
 
 from igprofiles.screens import screen_of_dump
 from PIL import Image
+from shared.errors import short_error
 
 from . import config, uidevice
 from .common import log
@@ -78,6 +79,13 @@ def load_crash_signatures(path: Path = CRASH_SIGNATURES_FILE) -> dict[str, str]:
 
 
 CRASH_SIGNATURES: dict[str, str] = load_crash_signatures()
+
+
+def signatures_in(text: str) -> dict[str, str]:
+    """{signature: fix} for the known crash signatures in `text`."""
+    return {sig: fix for sig, fix in CRASH_SIGNATURES.items() if sig in text}
+
+
 # What a failure logcat keeps besides error/fatal lines: the known crash signatures, plus kills and ANRs.
 _LOGCAT_SIGNATURES: re.Pattern[str] = re.compile(
     "|".join(
@@ -123,13 +131,9 @@ def save_failure_logcat(error: str) -> Path | None:
     lines: list[str] = _filter_logcat(out.stdout)
     path: Path = config.DEBUG_DIR / f"logcat_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.txt"
     header: list[str] = [
-        f"# run failed: {error.splitlines()[0][:500] if error else '?'}",
+        f"# run failed: {short_error(error, 500) or '?'}",
         f"# adb logcat -d: error/fatal lines and known crash signatures, last {len(lines)} kept",
-        *(
-            f"# seen {sig!r}: {fix}"
-            for sig, fix in CRASH_SIGNATURES.items()
-            if any(sig in ln for ln in lines)
-        ),
+        *(f"# seen {sig!r}: {fix}" for sig, fix in signatures_in("\n".join(lines)).items()),
     ]
     try:
         config.DEBUG_DIR.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,7 @@
 """Stored timestamps, shared by the scraper and the feed server."""
 
-from datetime import UTC, datetime
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 
 from .sqlrows import SqlValue
 
@@ -17,3 +18,9 @@ def parse_iso(value: SqlValue) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def window_starts(stamps: Iterable[SqlValue], now: datetime) -> list[datetime]:
+    """The stored timestamps inside the day before `now`, parsed; a malformed one is left out."""
+    cutoff: datetime = now - timedelta(days=1)
+    return [t for t in map(parse_iso, stamps) if t is not None and t >= cutoff]

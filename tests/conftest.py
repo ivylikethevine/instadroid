@@ -3,12 +3,10 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-import igprofiles
 import pytest
-from igprofiles import BaseProfile
 from instadroid import capture, config, db, device, diagnostics, tune, versioning
 
-V424: BaseProfile = igprofiles.load("v424")
+from tests.support import V424
 
 
 @pytest.fixture(autouse=True)

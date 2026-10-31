@@ -14,6 +14,11 @@ from tests.feedclient import make_app, write_image
 from tests.support import json_body
 
 
+def unescaped(body: str) -> str:
+    """A feed's HTML content, as Atom escapes it, read as HTML."""
+    return body.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+
+
 def test_feed_lists_posts_with_permalinks_and_escaping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -223,6 +228,35 @@ def test_etag_changes_when_an_avatar_is_captured(tmp_path: Path, monkeypatch: py
     assert second.headers["etag"] != etag
 
 
+def test_per_user_etag_ignores_other_accounts_new_slides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client: TestClient = make_app(
+        tmp_path,
+        monkeypatch,
+        seed="""
+        CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,
+            media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT, updated_at TEXT);
+        CREATE TABLE media (post_id TEXT, idx INTEGER, file TEXT);
+        INSERT INTO posts VALUES ('C1', 'someone', 'carousel', '1 day ago', 'cap', 'C1.jpg',
+            '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL, NULL, '2026-09-08T08:00:00+00:00');
+        INSERT INTO posts VALUES ('C2', 'other', 'carousel', '1 day ago', 'cap', 'C2.jpg',
+            '2026-09-08T08:00:00+00:00', 'h2', NULL, NULL, NULL, '2026-09-08T08:00:00+00:00');
+        """,
+    )
+    etag: str = client.get("/instagram.xml", params={"user": "someone"}).headers["etag"]
+    con: sqlite3.Connection = sqlite3.connect(tmp_path / "posts.sqlite")
+    con.execute("INSERT INTO media VALUES ('C2', 1, 'C2_1.jpg')")
+    con.commit()
+    params: dict[str, str] = {"user": "someone"}
+    headers: dict[str, str] = {"if-none-match": etag}
+    assert client.get("/instagram.xml", params=params, headers=headers).status_code == 304
+    con.execute("INSERT INTO media VALUES ('C1', 1, 'C1_1.jpg')")
+    con.commit()
+    con.close()
+    assert client.get("/instagram.xml", params=params, headers=headers).status_code == 200
+
+
 def _make_stories_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, TestClient]:
     seed: str = """
     CREATE TABLE stories (id TEXT PRIMARY KEY, username TEXT, media_file TEXT, kind TEXT,
@@ -231,22 +265,23 @@ def _make_stories_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[P
     return tmp_path / "posts.sqlite", make_app(tmp_path, monkeypatch, seed)
 
 
+def _add_story(db: Path, story_id: str, username: str, media_file: str, hours_ago: float = 1) -> None:
+    scraped: str = (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat()
+    con: sqlite3.Connection = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO stories VALUES (?, ?, ?, 'story', ?, ?)",
+        (story_id, username, media_file, f"{hours_ago:g}h", scraped),
+    )
+    con.commit()
+    con.close()
+
+
 def test_stories_feed_lists_stored_stories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db: Path
     client: TestClient
     db, client = _make_stories_db(tmp_path, monkeypatch)
-    now: datetime = datetime.now(UTC)
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute(
-        "INSERT INTO stories VALUES ('s1','alice','stories/s1.jpg','story','1h',?)",
-        ((now - timedelta(hours=1)).isoformat(),),
-    )
-    con.execute(
-        "INSERT INTO stories VALUES ('s2','bob','stories/s2.jpg','story','30h',?)",
-        ((now - timedelta(hours=30)).isoformat(),),
-    )
-    con.commit()
-    con.close()
+    _add_story(db, "s1", "alice", "stories/s1.jpg", hours_ago=1)
+    _add_story(db, "s2", "bob", "stories/s2.jpg", hours_ago=30)
 
     body: str = client.get("/stories.xml").text
     assert "alice" in body
@@ -277,21 +312,14 @@ def test_stories_feed_etag_changes_when_a_story_is_removed(
     db: Path
     client: TestClient
     db, client = _make_stories_db(tmp_path, monkeypatch)
-    now: datetime = datetime.now(UTC)
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute(
-        "INSERT INTO stories VALUES ('s1','alice','stories/s1.jpg','story','1h',?)",
-        ((now - timedelta(hours=1)).isoformat(),),
-    )
-    con.commit()
-    con.close()
+    _add_story(db, "s1", "alice", "stories/s1.jpg")
 
     first: Response = client.get("/stories.xml")
     assert "alice" in first.text
     etag: str = first.headers["etag"]
 
     # Simulate the retention sweep removing the story (as _prune_expired_stories() eventually does).
-    con = sqlite3.connect(db)
+    con: sqlite3.Connection = sqlite3.connect(db)
     con.execute("DELETE FROM stories WHERE id = 's1'")
     con.commit()
     con.close()
@@ -305,8 +333,6 @@ def test_stories_feed_etag_changes_when_a_story_is_removed(
 def test_opml_lists_every_account_plus_the_aggregate_and_stories_feeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import xml.etree.ElementTree as ET
-
     client: TestClient = make_app(tmp_path, monkeypatch)
     r: Response = client.get("/opml")
     assert r.status_code == 200
@@ -338,8 +364,6 @@ def test_opml_can_leave_the_aggregate_feed_out(tmp_path: Path, monkeypatch: pyte
 
 
 def test_opml_escapes_and_quotes_unusual_usernames(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import xml.etree.ElementTree as ET
-
     client: TestClient = make_app(tmp_path, monkeypatch)
     db: Path = tmp_path / "posts.sqlite"
     con: sqlite3.Connection = sqlite3.connect(db)
@@ -360,8 +384,6 @@ def test_opml_escapes_and_quotes_unusual_usernames(tmp_path: Path, monkeypatch: 
 def test_opml_without_a_posts_table_returns_an_empty_category_instead_of_500(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import xml.etree.ElementTree as ET
-
     client: TestClient = make_app(tmp_path, monkeypatch, seed="")  # an empty file, no table
 
     r: Response = client.get("/opml")
@@ -402,7 +424,7 @@ def test_feed_images_carry_their_dimensions_and_a_thumbnail(
     assert (
         'src="http://feed.test/media/ABC.jpg" alt="" width="1080" height="1350"'
         ' style="max-width:100%;height:auto"'
-    ) in body.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+    ) in unescaped(body)
     assert '<media:thumbnail url="http://feed.test/media/ABC.jpg" height="1350" width="1080"/>' in body
 
 
@@ -410,9 +432,7 @@ def test_feed_image_without_a_file_on_disk_has_no_dimensions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)  # ABC.jpg is in the DB but was never written
-    body: str = (
-        client.get("/instagram.xml").text.replace("&quot;", '"').replace("&gt;", ">").replace("&lt;", "<")
-    )
+    body: str = unescaped(client.get("/instagram.xml").text)
     assert '<img src="http://feed.test/media/ABC.jpg" alt="" />' in body
     assert '<media:thumbnail url="http://feed.test/media/ABC.jpg"/>' in body
 
@@ -423,9 +443,7 @@ def test_feed_image_that_is_not_an_image_has_no_dimensions(
     client: TestClient = make_app(tmp_path, monkeypatch)
     (tmp_path / "media").mkdir(exist_ok=True)
     (tmp_path / "media" / "ABC.jpg").write_bytes(b"not a jpeg at all")  # truncated by a crash mid-write
-    body: str = (
-        client.get("/instagram.xml").text.replace("&quot;", '"').replace("&gt;", ">").replace("&lt;", "<")
-    )
+    body: str = unescaped(client.get("/instagram.xml").text)
     assert '<img src="http://feed.test/media/ABC.jpg" alt="" />' in body
     assert '<media:thumbnail url="http://feed.test/media/ABC.jpg"/>' in body
 
@@ -442,7 +460,7 @@ def test_feed_entry_dates_a_post_from_posted_at_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch, seed=POSTED_AT_ONLY)
-    body: str = client.get("/instagram.xml").text.replace("&lt;", "<").replace("&gt;", ">")
+    body: str = unescaped(client.get("/instagram.xml").text)
     assert "<small>Posted 2026-09-07 09:30 UTC · saved 2026-09-08 08:00 UTC · " in body
     assert "<published>2026-09-07T09:30:00+00:00</published>" in body
 
@@ -460,17 +478,10 @@ def test_stories_feed_images_carry_dimensions_and_a_thumbnail(
     db: Path
     client: TestClient
     db, client = _make_stories_db(tmp_path, monkeypatch)
-    now: datetime = datetime.now(UTC)
     write_image(tmp_path / "media" / "stories" / "s1.webp", (1080, 1900))
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute(
-        "INSERT INTO stories VALUES ('s1','alice','stories/s1.webp','story','1h',?)",
-        ((now - timedelta(hours=1)).isoformat(),),
-    )
-    con.commit()
-    con.close()
+    _add_story(db, "s1", "alice", "stories/s1.webp")
     body: str = client.get("/stories.xml").text
-    assert 'width="1080" height="1900"' in body.replace("&quot;", '"')
+    assert 'width="1080" height="1900"' in unescaped(body)
     assert (
         '<media:thumbnail url="http://feed.test/media/stories/s1.webp" height="1900" width="1080"/>' in body
     )
@@ -512,6 +523,6 @@ def test_feed_entry_links_caption_mentions(tmp_path: Path, monkeypatch: pytest.M
     con.commit()
     con.close()
     body: str = client.get("/instagram.xml").text
-    content: str = body.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+    content: str = unescaped(body)
     assert '<a href="https://www.instagram.com/photog/">@photog</a>' in content
     assert "<title>someone: shot by @photog #sunset</title>" in body  # titles stay plain text

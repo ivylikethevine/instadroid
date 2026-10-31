@@ -15,18 +15,18 @@ from typing import NoReturn, TypedDict, Unpack
 import igprofiles
 import pytest
 from devtools import new_profile, promote_dump
-from igprofiles import BaseProfile, screens
+from igprofiles import screens
 from igprofiles.base import Selectors
 from instadroid import config, db, diagnostics, scrape, versioning
 from lxml import etree
 
 from tests.deviceflows import feed_device, following_list_screen, home_screen
 from tests.fakedevice import FakeDevice, hierarchy, node
+from tests.support import FEED_445, V424
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
-V424: BaseProfile = igprofiles.load("v424")
-FEED_XML: str = igprofiles.fixture("v424", "feed_445.xml").read_text()
+FEED_XML: str = FEED_445.read_text()
 
 
 # --- igprofiles.screens --------------------------------------------------------------------------
@@ -209,10 +209,10 @@ def scratch_profiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     )
     monkeypatch.setattr(new_profile, "PROFILES_DIR", root)
 
-    def fixture(name: str, filename: str) -> Path:
-        return root / name / "fixtures" / filename
+    def fixtures_dir(name: str) -> Path:
+        return root / name / "fixtures"
 
-    monkeypatch.setattr(igprofiles, "fixture", fixture)
+    monkeypatch.setattr(igprofiles, "fixtures_dir", fixtures_dir)
     yield root
     mod: str
     for mod in [m for m in sys.modules if m.startswith("igprofiles.v499")]:

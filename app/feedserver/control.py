@@ -60,7 +60,7 @@ def scrape_now() -> ControlState:
         raise HTTPException(409, "the manual lock is in place; release it first")
     con: sqlite3.Connection
     with queries.connection() as con:
-        since: float | None = files.minutes_since(queries.last_finished(con))
+        since: float | None = files.minutes_since_last_run(con)
     wait: float = settings.RUN_NOW_MIN_MINUTES
 
     if since is not None and not files.run_now_due(since, wait):

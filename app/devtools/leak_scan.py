@@ -30,6 +30,7 @@ import sys
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import BinaryIO
 
@@ -39,7 +40,7 @@ from lxml import etree
 from shared import sqlrows
 
 from devtools import ROOT
-from devtools.promote_dump import identifiers
+from devtools.promote_dump import PLACEHOLDER_KINDS, identifiers
 
 ALLOWLIST: Path = Path(__file__).with_name("leak_allowlist.txt")
 # Shorter identifiers match ordinary words and code too often to be worth reporting.
@@ -83,7 +84,7 @@ _SHAPES: tuple[Shape, ...] = (
     ),
 )
 # promote-dump's placeholders: user1, Place 2, Display 3, ...
-_PLACEHOLDER: re.Pattern[str] = re.compile(r"user\d+|(?:Place|Display|Caption|Note|Artist|Track) \d+")
+_PLACEHOLDER: re.Pattern[str] = re.compile("|".join(rf"{re.escape(p)}\d+" for p in PLACEHOLDER_KINDS))
 
 
 @dataclass(frozen=True)
@@ -170,16 +171,9 @@ def from_media(path: Path, data_dir: Path) -> dict[str, str]:
     return {}
 
 
-# promote-dump's placeholder prefixes, as the kinds this reports.
-_DUMP_KINDS: dict[str, str] = {
-    "user": "username",
-    "Place ": "place",
-    "Display ": "display name",
-    "Caption ": "caption",
-    "Note ": "note",
-    "Artist ": "audio credit",
-    "Track ": "audio credit",
-}
+@cache
+def _newest_profile() -> igprofiles.BaseProfile:
+    return igprofiles.load(igprofiles.available()[-1])
 
 
 def from_dump(path: Path) -> dict[str, str]:
@@ -187,7 +181,7 @@ def from_dump(path: Path) -> dict[str, str]:
     under the newest profile, less the account's own follower counts. A file that isn't a hierarchy
     dump gives nothing."""
     try:
-        with versioning.using(igprofiles.load(igprofiles.available()[-1])):
+        with versioning.using(_newest_profile()):
             names: dict[str, str] = identifiers(path.read_text(errors="replace"))
     except etree.XMLSyntaxError:
         return {}
@@ -195,7 +189,7 @@ def from_dump(path: Path) -> dict[str, str]:
     value: str
     placeholder: str
     for value, placeholder in names.items():
-        kind: str | None = _DUMP_KINDS.get(placeholder.rstrip("0123456789"))
+        kind: str | None = PLACEHOLDER_KINDS.get(placeholder.rstrip("0123456789"))
         if kind:
             _add(found, value, kind)
     return found

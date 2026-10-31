@@ -50,7 +50,7 @@ from shared.errors import short_error
 
 from devtools import ROOT, promote_dump
 
-PROFILES_DIR: Path = ROOT / "app" / "igprofiles"
+PROFILES_DIR: Path = igprofiles.ROOT
 DEV_DIR: Path = ROOT / "local" / "data" / "debug" / "profile-dev"  # /debug/profile-dev in the container
 CONTAINER_DEV_DIR: str = "/debug/profile-dev"
 # Screens whose dumps the parsers read, so a fixture of them checks parse output, not just selectors.
@@ -625,7 +625,7 @@ def validation_problems(profile: BaseProfile, build: str, run: RunSummary | None
     """What still stands between `build` and validated with `profile`."""
     problems: list[str] = []
     major: int = parse_version(build)
-    fixtures: list[Path] = sorted(igprofiles.fixture(profile.name, "").glob(f"*_{major}.expected.json"))
+    fixtures: list[Path] = sorted(igprofiles.fixtures_dir(profile.name).glob(f"*_{major}.expected.json"))
     if not fixtures:
         problems.append(f"no replay fixtures for {major}: `new-profile promote {build}`")
     recorded: Path

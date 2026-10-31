@@ -10,8 +10,6 @@ Ordered by scope, smallest first.
 - [Cleanup](#cleanup)
   - [Device and scrape](#device-and-scrape)
   - [Support modules and shared](#support-modules-and-shared)
-  - [Feed server](#feed-server)
-  - [Profiles and devtools](#profiles-and-devtools)
   - [Tests](#tests)
   - [CI and scripts](#ci-and-scripts)
 
@@ -142,10 +140,6 @@ small unless sized. Items that change what users or CI see say so.
   and a `_handle_card` returning an enum in place of nested `break`/`continue`. Medium.
 - **`capture.py` duplicates**: a `_card_on_screen(d, key)` for the two find-the-card-in-a-new-dump
   expressions, and `permalink_code(url)` as `_code_of(url) or url`.
-- **Following queries**: a `db.following_set(con)` for the two allowlist reads, and one
-  `COUNT(*), MAX(updated_at)` helper for the five copies in `app/instadroid/db.py`.
-- **One `_add_columns` call for `posts`** in `db.py` instead of three, each with its own
-  `PRAGMA table_info`.
 - **Retry loops**: a `_wait_until(pred)` for navigation's two six-try polling loops and a
   `_reach_home(d, recover)` for the two Home-feed retry loops in `stories.py`.
 
@@ -157,49 +151,8 @@ small unless sized. Items that change what users or CI see say so.
   Medium.
 - **`doctor.adb_run` shared**: move it where `diagnostics.py` and `tune.py` can use it for their
   hand-rolled `subprocess.run(["adb", "-s", …])` calls (`install._run_checked` stays).
-- **`shared/control.py`'s file protocol**: private `_read`/`_write` helpers for the repeated
-  mkdir-and-write and read-or-None blocks, and a `clear_run_now` so `instadroid/control.py` stops
-  unlinking the request file itself.
-- **`shared.control.minutes_since_last_run(con)`** for the latest-run query both processes run
-  (`feedserver/queries.py`, `feedserver/control.py`, `instadroid/control.py`).
 - **A shared run duration and result** for `/status` and `scraper.py doctor` (`status.py`,
   `doctor.py`), each keeping its own format; doctor's `has_column` plus `cell_str` is `opt_str`.
-- **Retention in a few queries**: `prune_old_posts` reads each expired post's files separately; one
-  `UNION` query and subquery deletes do it, and a `retain_cutoff()` replaces the three copies of the
-  cutoff (`retention.py`, `db.py`).
-- **One `tree_size()`** in `shared/` for `/status` and retention (retention then tolerates a file
-  vanishing mid-walk), and one PRAGMA query for the database size.
-- **`diagnostics.signatures_in(text)`** for the two crash-signature matches (`doctor.py`,
-  `diagnostics.py`), and `short_error` for the logcat header's hand-trimmed error.
-- **One `resized()` Pillow helper** for the `_Resizable` typing workaround copied in `stories.py`
-  and `reshare.py`.
-- **`tune_device` reads `tune_packages.txt` twice**; load it once.
-- **One run-budget window**: a shared `window_starts()` for the parse-and-filter `status.py` and
-  `scrape.py` both do, each keeping its arithmetic; and one `now` per `status_page`.
-
-### Feed server
-
-- **Per-account ETags count every account's slides**: `feed_signal` (`app/feedserver/queries.py`)
-  counts the whole `media` table, so any new carousel turns every `?user=` feed's 304 into a 200.
-  Scope the count to the user. Changes ETag values only.
-- **A `count(con, sql)` helper** for the five "COUNT, or 0 before the table exists" copies in
-  `queries.py`.
-- **`render.feed_url(..., token=False)`** replaces `feeds._self_url`, byte-identical.
-- **One `_respond(fmt, ...)`** for the Atom-or-JSON branch both feed builders repeat.
-- **Avatars for the feed's accounts only**: `post_entries` reads every account's avatar; filter by
-  the posts' usernames.
-- **`render.profile_url(username)`** for the seven profile URLs, quoted in `feeds.py` and
-  `render.py` but not in `entries.py`; quoting is a no-op for valid usernames.
-- **`settings.ZONE`** computed once instead of an `env.zone()` lookup per timestamp.
-
-### Profiles and devtools
-
-- **One placeholder table**: `promote_dump`'s placeholder kinds are spelled out again in
-  `leak_scan`'s `_PLACEHOLDER` regex and `_DUMP_KINDS`; define them once and derive both.
-- **leak-scan loads the newest profile per dump file**; load it once in `collect`.
-- **`igprofiles.fixtures_dir(name)` and a public `ROOT`** replace the `fixture(name, "")` workaround
-  in `promote_dump.py` and `new_profile.py`, and `new_profile.PROFILES_DIR`.
-- **`major_of` in `igprofiles/base.py`**, re-exported, instead of base's inline copies.
 
 ### Tests
 
@@ -221,7 +174,6 @@ small unless sized. Items that change what users or CI see say so.
   `subprocess.run` fakes, with the missing/hanging pair parametrized.
 - **Poll-loop stubs in `deviceflows`**: `stop_at_first_run` (three local `StopLoop` copies),
   `scrape_returns` and `recorded_run` (four copies), `connect_returns` (three copies).
-- **`V424` and `FEED_445` defined once** in `support.py` instead of in seven files.
 - **Shared CLI scaffolding**: `new_profile`'s host state, decline prompt, `dev_dir` and baseline
   fixtures between `test_profile_dev` and `test_scripts_cli`; the scraper CLI harness between
   `test_snapshot_check` and `test_scraper_cli`.
@@ -230,15 +182,10 @@ small unless sized. Items that change what users or CI see say so.
   `_fully_migrated` helper.
 - **Parametrize near-copies** in `test_db` (record-run stats, refresh trios, the rename pair),
   `test_feed` (the 304 tests, the image pair) and `test_parser` (quiet hours, time distribution).
-- **`test_feed` helpers**: an `unescaped()` for six `replace` chains, an `_add_story`, and three
-  redundant in-function ElementTree imports removed.
 - **`test_login` and `test_capture` helpers**: `_missing_ig`, `_first(calls, tool)`, `_cached_apk`,
   `_caption_device` and `deviceflows.top_card`.
-- **Patches conftest already applies** (`TUNE_ON_CONNECT`, `wait_for_boot`, `DEVICE_TIMEZONE=""`)
-  removed from `test_recording`, `test_tune` and `test_parser`, plus an `untuned` fixture.
 - **Fixtures for repeated setup** in `test_permalink_backfill` (five tests) and the selector-drift
   baseline (`test_selector_drift`, `test_resilience`).
-- **`test_leak_scan`'s git repository built once per module**: 12 git spawns down to 4.
 - **Lesser test cleanups**: an in-process `FEED_MODE` fallback check instead of a subprocess, the
   unused `fast_offline` parameters in `test_navigation`, `test_stories`' repeated screenshot setup,
   and a `MEMINFO` constant in `new_profile.py` to patch instead of `Path`.
@@ -252,20 +199,14 @@ small unless sized. Items that change what users or CI see say so.
 - **One copy of the `/data` version rule**: `scripts/preflight.sh` copies `android_major()` and the
   mismatch check from `guard-android-data.sh`; a read-only `--check` mode there replaces it.
   Preflight also fails when either version is empty and the guard doesn't, so `--check` keeps that.
-- **One basedpyright run**: an explicit `include`/`exclude` in `pyproject.toml` stops pyright's
-  default dot-directory exclude, so `check.sh` drops its second pass over `.github/scripts`.
 - **`publish.yml`'s release notes as one heredoc** instead of about 35 `echo` lines.
 - **`snapshot-android-data.sh` pruning in one container** instead of one per old snapshot, and one
   `tar` pass when `android.image` is missing.
-- **Job-level `env:` in `cflite.yml`** for the four keys both steps repeat (`GITHUB_TOKEN` stays per
-  step).
 - **`ci.yml`'s Trivy step through `trivy_scan.sh`**, the third copy of its flags. Drops secret
   results from that job's advisory SARIF, so the owner's call.
 - **`check.sh docker` once** in `ci.yml`'s docker job instead of `hadolint` and `compose` apart; a
   compose failure would then skip the build and smoke test.
 - **Preflight sizing from `docker compose config`** instead of parsing `.env` and repeating
   compose's defaults.
-- **`docs_drift.py` lists and reads the Markdown once** for both checks.
-- **The `scratch/` scripts drop their `app/` `sys.path` entry**, which the editable install covers.
 - **Keep or delete `scratch/reshare_census.py`**: no tracked file names it, and it last changed on
   2026-10-09. The docstring says what it answers; delete it if that question is settled.

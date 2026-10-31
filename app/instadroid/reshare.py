@@ -11,7 +11,7 @@ from PIL import Image, ImageChops, ImageFile, ImageFilter, ImageStat
 from shared import sqlrows
 
 from . import config, retention
-from .common import log
+from .common import log, resized
 
 # The reshare sticker is centred across the frame at any height, by default 88% of the frame wide;
 # these are the card widths searched, as shares of the frame's.
@@ -43,27 +43,15 @@ SHARP: int = 30
 PLAIN: float = 0.01
 
 
-class _Resizable(Protocol):
-    """Image.resize() as this module calls it. Pillow annotates `size` as also accepting a numpy array,
-    a type left unknown when numpy isn't installed, so the method is read through this instead."""
-
-    def resize(
-        self,
-        size: tuple[int, int],
-        resample: int | None = None,
-        box: tuple[float, float, float, float] | None = None,
-    ) -> Image.Image: ...
-
-
 def _shrunk(
-    img: _Resizable, size: tuple[int, int], box: tuple[float, float, float, float] | None = None
+    img: Image.Image, size: tuple[int, int], box: tuple[float, float, float, float] | None = None
 ) -> Image.Image:
     """`img`, or its `box`, averaged down to `size`."""
-    return img.resize(size, Image.Resampling.BOX, box)
+    return resized(img, size, Image.Resampling.BOX, box)
 
 
 class _Mappable(Protocol):
-    """Image.point() with a lookup table, read through this for the same reason."""
+    """Image.point() with a lookup table, read through this for common._Resizable's reason."""
 
     def point(self, lut: Sequence[int]) -> Image.Image: ...
 

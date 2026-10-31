@@ -41,7 +41,7 @@ from tests.deviceflows import (
     top_card_id,
 )
 from tests.fakedevice import FakeDevice, Node, node
-from tests.support import UrlResponse, fetch_row, record_run_ago, row_dict
+from tests.support import V424, UrlResponse, fetch_row, record_run_ago, row_dict
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
@@ -673,9 +673,8 @@ def test_a_card_whose_bottom_is_off_screen_waits_for_a_later_dump(monkeypatch: p
 def test_a_card_the_profile_cannot_attribute_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
     """parse_hierarchy() itself drops username-less cards, but a profile override may not."""
     _one_screen(monkeypatch)
-    root: igprofiles.BaseProfile = igprofiles.load("v424")
 
-    class Unattributed(type(root)):
+    class Unattributed(type(V424)):
         def parse_hierarchy(self, base: Callable[[str], list[parsing.Post]], xml: str) -> list[parsing.Post]:
             posts: list[parsing.Post] = base(xml)
             if posts:

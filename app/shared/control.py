@@ -10,18 +10,34 @@ poll loop telling /status when it means to start the next run. Each process read
 from the environment; the functions here take them as arguments."""
 
 import os
+import sqlite3
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .sqlrows import SqlValue
+from .sqlrows import SqlValue, scalar
 from .timestamps import parse_iso
 
 LOCK: str = "manual.lock"
 HOLD: str = "needs-human.hold"  # its text is the error that raised it
 RUN_NOW: str = "scrape-now"
 NEXT_RUN: str = "next-run"  # its text is an ISO timestamp
+
+
+def _read(control_dir: str | Path, name: str) -> str | None:
+    """A control file's stripped text, or None when there's no such file."""
+    try:
+        return (Path(control_dir) / name).read_text().strip()
+    except OSError:
+        return None
+
+
+def _write(control_dir: str | Path, name: str, text: str = "") -> None:
+    """Write a control file, making the control directory if it isn't there yet."""
+    path: Path = Path(control_dir) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
 
 
 def env_control_dir(db_path: str, environ: Mapping[str, str] = os.environ) -> Path:
@@ -61,53 +77,43 @@ def locked(control_dir: str | Path, max_hours: float, now: float | None = None) 
 def set_lock(control_dir: str | Path, on: bool) -> None:
     """Put the manual lock in place, or release it. Releasing also clears a hold: unlocking is the
     one way a person says "I've dealt with it"."""
-    path: Path = Path(control_dir) / LOCK
     if on:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
+        _write(control_dir, LOCK)
     else:
-        path.unlink(missing_ok=True)
+        (Path(control_dir) / LOCK).unlink(missing_ok=True)
         (Path(control_dir) / HOLD).unlink(missing_ok=True)
 
 
 def hold_reason(control_dir: str | Path) -> str | None:
     """The error text a hold was raised with, or None when there is no hold."""
-    try:
-        return (Path(control_dir) / HOLD).read_text().strip()
-    except OSError:
-        return None
+    return _read(control_dir, HOLD)
 
 
 def set_hold(control_dir: str | Path, reason: str) -> None:
     """Hold every run until a person unlocks: unlike the manual lock, this never expires."""
-    path: Path = Path(control_dir) / HOLD
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(reason + "\n")
+    _write(control_dir, HOLD, reason + "\n")
 
 
 def request_run_now(control_dir: str | Path) -> None:
-    path: Path = Path(control_dir) / RUN_NOW
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
+    _write(control_dir, RUN_NOW)
 
 
 def run_now_requested(control_dir: str | Path) -> bool:
     return (Path(control_dir) / RUN_NOW).exists()
 
 
+def clear_run_now(control_dir: str | Path) -> None:
+    (Path(control_dir) / RUN_NOW).unlink(missing_ok=True)
+
+
 def set_next_run(control_dir: str | Path, at: datetime) -> None:
     """Record when the poll loop means to start its next run (now, when one is starting)."""
-    path: Path = Path(control_dir) / NEXT_RUN
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(at.isoformat() + "\n")
+    _write(control_dir, NEXT_RUN, at.isoformat() + "\n")
 
 
 def next_run(control_dir: str | Path) -> datetime | None:
     """When the poll loop last said its next run starts, or None when it hasn't said."""
-    try:
-        return parse_iso((Path(control_dir) / NEXT_RUN).read_text().strip())
-    except OSError:
-        return None
+    return parse_iso(_read(control_dir, NEXT_RUN))
 
 
 def minutes_since(finished_at: SqlValue, now: datetime | None = None) -> float | None:
@@ -116,6 +122,17 @@ def minutes_since(finished_at: SqlValue, now: datetime | None = None) -> float |
     if finished is None:
         return None
     return ((now or datetime.now(UTC)) - finished).total_seconds() / 60
+
+
+def minutes_since_last_run(con: sqlite3.Connection, now: datetime | None = None) -> float | None:
+    """minutes_since() the latest run finished, or None before any has or the runs table exists. Runs
+    are inserted as they finish, so the newest id is the latest finish."""
+    try:
+        return minutes_since(
+            scalar(con.execute("SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1")), now
+        )
+    except sqlite3.OperationalError:
+        return None
 
 
 def run_now_due(since: float | None, min_minutes: float) -> bool:

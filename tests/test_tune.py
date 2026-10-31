@@ -15,6 +15,13 @@ REAL_WAIT_FOR_BOOT: Callable[[str, float], bool] = (
 )  # conftest's autouse fixture stubs the attribute for the suite
 
 
+@pytest.fixture
+def untuned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A process that hasn't tuned yet, with tuning on: what conftest turns off for the rest of the suite."""
+    monkeypatch.setattr(tune, "_tuned", False)
+    monkeypatch.setattr(config, "TUNE_ON_CONNECT", True)
+
+
 def test_the_package_list_is_the_scripts_list_and_never_the_installer() -> None:
     packages: list[str] = tune.load_packages()
     assert len(packages) == 42 and "com.android.vending" in packages and "com.android.traceur" in packages
@@ -31,12 +38,10 @@ def test_tune_commands_match_the_script() -> None:
     assert not tune.tune_commands("", [])[0].startswith("service call")  # no timezone: not applied
 
 
+@pytest.mark.usefixtures("untuned")
 def test_tune_device_runs_once_per_process_in_one_round_trip(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(tune, "_tuned", False)
-    monkeypatch.setattr(config, "TUNE_ON_CONNECT", True)
-    monkeypatch.setattr(config, "DEVICE_TIMEZONE", "")
     d: FakeDevice = feed_device()
     assert tune.tune_device(d)
     calls: list[str] = [c for c in d.shell_calls if "pm disable-user" in c or "settings put" in c]
@@ -86,30 +91,27 @@ def test_wait_for_boot_gives_up_after_the_timeout(monkeypatch: pytest.MonkeyPatc
     assert not REAL_WAIT_FOR_BOOT("127.0.0.1:5555", 150)
 
 
+@pytest.mark.usefixtures("untuned")
 def test_a_tuning_failure_is_logged_and_left_for_the_next_connect(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     class BrokenShell(FakeDevice):
         def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
             raise RuntimeError("adb: device offline")
 
-    monkeypatch.setattr(tune, "_tuned", False)
-    monkeypatch.setattr(config, "TUNE_ON_CONNECT", True)
     assert not tune.tune_device(BrokenShell({}, "launcher"))  # never raises: an untuned device still scrapes
     assert "device tuning failed" in capsys.readouterr().out
     assert not tune._tuned  # so the next connect tries again
 
 
+@pytest.mark.usefixtures("untuned")
 def test_tune_device_names_the_commands_the_device_rejected(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     class PartlyTuned(FakeDevice):
         def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
             return Out("+ - +")  # the second command's exit status was non-zero
 
-    monkeypatch.setattr(tune, "_tuned", False)
-    monkeypatch.setattr(config, "TUNE_ON_CONNECT", True)
-    monkeypatch.setattr(config, "DEVICE_TIMEZONE", "")
     assert tune.tune_device(PartlyTuned({}, "launcher"))
     out: str = capsys.readouterr().out
     assert "device tuned: 2 of 48 commands applied" in out
