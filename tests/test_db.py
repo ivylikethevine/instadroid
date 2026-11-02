@@ -7,9 +7,40 @@ from typing import NoReturn, TypedDict, Unpack
 
 import pytest
 from instadroid import config, db, parsing
+from shared import sqlrows
 from shared.sqlrows import SqlValue
 
 from tests.support import fetch_row, insert_post, sql_column
+
+
+def _legacy_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, columns: str = "") -> sqlite3.Connection:
+    """A pre-migration database (no posted_at/updated_at columns, unless given in `columns`) at
+    config.DB_PATH, open for seeding."""
+    media: Path = tmp_path / "media"
+    media.mkdir()
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
+    monkeypatch.setattr(config, "MEDIA_DIR", media)
+    con: sqlite3.Connection = sqlite3.connect(tmp_path / "posts.sqlite")
+    con.execute(
+        f"""CREATE TABLE posts (
+            id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
+            caption TEXT, media_file TEXT, scraped_at TEXT NOT NULL,
+            hash TEXT, url TEXT, place TEXT{columns}
+        )"""
+    )
+    return con
+
+
+def _reopen_at(con: sqlite3.Connection, version: int) -> sqlite3.Connection:
+    """Close `con` as a database that has run `version` migrations, and open it again."""
+    con.execute(f"PRAGMA user_version = {version}")
+    con.commit()
+    con.close()
+    return db.db_init()
+
+
+def _fully_migrated(con: sqlite3.Connection) -> bool:
+    return sqlrows.scalar(con.execute("PRAGMA user_version")) == len(db.MIGRATIONS)
 
 
 def test_merge_bumps_updated_at_without_touching_scraped_at(
@@ -89,37 +120,22 @@ def test_merge_keeps_the_first_seen_instagram_version(
     merged, _ = db.merged_fields(existing, candidate, datetime.now(UTC))
     db.write_merged(con, "h1", merged)
     assert (
-        con.execute("SELECT ig_version FROM posts WHERE id=?", (merged["id"],)).fetchone()[0] == "400.0.0.1.1"
+        sqlrows.scalar(con.execute("SELECT ig_version FROM posts WHERE id=?", (merged["id"],)))
+        == "400.0.0.1.1"
     )
 
 
 def test_db_init_backfills_updated_at_for_rows_from_before_the_column_existed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db_file: Path = tmp_path / "posts.sqlite"
-    media: Path = tmp_path / "media"
-    media.mkdir()
-    monkeypatch.setattr(config, "DB_PATH", str(db_file))
-    monkeypatch.setattr(config, "MEDIA_DIR", media)
-
-    con: sqlite3.Connection = sqlite3.connect(db_file)
-    con.execute(
-        """CREATE TABLE posts (
-            id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
-            caption TEXT, media_file TEXT, scraped_at TEXT NOT NULL,
-            hash TEXT, url TEXT, place TEXT, posted_at TEXT
-        )"""
-    )
+    con: sqlite3.Connection = _legacy_db(tmp_path, monkeypatch, ", posted_at TEXT")
     scraped_at: str = datetime.now(UTC).isoformat()
     con.execute(
         "INSERT INTO posts VALUES ('h1','u','photo','x','cap',NULL,?,'h1',NULL,NULL,?)",
         (scraped_at, scraped_at),
     )
-    con.execute("PRAGMA user_version = 1")  # already past the one-time dedupe migration
-    con.commit()
-    con.close()
 
-    con = db.db_init()
+    con = _reopen_at(con, 1)  # already past the one-time dedupe migration
 
     row: sqlite3.Row = fetch_row(con.execute("SELECT updated_at FROM posts WHERE id='h1'"))
     assert row["updated_at"] == scraped_at
@@ -128,24 +144,11 @@ def test_db_init_backfills_updated_at_for_rows_from_before_the_column_existed(
 def test_db_init_migration_merges_legacy_duplicate_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db_file: Path = tmp_path / "posts.sqlite"
-    media: Path = tmp_path / "media"
-    media.mkdir()
-    monkeypatch.setattr(config, "DB_PATH", str(db_file))
-    monkeypatch.setattr(config, "MEDIA_DIR", media)
-
     # Simulate a pre-migration DB (no posted_at column) with the exact bug pattern seen in
     # production: the same post stored twice because one pass identified it from a weak
     # media-description caption before the real caption had rendered.
-    con: sqlite3.Connection = sqlite3.connect(db_file)
-    con.execute(
-        """CREATE TABLE posts (
-            id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
-            caption TEXT, media_file TEXT, scraped_at TEXT NOT NULL,
-            hash TEXT, url TEXT, place TEXT
-        )"""
-    )
-    (media / "weakhash.jpg").write_bytes(b"x")
+    con: sqlite3.Connection = _legacy_db(tmp_path, monkeypatch)
+    (config.MEDIA_DIR / "weakhash.jpg").write_bytes(b"x")
     now: str = datetime.now(UTC).isoformat()
     con.execute(
         "INSERT INTO posts VALUES ('weakhash','club','carousel','3 days ago',"
@@ -166,23 +169,6 @@ def test_db_init_migration_merges_legacy_duplicate_rows(
     assert len(posts) == 1
     assert posts[0]["caption"] == "Attendance check! see you there"
     assert posts[0]["media_file"] == "weakhash.jpg"  # the only crop that exists is kept
-
-
-def _legacy_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
-    """A pre-migration database (no posted_at/updated_at columns) at config.DB_PATH, open for seeding."""
-    media: Path = tmp_path / "media"
-    media.mkdir()
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    monkeypatch.setattr(config, "MEDIA_DIR", media)
-    con: sqlite3.Connection = sqlite3.connect(tmp_path / "posts.sqlite")
-    con.execute(
-        """CREATE TABLE posts (
-            id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT,
-            caption TEXT, media_file TEXT, scraped_at TEXT NOT NULL,
-            hash TEXT, url TEXT, place TEXT
-        )"""
-    )
-    return con
 
 
 def test_db_init_migration_skips_a_row_it_already_merged_away(
@@ -207,7 +193,7 @@ def test_db_init_migration_skips_a_row_it_already_merged_away(
     con = db.db_init()
 
     assert sql_column(con.execute("SELECT id FROM posts")) == ["ABC"]
-    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+    assert _fully_migrated(con)
 
 
 def test_db_init_migration_skips_a_row_the_merge_raises_on(
@@ -236,14 +222,12 @@ def test_db_init_migration_skips_a_row_the_merge_raises_on(
 
     assert sql_column(con.execute("SELECT id FROM posts")) == ["odd"]
     assert "WARN: dedupe migration skipped row 'odd': RuntimeError(" in capsys.readouterr().out
-    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+    assert _fully_migrated(con)
 
 
 def test_accounts_backfill_skips_a_username_the_insert_rejects(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    con: sqlite3.Connection, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    con: sqlite3.Connection = db.db_init()
     now: str = datetime.now(UTC).isoformat()
     con.execute("INSERT INTO posts (id, username, scraped_at) VALUES ('p1', 'fine', ?)", (now,))
     con.execute("INSERT INTO posts (id, username, scraped_at) VALUES ('p2', 'cursed', ?)", (now,))
@@ -251,32 +235,24 @@ def test_accounts_backfill_skips_a_username_the_insert_rejects(
         "CREATE TRIGGER no_cursed BEFORE INSERT ON accounts WHEN NEW.username = 'cursed'"
         " BEGIN SELECT RAISE(ABORT, 'no such account'); END"
     )
-    con.execute("PRAGMA user_version = 1")  # back to before the accounts backfill
-    con.commit()
-    con.close()
 
-    con = db.db_init()
+    con = _reopen_at(con, 1)  # back to before the accounts backfill
 
     assert sql_column(con.execute("SELECT username FROM accounts ORDER BY username")) == ["fine"]
     assert "WARN: accounts backfill skipped 'cursed': IntegrityError(" in capsys.readouterr().out
-    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+    assert _fully_migrated(con)
 
 
-def test_migration_drops_the_stories_expiry_column(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    con: sqlite3.Connection = db.db_init()
+def test_migration_drops_the_stories_expiry_column(con: sqlite3.Connection) -> None:
     con.execute("ALTER TABLE stories ADD COLUMN expires_at TEXT")  # what db_init() created before v3
     con.execute("CREATE INDEX stories_expires_at ON stories(expires_at)")
-    con.execute("PRAGMA user_version = 2")
-    con.commit()
-    con.close()
 
-    con = db.db_init()
+    con = _reopen_at(con, 2)
 
     columns: list[SqlValue] = sql_column(con.execute("SELECT name FROM pragma_table_info('stories')"))
     assert "expires_at" not in columns
     assert not sql_column(con.execute("SELECT name FROM sqlite_master WHERE name='stories_expires_at'"))
-    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+    assert _fully_migrated(con)
 
 
 @pytest.mark.parametrize(
@@ -334,64 +310,35 @@ def test_record_run_writes_a_row(con: sqlite3.Connection) -> None:
     assert row["link_sheet_failures"] == 0  # default when the caller doesn't pass any
 
 
-def test_record_run_stores_link_failure_counts(con: sqlite3.Connection) -> None:
+@pytest.mark.parametrize(
+    "stats",
+    [
+        {"link_sheet_failures": 2, "link_clipboard_failures": 1},
+        {"new_stories": 3},
+        {"cards_per_screen": 4.5, "share_captioned": 0.8, "share_complete": 0.9},
+        {"warning": "w"},
+    ],
+    ids=["link-failures", "new-stories", "selector-drift", "warning"],
+)
+def test_record_run_stores_its_stats(con: sqlite3.Connection, stats: db.RunMetrics) -> None:
     started: str = datetime.now(UTC).isoformat()
     finished: str = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
 
-    db.record_run(con, started, finished, 1, None, {}, link_sheet_failures=2, link_clipboard_failures=1)
+    db.record_run(con, started, finished, 1, None, {}, **stats)
 
     row: sqlite3.Row = fetch_row(con.execute("SELECT * FROM runs"))
-    assert row["link_sheet_failures"] == 2
-    assert row["link_clipboard_failures"] == 1
-
-
-def test_record_run_stores_new_stories_count(con: sqlite3.Connection) -> None:
-    started: str = datetime.now(UTC).isoformat()
-    finished: str = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
-
-    db.record_run(con, started, finished, 0, None, {}, new_stories=3)
-
-    assert con.execute("SELECT new_stories FROM runs").fetchone()[0] == 3
-
-
-def test_record_run_stores_selector_drift_stats(con: sqlite3.Connection) -> None:
-    started: str = datetime.now(UTC).isoformat()
-    finished: str = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
-
-    db.record_run(
-        con, started, finished, 0, None, {}, cards_per_screen=4.5, share_captioned=0.8, share_complete=0.9
-    )
-
-    row: sqlite3.Row = fetch_row(
-        con.execute("SELECT cards_per_screen, share_captioned, share_complete FROM runs")
-    )
-    assert row["cards_per_screen"] == 4.5
-    assert row["share_captioned"] == 0.8
-    assert row["share_complete"] == 0.9
+    assert {key: sqlrows.cell(row, key) for key in stats} == stats
 
 
 def test_db_init_creates_an_empty_stories_table(con: sqlite3.Connection) -> None:
-    assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 0
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM stories")) == 0
     db.db_init()  # re-run must be a no-op, not a crash
 
 
 def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db_file: Path = tmp_path / "posts.sqlite"
-    media: Path = tmp_path / "media"
-    media.mkdir()
-    monkeypatch.setattr(config, "DB_PATH", str(db_file))
-    monkeypatch.setattr(config, "MEDIA_DIR", media)
-
-    con: sqlite3.Connection = sqlite3.connect(db_file)
-    con.execute(
-        """CREATE TABLE posts (
-            id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
-            caption TEXT, media_file TEXT, scraped_at TEXT NOT NULL,
-            hash TEXT, url TEXT, place TEXT
-        )"""
-    )
+    con: sqlite3.Connection = _legacy_db(tmp_path, monkeypatch)
     # One row with an unparseable scraped_at (e.g. hand-edited or corrupted), one normal row.
     con.execute(
         "INSERT INTO posts VALUES ('bad','u','photo','2 days ago','cap',NULL,'not-a-timestamp',"
@@ -407,7 +354,7 @@ def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(
     con = db.db_init()  # must not raise, and must not loop forever on the corrupt row
 
     # dedupe (v1), accounts backfill (v2), story-retention cleanup (v3), media_post index (v4), rehash (v5)
-    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+    assert _fully_migrated(con)
     ids: set[SqlValue] = set(sql_column(con.execute("SELECT id FROM posts")))
     assert ids == {"bad", "good"}  # the corrupt row is left alone, not dropped or crashed on
 
@@ -418,99 +365,54 @@ def test_db_init_migration_skips_a_corrupt_row_instead_of_crashing(
 def test_migration_backfills_an_accounts_row_for_every_existing_username(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db_file: Path = tmp_path / "posts.sqlite"
-    media: Path = tmp_path / "media"
-    media.mkdir()
-    monkeypatch.setattr(config, "DB_PATH", str(db_file))
-    monkeypatch.setattr(config, "MEDIA_DIR", media)
-
-    con: sqlite3.Connection = sqlite3.connect(db_file)
-    con.execute(
-        """CREATE TABLE posts (
-            id TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT, posted_date TEXT,
-            caption TEXT, media_file TEXT, scraped_at TEXT NOT NULL,
-            hash TEXT, url TEXT, place TEXT, posted_at TEXT, updated_at TEXT
-        )"""
-    )
+    con: sqlite3.Connection = _legacy_db(tmp_path, monkeypatch, ", posted_at TEXT, updated_at TEXT")
     now: str = datetime.now(UTC).isoformat()
     con.execute(
         "INSERT INTO posts VALUES ('h1','club','photo','x','cap','h1.jpg',?,'h1',NULL,NULL,?,?)",
         (now, now, now),
     )
-    con.execute("PRAGMA user_version = 1")  # already past the dedupe migration
-    con.commit()
-    con.close()
 
-    con = db.db_init()
+    con = _reopen_at(con, 1)  # already past the dedupe migration
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == len(
-        db.MIGRATIONS
-    )  # accounts backfill (v2) and every later one
-    assert con.execute("SELECT username FROM accounts WHERE username='club'").fetchone() is not None
+    assert _fully_migrated(con)  # accounts backfill (v2) and every later one
+    assert sqlrows.scalar(con.execute("SELECT username FROM accounts WHERE username='club'")) == "club"
     # media_file / the media table are untouched: no backfill needed there.
-    assert con.execute("SELECT media_file FROM posts WHERE id='h1'").fetchone()[0] == "h1.jpg"
-    assert con.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 0
+    assert sqlrows.scalar(con.execute("SELECT media_file FROM posts WHERE id='h1'")) == "h1.jpg"
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM media")) == 0
 
     db.db_init()  # re-run must be a no-op
 
 
-def test_migration_drops_the_redundant_media_post_index(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    db_file: Path = tmp_path / "posts.sqlite"
-    monkeypatch.setattr(config, "DB_PATH", str(db_file))
-    con: sqlite3.Connection = db.db_init()
+def test_migration_drops_the_redundant_media_post_index(con: sqlite3.Connection) -> None:
     con.execute("CREATE INDEX media_post ON media(post_id)")  # what db_init() created before v4
-    con.execute("PRAGMA user_version = 3")
-    con.commit()
-    con.close()
 
-    con = db.db_init()
+    con = _reopen_at(con, 3)
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+    assert _fully_migrated(con)
     assert not sql_column(con.execute("SELECT name FROM sqlite_master WHERE name='media_post'"))
 
 
-def test_rehash_migration_skips_a_row_without_an_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rehash_migration_skips_a_row_without_an_id(con: sqlite3.Connection) -> None:
     """A corrupt legacy row without an id is skipped, not crashed on, and the migration still finishes."""
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    con: sqlite3.Connection = db.db_init()
     con.execute(
         "INSERT INTO posts (id, username, caption, scraped_at, hash) VALUES (NULL, 'u', 'cap', 'x', 'old')"
     )
-    con.execute("PRAGMA user_version = 4")
-    con.commit()
-    con.close()
 
-    con = db.db_init()
+    con = _reopen_at(con, 4)
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+    assert _fully_migrated(con)
     assert sql_column(con.execute("SELECT hash FROM posts WHERE id IS NULL")) == ["old"]
 
 
-def test_migration_rehashes_stored_posts_to_the_current_post_key(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_migration_rehashes_stored_posts_to_the_current_post_key(con: sqlite3.Connection) -> None:
     """After parsing._post_key() changed, stored hashes are recomputed from the stored caption so the
     next run recognises every post outright instead of re-capturing and merging it."""
-    db_file: Path = tmp_path / "posts.sqlite"
-    monkeypatch.setattr(config, "DB_PATH", str(db_file))
-    con: sqlite3.Connection = db.db_init()
-    insert_post(con, config.MEDIA_DIR, "captioned", days_old=1)
-    insert_post(con, config.MEDIA_DIR, "weak", days_old=1)
-    con.execute(
-        "UPDATE posts SET username='u', caption='First line here\nsecond', hash='old1' WHERE id='captioned'"
-    )
-    con.execute(
-        "UPDATE posts SET username='u', caption='Photo 2 of 5 by U, 9 likes', hash='old2' WHERE id='weak'"
-    )
-    con.execute("PRAGMA user_version = 4")
-    con.commit()
-    con.close()
+    insert_post(con, "captioned", caption="First line here\nsecond", h="old1")
+    insert_post(con, "weak", caption="Photo 2 of 5 by U, 9 likes", h="old2")
 
-    con = db.db_init()
+    con = _reopen_at(con, 4)
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+    assert _fully_migrated(con)
     card: parsing.Post = parsing._new_post("u", "photo", "", "", 0)
     card["caption"] = "First line here…"  # the same post, seen truncated
     assert db.stored_post(fetch_row(con.execute("SELECT * FROM posts WHERE id='captioned'")))[
@@ -525,16 +427,15 @@ def test_migration_rehashes_stored_posts_to_the_current_post_key(
 def test_merge_accounts_repoints_posts_and_drops_old_account_row(
     con: sqlite3.Connection,
 ) -> None:
-    insert_post(con, config.MEDIA_DIR, "p1", days_old=1)
-    con.execute("UPDATE posts SET username='old_handle' WHERE id='p1'")
+    insert_post(con, "p1", username="old_handle")
     con.execute("INSERT INTO accounts (username, account_id) VALUES ('old_handle', 'acct123')")
     con.commit()
 
     moved: int = db.rename_account(con, "old_handle", "new_handle")
 
     assert moved == 1
-    assert con.execute("SELECT username FROM posts WHERE id='p1'").fetchone()[0] == "new_handle"
-    assert con.execute("SELECT COUNT(*) FROM accounts WHERE username='old_handle'").fetchone()[0] == 0
+    assert sqlrows.scalar(con.execute("SELECT username FROM posts WHERE id='p1'")) == "new_handle"
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM accounts WHERE username='old_handle'")) == 0
     new_account: sqlite3.Row = fetch_row(
         con.execute("SELECT account_id FROM accounts WHERE username='new_handle'")
     )
@@ -547,112 +448,60 @@ def test_merge_accounts_is_a_noop_for_the_same_username(
     assert db.rename_account(con, "same", "same") == 0
 
 
-def test_rename_account_keeps_a_followed_allowlist_entry_in_sync(
-    con: sqlite3.Connection,
+@pytest.mark.parametrize(
+    ("followed", "after"),
+    [("old_handle", "new_handle"), ("someone_else", "someone_else")],
+    ids=["old-name-on-the-allowlist", "old-name-not-on-it"],
+)
+def test_rename_account_keeps_the_allowlist_in_sync(
+    con: sqlite3.Connection, followed: str, after: str
 ) -> None:
-    con.execute("INSERT INTO following (username, updated_at) VALUES ('old_handle', '2020-01-01')")
+    con.execute("INSERT INTO following (username, updated_at) VALUES (?, '2020-01-01')", (followed,))
     con.commit()
 
     db.rename_account(con, "old_handle", "new_handle")
 
-    assert set(sql_column(con.execute("SELECT username FROM following"))) == {"new_handle"}
+    assert set(sql_column(con.execute("SELECT username FROM following"))) == {after}
 
 
-def test_rename_account_leaves_the_allowlist_alone_when_the_old_name_wasnt_on_it(
-    con: sqlite3.Connection,
-) -> None:
-    con.execute("INSERT INTO following (username, updated_at) VALUES ('someone_else', '2020-01-01')")
-    con.commit()
-
-    db.rename_account(con, "old_handle", "new_handle")
-
-    assert set(sql_column(con.execute("SELECT username FROM following"))) == {"someone_else"}
-
-
-def test_needs_avatar_refresh_true_when_never_captured(
-    con: sqlite3.Connection,
-) -> None:
-    con.execute("INSERT INTO accounts (username) VALUES ('u')")
-    con.commit()
-    assert db.needs_avatar_refresh(con, "u") is True
-
-
-def test_needs_avatar_refresh_false_when_recently_captured(
-    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("captured_days_ago", "needed"),
+    [(None, True), (0, False), (30, True)],
+    ids=["never-captured", "recently-captured", "stale"],
+)
+def test_needs_avatar_refresh(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, captured_days_ago: int | None, needed: bool
 ) -> None:
     monkeypatch.setattr(config, "AVATAR_REFRESH_DAYS", 14)
-    now: str = datetime.now(UTC).isoformat()
-    con.execute(
-        "INSERT INTO accounts (username, avatar_file, avatar_updated_at) VALUES ('u', 'avatars/u.jpg', ?)",
-        (now,),
-    )
+    if captured_days_ago is None:
+        con.execute("INSERT INTO accounts (username) VALUES ('u')")
+    else:
+        captured: str = (datetime.now(UTC) - timedelta(days=captured_days_ago)).isoformat()
+        con.execute(
+            "INSERT INTO accounts (username, avatar_file, avatar_updated_at) VALUES ('u', 'avatars/u.jpg', ?)",
+            (captured,),
+        )
     con.commit()
-    assert db.needs_avatar_refresh(con, "u") is False
+    assert db.needs_avatar_refresh(con, "u") is needed
 
 
-def test_needs_avatar_refresh_true_when_stale(
-    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(config, "AVATAR_REFRESH_DAYS", 14)
-    old: str = (datetime.now(UTC) - timedelta(days=30)).isoformat()
-    con.execute(
-        "INSERT INTO accounts (username, avatar_file, avatar_updated_at) VALUES ('u', 'avatars/u.jpg', ?)",
-        (old,),
-    )
-    con.commit()
-    assert db.needs_avatar_refresh(con, "u") is True
-
-
-def test_needs_following_refresh_true_when_never_captured(
-    con: sqlite3.Connection,
-) -> None:
-    assert db.needs_following_refresh(con) is True
-
-
-def test_needs_following_refresh_false_when_recently_captured(
-    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("captured_days_ago", "needed"),
+    [(None, True), (0, False), (30, True)],
+    ids=["never-captured", "recently-captured", "stale"],
+)
+def test_needs_following_refresh(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, captured_days_ago: int | None, needed: bool
 ) -> None:
     monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 7)
-    now: str = datetime.now(UTC).isoformat()
-    con.execute("INSERT INTO following (username, updated_at) VALUES ('u', ?)", (now,))
-    con.commit()
-    assert db.needs_following_refresh(con) is False
-
-
-def test_needs_following_refresh_true_when_stale(
-    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 7)
-    old: str = (datetime.now(UTC) - timedelta(days=30)).isoformat()
-    con.execute("INSERT INTO following (username, updated_at) VALUES ('u', ?)", (old,))
-    con.commit()
-    assert db.needs_following_refresh(con) is True
+    if captured_days_ago is not None:
+        captured: str = (datetime.now(UTC) - timedelta(days=captured_days_ago)).isoformat()
+        con.execute("INSERT INTO following (username, updated_at) VALUES ('u', ?)", (captured,))
+        con.commit()
+    assert db.needs_following_refresh(con) is needed
 
 
 LONG: str = "A caption long enough that two different posts would not share it by accident"
-
-
-def _add_post(
-    con: sqlite3.Connection,
-    post_id: str,
-    caption: str = LONG,
-    *,
-    url: str | None = None,
-    dated: bool = False,
-    media_file: str | None = None,
-    days_old: float = 1,
-    h: str | None = None,
-) -> None:
-    """A post by "u", `days_old` days old, with its media file written when given."""
-    ts: str = (datetime.now(UTC) - timedelta(days=days_old)).isoformat()
-    if media_file:
-        (config.MEDIA_DIR / media_file).write_bytes(b"x")
-    con.execute(
-        "INSERT INTO posts (id, username, kind, caption, media_file, scraped_at, hash, url, posted_at, updated_at)"
-        " VALUES (?,'u','photo',?,?,?,?,?,?,?)",
-        (post_id, caption, media_file, ts, h or post_id, url, ts if dated else None, ts),
-    )
-    con.commit()
 
 
 def _dateless(
@@ -664,9 +513,15 @@ def _dateless(
 
 
 def test_a_card_with_no_date_matches_a_stored_row_on_its_caption(con: sqlite3.Connection) -> None:
-    _add_post(con, "hashid")
-    _add_post(con, "ABC", LONG.replace(" long ", "\nlong  "), url="https://www.instagram.com/p/ABC/")
-    _add_post(con, "short", "See you there")
+    insert_post(con, "hashid", caption=LONG, dated=False)
+    insert_post(
+        con,
+        "ABC",
+        caption=LONG.replace(" long ", "\nlong  "),
+        dated=False,
+        url="https://www.instagram.com/p/ABC/",
+    )
+    insert_post(con, "short", caption="See you there", dated=False)
     assert _dateless(con, LONG) == "ABC"  # the permalinked row first, whitespace aside
     assert _dateless(con, LONG, exclude_id="ABC") == "hashid"
     assert _dateless(con, LONG, username="someone_else") is None
@@ -678,7 +533,7 @@ def test_a_card_with_no_date_matches_a_stored_row_on_its_caption(con: sqlite3.Co
 def test_the_dateless_match_looks_back_retain_days(
     con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _add_post(con, "old", days_old=90)
+    insert_post(con, "old", caption=LONG, days_old=90, dated=False)
     monkeypatch.setattr(config, "RETAIN_DAYS", 60)
     assert _dateless(con, LONG) is None
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)  # nothing is ever deleted, so nothing is too old
@@ -686,7 +541,7 @@ def test_the_dateless_match_looks_back_retain_days(
 
 
 def test_a_merge_keeps_the_hash_of_each_caption_form(con: sqlite3.Connection) -> None:
-    _add_post(con, "h1", dated=True)
+    insert_post(con, "h1", caption=LONG)
     existing: sqlite3.Row = fetch_row(con.execute("SELECT * FROM posts WHERE id='h1'"))
     now: datetime = datetime.now(UTC)
     assert db.merged_fields(existing, _candidate(), now)[0]["alt_hash"] == "h1"
@@ -695,31 +550,23 @@ def test_a_merge_keeps_the_hash_of_each_caption_form(con: sqlite3.Connection) ->
 
 
 def test_remember_hash_keeps_the_hash_it_replaces(con: sqlite3.Connection) -> None:
-    _add_post(con, "p", h="collapsed")
+    insert_post(con, "p", caption=LONG, h="collapsed", dated=False)
     db.remember_hash(con, "p", "expanded")
     db.remember_hash(con, "p", "expanded")  # seen that way again: nothing to remember
     row: sqlite3.Row = fetch_row(con.execute("SELECT hash, alt_hash FROM posts WHERE id='p'"))
     assert (row["hash"], row["alt_hash"]) == ("expanded", "collapsed")
 
 
-def _reopen_at(con: sqlite3.Connection, version: int) -> sqlite3.Connection:
-    """Close `con` as a database that has run `version` migrations, and open it again."""
-    con.execute(f"PRAGMA user_version = {version}")
-    con.commit()
-    con.close()
-    return db.db_init()
-
-
 def test_migration_fills_the_alt_hash_of_a_row_last_seen_collapsed(con: sqlite3.Connection) -> None:
     card: parsing.Post = parsing._new_post("u", "photo", "", "", 0)
     card["caption"] = LONG
     expanded: str = parsing.post_id(card)
-    _add_post(con, "collapsed", dated=True, h="its-collapsed-key")
-    _add_post(con, "expanded", dated=True, h=expanded)
+    insert_post(con, "collapsed", caption=LONG, h="its-collapsed-key")
+    insert_post(con, "expanded", caption=LONG, h=expanded)
 
     con = _reopen_at(con, 5)
 
-    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+    assert _fully_migrated(con)
     assert dict(con.execute("SELECT id, alt_hash FROM posts").fetchall()) == {
         "collapsed": expanded,
         "expanded": None,
@@ -727,9 +574,16 @@ def test_migration_fills_the_alt_hash_of_a_row_last_seen_collapsed(con: sqlite3.
 
 
 def test_migration_merges_a_dateless_twin_into_its_permalink_row(con: sqlite3.Connection) -> None:
-    _add_post(con, "ABC", url="https://www.instagram.com/p/ABC/", dated=True, media_file="ABC.webp", h="k1")
-    _add_post(con, "twin", media_file="twin.webp", days_old=0.9)
-    _add_post(con, "other", "A different caption, also long enough to be compared with the others")
+    insert_post(
+        con, "ABC", caption=LONG, url="https://www.instagram.com/p/ABC/", media_file="ABC.webp", h="k1"
+    )
+    insert_post(con, "twin", caption=LONG, media_file="twin.webp", days_old=0.9, dated=False)
+    insert_post(
+        con,
+        "other",
+        caption="A different caption, also long enough to be compared with the others",
+        dated=False,
+    )
     (config.MEDIA_DIR / "twin_1.webp").write_bytes(b"x")
     con.execute("INSERT INTO media (post_id, idx, file) VALUES ('twin', 1, 'twin_1.webp')")
 
@@ -740,12 +594,12 @@ def test_migration_merges_a_dateless_twin_into_its_permalink_row(con: sqlite3.Co
     assert (kept["media_file"], kept["hash"], kept["alt_hash"]) == ("ABC.webp", "twin", "k1")
     assert kept["updated_at"] > kept["scraped_at"]  # the feed's ETag moves: an entry went away
     assert sorted(p.name for p in config.MEDIA_DIR.iterdir()) == ["ABC.webp"]
-    assert con.execute("SELECT COUNT(*) FROM media").fetchone()[0] == 0
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM media")) == 0
 
 
 def test_twin_merge_keeps_the_twins_media_when_the_other_row_has_none(con: sqlite3.Connection) -> None:
-    _add_post(con, "ABC", url="https://www.instagram.com/p/ABC/", dated=True)
-    _add_post(con, "twin", media_file="twin.webp")
+    insert_post(con, "ABC", caption=LONG, url="https://www.instagram.com/p/ABC/")
+    insert_post(con, "twin", caption=LONG, media_file="twin.webp", dated=False)
     (config.MEDIA_DIR / "twin_1.webp").write_bytes(b"x")
     con.execute("INSERT INTO media (post_id, idx, file) VALUES ('twin', 1, 'twin_1.webp')")
 
@@ -759,8 +613,8 @@ def test_twin_merge_keeps_the_twins_media_when_the_other_row_has_none(con: sqlit
 def test_twin_merge_skips_a_row_the_merge_raises_on(
     con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _add_post(con, "ABC", url="https://www.instagram.com/p/ABC/", dated=True)
-    _add_post(con, "twin")
+    insert_post(con, "ABC", caption=LONG, url="https://www.instagram.com/p/ABC/")
+    insert_post(con, "twin", caption=LONG, dated=False)
 
     def unexpected(existing: sqlite3.Row, new: db.StoredPost, now: datetime) -> NoReturn:
         raise RuntimeError("something this row does that nothing anticipated")
@@ -770,4 +624,4 @@ def test_twin_merge_skips_a_row_the_merge_raises_on(
 
     assert sql_column(con.execute("SELECT id FROM posts ORDER BY id")) == ["ABC", "twin"]
     assert "WARN: twin-merge migration skipped row 'twin': RuntimeError(" in capsys.readouterr().out
-    assert con.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+    assert _fully_migrated(con)

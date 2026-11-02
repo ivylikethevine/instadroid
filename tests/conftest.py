@@ -4,8 +4,11 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from devtools import new_profile
 from instadroid import capture, config, db, device, diagnostics, tune, versioning
 
+from tests.fakedevice import FakeDevice
+from tests.profilecli import host_state
 from tests.support import V424
 
 
@@ -66,6 +69,14 @@ def no_alert_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test posts a real alert or heartbeat, whatever ALERT_URL or HEARTBEAT_URL the environment has."""
     monkeypatch.setattr(config, "ALERT_URL", "")
     monkeypatch.setattr(config, "HEARTBEAT_URL", "")
+
+
+@pytest.fixture(autouse=True)
+def no_feed_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A FEED_TOKEN in the developer's own environment would otherwise reach the feed server; a test
+    needing a token sets it."""
+    monkeypatch.delenv("FEED_TOKEN", raising=False)
+    monkeypatch.delenv("FEED_TOKEN_FILE", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -149,3 +160,37 @@ def con(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
     monkeypatch.setattr(config, "MEDIA_DIR", media)
     return db.db_init()
+
+
+@pytest.fixture
+def scraper_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDevice:
+    """For support.run_scraper: a scratch database and debug directory, and a fake device for whatever
+    connects."""
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
+    monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "debug")
+    fake: FakeDevice = FakeDevice({"home": ""}, "home")
+
+    def connect() -> FakeDevice:
+        return fake
+
+    monkeypatch.setattr(device, "connect_device", connect)
+    return fake
+
+
+@pytest.fixture
+def dev_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """new_profile's per-build directories, under the returned tmp_path/dev."""
+    dev: Path = tmp_path / "dev"
+
+    def dev_dir(build: str) -> Path:
+        return dev / build.split(".")[0]
+
+    monkeypatch.setattr(new_profile, "dev_dir", dev_dir)
+    return dev
+
+
+@pytest.fixture
+def ready_baseline(dev_dirs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A baseline on a healthy host, with new_profile's root and dev directories under tmp_path."""
+    monkeypatch.setattr(new_profile, "ROOT", tmp_path)
+    monkeypatch.setattr(new_profile, "read_host_state", host_state)

@@ -15,8 +15,9 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
+from shared.jsonvalues import JSON
+
 from devtools import ROOT
-from devtools.jsonvalues import JSON
 
 SPEC: Path = ROOT / "docs" / "openapi.json"
 

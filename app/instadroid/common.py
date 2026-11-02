@@ -128,7 +128,7 @@ def redact_url(url: str) -> str:
     """scheme://host/path only: no credentials in the netloc, no query string. Webhook and refresh URLs
     carry tokens that must never land in the shared container log."""
     parts: SplitResult = urlsplit(url)
-    return f"{parts.scheme}://{parts.hostname or ''}{f':{parts.port}' if parts.port else ''}{parts.path}"
+    return f"{parts.scheme}://{parts.netloc.rpartition('@')[2]}{parts.path}"
 
 
 def web_request(url: str, method: str = "GET") -> urllib.request.Request:
@@ -137,10 +137,9 @@ def web_request(url: str, method: str = "GET") -> urllib.request.Request:
     parts: SplitResult = urlsplit(url)
     if parts.username is None:
         return urllib.request.Request(url, method=method)
-    netloc: str = f"{parts.hostname or ''}{f':{parts.port}' if parts.port else ''}"
     credentials: bytes = f"{unquote(parts.username)}:{unquote(parts.password or '')}".encode()
     return urllib.request.Request(
-        urlunsplit(parts._replace(netloc=netloc)),
+        urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2])),
         method=method,
         headers={"Authorization": f"Basic {base64.b64encode(credentials).decode()}"},
     )

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 
+from shared.captions import caption_html, profile_url
 from shared.sqlrows import opt_str
 from shared.timestamps import parse_iso
 
@@ -67,7 +68,7 @@ def post_entries(con: sqlite3.Connection, posts: list[sqlite3.Row]) -> list[Entr
         caption: str = text(r, "caption") or ""
         first_line: str = caption.split("\n", 1)[0][:90] or kind or "post"
         marker: str = "▶ " if kind == "video" else ""  # Reels and videos are stored as kind "video"
-        url: str = opt_str(r, "url") or render.profile_url(username)
+        url: str = opt_str(r, "url") or profile_url(username)
         posted_abs: datetime | None = parse_iso(opt_str(r, "posted_at"))
         html: str = ""
         avatar: str | None = avatars.get(username)
@@ -76,7 +77,7 @@ def post_entries(con: sqlite3.Connection, posts: list[sqlite3.Row]) -> list[Entr
         slide: str
         for slide in ([media_file] if media_file else []) + extra_slides.get(string(r, "id"), []):
             html += f"<p>{render.img(slide)}</p>"
-        html += f"<p>{render.caption_html(caption)}</p>"
+        html += f"<p>{caption_html(caption)}</p>"
         # Both dates are also on the entry itself (published/updated) for readers that sort by
         # those, but spelling them out here means sorting-by-eye works in any reader.
         meta: list[str] = []
@@ -101,7 +102,7 @@ def post_entries(con: sqlite3.Connection, posts: list[sqlite3.Row]) -> list[Entr
                 updated=scraped_abs or datetime.now(UTC),
                 published=posted_abs,
                 author=username,
-                author_url=render.profile_url(username),
+                author_url=profile_url(username),
                 avatar=avatar,
                 image=media_file,
             )
@@ -123,12 +124,12 @@ def story_entries(stories: list[sqlite3.Row]) -> list[Entry]:
             Entry(
                 id=f"{settings.PUBLIC_URL}/story/{string(r, 'id')}",
                 title=f"{username}'s story",
-                url=render.profile_url(username),
+                url=profile_url(username),
                 html=html,
                 updated=scraped,
                 published=scraped,
                 author=username,
-                author_url=render.profile_url(username),
+                author_url=profile_url(username),
                 image=media_file,
             )
         )

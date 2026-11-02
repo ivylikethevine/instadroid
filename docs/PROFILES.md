@@ -7,7 +7,6 @@ The dated device runs behind the decisions here are in the [run log](RUNS.md).
 - [Why](#why)
 - [Design: profiles at change points](#design-profiles-at-change-points)
 - [Adding a version](#adding-a-version)
-- [Status](#status)
 - [Leak scan (2026-09-14)](#leak-scan-2026-09-14)
 
 ## Why
@@ -183,24 +182,6 @@ what a changed selector or override should be.
 
 `scraper.py once` records its run in the `runs` table like a scheduled run, which is what `check` and
 `validate` read from the baseline's scratch database.
-
-## Status
-
-- [x] Profile system: directory profiles, loader with the 424 floor (440 until 2026-09-15), `IG_PROFILE`, `@versioned`
-      behavior overrides, contract tests, `scraper.py profiles`.
-- [x] Tooling for adding versions: `new-profile` (`app/devtools/new_profile.py`), capture mode, `igprofiles/screens.py`.
-- [x] Profiles only where something changes (2026-09-14): one root profile, `v424`; the covering
-      profile is chosen automatically; `validated` lists builds; fixtures per version.
-- [x] Validated with `v424`: 424.0.0.49.64, 440.1.0.46.86, 441.0.0.43.81, 442.0.0.46.79, 443.0.0.48.82,
-      444.0.0.46.85, 445.0.0.45.83, 446.0.0.49.77, 450.0.0.50.77 (see the [run log](RUNS.md)). Replay fixtures for 424,
-      440-446 and 450 (450 also has the Following list, and the Home feed with its tray floating).
-      425-439 and 447-449 are suspected to work, between confirmed builds.
-- [x] Own profile, Following list and login form checked on 450 (2026-10-07): every required key present.
-- [x] Floor moved to 424 and the default install pinned to 445 (2026-09-15).
-- [x] Retried 446 (2026-10-07): it runs on a new `/data`, and its fixtures are recorded.
-- [x] Default install moved to 450 (2026-10-07).
-- [x] Old-build probe, `400.0.0.49.68`: installs, but crashes at native startup on every launch ([run log](RUNS.md)).
-- [x] Leak scan of fixtures, tests, docs and git history (below); working tree cleaned, history not rewritten.
 
 ## Leak scan (2026-09-14)
 

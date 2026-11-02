@@ -3,9 +3,9 @@
 from pathlib import Path
 
 import pytest
-from devtools.jsonvalues import JSON
 from fastapi.testclient import TestClient
 from httpx2 import Response
+from shared.jsonvalues import JSON
 
 from tests.feedclient import TWO_POSTS, make_app
 from tests.support import json_at, json_object

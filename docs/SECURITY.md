@@ -36,7 +36,7 @@ track those). They are:
   variables, or from files (`IG_PASSWORD_FILE`, e.g. a Docker secret). Any way they can leak (into
   logs, `/status`, debug dumps, the feeds, or the published image) is in scope.
 - **The feed server** (`app/feedserver/`: `/instagram.xml`, `/stories.xml`, `/opml`, `/users`, `/media`,
-  `/status`, `/control`, `/health`). It's unauthenticated unless `FEED_TOKEN` is set. Anything that reaches beyond what it's
+  `/browse`, `/status`, `/control`, `/health`). It's unauthenticated unless `FEED_TOKEN` is set. Anything that reaches beyond what it's
   meant to serve is in scope: getting past the token, triggering `/control` changes from another
   site (cross-site POST/DELETE requests are refused), a media signature that opens a file it wasn't
   issued for, path traversal out of the media directory, injection through captions or usernames
@@ -122,14 +122,14 @@ fresh APK install trusting APKPure. They're listed under
   egress, and blocks everything but an allowlist in the release jobs that hold write and signing
   tokens. actionlint, zizmor and `.github/scripts/lint_workflows.sh` lint the workflows themselves,
   and CodeQL analyses them.
-- **Pinned tools.** The CI tools (actionlint, shellcheck, hadolint, Trivy, lychee) are installed
-  from release assets pinned by SHA-256 in `.github/actions/setup-tool/tools.txt`, and
+- **Pinned tools.** The CI tools are installed from release assets pinned by SHA-256 in
+  `.github/actions/setup-tool/tools.txt`, and
   `scripts/check.sh --install` fetches the same pins locally. The Markdown tools come from
   `.github/package-lock.json`, which pins their whole dependency tree. `tool-versions.yml` tracks the
   drift of every pin in one tracking issue.
 - **Dependencies.** Python dependencies are installed from pip-compile locks with
   `--require-hashes`, in CI and in the image, and the project's own setuptools build dependency comes
-  hashed from the dev lock. `pip-audit` checks both Python locks on every pull request, GitHub's
+  hashed from the dev lock. `pip-audit` checks both Python locks on a change to them, GitHub's
   dependency review fails a pull request that adds a dependency with a high-severity advisory, and
   `advisories.yml` re-audits the Python locks (`pip-audit`) and the Markdown tools' lock
   (`npm audit`) weekly and after each merge to `main`, keeping one tracking issue open while
@@ -150,18 +150,19 @@ fresh APK install trusting APKPure. They're listed under
   tracking issue. OpenSSF Scorecard runs after every green CI run on `main`, weekly, and when branch
   protection changes.
 - **Fuzzing.** ClusterFuzzLite fuzzes the hierarchy parsers, the one place outside input is parsed,
-  on pull requests that touch the app and daily (`cflite.yml`, [TESTING.md](TESTING.md#fuzzing)).
+  on pull requests that touch them and weekly (`cflite.yml`, [TESTING.md](TESTING.md#fuzzing)).
   Its images are pinned by digest, and the fuzz build's Python by release and SHA-256 checksum.
 - **Releases** run unattended from a protected `vX.Y.Z` tag, only when the tag is signed by a key in
   `.github/allowed_signers`, its commit is on `main`, and CI has passed on that commit. The image is
-  built without a cache, pushed by digest, smoke-tested, and scanned with Trivy, which **blocks** the
-  release on a fixable HIGH or CRITICAL vulnerability; only then is it tagged, in a separate job
-  without a rebuild, with signed build-provenance and SBOM attestations
+  built without a cache, pushed by digest, smoke-tested, and scanned with Trivy, which reports a
+  fixable HIGH or CRITICAL vulnerability in the Security tab and on the release page without stopping
+  the release; it's then tagged, in a separate job without a rebuild, with signed build-provenance and
+  SBOM attestations
   ([RELEASING.md](RELEASING.md#what-the-tag-triggers)).
 - **Scrubbed fixtures.** Fixtures from real dumps go through `promote-dump`'s scrubbing. Older
   commits still carry real identifiers from before that
-  ([PROFILES.md](PROFILES.md#leak-scan-2026-09-14)); the maintainer keeps an offline runbook for
-  rewriting that history, outside the repository, not yet run ([ROADMAP.md](ROADMAP.md)).
+  ([PROFILES.md](PROFILES.md#leak-scan-2026-09-14)), and that history won't be rewritten
+  ([ROADMAP.md](ROADMAP.md#small)).
 
 [OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md) tracks what's still open against OpenSSF
 Scorecard.

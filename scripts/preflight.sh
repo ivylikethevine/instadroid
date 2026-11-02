@@ -9,12 +9,13 @@
 # driver (a built-in one and the out-of-tree binder_linux together panicked a host,
 # docs/INCIDENTS.md); memory, CPUs and disk for the limits in .env; the ADB and feed ports free;
 # `.env` in place with real credentials; the /data volume's Android version matching the configured
-# image; and whether scripts/diagnose.sh can read the kernel log. Settings are read from .env (only
-# REDROID_MEM_LIMIT, REDROID_CPUS and FEED_PORT; nothing in it is printed), else their defaults.
+# image; and whether scripts/diagnose.sh can read the kernel log. redroid's limits are what
+# `docker compose config` resolves; FEED_PORT, the app's own setting, is read from .env, else its
+# default. Nothing from .env is printed.
 set -euo pipefail
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  sed -n '2,13s/^# \{0,1\}//p' "$0"
+  sed -n '2,14s/^# \{0,1\}//p' "$0"
   exit 0
 fi
 
@@ -38,12 +39,14 @@ setting() {
   printf '%s\n' "${value:-$2}"
 }
 
-# A Docker memory size (3g, 3072m, 512M, a plain byte count) in MiB; empty when unreadable.
-mib() {
-  printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]' | sed -n \
-    -e 's/^\([0-9][0-9]*\)gb\{0,1\}$/\1 1024/p' \
-    -e 's/^\([0-9][0-9]*\)mb\{0,1\}$/\1 1/p' \
-    -e 's/^\([0-9][0-9]*\)b\{0,1\}$/\1 0/p' | awk '{ print ($2 ? $1 * $2 : int($1 / 1048576)) }'
+# One of the redroid service's keys in the resolved compose file, quotes stripped; empty when compose
+# can't resolve it. --no-env-resolution: a missing .env, which a check below reports, needn't stop this.
+compose_config="$(docker compose config --no-env-resolution 2>/dev/null || true)"
+redroid_setting() {
+  awk -v key="$1" '
+    /^  [^ ]/ { inside = ($0 == "  redroid:") }
+    inside && $1 == key ":" { gsub(/"/, "", $2); print $2; exit }
+  ' <<<"$compose_config"
 }
 
 # --- architecture ---------------------------------------------------------------------------------
@@ -111,26 +114,28 @@ else
 fi
 
 # --- memory, CPUs, disk ---------------------------------------------------------------------------
-redroid_mem="$(setting REDROID_MEM_LIMIT 3g)"
-redroid_mib="$(mib "$redroid_mem")"
-if [ -z "$redroid_mib" ]; then
-  warn "REDROID_MEM_LIMIT=$redroid_mem isn't a size this script reads; skipping the memory check"
+redroid_bytes="$(redroid_setting mem_limit)"
+if [ -z "$redroid_bytes" ]; then
+  warn "docker compose config didn't give redroid's mem_limit; skipping the memory check"
 else
   # redroid's limit, the app's 256m, and 512MiB for the host itself
+  redroid_mib=$((redroid_bytes / 1048576))
   need=$((redroid_mib + 256 + 512))
   total=$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo)
   available=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo)
   if [ "$total" -lt "$need" ]; then
-    fail "memory: ${total}MiB in total, under the ${need}MiB redroid ($redroid_mem), the app and the host need"
+    fail "memory: ${total}MiB in total, under the ${need}MiB redroid (${redroid_mib}MiB), the app and the host need"
   elif [ "$available" -lt "$need" ]; then
-    warn "memory: ${available}MiB available now, under the ${need}MiB redroid ($redroid_mem), the app and the host need"
+    warn "memory: ${available}MiB available now, under the ${need}MiB redroid (${redroid_mib}MiB), the app and the host need"
   else
     ok "memory: ${available}MiB available, ${need}MiB needed"
   fi
 fi
-redroid_cpus="$(setting REDROID_CPUS 4)"
+redroid_cpus="$(redroid_setting cpus)"
 cpus="$(nproc)"
-if awk -v have="$cpus" -v want="$redroid_cpus" 'BEGIN { exit !(have >= want + 2) }'; then
+if [ -z "$redroid_cpus" ]; then
+  warn "docker compose config didn't give redroid's cpus; skipping the CPU check"
+elif awk -v have="$cpus" -v want="$redroid_cpus" 'BEGIN { exit !(have >= want + 2) }'; then
   ok "CPUs: $cpus, for redroid's $redroid_cpus and the app's 1.5"
 else
   warn "CPUs: $cpus, little room beside redroid's $redroid_cpus (REDROID_CPUS) and the app's 1.5"
@@ -171,14 +176,11 @@ elif grep -Eq '^[[:space:]]*IG_(USERNAME=username|PASSWORD=password)[[:space:]]*
 else
   ok ".env in place"
 fi
-android_major() {
-  printf '%s\n' "${1##*:}" | sed -n 's/^[^0-9]*\([0-9][0-9]*\).*/\1/p'
-}
 image="$(sed -n 's/^x-redroid-image: &redroid_image //p' docker-compose.yml)"
 marker=local/data/android.image
 if [ -s "$marker" ]; then
   recorded="$(head -n 1 "$marker")"
-  if [ "$(android_major "$recorded")" != "$(android_major "$image")" ]; then
+  if ! scripts/guard-android-data.sh --check "$image" "$marker"; then
     fail "local/data/android was last used by $recorded, a different Android version from $image;" \
       "init will refuse to start redroid (docs/COMPATIBILITY.md, one Android version per /data volume)"
   else

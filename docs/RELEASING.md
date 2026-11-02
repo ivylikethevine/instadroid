@@ -63,7 +63,7 @@ Nothing else is manual: the pipeline below runs unattended, with no approval ste
 
 Pushing a `v*` tag runs `.github/workflows/publish.yml`: **gate → build → scan → publish → release**.
 Each job needs the one before it, and a job is skipped when one it needs failed or was skipped, so
-nothing is tagged or released unless the gate, the build and the scan all passed. Releases run
+nothing is tagged or released unless the gate and the build passed and the scan ran. Releases run
 **unattended**; the checks are release tag protection, so only the maintainer can push one, and the
 jobs themselves:
 
@@ -81,11 +81,12 @@ jobs themselves:
    it's set here because `publish` only retags. It then smoke-tests that exact digest
    (`.github/scripts/smoke-test.sh`). A broken build fails here, before anything a user could pull by
    tag exists.
-3. **`scan`** runs Trivy over that digest and **blocks the release on any fixable HIGH or CRITICAL
-   vulnerability**. The findings go to the Security tab under the `release-image` category, and the
-   step summary. The fix is usually a rebuild or a base-image repin. A finding that has to be
-   accepted goes in the root `.trivyignore`, with a comment giving the reason and an `exp:` date, so
-   the acceptance lapses on its own.
+3. **`scan`** runs Trivy over that digest. **A fixable HIGH or CRITICAL vulnerability is a warning and
+   the release ships**: only the tag decides a release. The findings go to the Security tab under the
+   `release-image` category, the step summary and the release page. The fix, for the next release, is
+   usually a rebuild or a base-image repin. A finding that has to be accepted goes in the root
+   `.trivyignore`, with a comment giving the reason and an `exp:` date, so the acceptance lapses on
+   its own. A scan that didn't run fails the job, and re-running it clears that.
 4. **`publish`**, named "promote and tag release image", runs in the `publish` GitHub Environment,
    which has no required reviewer. It tags the already-scanned digest with `vX.Y.Z`, `vX.Y` and
    `latest` (no rebuild), and pushes two signed attestations to the registry beside it: build
@@ -94,14 +95,12 @@ jobs themselves:
    timestamped with the tagged commit so a re-run builds the same archive. Its "What changed" is the
    `## Release note` section of each pull request merged since the previous non-prerelease tag
    (`.github/scripts/release_notes.sh`), skipping `none`; only when no pull request wrote a note does
-   GitHub's generated list of merged pull requests stand in. Below that: the image digest and tags,
-   the pull command, how to run the deploy bundle, and the commands to verify the
-   provenance and the SBOM. A re-run edits the release an earlier attempt created.
+   GitHub's generated list of merged pull requests stand in, and a failure working either out is a
+   warning, never a stopped release. Below that: any scan findings, the image digest and tags, the
+   pull command, how to run the deploy bundle, and the commands to verify the provenance and the
+   SBOM. A re-run edits the release an earlier attempt created.
 
-Every job starts with `step-security/harden-runner`. In `publish` and `release`, which hold the
-package-write, signing and contents-write tokens, it **blocks** all network egress but an allowlist:
-GHCR, the GitHub API and public-good Sigstore for `publish`, and github.com and the GitHub API for
-`release`. The other jobs only record egress.
+[CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs) covers the network egress limits on these jobs.
 
 Releases share one `release` concurrency group that never cancels, so two tags pushed close
 together publish one after the other rather than interleaving.

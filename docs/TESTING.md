@@ -24,7 +24,7 @@ pytest -q                                    # parser, feed, and device-flow tes
 pytest -q --cov --cov-report=term-missing    # with coverage; fails under the floor
 ```
 
-`scripts/check.sh`'s groups mirror CI's jobs: `test` and `python` together cover this page's tiers 1 to
+`scripts/check.sh`'s `test` and `python` groups together cover this page's tiers 1 to
 3 (`--fast` runs both), and [CONTRIBUTING.md](CONTRIBUTING.md#development-setup) lists the rest.
 
 Hermetic: no emulator, no Instagram account, no network. The device-driving code (login, feed
@@ -47,6 +47,7 @@ served by `pages.yml`; the badge turns bright green at that same `fail_under`.
 - `no_profile_capture` keeps capture mode off whatever the environment says;
 - `backups_in_tmp` and `control_files_in_tmp` put database backups and the poll loop's control files
   in throwaway directories, and `no_alert_delivery` blanks `ALERT_URL` and `HEARTBEAT_URL`;
+- `no_feed_token` unsets `FEED_TOKEN` and `FEED_TOKEN_FILE`; a test needing a token sets it;
 - `close_databases` closes every connection `db_init()` opened at the test's teardown, rather than
   leaving it to garbage collection and a `ResourceWarning`;
 - `no_permalink_backfill` turns the permalink backfill off; its own tests turn it back on.
@@ -143,13 +144,12 @@ No real account data is used in any fixture.
 
 ## What CI runs
 
-On every non-draft pull request and every push to `main`, `ci.yml` runs tiers 1 to 3: the `test` job
-runs the whole suite with coverage (replay and contract tests included), and the `lint` job runs
+On every non-draft pull request and every push to `main`, `ci.yml` runs tiers 1 to 3: the `Unit tests`
+job runs the whole suite with coverage (replay and contract tests included), and the `Lint` job runs
 ruff, basedpyright, `lint-imports` and constricter, each through `scripts/check.sh`. Both are skipped when a
-change touches only Markdown, `docs/` or workflow files. `coverage.yml` runs the suite with coverage
-again after each green CI run on a push to `main`, for the badge, and on a same-repository pull
-request, where it comments the pull request's coverage and test count next to `main`'s. The docs job
-runs `.github/scripts/docs_drift.py`, which checks `.env.example` against the settings the code reads.
+change touches only Markdown, `docs/` or workflow files. `coverage.yml` hands on the `Unit tests` job's
+figures after each green CI run on a push to `main`, for the badge, and runs the suite again on a
+same-repository pull request, where it comments the pull request's coverage and test count next to `main`'s.
 Tier 4 never runs in CI. Everything else CI checks (dependencies, shell,
 docs, the image, workflows) is in [CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs).
 
@@ -175,5 +175,5 @@ python tests/fuzz/fuzz_parsing.py -max_total_time=60 local/fuzz-corpus app/igpro
 libFuzzer writes the inputs it keeps into the first directory, so the fixtures go second. A new
 fuzzer in `tests/fuzz/` is picked up by the ClusterFuzzLite build as is; one that imports a module
 reading a data file next to it needs that file added to `build.sh`'s `--add-data` list. Captions
-reach the feed through `feedserver.render.caption_html()`, which escapes them. See
+reach the feed through `shared.captions.caption_html()`, which escapes them. See
 [OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md).

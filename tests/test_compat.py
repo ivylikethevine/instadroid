@@ -1,9 +1,7 @@
 import sqlite3
-from pathlib import Path
 from typing import Unpack
 
-import pytest
-from instadroid import config, db, device
+from instadroid import db, device
 
 IMAGE: str = "erstt/redroid:13.0.0_ndk_ChromeOS"
 
@@ -22,11 +20,7 @@ def _run(
     db.record_run(con, started, started, new_posts, error, snapshot, **stats)
 
 
-def test_version_pairs_summarizes_runs_per_image_and_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    con: sqlite3.Connection = db.db_init()
+def test_version_pairs_summarizes_runs_per_image_and_build(con: sqlite3.Connection) -> None:
     _run(con, "2026-09-14T10:00:00+00:00", "445.0.0.45.83", new_posts=2)
     _run(con, "2026-09-14T11:00:00+00:00", "446.0.0.49.77", new_posts=1, warning="memory guard")
     _run(con, "2026-09-14T12:00:00+00:00", "446.0.0.49.77", new_posts=6)

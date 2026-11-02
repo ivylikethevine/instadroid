@@ -2,15 +2,19 @@
 telling a bare reshare from one with something added, and deleting the bare ones at the end of a run.
 """
 
+import os
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from instadroid import capture, config, db, reshare, scrape, stories, uidevice
 from PIL import Image, ImageDraw, ImageOps
 from shared import sqlrows
 
-from tests.deviceflows import feed_device
+from tests.deviceflows import feed_device, run_caps
+from tests.support import insert_story
 
 WIDTH: int = 540
 HEIGHT: int = 828
@@ -119,10 +123,7 @@ def _store_story(con: sqlite3.Connection, story_id: str, frame: Image.Image | No
         media_file = f"stories/{story_id}.webp"
         (config.MEDIA_DIR / "stories").mkdir(exist_ok=True)
         capture.save_media(frame, config.MEDIA_DIR / media_file)
-    con.execute(
-        "INSERT INTO stories (id, username, media_file, scraped_at) VALUES (?, 'alice', ?, ?)",
-        (story_id, media_file, datetime.now(UTC).isoformat()),
-    )
+    insert_story(con, story_id, datetime.now(UTC).isoformat(), username="alice", media_file=media_file)
 
 
 def _store_post(con: sqlite3.Connection, post_id: str, img: Image.Image | None) -> None:
@@ -159,6 +160,67 @@ def test_only_a_bare_reshare_of_a_stored_post_is_deleted(
     assert "only reshares stored post cover" in capsys.readouterr().out
 
 
+def _count_decodes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    decoded: list[str] = []
+    real: Callable[[str, Image.Image], reshare.PostImage | None] = reshare.post_image
+
+    def counting(post_id: str, img: Image.Image) -> reshare.PostImage | None:
+        decoded.append(post_id)
+        return real(post_id, img)
+
+    monkeypatch.setattr(reshare, "post_image", counting)
+    monkeypatch.setattr(reshare, "_thumbnails", {})
+    return decoded
+
+
+def test_a_later_pass_decodes_only_a_changed_file(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decoded: list[str] = _count_decodes(monkeypatch)
+    _store_post(con, "p", _POST)
+    _store_post(con, "flat", Image.new("RGB", (1080, 1350), "black"))
+    con.execute("INSERT INTO media (post_id, idx, file) VALUES ('other', 1, 'p.webp')")
+    _store_story(con, "bare", _story())
+    assert reshare.drop_reshared_stories(con, "") == 1
+    assert sorted(decoded) == ["flat", "other", "p"]  # nothing cached yet
+
+    decoded.clear()
+    posts: list[reshare.PostImage] = reshare._post_images(con)
+    assert decoded == []  # a featureless verdict is remembered too
+    assert sorted(post.post_id for post in posts) == ["other", "p"]  # each row keeps its own post
+
+    path: Path = config.MEDIA_DIR / "p.webp"
+    os.utime(path, (1_800_000_000, 1_800_000_000))
+    assert len(reshare._post_images(con)) == 2
+    assert sorted(decoded) == ["other", "p"]  # both rows of the changed file, not the flat one
+
+
+def test_a_file_gone_from_disk_leaves_the_cache(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = _count_decodes(monkeypatch)
+    _store_post(con, "p", _POST)
+    assert [post.post_id for post in reshare._post_images(con)] == ["p"]
+    assert "p.webp" in reshare._thumbnails
+    (config.MEDIA_DIR / "p.webp").unlink()
+    assert reshare._post_images(con) == []
+    assert reshare._thumbnails == {}
+
+
+def test_the_cache_stops_growing_at_its_cap_and_the_rest_still_gets_searched(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decoded: list[str] = _count_decodes(monkeypatch)
+    monkeypatch.setattr(reshare, "THUMBNAIL_CACHE_MAX", 1)
+    _store_post(con, "a", _POST)
+    _store_post(con, "b", _OTHER)
+    assert sorted(post.post_id for post in reshare._post_images(con)) == ["a", "b"]
+    assert len(reshare._thumbnails) == 1
+    decoded.clear()
+    assert len(reshare._post_images(con)) == 2
+    assert len(decoded) == 1
+
+
 def test_stories_from_before_the_run_are_left_alone(con: sqlite3.Connection) -> None:
     _store_post(con, "p", _POST)
     _store_story(con, "bare", _story())
@@ -170,8 +232,7 @@ def test_stories_from_before_the_run_are_left_alone(con: sqlite3.Connection) -> 
 def test_a_run_checks_its_stories_after_its_posts_and_counts_what_is_left(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    run_caps(monkeypatch, slides=1, scrolls=1)
     started: str = datetime.now(UTC).isoformat()
     posts_stored: list[int] = []
 

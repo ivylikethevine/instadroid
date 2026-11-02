@@ -9,6 +9,7 @@ from instadroid.uidevice import Device
 from uiautomator2.exceptions import HTTPError, LaunchUiAutomationError, UiObjectNotFoundError
 
 from tests.fakedevice import FakeDevice
+from tests.support import record_drift_baseline
 
 # A feed list with nothing identifiable in it: parse_hierarchy() returns [] for this.
 EMPTY_XML: str = '<hierarchy><node resource-id="android:id/list" bounds="[0,0][1080,2340]" /></hierarchy>'
@@ -100,8 +101,9 @@ def test_empty_screen_guard_can_be_disabled(
     assert stats["metrics"].get("warning") is None
 
 
+@pytest.mark.usefixtures("offline_scrape")
 def test_scrape_stats_report_cards_per_screen_and_shares(
-    con: sqlite3.Connection, offline_scrape: OfflineCalls, monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "MAX_SCROLLS", 3)
     monkeypatch.setattr(config, "EMPTY_SCREEN_LIMIT", 0)
@@ -114,32 +116,17 @@ def test_scrape_stats_report_cards_per_screen_and_shares(
     assert metrics.get("share_complete") == 0.0
 
 
+@pytest.mark.usefixtures("offline_scrape")
 def test_scrape_once_flags_selector_drift_against_seeded_baseline(
-    con: sqlite3.Connection, offline_scrape: OfflineCalls, monkeypatch: pytest.MonkeyPatch
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "MAX_SCROLLS", 3)
     monkeypatch.setattr(config, "EMPTY_SCREEN_LIMIT", 0)
-    for _ in range(5):
-        db.record_run(
-            con,
-            "2026-09-11T00:00:00+00:00",
-            "2026-09-11T00:05:00+00:00",
-            0,
-            None,
-            {},
-            cards_per_screen=4.0,
-            share_captioned=0.8,
-            share_complete=0.9,
-        )
+    record_drift_baseline(con)
     d: EmptyFeedDevice = EmptyFeedDevice()  # every dump parses 0 cards — a stand-in for selectors gone stale
 
     warning: str | None = scrape.scrape_once(d, con)["metrics"].get("warning")
     assert warning is not None and "selector drift?" in warning
-
-
-def test_record_run_stores_a_warning(con: sqlite3.Connection) -> None:
-    db.record_run(con, "2026-09-11T00:00:00+00:00", "2026-09-11T00:05:00+00:00", 0, None, {}, warning="w")
-    assert con.execute("SELECT warning FROM runs").fetchone()[0] == "w"
 
 
 @pytest.mark.parametrize(

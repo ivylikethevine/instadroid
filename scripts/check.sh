@@ -8,15 +8,15 @@
 #   scripts/check.sh <subcommand>...    only those; `test -- <pytest args>` passes arguments on to pytest
 #   scripts/check.sh --install [...]    first fetch tools.txt's pinned binaries into local/ci-tools
 #
-# Subcommands, grouped as ci.yml's jobs are:
-#   python     ruff (check + format), basedpyright, lint-imports, constricter         (lint job)
-#   test       pytest with coverage; the floor is pyproject.toml's fail_under          (test job)
-#   audit      pip-audit over both hashed locks (needs the network)                    (audit job)
+# Subcommands, and the ci.yml job that runs each:
+#   python     ruff (check + format), basedpyright, lint-imports, constricter         (Lint)
+#   test       pytest with coverage; the floor is pyproject.toml's fail_under          (Unit tests)
+#   audit      pip-audit over both hashed locks (needs the network)                    (audit)
 #   osv        osv-scanner over every lockfile (needs the network)                     (scorecard.yml)
-#   shell      shellcheck, shfmt                                                        (shell job)
-#   docs       markdownlint, prettier, lychee --offline, typos, docs-drift              (docs job)
-#   workflows  actionlint, lint-workflows, zizmor                          (actionlint + zizmor jobs)
-#   docker     hadolint (advisory), compose (`docker compose config` + bundle)         (docker job)
+#   shell      shellcheck, shfmt                                                        (Quick lint)
+#   docs       markdownlint, prettier, lychee --offline, typos, docs-drift              (Quick lint)
+#   workflows  actionlint, lint-workflows, zizmor                                      (Quick lint)
+#   docker     hadolint (advisory), compose (`docker compose config` + bundle)         (docker)
 # Each name on the right of a group is a subcommand too. The image build, smoke test and Trivy scan
 # stay CI-only, as do gitleaks and dependency review. No ci.yml job runs osv: Scorecard's
 # Vulnerabilities check scans the same lockfiles after a merge, and this runs it before one.
@@ -334,19 +334,14 @@ check_compose() {
     missing "docker compose config" "docker compose not available"
     return
   fi
-  # config only reads files; nothing starts. Interpolation uses .env.example, like CI; a missing .env
-  # (which env_file: requires) is stood in for by a copy, removed afterwards.
-  local made=""
-  if [ ! -e .env ]; then
-    cp .env.example .env && made=1
-  fi
+  # config only reads files; nothing starts. Interpolation uses .env.example, like CI;
+  # --no-env-resolution: env_file's .env needn't exist.
   # shellcheck disable=SC2329 # called through run
   compose_config() {
-    docker compose --env-file .env.example config -q &&
-      docker compose --env-file .env.example --profile freshrss config -q
+    docker compose --env-file .env.example config -q --no-env-resolution &&
+      docker compose --env-file .env.example --profile freshrss config -q --no-env-resolution
   }
   run "docker compose config" compose_config
-  [ -z "$made" ] || rm -f .env
   # The deploy bundle a release attaches (.github/scripts/release_bundle.sh), with a placeholder digest.
   # shellcheck disable=SC2329 # called through run
   bundle_config() {
@@ -355,9 +350,8 @@ check_compose() {
     archive="$(.github/scripts/release_bundle.sh "ghcr.io/example/instadroid@sha256:$(printf '%064d' 0)" \
       check "$work")" &&
       tar -xzf "$archive" -C "$work" &&
-      cp "$work/instadroid-check/.env.example" "$work/instadroid-check/.env" &&
       docker compose --project-directory "$work/instadroid-check" \
-        --env-file "$work/instadroid-check/.env.example" config -q || status=$?
+        --env-file "$work/instadroid-check/.env.example" config -q --no-env-resolution || status=$?
     case "$work" in */bundle-check.??????) rm -r -- "$work" ;; esac
     return "$status"
   }

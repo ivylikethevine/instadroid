@@ -2,16 +2,14 @@
 refuses without a recent snapshot, unless --force."""
 
 import os
-import runpy
-import sys
 import time
 from pathlib import Path
 
 import pytest
-from devtools import ROOT
 from instadroid import config, install
 
 from tests.fakedevice import FakeDevice
+from tests.support import run_scraper
 
 DAY: float = 86400
 
@@ -50,30 +48,22 @@ def test_zero_turns_the_check_off(snapshots: Path, monkeypatch: pytest.MonkeyPat
     assert install.snapshot_problem() is None
 
 
+@pytest.mark.usefixtures("scraper_cli")
 def test_install_refuses_without_a_recent_snapshot_unless_forced(
-    snapshots: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    snapshots: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
     asked: list[str | None] = []
 
     def install_version(d: FakeDevice, version: str | None = None) -> str:
         asked.append(version)
         return version or "450.0.0.50.77"
 
-    def connect() -> FakeDevice:
-        return FakeDevice({"home": ""}, "home")
-
-    def run(*args: str) -> None:
-        monkeypatch.setattr(sys, "argv", ["scraper.py", *args])
-        runpy.run_path(str(ROOT / "app" / "scraper.py"), run_name="__main__")
-
     monkeypatch.setattr(install, "install_instagram_version", install_version)
-    monkeypatch.setattr("instadroid.device.connect_device", connect)
     with pytest.raises(SystemExit, match="no /data snapshot in .*or pass --force"):
-        run("install", "444.0.0.46.85")
+        run_scraper(monkeypatch, "install", "444.0.0.46.85")
     assert asked == []
-    run("install", "--force", "444.0.0.46.85")
+    run_scraper(monkeypatch, "install", "--force", "444.0.0.46.85")
     _snapshot(snapshots, 1)
-    run("install")
+    run_scraper(monkeypatch, "install")
     assert asked == ["444.0.0.46.85", None]
     assert "installed: 450.0.0.50.77" in capsys.readouterr().out

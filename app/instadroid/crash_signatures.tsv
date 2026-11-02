@@ -6,4 +6,4 @@ FATAL EXCEPTION	a crash loop, not necessarily the cause -> read the surrounding 
 Version mismatch in Idmap	stale resource-cache idmap from a prior boot -> ./scripts/reset-resource-cache.sh
 Can't downgrade database	corrupt telephony.db (cross-version /data reuse) -> adb root; am force-stop com.android.phone; mv aside telephony.db/mmssms.db/carrierIdentification.db (+ -journal) under /data/user_de/0/com.android.providers.telephony/databases/, restart. See docs/INCIDENTS.md.
 Bad operation #	corrupt appops.xml (cross-version /data reuse) -> adb root; mv /data/system/appops.xml aside, restart. See docs/INCIDENTS.md.
-There must be exactly one installer	package-restrictions.xml corrupted (e.g. after disabling com.android.packageinstaller, which must never be disabled) -> adb root; mv /data/system/users/0/package-restrictions.xml aside, restart, then re-run scripts/tune-android.sh.
+There must be exactly one installer	package-restrictions.xml corrupted (e.g. after disabling com.android.packageinstaller, which must never be disabled) -> adb root; mv /data/system/users/0/package-restrictions.xml aside, restart, then re-run scraper.py tune.

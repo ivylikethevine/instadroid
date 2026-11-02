@@ -1,15 +1,12 @@
 """A Following-list refresh far shorter than the stored list (db.store_following()): held back with an
 alert, until a refresh agrees with the stored list again or `scraper.py following --accept` takes it."""
 
-import runpy
 import sqlite3
-import sys
 
 import pytest
-from devtools import ROOT
 from instadroid import alerts, config, db
 
-from tests.support import sql_column
+from tests.support import run_scraper, sql_column
 
 STORED: list[str] = ["a", "b", "c", "d"]
 
@@ -80,15 +77,10 @@ def test_the_following_command_shows_and_accepts(
     con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert db.store_following(con, ["a"]) is not None
-
-    def run(*args: str) -> None:
-        monkeypatch.setattr(sys, "argv", ["scraper.py", *args])
-        runpy.run_path(str(ROOT / "app" / "scraper.py"), run_name="__main__")
-
-    run("following")
+    run_scraper(monkeypatch, "following")
     assert "held back" in capsys.readouterr().out
-    run("following", "--accept")
+    run_scraper(monkeypatch, "following", "--accept")
     out: str = capsys.readouterr().out
     assert "stored the held refresh: 1 account(s)" in out and "1 account(s) stored" in out
     with pytest.raises(SystemExit):
-        run("following", "--bogus")
+        run_scraper(monkeypatch, "following", "--bogus")

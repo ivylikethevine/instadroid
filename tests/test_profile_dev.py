@@ -2,7 +2,6 @@
 and devtools/new_profile.py (scaffold, preflight, baseline commands, check, promote, validate).
 Nothing here runs docker or touches a device."""
 
-import dataclasses
 import json
 import re
 import sqlite3
@@ -10,7 +9,7 @@ import sys
 from collections.abc import Callable, Iterator, Sequence
 from datetime import date
 from pathlib import Path
-from typing import NoReturn, TypedDict, Unpack
+from typing import NoReturn
 
 import igprofiles
 import pytest
@@ -22,6 +21,7 @@ from lxml import etree
 
 from tests.deviceflows import feed_device, following_list_screen, home_screen
 from tests.fakedevice import FakeDevice, hierarchy, node
+from tests.profilecli import HostChanges, decline, host_state
 from tests.support import FEED_445, V424
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
@@ -289,7 +289,6 @@ def test_baseline_runs_the_working_tree_against_a_scratch_database() -> None:
     assert env["MEDIA_DIR"] == "/debug/profile-dev/444/media"
     assert (env["MAX_SCROLLS"], env["MAX_STORIES_PER_RUN"], env["FOLLOWING_REFRESH_DAYS"]) == ("5", "2", "0")
     assert env["READER_REFRESH_URLS"] == env["READER_REFRESH_URLS_FILE"] == ""
-    assert env["FRESHRSS_REFRESH_URL"] == env["FRESHRSS_REFRESH_URL_FILE"] == ""
     cmd: list[str] = new_profile.compose_run(["once"], env, root=Path("/repo"))
     assert cmd[:7] == ["docker", "compose", "--project-directory", "/repo", "run", "--rm", "--no-deps"]
     assert cmd[cmd.index("-v") + 1] == "/repo/app:/app:ro"
@@ -311,32 +310,12 @@ def test_host_available_mib() -> None:
     assert new_profile.host_available_mib("MemTotal: 64000000 kB\nMemAvailable:   4194304 kB\n") == 4096
 
 
-class HostChanges(TypedDict, total=False):
-    """Any subset of new_profile.HostState's fields."""
-
-    redroid_running: bool
-    app_running: bool
-    redroid_mem: str
-    host_available_mib: int
-
-
-def _state(**changes: Unpack[HostChanges]) -> new_profile.HostState:
-    healthy: new_profile.HostState = new_profile.HostState(
-        redroid_running=True, app_running=False, redroid_mem="1.0GiB / 3GiB", host_available_mib=8000
-    )
-    return dataclasses.replace(healthy, **changes)
-
-
 def _no_commands(cmd: Sequence[str], log_path: Path) -> NoReturn:
     pytest.fail("ran a command")
 
 
-def _decline(prompt: str) -> bool:
-    return False
-
-
 def test_preflight_passes_with_headroom_and_the_scraper_stopped() -> None:
-    assert new_profile.preflight_problems(_state()) == []
+    assert new_profile.preflight_problems(host_state()) == []
 
 
 @pytest.mark.parametrize(
@@ -350,41 +329,34 @@ def test_preflight_passes_with_headroom_and_the_scraper_stopped() -> None:
     ],
 )
 def test_preflight_refuses(kw: HostChanges, problem: str) -> None:
-    problems: list[str] = new_profile.preflight_problems(_state(**kw))
+    problems: list[str] = new_profile.preflight_problems(host_state(**kw))
     assert any(problem in p for p in problems), problems
 
 
 def test_an_install_alone_skips_the_memory_checks() -> None:
-    assert new_profile.preflight_problems(_state(redroid_mem="2.9GiB / 3GiB"), memory=False) == []
+    assert new_profile.preflight_problems(host_state(redroid_mem="2.9GiB / 3GiB"), memory=False) == []
 
 
 def test_baseline_stops_before_touching_the_device_when_preflight_fails(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(new_profile, "read_host_state", lambda: _state(app_running=True))
+    monkeypatch.setattr(new_profile, "read_host_state", lambda: host_state(app_running=True))
     monkeypatch.setattr(new_profile, "_run_logged", _no_commands)
     assert new_profile.baseline("445.0.0.45.83", yes=True) == 1
     assert "docker compose stop app" in capsys.readouterr().out
 
 
 def test_baseline_asks_first(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(new_profile, "read_host_state", lambda: _state())
-    monkeypatch.setattr(new_profile, "_confirm", _decline)
+    monkeypatch.setattr(new_profile, "read_host_state", host_state)
+    monkeypatch.setattr(new_profile, "_confirm", decline)
     monkeypatch.setattr(new_profile, "_run_logged", _no_commands)
     assert new_profile.baseline("445.0.0.45.83") == 1
 
 
+@pytest.mark.usefixtures("ready_baseline")
 def test_baseline_installs_runs_and_checks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    dev_dirs: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(new_profile, "DEV_DIR", tmp_path / "dev")
-    monkeypatch.setattr(new_profile, "ROOT", tmp_path)
-
-    def dev_dir(build: str) -> Path:
-        return tmp_path / "dev" / build.split(".")[0]
-
-    monkeypatch.setattr(new_profile, "dev_dir", dev_dir)
-    monkeypatch.setattr(new_profile, "read_host_state", lambda: _state())
     commands: list[list[str]] = []
 
     def run_logged(cmd: Sequence[str], log_path: Path) -> int:
@@ -394,7 +366,7 @@ def test_baseline_installs_runs_and_checks(
     monkeypatch.setattr(new_profile, "_run_logged", run_logged)
     assert new_profile.baseline("445.0.0.45.83", yes=True) == 0
     assert [c[c.index("scraper.py") + 1 :] for c in commands] == [["install", "445.0.0.45.83"], ["once"]]
-    assert (tmp_path / "dev" / "445" / "dumps").is_dir()
+    assert (dev_dirs / "445" / "dumps").is_dir()
     out: str = capsys.readouterr().out
     assert "No captured screens" in out and "new-profile restore" in out
 
@@ -472,7 +444,7 @@ def _record_run(db_path: Path, **values: str | int | None) -> None:
 
 
 def test_validating_a_build_records_it_and_its_fixtures_with_the_covering_profile(
-    scratch_profiles: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    scratch_profiles: Path, dev_dirs: Path
 ) -> None:
     new_profile.fork("499.0.0.34.72", root=scratch_profiles)
     profile: igprofiles.BaseProfile = igprofiles.load("v499")
@@ -482,12 +454,7 @@ def test_validating_a_build_records_it_and_its_fixtures_with_the_covering_profil
         "no baseline run" in p for p in problems
     )
 
-    dev: Path = tmp_path / "dev" / "499"
-
-    def dev_dir(build: str) -> Path:
-        return dev
-
-    monkeypatch.setattr(new_profile, "dev_dir", dev_dir)
+    dev: Path = dev_dirs / "499"
     _dumps(dev / "dumps", {"001-feed": FEED_XML, "002-feed": FEED_XML})
     assert new_profile.promote(build) == 0
     fixtures: Path = scratch_profiles / "v499" / "fixtures"
@@ -508,9 +475,7 @@ def test_validating_a_build_records_it_and_its_fixtures_with_the_covering_profil
     )
 
 
-def test_promote_skips_screens_without_a_clean_capture(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_promote_skips_screens_without_a_clean_capture(tmp_path: Path) -> None:
     empty_feed: str = hierarchy(
         node("android:id/list"), node("row_feed_profile_header"), node("row_feed_button_share")
     )
@@ -518,10 +483,6 @@ def test_promote_skips_screens_without_a_clean_capture(
         V424, _dumps(tmp_path, {"001-feed": empty_feed, "002-home_feed-fail": FEED_XML})
     )
     assert new_profile.pick_fixtures(reports) == {}
-
-
-def test_there_is_a_validated_build_to_install_by_default() -> None:
-    assert igprofiles.newest_build() is not None
 
 
 def test_pseudonymize_catches_names_no_parser_returns() -> None:
@@ -586,21 +547,12 @@ def test_parse_mem_usage_rejects_what_it_cannot_read() -> None:
         new_profile.parse_mem_usage("-- / --")
 
 
-class _UnreadablePath(Path):
-    """A Path whose files can't be read: what /proc/meminfo looks like outside Linux."""
-
-    def read_text(
-        self, encoding: str | None = None, errors: str | None = None, newline: str | None = None
-    ) -> str:
-        raise OSError("no such file")
-
-
-def test_read_host_state_without_docker_or_meminfo(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_read_host_state_without_docker_or_meminfo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def nothing(cmd: Sequence[str]) -> str:
         return ""
 
     monkeypatch.setattr(new_profile, "_output", nothing)
-    monkeypatch.setattr(new_profile, "Path", _UnreadablePath)
+    monkeypatch.setattr(new_profile, "MEMINFO", tmp_path / "missing")  # no /proc/meminfo outside Linux
     state: new_profile.HostState = new_profile.read_host_state()
     assert state == new_profile.HostState(
         redroid_running=False, app_running=False, redroid_mem="", host_available_mib=0
@@ -620,16 +572,10 @@ def test_confirm_reads_a_yes(monkeypatch: pytest.MonkeyPatch, answer: str, confi
     assert prompts == ["Drive the device now? [y/N] "]
 
 
+@pytest.mark.usefixtures("ready_baseline")
 def test_baseline_stops_when_the_install_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(new_profile, "ROOT", tmp_path)
-
-    def dev_dir(build: str) -> Path:
-        return tmp_path / "dev" / build.split(".")[0]
-
-    monkeypatch.setattr(new_profile, "dev_dir", dev_dir)
-    monkeypatch.setattr(new_profile, "read_host_state", lambda: _state())
     commands: list[list[str]] = []
 
     def failing_install(cmd: Sequence[str], log_path: Path) -> int:
@@ -696,18 +642,11 @@ def test_add_validated_needs_a_class_to_add_to(tmp_path: Path) -> None:
     assert init.read_text() == "class Profile(Base):\n    major = 499\n"
 
 
+@pytest.mark.usefixtures("dev_dirs")
 def test_validate_lists_what_is_still_missing(
-    scratch_profiles: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    scratch_profiles: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     new_profile.fork("499.0.0.34.72", root=scratch_profiles)
-
-    def dev_dir(build: str) -> Path:
-        return tmp_path / "dev" / "499"
-
-    monkeypatch.setattr(new_profile, "dev_dir", dev_dir)
     assert new_profile.validate("499.0.0.34.72") == 1
     out: str = capsys.readouterr().out
     assert "can't be marked validated with v499 yet:" in out

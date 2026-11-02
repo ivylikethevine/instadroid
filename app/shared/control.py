@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .sqlrows import SqlValue, scalar
+from .sqlrows import scalar
 from .timestamps import parse_iso
 
 LOCK: str = "manual.lock"
@@ -116,26 +116,20 @@ def next_run(control_dir: str | Path) -> datetime | None:
     return parse_iso(_read(control_dir, NEXT_RUN))
 
 
-def minutes_since(finished_at: SqlValue, now: datetime | None = None) -> float | None:
-    """Minutes since the stored timestamp `finished_at` (the last run's), or None when it's missing."""
-    finished: datetime | None = parse_iso(finished_at)
+def minutes_since_last_run(con: sqlite3.Connection, now: datetime | None = None) -> float | None:
+    """Minutes since the latest run finished, or None before any has or the runs table exists. Runs
+    are inserted as they finish, so the newest id is the latest finish."""
+    finished: datetime | None
+    try:
+        finished = parse_iso(scalar(con.execute("SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1")))
+    except sqlite3.OperationalError:
+        return None
     if finished is None:
         return None
     return ((now or datetime.now(UTC)) - finished).total_seconds() / 60
 
 
-def minutes_since_last_run(con: sqlite3.Connection, now: datetime | None = None) -> float | None:
-    """minutes_since() the latest run finished, or None before any has or the runs table exists. Runs
-    are inserted as they finish, so the newest id is the latest finish."""
-    try:
-        return minutes_since(
-            scalar(con.execute("SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1")), now
-        )
-    except sqlite3.OperationalError:
-        return None
-
-
 def run_now_due(since: float | None, min_minutes: float) -> bool:
-    """Whether a scrape-now request may start a run, `since` minutes (minutes_since()) after the last one
-    finished: once `min_minutes` have passed, or when no run has finished yet."""
+    """Whether a scrape-now request may start a run, `since` minutes (minutes_since_last_run()) after the
+    last one finished: once `min_minutes` have passed, or when no run has finished yet."""
     return since is None or since >= min_minutes

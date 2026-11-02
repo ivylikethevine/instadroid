@@ -121,7 +121,7 @@ run goes fully blank, rather than only noticing once new posts stop arriving. `S
 
 Memory: redroid's Android never reclaims memory on its own here, so the scraper manages it. On its
 first connect after each start it disables the unused apps in `app/instadroid/tune_packages.txt` (the
-same list `scripts/tune-android.sh` applies by hand), so they never launch at all. Every
+same list `scraper.py tune` applies by hand), so they never launch at all. Every
 run starts and ends by force-stopping Instagram and a few cached system apps (the end even when the
 run fails), and `scraper.py login` stops Instagram when it's done. During a run the scraper reads
 redroid's container memory through adb before stories and before each screen, and stops early with
@@ -180,3 +180,21 @@ newest snapshot is more than `SNAPSHOT_MAX_DAYS` old.
 Stories live in their own `stories` table and `media/stories` subdirectory, but share `RETAIN_DAYS`
 with posts (`MEDIA_MAX_MB`'s size cap only ever considers posts, not stories) — see the README's
 "Stories".
+
+**Browsing and search**: `/browse` is a plain-HTML page of every account, each account's timeline
+(`?user=`) and a caption search (`?q=`, optionally with `?user=`), paged newest first and behind
+`FEED_TOKEN` like the feeds; a browser gets a basic-auth prompt, and the page's links never carry the
+token. Every search word must match, each as a prefix of a caption word (`sun` finds `sunset`), case
+and accents aside; nothing typed is treated as an operator. The search reads SQLite's FTS5 index
+`posts_fts`, which triggers on `posts` keep in step and the first start after upgrading fills. It
+holds a copy of the captions plus their index, in the database and so under `MEDIA_MAX_MB`. The feeds'
+`?q=` stays a substring match.
+
+**Export**: `docker compose exec app python scraper.py export /db/export` writes every stored post
+under that directory, here `local/data/db/export` on the host: `data/<account>/<post>.json`, its
+images under `media/`, and static pages from `index.html` (`--format json` leaves the pages out). Run
+it again into the same directory, more often than `RETAIN_DAYS` and any `MEDIA_MAX_MB` pruning: it
+updates the posts still stored and keeps the rest, so the archive only grows, and each run rebuilds
+the pages from everything in it. A post renamed or merged after an export stays under its old account
+or id as well. Stories and avatars aren't exported. The directory has to be one the container can
+write, and the export never writes outside it, whatever a stored name or a symlink in it says.

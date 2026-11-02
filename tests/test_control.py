@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import NoReturn
 
 import pytest
-from devtools.jsonvalues import JSON
 from fastapi.testclient import TestClient
 from httpx2 import Response
 from instadroid import config, control, device, scrape
 from shared import control as files
+from shared.jsonvalues import JSON
 
-from tests.feedclient import make_app
+from tests.deviceflows import StopLoop, stop_at_first_run
+from tests.feedclient import add_runs, make_app
 from tests.support import json_body, json_object, record_run_ago
 
 
@@ -96,18 +97,7 @@ def test_the_poll_loop_holds_while_held(
             control.set_lock(False)
 
     monkeypatch.setattr(time, "sleep", sleep)
-
-    class StopLoop(Exception):
-        pass
-
-    def run_recorded(c: sqlite3.Connection) -> NoReturn:
-        raise StopLoop
-
-    def startup_wait_seconds(c: sqlite3.Connection) -> float:
-        return 0
-
-    monkeypatch.setattr(scrape, "_startup_wait_seconds", startup_wait_seconds)
-    monkeypatch.setattr(scrape, "run_recorded", run_recorded)
+    stop_at_first_run(monkeypatch)
     with pytest.raises(StopLoop):
         scrape.main()
     assert held == [30, 30]
@@ -181,20 +171,7 @@ def test_the_poll_loop_holds_while_locked(
             control.set_lock(False)
 
     monkeypatch.setattr(time, "sleep", sleep)
-    started: list[int] = []
-
-    class StopLoop(Exception):
-        pass
-
-    def run_recorded(c: sqlite3.Connection) -> NoReturn:
-        started.append(1)
-        raise StopLoop
-
-    def startup_wait_seconds(c: sqlite3.Connection) -> float:
-        return 0
-
-    monkeypatch.setattr(scrape, "_startup_wait_seconds", startup_wait_seconds)
-    monkeypatch.setattr(scrape, "run_recorded", run_recorded)
+    started: list[int] = stop_at_first_run(monkeypatch)
     with pytest.raises(StopLoop):
         scrape.main()
     assert held == [30, 30, 30] and started == [1]  # held three polls, then ran
@@ -237,14 +214,8 @@ def test_control_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert json_body(client.delete("/control/lock")) == {"locked": False, "scrape_now": False, "hold": None}
     assert not (control_dir / "needs-human.hold").exists()
 
-    con: sqlite3.Connection = sqlite3.connect(tmp_path / "posts.sqlite")
-    con.execute(
-        "CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at TEXT, finished_at TEXT, new_posts INTEGER, error TEXT)"
-    )
     recent: str = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
-    con.execute("INSERT INTO runs (started_at, finished_at, new_posts) VALUES (?, ?, 0)", (recent, recent))
-    con.commit()
-    con.close()
+    add_runs(tmp_path, [{"started_at": recent, "finished_at": recent, "new_posts": 0}], ())
     r: Response = client.post("/control/scrape-now")
     detail: JSON = json_object(r)["detail"]
     assert r.status_code == 429 and isinstance(detail, str) and "25" in detail  # 30 - 5 minutes to go

@@ -7,7 +7,7 @@ name: CI
 # stable name while jobs are renamed, added, or skipped by the change filter; a skipped job counts as
 # passed, a failed or cancelled one fails it. The individual job names are informational.
 #
-# `changes` skips the Python, shell and Docker jobs when a push or pull request touches only Markdown,
+# `changes` skips the Python and Docker jobs when a push or pull request touches only Markdown,
 # docs/, or workflow files. `Quick lint` always runs, and the schedule and a manual dispatch always run
 # everything. It also finds a push whose tree a green same-repository pull request run already took
 # (the usual squash merge): that run recorded the tree (`CI result`), the push finds the record, and
@@ -141,8 +141,7 @@ jobs:
           fetch-depth: 0
       # From tools.txt (sha256-verified): lychee, zizmor, actionlint and the pinned shellcheck it runs over
       # `run:` blocks. .shellcheckrc lets shellcheck follow `source` lines.
-      - id: tools
-        uses: ./.github/actions/setup-tools
+      - uses: ./.github/actions/setup-tools
         with:
           tools: shellcheck actionlint zizmor lychee
       # check.sh runs `npm ci` in .github: markdownlint-cli2 and prettier, with their whole dependency
@@ -157,39 +156,40 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - id: python-tools
-        run: ./.github/scripts/pip-install-locked.sh requirements-dev.txt typos shfmt-py
-      # shellcheck over every tracked script, then shfmt
-      - if: ${{ !cancelled() && steps.tools.outcome == 'success' && steps.python-tools.outcome == 'success' }}
-        run: scripts/check.sh shell
-      # markdownlint, prettier, lychee (lychee.toml) on relative links and #fragments only (so a flaky
-      # external site can't fail a pull request; link-check.yml checks external links after merge and
-      # weekly), typos, and .github/scripts/docs_drift.py (.env.example, Contents blocks, links the site
-      # can't follow)
-      - if: ${{ !cancelled() && steps.tools.outcome == 'success' && steps.python-tools.outcome == 'success' }}
-        run: scripts/check.sh docs
+      - run: ./.github/scripts/pip-install-locked.sh requirements-dev.txt typos shfmt-py
+      # check.sh runs every check whatever the earlier ones did, and under CI a missing tool fails it.
+      # docs: lychee (lychee.toml) on relative links and #fragments only, so a flaky external site can't
+      # fail a pull request; link-check.yml checks external links after merge and weekly. lint-workflows:
+      # yq and jq are on the runner.
+      - if: ${{ !cancelled() }}
+        run: scripts/check.sh shell docs actionlint lint-workflows
       - if: ${{ !cancelled() }}
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # actionlint, then .github/scripts/lint_workflows.sh's structural rules (timeouts, checkout
-      # credentials, top-level permissions, workflow_run gates, SHA pins); yq and jq are on the runner.
-      - if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
-        run: scripts/check.sh actionlint lint-workflows
       # workflows, composite actions and dependabot.yml
-      - if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+      - if: ${{ !cancelled() }}
         run: scripts/check.sh zizmor
         env:
           # Lets zizmor run its online audits (e.g. checking action pins against the real repo)
           # instead of falling back to offline-only checks.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  lint:
+  # Lint: ruff check + format, basedpyright, and import-linter's boundaries. Unit tests: the floor is
+  # pyproject.toml's [tool.coverage.report] fail_under, which pytest-cov enforces; its figures and HTML report
+  # are artifacts, which coverage.yml hands to pages.yml for the README's badges.
+  python:
     needs: [changes, quick-lint]
     if: needs.changes.outputs.code == 'true'
-    name: Lint (ruff + basedpyright)
+    name: ${{ matrix.name }}
     runs-on: ubuntu-26.04
-    timeout-minutes: 5
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { check: python, name: "Lint (ruff + basedpyright)", timeout: 5 }
+          - { check: test, name: "Unit tests", timeout: 10 }
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
@@ -205,30 +205,22 @@ jobs:
       # commands): basedpyright resolves imports against them. --no-build-isolation builds it with the
       # locked setuptools instead of fetching an unhashed one.
       - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-build-isolation --no-deps -e .
-      # ruff check + format, basedpyright, and import-linter's boundaries
-      - run: scripts/check.sh python
-
-  test:
-    needs: [changes, quick-lint]
-    if: needs.changes.outputs.code == 'true'
-    name: Unit tests
-    runs-on: ubuntu-26.04
-    timeout-minutes: 10
-    steps:
-      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+      - if: matrix.check == 'python'
+        run: scripts/check.sh python
+      - if: matrix.check == 'test'
+        uses: ./.github/actions/measure-coverage
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ matrix.check == 'test' && !cancelled() && hashFiles('coverage-badge/coverage.json') != '' }}
         with:
-          egress-policy: audit
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          name: coverage-badge
+          path: coverage-badge
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ matrix.check == 'test' && !cancelled() && hashFiles('coverage-html/index.html') != '' }}
         with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.14"
-          cache: pip
-      - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-build-isolation --no-deps -e .
-      # The floor is pyproject.toml's [tool.coverage.report] fail_under, which pytest-cov enforces. The
-      # README's coverage and test-count badges come from coverage.yml, which pages.yml publishes.
-      - run: scripts/check.sh test
+          name: coverage-html
+          path: coverage-html
+          retention-days: 90
 
   # A change to a lock or to what they compile from; advisories.yml reports a new advisory against a tree
   # nobody touched. The schedule runs it regardless.
@@ -273,9 +265,10 @@ jobs:
       - uses: ./.github/actions/setup-tools
         with:
           tools: hadolint trivy
-      # Advisory: a finding is a warning and a step summary, never a failed job.
+      # hadolint, advisory: a finding is a warning and a step summary, never a failed job. Then `docker
+      # compose config`, with and without the freshrss profile, interpolated from .env.example.
       - id: hadolint
-        run: scripts/check.sh hadolint
+        run: scripts/check.sh docker
       - if: steps.hadolint.outputs.hadolint-findings == 'true'
         uses: ./.github/actions/advisory-note
         with:
@@ -295,39 +288,28 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Image smoke test
         run: ./.github/scripts/smoke-test.sh instadroid-app:ci
-      # Advisory here: the blocking scan of the release candidate is publish.yml's `scan` job. This one
-      # shows what a pull request's image carries (the base image's Debian packages and the apkeep
-      # binary, which pip-audit doesn't cover), in the step summary and, from the SARIF, the Security tab
-      # (not for fork PRs, whose token can't upload). Scanned once as JSON, then converted to both
-      # reports; trivy reads the root .trivyignore.
+      # Advisory, as is publish.yml's `scan` job. This one shows what a pull request's image carries (the
+      # base image's Debian packages and the apkeep binary, which pip-audit doesn't cover), in the step
+      # summary and, from the SARIF, the Security tab (not for fork PRs, whose token can't upload). trivy
+      # reads the root .trivyignore.
       - name: Scan the image (Trivy, advisory)
         id: trivy
-        run: |
-          set -euo pipefail
-          trivy image --format json --output "$RUNNER_TEMP/trivy.json" \
-            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 instadroid-app:ci
-          trivy convert --format sarif --output trivy-image.sarif "$RUNNER_TEMP/trivy.json"
-          trivy convert --format table --output "$RUNNER_TEMP/trivy.txt" "$RUNNER_TEMP/trivy.json"
-          findings="$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$RUNNER_TEMP/trivy.json")"
-          echo "findings=$findings" >>"$GITHUB_OUTPUT"
-          if [ "$findings" = 0 ]; then
-            printf '### Trivy image scan\n\nNo fixable HIGH or CRITICAL findings in the built image.\n' >>"$GITHUB_STEP_SUMMARY"
-          fi
-      - if: steps.trivy.outputs.findings != '0'
+        run: .github/scripts/trivy_scan.sh instadroid-app:ci "$RUNNER_TEMP"
+      - if: steps.trivy.outputs.found == '0'
+        run: printf '### Trivy image scan\n\nNo fixable HIGH or CRITICAL findings in the built image.\n' >>"$GITHUB_STEP_SUMMARY"
+      - if: steps.trivy.outputs.found != '0'
         uses: ./.github/actions/advisory-note
         with:
           title: trivy
-          warning-body: Trivy found fixable HIGH/CRITICAL vulnerabilities in the built image - advisory here, blocking at release
+          warning-body: Trivy found fixable HIGH/CRITICAL vulnerabilities in the built image - advisory, never blocking
           heading: Trivy image scan
-          body: Fixable HIGH and CRITICAL findings in the built app image. Advisory in CI; publish.yml's scan blocks a release on them.
+          body: Fixable HIGH and CRITICAL findings in the built app image. Advisory here and in publish.yml's scan.
           report-file: ${{ runner.temp }}/trivy.txt
       - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
-          sarif_file: trivy-image.sarif
+          sarif_file: ${{ runner.temp }}/trivy.sarif
           category: trivy-image
-      # `docker compose config`, with and without the freshrss profile, interpolated from .env.example
-      - run: scripts/check.sh compose
 
   dependency-review:
     if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
@@ -348,7 +330,7 @@ jobs:
   result:
     # skipped on a draft like the jobs it needs; a skipped required check still passes
     if: always() && github.event.pull_request.draft != true
-    needs: [changes, quick-lint, lint, test, audit, docker, dependency-review]
+    needs: [changes, quick-lint, python, audit, docker, dependency-review]
     name: CI result
     runs-on: ubuntu-26.04
     timeout-minutes: 5
@@ -367,22 +349,19 @@ jobs:
               exit 1
               ;;
           esac
-      # The tree a same-repository run tested, recorded only when no job skipped: a docs-only diff against
-      # `dev` skips the heavy jobs and still goes green, and that must not vouch for a push whose diff is
-      # code. find_tree_run.sh's header says why a fork's run never counts.
-      - if: >-
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          !contains(needs.*.result, 'skipped')
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: .github/actions/mark-tree
           sparse-checkout-cone-mode: false
+      # The tree a same-repository run tested, recorded only when the heavy jobs ran: a docs-only diff
+      # against `dev` skips them and still goes green, and that must not vouch for a push whose diff is
+      # code. The audit and dependency review skip by design, so they don't count. find_tree_run.sh's
+      # header says why a fork's run never counts.
       - if: >-
           github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository &&
-          !contains(needs.*.result, 'skipped')
+          needs.python.result == 'success' && needs.docker.result == 'success'
         uses: ./.github/actions/mark-tree
         with:
           prefix: ci-tree

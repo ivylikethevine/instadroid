@@ -3,6 +3,7 @@ viewer that closes before it's read, a Home feed that can't be reached or recove
 """
 
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -27,6 +28,12 @@ _NOISE: Image.Image = Image.effect_noise((WIDTH // 8, HEIGHT // 8), 80)  # rando
 def _frame() -> Image.Image:
     """A photo-like screenshot: FakeDevice's own solid colour can read as a blank frame."""
     return ImageOps.fit(_NOISE, (WIDTH, HEIGHT)).convert("RGB")
+
+
+def _home_device(screenshot: Callable[[], Image.Image] = _frame) -> FakeDevice:
+    d: FakeDevice = feed_device(start="home")
+    d.screenshot = screenshot
+    return d
 
 
 def test_capture_story_skips_an_item_without_usable_bounds() -> None:
@@ -86,22 +93,16 @@ def test_scrape_stories_stops_early_when_home_cannot_be_recovered(capsys: pytest
     assert d.screen == "following"  # the run still ended up back on its feed
 
 
-def test_a_byte_identical_recapture_is_dropped_by_the_stories_table(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_byte_identical_recapture_is_dropped_by_the_stories_table() -> None:
     # The perceptual check only looks a day back; an older row with the same content digest still
     # blocks the insert, and the fresh crop is removed rather than left orphaned.
     con: sqlite3.Connection = db.db_init()
-    d: FakeDevice = feed_device(start="home")
-    d.screenshot = _frame
-    assert stories.scrape_stories(d, con) == 1
+    assert stories.scrape_stories(_home_device(), con) == 1
     stale: str = (datetime.now(UTC) - timedelta(days=2)).isoformat()
     con.execute("UPDATE stories SET scraped_at=?", (stale,))
     con.commit()
 
-    d = feed_device(start="home")
-    d.screenshot = _frame
-    assert stories.scrape_stories(d, con) == 0
+    assert stories.scrape_stories(_home_device(), con) == 0
 
     assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM stories")) == 1
     assert len(list((config.MEDIA_DIR / "stories").iterdir())) == 1
@@ -109,9 +110,7 @@ def test_a_byte_identical_recapture_is_dropped_by_the_stories_table(
 
 def test_a_story_is_saved_whole_and_identified_by_what_is_below_its_header() -> None:
     con: sqlite3.Connection = db.db_init()
-    d: FakeDevice = feed_device(start="home")
-    d.screenshot = _frame
-    assert stories.scrape_stories(d, con) == 1
+    assert stories.scrape_stories(_home_device(), con) == 1
     saved: ImageFile.ImageFile
     with Image.open(next((config.MEDIA_DIR / "stories").iterdir())) as saved:
         assert saved.size == (WIDTH, 2200 - 150)  # the viewer's whole media container
@@ -122,16 +121,13 @@ def test_a_story_is_saved_whole_and_identified_by_what_is_below_its_header() -> 
         ImageDraw.Draw(img).rectangle((0, 150, WIDTH, 399), fill="white")
         return img
 
-    d = feed_device(start="home")
-    d.screenshot = other_header
-    assert stories.scrape_stories(d, con) == 0
+    assert stories.scrape_stories(_home_device(other_header), con) == 0
 
 
 def test_a_dark_first_frame_is_retaken() -> None:
     con: sqlite3.Connection = db.db_init()
-    d: FakeDevice = feed_device(start="home")
     shots: list[Image.Image] = [Image.new("RGB", (WIDTH, HEIGHT), (3, 3, 3)), _frame()]
-    d.screenshot = lambda: shots.pop(0)
+    d: FakeDevice = _home_device(lambda: shots.pop(0))
     assert stories.scrape_stories(d, con) == 1  # the fade-in frame alone would have been blank
     assert shots == []
 

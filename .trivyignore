@@ -2,7 +2,7 @@
 # scan, image-scan.yml's scan of the published image, and any scan run from the repository root.
 #
 # Every entry needs a reason and an expiry date: the reason in a comment above it, the date in trivy's
-# exp: field, so an acceptance lapses on its own and the finding blocks again:
+# exp: field, so an acceptance lapses on its own and the finding is reported again:
 #
 #   # Why it can't be fixed yet, and what will clear it.
 #   CVE-2026-00000 exp:2026-12-31

@@ -2,6 +2,8 @@
 
 import sqlite3
 import time
+from collections.abc import Callable
+from typing import NoReturn
 
 import igprofiles
 
@@ -21,11 +23,7 @@ def _prepare_app(d: uidevice.Device) -> None:
 
 @versioned
 def _challenge_present(d: uidevice.Device) -> str | None:
-    t: str
-    for t in SELECTORS["challenge_texts"]:
-        if d(textContains=t).exists(timeout=0.5):
-            return t
-    return None
+    return device.match(d, "textContains", SELECTORS["challenge_texts"], 0.5)
 
 
 def check_restricted(d: uidevice.Device, xml: str | None = None) -> None:
@@ -43,12 +41,8 @@ def check_restricted(d: uidevice.Device, xml: str | None = None) -> None:
 def _update_required(d: uidevice.Device) -> str | None:
     """The title of the forced-update screen when that is what's in front: one of update_texts, with no
     tab bar behind it (a caption in the feed can read the same)."""
-    t: str
-    for t in SELECTORS["update_texts"]:
-        if d(text=t).exists(timeout=0.5):
-            tab_bar: uidevice.Selector = d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}")
-            return None if tab_bar.exists(timeout=0.5) else t
-    return None
+    t: str | None = device.match(d, "text", SELECTORS["update_texts"], 0.5)
+    return None if t is None or device.by_id(d, "home_tab_id").exists(timeout=0.5) else t
 
 
 def _update_instagram(d: uidevice.Device, title: str) -> None:
@@ -131,6 +125,18 @@ def _package_present(d: uidevice.Device) -> bool:
     return present
 
 
+def _login_failure(d: uidevice.Device, message: str, error: type[RuntimeError] = RuntimeError) -> NoReturn:
+    """Save a debug dump of the login screen, and raise."""
+    diagnostics.dump_debug(d, "login")
+    raise error(message)
+
+
+def _raise_if_challenge(d: uidevice.Device) -> None:
+    c: str | None
+    if c := _challenge_present(d):
+        _login_failure(d, f"Instagram wants a human: '{c}' screen; see {config.DEBUG_DIR}")
+
+
 @versioned
 def ensure_logged_in(d: uidevice.Device) -> None:
     """If the login screen is showing, fill credentials from the environment and log in.
@@ -138,38 +144,15 @@ def ensure_logged_in(d: uidevice.Device) -> None:
     Returns once we are (or became) logged in. Raises RuntimeError on a 2FA/challenge
     screen so the caller can abort and a human can finish it.
     """
-    if config.IG_PKG not in d.app_list() and not _package_present(d):
-        if not config.IG_AUTO_INSTALL:
-            raise RuntimeError(f"{config.IG_PKG} is not installed on the device; adb install it first")
-        log(f"{config.IG_PKG} not installed; fetching and installing")
-        install.install_instagram(d)
-        if config.IG_PKG not in d.app_list():
-            raise DeviceNotReady(f"{config.IG_PKG} still not present after install")
-    device.launch_app(d)
-    device.human_pause(4, 6)
-    attempt: int
-    for attempt in range(3):
-        if device.in_foreground(d):
-            break
-        log(f"WARN: {config.IG_PKG} not foregrounded yet (attempt {attempt}); retrying launch")
-        device.launch_app(d)
-        device.human_pause(3, 5)
-    else:
-        # Without this check, every screen-detection call below trivially finds nothing (we're
-        # still on the home screen) and the function falls through to "no login screen; assume
-        # session is live" — a false positive that leaves the caller thinking it's logged in.
-        diagnostics.dump_debug(d, "login")
-        raise DeviceNotReady(f"could not bring {config.IG_PKG} to the foreground; see {config.DEBUG_DIR}")
+    _ensure_installed(d)
+    _launch_to_foreground(d)
     check_restricted(d)  # before the stray-alert "OK" below can dismiss a block's dialog
     # Stray "Enter your password" style alert from a previous attempt.
     ok: uidevice.Selector = d(text=SELECTORS["stray_alert_ok_text"])
     if ok.exists(timeout=1):
         ok.click()
         device.human_pause()
-    c: str | None
-    if c := _challenge_present(d):
-        diagnostics.dump_debug(d, "login")
-        raise RuntimeError(f"Instagram wants a human: '{c}' screen; see {config.DEBUG_DIR}")
+    _raise_if_challenge(d)
     update: str | None
     if update := _update_required(d):
         _update_instagram(d, update)
@@ -184,20 +167,55 @@ def ensure_logged_in(d: uidevice.Device) -> None:
     form: tuple[uidevice.Selector, uidevice.Selector] | None = _login_form(d)
     if not form:
         if device.first(d, text=SELECTORS["login_page_markers"]):
-            diagnostics.dump_debug(d, "login")
-            raise RuntimeError(f"login page shown but form not recognised; see {config.DEBUG_DIR}")
+            _login_failure(d, f"login page shown but form not recognised; see {config.DEBUG_DIR}")
         # No login screen, so the session is live, provided Instagram is still up: a build that
         # crashes at startup is in front just long enough for the check above, then gone (seen live
         # with 400.0.0.49.68), and every check since found nothing because nothing was there.
         if not device.in_foreground(d):
-            diagnostics.dump_debug(d, "login")
-            raise DeviceNotReady(
-                f"{config.IG_PKG} left the foreground right after launch (crashing at startup?)"
+            _login_failure(
+                d,
+                f"{config.IG_PKG} left the foreground right after launch (crashing at startup?)",
+                DeviceNotReady,
             )
         return
+    _submit_login(d, form)
+
+
+def _ensure_installed(d: uidevice.Device) -> None:
+    """Install Instagram if it's missing and IG_AUTO_INSTALL allows it, else raise."""
+    if config.IG_PKG in d.app_list() or _package_present(d):
+        return
+    if not config.IG_AUTO_INSTALL:
+        raise RuntimeError(f"{config.IG_PKG} is not installed on the device; adb install it first")
+    log(f"{config.IG_PKG} not installed; fetching and installing")
+    install.install_instagram(d)
+    if config.IG_PKG not in d.app_list():
+        raise DeviceNotReady(f"{config.IG_PKG} still not present after install")
+
+
+def _launch_to_foreground(d: uidevice.Device) -> None:
+    """Launch Instagram, retrying until it's in front."""
+    device.launch_app(d)
+    device.human_pause(4, 6)
+    attempt: int
+    for attempt in range(3):
+        if device.in_foreground(d):
+            return
+        log(f"WARN: {config.IG_PKG} not foregrounded yet (attempt {attempt}); retrying launch")
+        device.launch_app(d)
+        device.human_pause(3, 5)
+    # Without this check, every screen-detection call after this trivially finds nothing (we're
+    # still on the home screen) and ensure_logged_in() falls through to "no login screen; assume
+    # session is live" — a false positive that leaves the caller thinking it's logged in.
+    _login_failure(
+        d, f"could not bring {config.IG_PKG} to the foreground; see {config.DEBUG_DIR}", DeviceNotReady
+    )
+
+
+def _submit_login(d: uidevice.Device, form: tuple[uidevice.Selector, uidevice.Selector]) -> None:
+    """Fill the login form from the environment, submit it, and check where that led."""
     if not (config.IG_USERNAME and config.IG_PASSWORD):
-        diagnostics.dump_debug(d, "login")
-        raise RuntimeError("login screen shown but IG_USERNAME/IG_PASSWORD not set")
+        _login_failure(d, "login screen shown but IG_USERNAME/IG_PASSWORD not set")
     diagnostics.capture_screen(d, "login")  # before typing, so no credentials end up in it
     user_field: uidevice.Selector
     pw_field: uidevice.Selector
@@ -220,20 +238,26 @@ def ensure_logged_in(d: uidevice.Device) -> None:
         d.press("enter")
     log("submitted login; waiting")
     device.human_pause(10, 14)
-    if c := _challenge_present(d):
-        diagnostics.dump_debug(d, "login")
-        raise RuntimeError(f"Instagram wants a human: '{c}' screen; see {config.DEBUG_DIR}")
+    _raise_if_challenge(d)
     _dismiss_interstitials(d)
     if _login_form(d):
-        diagnostics.dump_debug(d, "login")
-        raise RuntimeError(f"still on login screen after submit (wrong password?); see {config.DEBUG_DIR}")
+        _login_failure(d, f"still on login screen after submit (wrong password?); see {config.DEBUG_DIR}")
     log("logged in")
+
+
+def _wait_until(pred: Callable[[], bool]) -> bool:
+    """Poll `pred`, up to six tries two seconds apart: cold starts can take a while to build a screen."""
+    for _ in range(6):
+        if pred():
+            return True
+        time.sleep(2)
+    return False
 
 
 @versioned
 def _on_following_feed(d: uidevice.Device) -> bool:
-    t: uidevice.Selector = d(
-        resourceIdMatches=f".*:id/{SELECTORS['following_title_id']}$", text=SELECTORS["following_text"]
+    t: uidevice.Selector = device.by_id(
+        d, "following_title_id", anchored=True, text=SELECTORS["following_text"]
     )
     return t.exists(timeout=1)
 
@@ -274,11 +298,9 @@ def open_following_feed(d: uidevice.Device) -> bool:
                 if f.exists(timeout=1):
                     f.click()
                     device.human_pause(3, 5)
-                    for _ in range(6):  # cold starts can take a while to build the screen
-                        if _on_following_feed(d):
-                            diagnostics.capture_screen(d, "following_feed")
-                            return True
-                        time.sleep(2)
+                    if _wait_until(lambda: _on_following_feed(d)):
+                        diagnostics.capture_screen(d, "following_feed")
+                        return True
                     log(f"feed switch attempt {attempt}: clicked Following but title not found")
                 else:
                     diagnostics.dump_debug(d, f"feed_switch_menu{attempt}")
@@ -304,7 +326,7 @@ def open_home_feed(d: uidevice.Device) -> bool:
     it doesn't refresh anything, it triggers Android's "tap again to exit" and risks actually
     exiting the app on a second back press soon after. Already being on Home just means done."""
     _prepare_app(d)
-    tab: uidevice.Selector = d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}$")
+    tab: uidevice.Selector = device.by_id(d, "home_tab_id", anchored=True)
     attempt: int
     for attempt in range(4):
         if on_home_feed(d):
@@ -313,10 +335,8 @@ def open_home_feed(d: uidevice.Device) -> bool:
             try:
                 tab.click()
                 device.human_pause(1.5, 2.5)
-                for _ in range(6):  # cold starts can take a while to build the screen
-                    if on_home_feed(d):
-                        return True
-                    time.sleep(2)
+                if _wait_until(lambda: on_home_feed(d)):
+                    return True
                 log(f"open home feed attempt {attempt}: tapped Home tab but feed not found")
             except Exception as e:  # the tab bar can be mid-transition between exists() and click()
                 log("WARN: home tab click failed, retrying:", repr(e))
@@ -330,10 +350,14 @@ def open_home_feed(d: uidevice.Device) -> bool:
 
 def on_target_feed(d: uidevice.Device) -> bool:
     """True when the screen currently showing is the specific feed FEED_MODE selects, not just
-    any feed at all — the Following and Home feeds are the only two the scraper ever intends to be
-    on, and on_home_feed()'s bottom-tab-bar check tells them apart."""
-    if not on_feed(d):
-        return False
+    any feed at all."""
+    return on_feed(d) and feed_is_target(d)
+
+
+def feed_is_target(d: uidevice.Device) -> bool:
+    """Given that a feed is showing, whether it's the one FEED_MODE selects: the Following and Home
+    feeds are the only two the scraper ever intends to be on, and on_home_feed()'s bottom-tab-bar check
+    tells them apart."""
     return on_home_feed(d) if config.FEED_MODE == "home" else not on_home_feed(d)
 
 
@@ -352,7 +376,7 @@ def _on_following_list(d: uidevice.Device) -> bool:
     """The Following-list screen (reached via own profile -> "N following"), independent of
     whether the list itself has any rows on screen yet — this is the screen's own view pager,
     present as soon as the screen loads."""
-    return d(resourceIdMatches=f".*:id/{SELECTORS['following_list_screen_id']}$").exists(timeout=2)
+    return device.by_id(d, "following_list_screen_id", anchored=True).exists(timeout=2)
 
 
 @versioned
@@ -369,7 +393,7 @@ def open_own_following_list(d: uidevice.Device) -> bool:
     same as open_following_feed()'s own "leave and re-enter so the feed is fresh") and navigate
     back in via the normal tab -> link path, which always starts the list at row 0."""
     _prepare_app(d)
-    tab: uidevice.Selector = d(resourceIdMatches=f".*:id/{SELECTORS['profile_tab_id']}$")
+    tab: uidevice.Selector = device.by_id(d, "profile_tab_id", anchored=True)
     attempt: int
     for attempt in range(4):
         if _on_following_list(d):
@@ -385,7 +409,7 @@ def open_own_following_list(d: uidevice.Device) -> bool:
             tab.click()
             device.human_pause(1.5, 2.5)
             diagnostics.capture_screen(d, "profile")
-            link: uidevice.Selector = d(resourceIdMatches=f".*:id/{SELECTORS['following_link_id']}$")
+            link: uidevice.Selector = device.by_id(d, "following_link_id", anchored=True)
             if not link.exists(timeout=5):
                 log(f"open following list attempt {attempt}: following link not found on profile")
                 diagnostics.dump_debug(d, f"following_list_profile{attempt}")
@@ -465,42 +489,44 @@ def refresh_following_list(d: uidevice.Device, con: sqlite3.Connection) -> str |
 
 @versioned
 def _sheet_open(d: uidevice.Device) -> bool:
-    if d(description=SELECTORS["copy_link_desc"]).exists(timeout=0.3):
-        return True
-    if any(d(text=t).exists(timeout=0.3) for t in SELECTORS["sheet_markers_text"]):
-        return True
-    return any(d(description=t).exists(timeout=0.3) for t in SELECTORS["sheet_markers_desc"])
+    descriptions: list[str] = [SELECTORS["copy_link_desc"], *SELECTORS["sheet_markers_desc"]]
+    return bool(
+        device.match(d, "description", descriptions, 0.3)
+        or device.match(d, "text", SELECTORS["sheet_markers_text"], 0.3)
+    )
 
 
 @versioned
 def close_sheets(d: uidevice.Device, max_back: int = 2) -> bool:
     """Back out of any open share/bottom sheet without touching its contents."""
+    sheet: bool | None = None  # the last look, while nothing has changed the screen since
     i: int
     for i in range(max_back):
-        if not _sheet_open(d) or not device.in_foreground(d):
+        sheet = _sheet_open(d)
+        if not sheet or not device.in_foreground(d):
             break
         if i > 0 and on_feed(d):
             break  # feed rows visible: the marker is a false positive, another Back would exit
         d.press("back")
+        sheet = None
         device.human_pause(1.5, 2)
     if device.ensure_foreground(d):
         log("WARN: left Instagram while closing a sheet; relaunched")
-    return not _sheet_open(d)
+        sheet = None
+    return not (_sheet_open(d) if sheet is None else sheet)
 
 
 @versioned
 def on_feed(d: uidevice.Device) -> bool:
     """True when a feed list with post rows is showing (title bars hide while scrolled, so
     they are not a reliable signal)."""
-    return d(resourceIdMatches=f".*:id/{SELECTORS['share_id']}").exists(timeout=0.5) or d(
-        resourceIdMatches=f".*:id/{SELECTORS['header_id']}"
-    ).exists(timeout=0.5)
+    return device.by_id(d, "share_id").exists(timeout=0.5) or device.by_id(d, "header_id").exists(timeout=0.5)
 
 
 @versioned
 def on_home_feed(d: uidevice.Device) -> bool:
     """The Home feed keeps the bottom tab bar; the Following screen does not."""
-    return d(resourceIdMatches=f".*:id/{SELECTORS['home_tab_id']}").exists(timeout=0.5)
+    return device.by_id(d, "home_tab_id").exists(timeout=0.5)
 
 
 @versioned

@@ -1,6 +1,8 @@
 # Roadmap
 
-Ordered by scope, smallest first.
+Ordered by scope, smallest first. Inside Small, Medium and Large, the most value for the size comes
+first, and an item waiting on something outside the repository comes last. Inside Cleanup, the most
+sites or time saved comes first, and medium items come last.
 
 ## Contents
 
@@ -8,9 +10,6 @@ Ordered by scope, smallest first.
 - [Medium](#medium)
 - [Large](#large)
 - [Cleanup](#cleanup)
-  - [Device and scrape](#device-and-scrape)
-  - [Support modules and shared](#support-modules-and-shared)
-  - [Tests](#tests)
   - [CI and scripts](#ci-and-scripts)
 
 ## Small
@@ -24,31 +23,13 @@ list is in [PROFILES.md](PROFILES.md)'s leak scan), but older commits keep real 
 and places; removing them would take a force-push and a fresh clone everywhere, which the owner
 decided against.
 
-Done: boolean settings that read `no`/`off` as on (one `_flag()` parser), the run budget's wait
-matching `/status`, recording keeping the device caches, per-file SPDX headers replaced by
-`REUSE.toml` (the synced code of conduct keeps its CC-BY-4.0 header, which changes at its source;
-don't add one to new files), Markdown lint and format checks, a link check (relative links on pull
-requests, external links after merge and weekly), spell check (typos), container image scanning (Trivy:
-advisory in CI, blocking at release), dependency review on pull requests, shell formatting (shfmt), import boundaries
-(import-linter), hashed dependency locks (pip-compile), a `no_media_node` debug dump on the
-"media node not found" path, whole story frames, story frames matched across accounts, a retake of a
-dark story frame, a story's header painted over, the clipboard emptied before Copy link, the twin-post merge migration, `/opml?aggregate=0`, an unreachable upstream host counted as tool-version drift, a story that only reshares a stored post dropped, a resource-id report in the new-builds issue, an in-place update when Instagram demands one, a hold on an action block or restricted account, a heartbeat URL, a host preflight and a deploy bundle on each release, a snapshot check before an Instagram update, a held-back shrunk Following list, a newer-validated-build alert, the schedule and disk use on `/status`, JSON Feed and feed filters, refresh pings for other readers (Miniflux), alerts through Apprise, continuous fuzzing (ClusterFuzzLite) and a leak search across deployments (`leak-scan`). Earlier: credentials from a file, caption hashtag/mention links, optional feed
-auth, the compatibility table ([`COMPATIBILITY.md`](COMPATIBILITY.md)) and the committed OpenAPI
-spec.
+Not doing: per-file SPDX headers. `REUSE.toml` covers the repository, so don't add one to a new file;
+the synced code of conduct keeps its CC-BY-4.0 header, which changes at its source.
 
 ## Medium
 
 A feature across several parts of the scraper, compose or CI, or repeated real-device work.
 
-- **Confirm the forced-update screen**: an installed build that Instagram refuses to run until it's
-  updated is replaced in place with a newer validated one (README.md's "First-time setup"), but the
-  screen is recognised by wording no device run has shown yet (`update_texts` in
-  `app/igprofiles/v424/selectors.py`). Replace it with the text of a real `update` debug dump, and
-  promote that dump to a fixture, the first time one turns up.
-- **Confirm the restriction screens**: a run holds itself on an action block or a locked, suspended
-  or disabled account ([OPERATIONS.md](OPERATIONS.md#health-and-restarts)), recognised by wording no
-  device run has shown yet (`restriction_texts` in `app/igprofiles/v424/selectors.py`). Replace it
-  with the text of a real `restricted` debug dump, and promote that dump to a fixture.
 - **Back up and restore the login alone**: save `/data/data/com.instagram.android` (with `adb root`)
   so a fresh `/data` volume, another Android version's included, or a `/data/system` reset gets a
   working login without a new challenge. A device run has to show the session survives the copy:
@@ -62,11 +43,20 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   account's own login is arguably not a suspicious-login challenge, so it's the owner's call first.
 - **Account groups**: a config file mapping accounts to groups, served as `?group=` feeds and OPML
   categories.
-- **Search and a browse page**: SQLite FTS5 over captions and a `/browse` page of each account's
-  timeline, so the stored history works as an archive and not only a feed; `scraper.py export` to
-  static HTML or JSON keeps posts past `RETAIN_DAYS`.
-- **Readable text-only stories**: OCR of story frames into the entry text, searchable with the
-  above. Opt-in, and measured first against the app container's 256m limit.
+- **Readable text-only stories**: OCR of story frames into the entry text, searchable on `/browse`.
+  Opt-in, and measured first against the app container's 256m limit.
+- **Confirm the batched selectors and shells on a device**: tested only against `tests/fakedevice.py`.
+  A run has to show that `textMatches` and `descriptionMatches` accept escaped candidates with `(?is)`
+  on Android's regex, that `textContains` ignores case as the fake now does, that a batched `getprop`
+  keeps a blank line for an unset property, that doctor's single marker-split shell reads correctly,
+  and that `scraper.py tune` and the split `ensure_logged_in` and story capture behave as before.
+- **Confirm the forced-update and restriction screens**: two screens are recognised by wording no
+  device run has shown yet, both in `app/igprofiles/v424/selectors.py`. An installed build that
+  Instagram refuses to run until it's updated is replaced in place with a newer validated one
+  (README.md's "First-time setup"), on `update_texts`. A run holds itself on an action block or a
+  locked, suspended or disabled account ([OPERATIONS.md](OPERATIONS.md#health-and-restarts)), on
+  `restriction_texts`. Replace each with the text of a real `update` or `restricted` debug dump, and
+  promote that dump to a fixture, the first time one turns up.
 
 ## Large
 
@@ -83,130 +73,41 @@ Open investigations, new capture mechanisms, or changes to the container/process
   (A followed-accounts allowlist now filters the fallback's suggested posts after the fact — see
   README.md's "Followed-accounts allowlist" — but reaching the real feed directly would still be
   cheaper than the extra Following-list navigation that costs.)
-- **Turn on automatic username changes**: a suspected rename is applied without a person once the
-  Following list has the new username and not the old one, and a wrong suspicion can be dismissed
-  ([README](../README.md#how-a-scrape-works)), but only with `RENAME_AUTO_APPLY=1`. It stays off
-  until a real rename has gone through it: none has been seen on a device yet, and a wrong merge
-  joins two accounts' histories for good. Still open either way: an account none of whose stored
-  posts are still in the feed, which only a visit to its profile would catch.
-- **Full story-reel capture**: only a story's current frame is captured (see README.md's
-  "Stories") — a deliberate scope decision, not a gap left for later, given that tapping to advance
-  a story has been observed to eject the app to the OS launcher on this host once its queue is
-  exhausted. Worth revisiting only with a materially different navigation approach (e.g. reading the
-  tray's own `total` count to know exactly how many frames to expect, so the loop never has to
-  discover exhaustion by tapping past the end).
-- **Real video capture**: still a poster-frame still — Reels/videos never get the actual video. Likely needs screen recording rather than a screenshot,
-  plus somewhere to store and serve a video file per post, and meaningfully longer dwell time per
-  video post (see README.md's "Staying under the radar") — a real cost/benefit call, not just effort.
 - **Commit a real run's tape**: a run can be recorded as a tape of screens and actions and replayed
   through the navigation code ([TESTING.md](TESTING.md#tier-3-fixture-replay)), but the only tape in
   the test suite is one recorded from `tests/fakedevice.py`. A real one would catch navigation
   drift (a moved tab, a new interstitial) the way the promoted single screens catch parser drift. It
   needs `promote-dump`'s pseudonymizing applied across a whole tape, the same alias for an account
   on every screen and in the copied links, before one can go in a profile's `fixtures/`.
+- **Several Instagram accounts**: one redroid and app pair per account through compose profiles,
+  each with its own `/data` volume and guard, ports, and 3g of memory.
 - **arm64 host support**: on an arm64 host, official `redroid/redroid` images run Instagram's arm64
   code natively — no NDK translation, sidestepping the whole compatibility matrix
   ([`COMPATIBILITY.md`](COMPATIBILITY.md)). Needs a multi-arch app image (`platforms:` in `publish.yml`), and README.md's
   "Kernel modules (Linux)" checked against an arm64 host's kernel.
-- **Several Instagram accounts**: one redroid and app pair per account through compose profiles,
-  each with its own `/data` volume and guard, ports, and 3g of memory.
+- **Real video capture**: still a poster-frame still — Reels/videos never get the actual video. Likely needs screen recording rather than a screenshot,
+  plus somewhere to store and serve a video file per post, and meaningfully longer dwell time per
+  video post (see README.md's "Staying under the radar") — a real cost/benefit call, not just effort.
+- **Full story-reel capture**: only a story's current frame is captured (see README.md's
+  "Stories") — a deliberate scope decision, not a gap left for later, given that tapping to advance
+  a story has been observed to eject the app to the OS launcher on this host once its queue is
+  exhausted. Worth revisiting only with a materially different navigation approach (e.g. reading the
+  tray's own `total` count to know exactly how many frames to expect, so the loop never has to
+  discover exhaustion by tapping past the end).
+- **Turn on automatic username changes**: a suspected rename is applied without a person once the
+  Following list has the new username and not the old one, and a wrong suspicion can be dismissed
+  ([README](../README.md#how-a-scrape-works)), but only with `RENAME_AUTO_APPLY=1`. It stays off
+  until a real rename has gone through it: none has been seen on a device yet, and a wrong merge
+  joins two accounts' histories for good. Still open either way: an account none of whose stored
+  posts are still in the feed, which only a visit to its profile would catch.
 
 ## Cleanup
 
 Simplifications from a whole-repository review. Each keeps behavior unless marked otherwise, and is
 small unless sized. Items that change what users or CI see say so.
 
-### Device and scrape
-
-- **One selector query per candidate list**: `_challenge_present`, `_update_required`,
-  `_sheet_open` (`app/instadroid/navigation.py`) and the `device.first()` callers run one
-  `exists(timeout)` per candidate string, and every miss waits out its timeout (about 20 calls per
-  `_prepare_app`). One `textMatches`/`descriptionMatches` query with N times the timeout keeps the
-  worst case and returns on the first hit; an instant per-candidate check then picks the match in
-  list order. `tests/fakedevice.py` needs `textMatches`. Medium.
-- **`device.by_id(d, key, anchored=...)`** for the nine hand-built `resourceIdMatches=f".*:id/…"`
-  selectors in `navigation.py` and `stories.py`, each keeping its current anchoring.
-- **`ensure_logged_in`'s failure paths**: a `_raise_if_challenge` for the duplicated challenge block
-  and a `_login_failure(...) -> NoReturn` for the seven dump-then-raise pairs.
-- **`close_sheets` checks twice when nothing is open**: reuse the last `_sheet_open` result unless
-  Back was pressed or the app relaunched (about 0.9 s, twice per card).
-- **`fetch_permalink` re-checks "Copy link"** right after finding it (`app/instadroid/capture.py`).
-- **`fetch_permalink` reports where it left the device**, so `_reopen_feed_if_left`
-  (`app/instadroid/scrape.py`) checks only the feed mode instead of re-running `on_feed`.
-- **One adb round trip for a device snapshot**: `device_snapshot` runs a `getprop` shell per
-  property and doctor's `_device_section` five separate shells; batch each into one, and share a
-  `device.parse_version_name` with `instagram_version`.
-- **`_scrape_feed`'s loop state**: about 20 mutable locals across 236 lines; a `_FeedRun` dataclass
-  and a `_handle_card` returning an enum in place of nested `break`/`continue`. Medium.
-- **`capture.py` duplicates**: a `_card_on_screen(d, key)` for the two find-the-card-in-a-new-dump
-  expressions, and `permalink_code(url)` as `_code_of(url) or url`.
-- **Retry loops**: a `_wait_until(pred)` for navigation's two six-try polling loops and a
-  `_reach_home(d, recover)` for the two Home-feed retry loops in `stories.py`.
-
-### Support modules and shared
-
-- **Cache reshare thumbnails across runs**: `drop_reshared_stories` (`app/instadroid/reshare.py`)
-  decodes every stored cover and slide on each run that stored a story, thousands of WebP decodes in
-  the 256m app container. Key a module-level cache on file name and mtime; measure its memory first.
-  Medium.
-- **`doctor.adb_run` shared**: move it where `diagnostics.py` and `tune.py` can use it for their
-  hand-rolled `subprocess.run(["adb", "-s", …])` calls (`install._run_checked` stays).
-- **A shared run duration and result** for `/status` and `scraper.py doctor` (`status.py`,
-  `doctor.py`), each keeping its own format; doctor's `has_column` plus `cell_str` is `opt_str`.
-
-### Tests
-
-- **A shell seam on `FakeDevice`**: `shell_replies={prefix: output or exception}` replaces about ten
-  subclasses that only override `shell()`; `VersionedDevice` is redundant with the defaults.
-- **`FakeDevice.fail_taps` and `clipboard_error`** replace the three tap-failing subclasses in
-  `test_navigation.py` and the class-level clipboard patch in `test_capture.py`.
-- **Feed database helpers**: a `feedclient.feed_sql()` and a shared `add_runs(db, runs, columns)`
-  for about 27 connect-execute-commit blocks and eight hand copies of the legacy `runs` schema
-  (`test_feed`, `test_health`, `test_status_page`, `test_alerts`, `test_control`); the legacy
-  schemas stay hand-built.
-- **`deviceflows.run_caps(...)`** for about 25 sites setting `MAX_STORIES_PER_RUN`, `MAX_SCROLLS`
-  and `MAX_CAROUSEL_SLIDES` by hand, and the two local `one_screen` helpers.
-- **One `support.insert_post`**, a keyword superset of `seed_post`, `insert_post` and
-  `test_db._add_post`; a shared story-row helper; `db.store_following` in place of
-  `test_post_identity`'s `_follow`.
-- **`support.record_urlopen(monkeypatch, fail=...)`** for the eight or more fake `urlopen` handlers.
-- **`fake_run(monkeypatch, stdout=, returncode=, raises=)`** for about nine nested
-  `subprocess.run` fakes, with the missing/hanging pair parametrized.
-- **Poll-loop stubs in `deviceflows`**: `stop_at_first_run` (three local `StopLoop` copies),
-  `scrape_returns` and `recorded_run` (four copies), `connect_returns` (three copies).
-- **Shared CLI scaffolding**: `new_profile`'s host state, decline prompt, `dev_dir` and baseline
-  fixtures between `test_profile_dev` and `test_scripts_cli`; the scraper CLI harness between
-  `test_snapshot_check` and `test_scraper_cli`.
-- **`test_db`'s setup**: `_legacy_db` for four inline copies, the `con` fixture and `_reopen_at` for
-  five migration round trips, `sqlrows.scalar` for 19 `.fetchone()[0]` reads, and a
-  `_fully_migrated` helper.
-- **Parametrize near-copies** in `test_db` (record-run stats, refresh trios, the rename pair),
-  `test_feed` (the 304 tests, the image pair) and `test_parser` (quiet hours, time distribution).
-- **`test_login` and `test_capture` helpers**: `_missing_ig`, `_first(calls, tool)`, `_cached_apk`,
-  `_caption_device` and `deviceflows.top_card`.
-- **Fixtures for repeated setup** in `test_permalink_backfill` (five tests) and the selector-drift
-  baseline (`test_selector_drift`, `test_resilience`).
-- **Lesser test cleanups**: an in-process `FEED_MODE` fallback check instead of a subprocess, the
-  unused `fast_offline` parameters in `test_navigation`, `test_stories`' repeated screenshot setup,
-  and a `MEMINFO` constant in `new_profile.py` to patch instead of `Path`.
-
 ### CI and scripts
 
-- **The suite runs twice on main**: `coverage.yml` re-runs what `ci.yml`'s test job just ran. Build
-  the badge and HTML report in the test job and have `coverage.yml` download them; the pull-request
-  comment half restructures triggers and can follow later. Medium.
-- **One matrix job for lint and test** in `ci.yml`, which differ only in name and check group.
-- **One copy of the `/data` version rule**: `scripts/preflight.sh` copies `android_major()` and the
-  mismatch check from `guard-android-data.sh`; a read-only `--check` mode there replaces it.
-  Preflight also fails when either version is empty and the guard doesn't, so `--check` keeps that.
-- **`publish.yml`'s release notes as one heredoc** instead of about 35 `echo` lines.
-- **`snapshot-android-data.sh` pruning in one container** instead of one per old snapshot, and one
-  `tar` pass when `android.image` is missing.
-- **`ci.yml`'s Trivy step through `trivy_scan.sh`**, the third copy of its flags. Drops secret
-  results from that job's advisory SARIF, so the owner's call.
-- **`check.sh docker` once** in `ci.yml`'s docker job instead of `hadolint` and `compose` apart; a
-  compose failure would then skip the build and smoke test.
-- **Preflight sizing from `docker compose config`** instead of parsing `.env` and repeating
-  compose's defaults.
-- **Keep or delete `scratch/reshare_census.py`**: no tracked file names it, and it last changed on
-  2026-10-09. The docstring says what it answers; delete it if that question is settled.
+- **The suite runs twice on a pull request into main**: `coverage.yml`'s comment still runs what
+  `ci.yml`'s test job runs. Have it read the test job's figures instead, which restructures its
+  triggers. A push to main already hands on what the test job measured. Medium.

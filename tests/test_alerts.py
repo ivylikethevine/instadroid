@@ -15,8 +15,8 @@ from httpx2 import Response
 from instadroid import alerts, config, db
 from shared.sqlrows import SqlValue
 
-from tests.feedclient import make_app
-from tests.support import UrlResponse, record_run_ago, sql_column
+from tests.feedclient import feed_sql, make_app
+from tests.support import record_run_ago, record_urlopen, sql_column
 
 if TYPE_CHECKING:
     from _typeshed import SupportsRead
@@ -42,15 +42,8 @@ def _run(con: sqlite3.Connection, hours_ago: float, error: str | None = None) ->
 
 @pytest.fixture
 def sent(monkeypatch: pytest.MonkeyPatch) -> list[urllib.request.Request]:
-    requests: list[urllib.request.Request] = []
-
-    def urlopen(request: urllib.request.Request, timeout: float) -> UrlResponse:
-        requests.append(request)
-        return UrlResponse()
-
     monkeypatch.setattr(config, "ALERT_URL", "https://ntfy.example/instadroid-topic?auth=secret")
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    return requests
+    return record_urlopen(monkeypatch).requests
 
 
 def test_no_conditions_on_a_healthy_history(con: sqlite3.Connection) -> None:
@@ -123,11 +116,7 @@ def test_a_failed_delivery_is_reported_without_the_token(
     con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(config, "ALERT_URL", "https://user:pw@ntfy.example/topic?auth=secret")
-
-    def urlopen(request: urllib.request.Request, timeout: float) -> None:
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    record_urlopen(monkeypatch, fail=OSError("connection refused"))
     _run(con, 1, CHALLENGE)
     errors: list[str] = alerts.update(con, NOW)
     assert errors and "https://ntfy.example/topic" in errors[0]
@@ -225,13 +214,11 @@ def test_open_alerts_lead_the_feed_and_show_on_status(
 ) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
     before: str = client.get("/instagram.xml").headers["etag"]
-    con: sqlite3.Connection = sqlite3.connect(tmp_path / "posts.sqlite")
-    con.execute("CREATE TABLE alerts (kind TEXT PRIMARY KEY, message TEXT, raised_at TEXT)")
-    con.execute(
-        "INSERT INTO alerts VALUES ('login', 'finish it in scrcpy: <challenge>', '2026-09-14T12:00:00+00:00')"
+    feed_sql(
+        tmp_path,
+        "CREATE TABLE alerts (kind TEXT PRIMARY KEY, message TEXT, raised_at TEXT)",
+        "INSERT INTO alerts VALUES ('login', 'finish it in scrcpy: <challenge>', '2026-09-14T12:00:00+00:00')",
     )
-    con.commit()
-    con.close()
     r: Response = client.get("/instagram.xml")
     assert r.headers["etag"] != before
     body: str = r.text

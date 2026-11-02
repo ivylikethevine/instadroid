@@ -15,6 +15,8 @@ from . import settings
 
 type EtagPart = SqlValue | tuple[SqlValue, ...]  # what an ETag is computed over
 
+MAX_SEARCH_WORDS: int = 32  # FTS5 caps an expression's size; words past this are ignored
+
 
 @contextmanager
 def connection() -> Generator[sqlite3.Connection]:
@@ -119,6 +121,47 @@ def posts(con: sqlite3.Connection, where: PostFilter, requested: int) -> list[sq
         con,
         f"SELECT * FROM posts{sql} ORDER BY COALESCE(posted_at, scraped_at) DESC LIMIT ?",
         (*args, limit(requested)),
+    )
+
+
+def fts_query(q: str) -> str:
+    """A person's search text as an FTS5 query that can't be a syntax error: each word quoted, so
+    nothing in it is an operator, and matched as a prefix; every word must match. "" for blank text.
+    NUL goes first since FTS5 would stop reading the query there, inside an open quote."""
+    words: list[str] = q.replace("\x00", " ").split()[:MAX_SEARCH_WORDS]
+    return " ".join('"' + word.replace('"', '""') + '"*' for word in words)
+
+
+def archive_page(
+    con: sqlite3.Connection,
+    user: str | None,
+    q: str | None,
+    before: tuple[str, str] | None,
+    requested: int,
+) -> list[sqlite3.Row]:
+    """/browse's posts, newest first, up to one past limit(requested) so the caller can tell whether
+    there's another page. `before` is the (sort_at, id) of the previous page's last row: seeking from it
+    keeps the sort to one page of rows at any depth. Before the search index exists, a search finds nothing."""
+    source: str = "posts"
+    clauses: list[str] = []
+    args: list[SqlValue] = []
+    match: str = fts_query(q or "")
+    if match:
+        source = "posts_fts JOIN posts_fts_ids ON fts_id = posts_fts.rowid JOIN posts ON id = post_id"
+        clauses.append("posts_fts MATCH ?")
+        args.append(match)
+    if user:
+        clauses.append("username = ?")
+        args.append(user)
+    if before:
+        clauses.append("(COALESCE(posted_at, scraped_at), id) < (?, ?)")
+        args.extend(before)
+    where: str = " WHERE " + " AND ".join(clauses) if clauses else ""
+    return all_rows(
+        con,
+        f"SELECT posts.*, COALESCE(posted_at, scraped_at) AS sort_at FROM {source}{where}"
+        " ORDER BY sort_at DESC, id DESC LIMIT ?",
+        (*args, limit(requested) + 1),
     )
 
 

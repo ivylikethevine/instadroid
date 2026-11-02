@@ -2,13 +2,11 @@
 
 import sqlite3
 import subprocess
-from typing import NoReturn, Unpack
 
 import pytest
-from instadroid import config, control, db, device, doctor
+from instadroid import adbcli, config, control, db, doctor
 
-from tests.deviceflows import RunOptions
-from tests.support import record_run_ago
+from tests.support import fake_run, record_run_ago
 
 
 def _adb(answers: dict[str, str]) -> doctor.Adb:
@@ -20,15 +18,22 @@ def _adb(answers: dict[str, str]) -> doctor.Adb:
     return run
 
 
+def _device_answers(running: str = "") -> str:
+    """The output of doctor.DEVICE_QUERY: each answer followed by the marker line."""
+    answers: tuple[str, ...] = (
+        "1\n",
+        "13\n",
+        "redroid_x86_64\n",
+        "  Package [com.instagram.android]\n    versionName=445.0.0.45.83\n",
+        running,
+        f"{1500 * 2**20}\n{3 * 2**30}\noom_kill 2\ninactive_file {300 * 2**20}\n",
+    )
+    return "".join(f"{answer}{doctor.DEVICE_ANSWER_END}\n" for answer in answers)
+
+
 HEALTHY: dict[str, str] = {
     "get-state": "device\n",
-    "shell getprop sys.boot_completed": "1\n",
-    "shell getprop ro.build.version.release; getprop ro.product.name": "13\nredroid_x86_64\n",
-    "shell dumpsys package com.instagram.android": "  Package [com.instagram.android]\n    versionName=445.0.0.45.83\n",
-    "shell pidof com.instagram.android": "",
-    "shell cat " + " ".join(device.MEMORY_FILES): (
-        f"{1500 * 2**20}\n{3 * 2**30}\noom_kill 2\ninactive_file {300 * 2**20}\n"
-    ),
+    f"shell {doctor.DEVICE_QUERY}": _device_answers(),
     "logcat -d -v threadtime": "09-16 10:00:00.000  1 1 I ActivityManager: fine\n",
 }
 
@@ -60,7 +65,7 @@ def test_doctor_shows_the_hold_alerts_budget_and_crash_signatures(
     con.commit()
     answers: dict[str, str] = {
         **HEALTHY,
-        "shell pidof com.instagram.android": "4321\n",
+        f"shell {doctor.DEVICE_QUERY}": _device_answers(running="4321\n"),
         "logcat -d -v threadtime": "09-16 10:00:00.000  1 1 E AppOps: Bad operation #133\n" * 3,
     }
     out: str = doctor.report(con, _adb(answers))
@@ -86,30 +91,20 @@ def test_doctor_reports_a_manual_lock_and_a_run_with_unreadable_timestamps(con: 
 
 
 def test_adb_run_returns_stdout_only_when_adb_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
-
-    def ok_run(cmd: list[str], **kwargs: Unpack[RunOptions]) -> subprocess.CompletedProcess[str]:
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="device\n", stderr="")
-
-    def offline_run(cmd: list[str], **kwargs: Unpack[RunOptions]) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error: device offline")
-
-    monkeypatch.setattr(subprocess, "run", ok_run)
-    assert doctor.adb_run(["get-state"]) == "device\n"
+    calls: list[list[str]] = fake_run(monkeypatch, stdout="device\n")
+    assert adbcli.adb_run(["get-state"]) == "device\n"
     assert calls == [["adb", "-s", config.ADB_ADDR, "get-state"]]
-    monkeypatch.setattr(subprocess, "run", offline_run)
-    assert doctor.adb_run(["get-state"]) is None
+    fake_run(monkeypatch, returncode=1, stderr="error: device offline")
+    assert adbcli.adb_run(["get-state"]) is None
 
 
-def test_adb_run_answers_none_when_adb_is_missing_or_hangs(monkeypatch: pytest.MonkeyPatch) -> None:
-    def missing(cmd: list[str], **kwargs: Unpack[RunOptions]) -> NoReturn:
-        raise FileNotFoundError("adb")
-
-    def hanging(cmd: list[str], **kwargs: Unpack[RunOptions]) -> NoReturn:
-        raise subprocess.TimeoutExpired(cmd, config.LOGCAT_TIMEOUT)
-
-    monkeypatch.setattr(subprocess, "run", missing)
-    assert doctor.adb_run(["get-state"]) is None
-    monkeypatch.setattr(subprocess, "run", hanging)
-    assert doctor.adb_run(["get-state"]) is None
+@pytest.mark.parametrize(
+    "failure",
+    [FileNotFoundError("adb"), subprocess.TimeoutExpired(["adb"], config.LOGCAT_TIMEOUT)],
+    ids=["missing", "hanging"],
+)
+def test_adb_run_answers_none_when_adb_is_missing_or_hangs(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    fake_run(monkeypatch, raises=failure)
+    assert adbcli.adb_run(["get-state"]) is None

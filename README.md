@@ -8,20 +8,16 @@ driven by `uiautomator2`, publishing the chronological _Following_ feed as Atom 
 <!-- Where each badge's data comes from:
      - Release, ghcr.io image: the newest GitHub Release, which .github/workflows/publish.yml creates
        from a vX.Y.Z tag.
-     - Tests: shields.io check-runs on main, filtered to ci.yml's `test` job by its name ("Unit
-       tests"). A rename of that job must be mirrored in nameFilter, or the badge reads "no check
-       runs". The site also serves a tests-passed endpoint at badges/tests.json, an alternative
-       (https://ivylikethevine.github.io/instadroid/badges/tests.json).
-     - Coverage: a shields.io endpoint JSON at badges/coverage.json on the Pages site. The figures are
-       measured by .github/workflows/coverage.yml (.github/scripts/coverage_badges.sh writes both
-       files) and served by .github/workflows/pages.yml.
+     - Tests, Coverage: shields.io endpoint JSON at badges/tests.json and badges/coverage.json on the
+       Pages site. .github/scripts/coverage_badges.sh writes both files, .github/workflows/coverage.yml
+       hands them on and .github/workflows/pages.yml serves them.
      - OpenSSF Scorecard: api.scorecard.dev, fed by .github/workflows/scorecard.yml.
      - License: GitHub's detection of LICENSE.md.
      - Python: static, mirrors pyproject.toml's requires-python. -->
 
 [![Release](https://img.shields.io/github/v/release/ivylikethevine/instadroid?logo=github&label=release)](https://github.com/ivylikethevine/instadroid/releases/latest)
 [![instadroid image](https://img.shields.io/github/v/release/ivylikethevine/instadroid?logo=docker&logoColor=white&label=ghcr.io%2Finstadroid)](https://github.com/ivylikethevine/instadroid/pkgs/container/instadroid)
-[![Tests](https://img.shields.io/github/check-runs/ivylikethevine/instadroid/main?nameFilter=Unit%20tests&label=tests)](https://github.com/ivylikethevine/instadroid/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fivylikethevine.github.io%2Finstadroid%2Fbadges%2Ftests.json)](https://github.com/ivylikethevine/instadroid/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fivylikethevine.github.io%2Finstadroid%2Fbadges%2Fcoverage.json)](https://github.com/ivylikethevine/instadroid/actions/workflows/coverage.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ivylikethevine/instadroid/badge)](https://scorecard.dev/viewer/?uri=github.com/ivylikethevine/instadroid)
 [![License: MIT](https://img.shields.io/github/license/ivylikethevine/instadroid)](LICENSE.md)
@@ -149,12 +145,12 @@ harm the host: two binder drivers on one kernel (the kernel panic in
 `REDROID_MEM_LIMIT`, a port already taken, or a `/data` volume from another Android version.
 
 On its first connect after each app start (a restart of redroid alone doesn't count; run
-`scripts/tune-android.sh` then, or restart the app) the app waits for Android to finish booting and
+`docker compose exec app python scraper.py tune` then, or restart the app) the app waits for Android to finish booting and
 tunes the device: animations, sync and location off, the screen never sleeping, the timezone from `TZ` in
 `.env` if set (see "Staying under the radar"), and the unused Google/AOSP apps in
 `app/instadroid/tune_packages.txt` disabled so they never sit resident (cuts idle memory). It's
-idempotent, one adb round trip; `TUNE_ON_CONNECT=0` skips it, and `scripts/tune-android.sh` does the
-same by hand, e.g. after a `/data/system` reset.
+idempotent, one adb round trip; `TUNE_ON_CONNECT=0` skips it, and `scraper.py tune` does the same by
+hand, e.g. after a `/data/system` reset.
 
 The password doesn't have to live in `.env`: `IG_PASSWORD_FILE` (and `IG_USERNAME_FILE`) read the value
 from a file instead, such as a Docker secret mounted at `/run/secrets/` — `docker-compose.yml` has a
@@ -404,7 +400,7 @@ device-failure retries, the selector-drift canary and memory management.
   extra layer: a metronome that's merely slow is still a metronome, whereas real usage thins out
   overnight.
 - `TZ` (e.g. `America/Los_Angeles`) is applied to the device by the first-connect tuning (or
-  `tune-android.sh`; takes effect immediately, no reboot), defines "local" for `daynight`, and is the
+  `scraper.py tune`; takes effect immediately, no reboot), defines "local" for `daynight`, and is the
   zone the feeds spell their times out in. A timezone that doesn't match the network egress may be a
   worse signal than the device's default GMT, so when yours doesn't, set the device's alone with
   `DEVICE_TIMEZONE`.
@@ -421,8 +417,10 @@ device-failure retries, the selector-drift canary and memory management.
 ### Storage and retention
 
 Posts, stories and media older than `RETAIN_DAYS` (default 60) are pruned after every run, the
-database is backed up daily, and images are stored as WebP by default. [docs/OPERATIONS.md](docs/OPERATIONS.md)
-covers duplicate merging, `MEDIA_MAX_MB`, debug-dump retention, and snapshotting redroid's `/data`.
+database is backed up daily, and images are stored as WebP by default. `/browse` pages through each
+account's history and searches captions, and `scraper.py export <directory>` keeps posts past
+`RETAIN_DAYS` as JSON and static HTML. [docs/OPERATIONS.md](docs/OPERATIONS.md#storage-and-retention)
+covers these, duplicate merging, `MEDIA_MAX_MB`, debug-dump retention, and snapshotting redroid's `/data`.
 
 ## Building and testing
 
@@ -433,7 +431,7 @@ coverage. The device-driving code is tested against a scripted fake device, so t
 emulator and no Instagram account.
 
 Releases are cut by pushing a signed `vX.Y.Z` tag, which publishes the image unattended once CI has
-passed on that commit and the image scan is clean: see [docs/RELEASING.md](docs/RELEASING.md).
+passed on that commit: see [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Getting help and contributing
 

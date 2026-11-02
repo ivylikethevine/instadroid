@@ -9,12 +9,14 @@ profiles under igprofiles/ (see docs/PROFILES.md).
     versioning   the active version profile, SELECTORS, and the @versioned hook
     device       uiautomator2 connection, launch, timing/gestures, memory housekeeping
     install      apkeep fetch + adb install
+    adbcli       the adb command line, for what runs before or without a uiautomator2 connection
     diagnostics  debug dumps and failure logcats
     doctor       `scraper.py doctor`: one report of runs, control state, device and logcat signatures
     tune         the boot wait and device tuning on the first connect after a start
     parsing      pure parsing of hierarchy dumps (what the replay tests exercise)
     db           schema, numbered migrations, runs, accounts, duplicate merging
     backup       consistent copies of the database
+    export       `scraper.py export`: an archive of posts, as JSON and static HTML, that outlives retention
     retention    pruning posts, stories and media
     navigation   login, feeds, sheets, the Following list
     capture      captions, permalinks, media crops, carousels, avatars

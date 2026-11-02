@@ -13,8 +13,10 @@ from pydantic import BaseModel
 from shared import control as files
 from shared.disk import tree_size
 from shared.errors import short_error
+from shared.pagestyle import PAGE_STYLE
+from shared.runs import run_result, run_seconds
 from shared.sqlrows import cell_int, has_column, opt_int, opt_str
-from shared.timestamps import parse_iso, window_starts
+from shared.timestamps import next_allowed, parse_iso, window_starts
 
 from . import control, queries, render, settings
 from .queries import string, text
@@ -77,14 +79,12 @@ def health() -> Health | JSONResponse:
 
 
 def _duration(run: sqlite3.Row) -> str:
-    start: datetime | None
-    end: datetime | None
-    start, end = parse_iso(text(run, "started_at")), parse_iso(text(run, "finished_at"))
-    if not start or not end:
+    seconds: int | None = run_seconds(run)
+    if seconds is None:
         return "—"
     m: int
     s: int
-    m, s = divmod(int((end - start).total_seconds()), 60)
+    m, s = divmod(seconds, 60)
     return f"{m}m {s}s" if m else f"{s}s"
 
 
@@ -109,17 +109,6 @@ def _run_memory(run: sqlite3.Row) -> str:
     if peak is None:
         return "—"
     return f"{peak} MiB" + (f", {ooms} OOM kill(s)" if ooms else "")
-
-
-def _run_result(run: sqlite3.Row) -> tuple[str, str]:
-    """(css class, text) for a run's Result cell: its error, else its warning, else "ok"."""
-    error: str | None
-    if error := text(run, "error"):
-        return "err", short_error(error)
-    warning: str | None
-    if warning := opt_str(run, "warning"):
-        return "warn", f"warn: {short_error(warning)}"
-    return "", "ok"
 
 
 def _in(delta: timedelta) -> str:
@@ -150,7 +139,7 @@ def _budget(starts: list[str], now: datetime) -> str:
     left: int = max(limit - len(started), 0)
     line: str = f"{left} of {limit} left in the last 24h"
     if not left:
-        line += f"; the next is allowed at {render.local(started[-limit] + timedelta(days=1))}"
+        line += f"; the next is allowed at {render.local(next_allowed(started, limit))}"
     return line
 
 
@@ -185,50 +174,43 @@ def _disk() -> str:
     return line
 
 
-@router.get("/status", response_class=HTMLResponse, summary="Status page")
-def status_page() -> HTMLResponse:
-    """A plain-HTML page of recent runs, the device, and per-account totals."""
-    con: sqlite3.Connection
-    health_label: str
-    health_reason: str
-    now: datetime = datetime.now(UTC)
-    with queries.connection() as con:
-        users: list[sqlite3.Row] = queries.user_counts(con)
-        stories_count: int = queries.stories_stats(con)[0]
-        runs: list[sqlite3.Row] = queries.recent_runs(con)
-        device: sqlite3.Row | None = queries.latest_device(con)
-        alerts: list[sqlite3.Row] = queries.open_alerts(con)
-        health_label, health_reason = scraper_health(con, now)  # same verdict /health gives the healthcheck
-        starts: list[str] = queries.starts_since(con, (now - timedelta(days=1)).isoformat())
-        following: tuple[int, str | None, int] = queries.following_state(con)
-    total: int = sum(cell_int(u, "n") or 0 for u in users)
-    latest: sqlite3.Row | None = runs[0] if runs else None
-
-    device_line: str = "no successful run yet"
+def _device_line(device: sqlite3.Row | None) -> str:
+    """What the device was on the last run that read it, escaped."""
+    if not device:
+        return "no successful run yet"
+    line: str = f"Android {escape(text(device, 'android_release') or '?')}"
     sdk: str | None
     product: str | None
     ig: str | None
     profile: str | None
     image: str | None
-    if device:
-        device_line = f"Android {escape(text(device, 'android_release') or '?')}"
-        if sdk := text(device, "android_sdk"):
-            device_line += f" (API {escape(sdk)})"
-        if product := text(device, "device_product"):
-            device_line += f" — {escape(product)}"
-        if ig := opt_str(device, "ig_version"):
-            device_line += f" · Instagram {escape(ig)}"
-        if profile := opt_str(device, "selector_profile"):
-            device_line += f" (profile {escape(profile)})"
-        if image := opt_str(device, "redroid_image"):
-            device_line += f" · {escape(image)}"
+    if sdk := text(device, "android_sdk"):
+        line += f" (API {escape(sdk)})"
+    if product := text(device, "device_product"):
+        line += f" — {escape(product)}"
+    if ig := opt_str(device, "ig_version"):
+        line += f" · Instagram {escape(ig)}"
+    if profile := opt_str(device, "selector_profile"):
+        line += f" (profile {escape(profile)})"
+    if image := opt_str(device, "redroid_image"):
+        line += f" · {escape(image)}"
+    return line
 
-    latest_html: str
-    status_word: str
-    status_class: str
+
+def _latest_html(
+    latest: sqlite3.Row | None,
+    alerts: list[sqlite3.Row],
+    health_label: str,
+    health_reason: str,
+    state: control.ControlState,
+) -> str:
+    """The "Last scrape" section: the latest run's verdict, open alerts, holds, and the control buttons."""
+    html: str
     if not latest:
-        latest_html = "<p>No scrape runs recorded yet.</p>"
+        html = "<p>No scrape runs recorded yet.</p>"
     else:
+        status_word: str
+        status_class: str
         warning: str | None = opt_str(latest, "warning")
         error: str | None = text(latest, "error")
         new_posts: int | None = cell_int(latest, "new_posts")
@@ -238,7 +220,7 @@ def status_page() -> HTMLResponse:
             status_word, status_class = "WARN", "warn"
         else:
             status_word, status_class = "OK", "good"
-        latest_html = f"""
+        html = f"""
         <p><span class="badge {status_class}">{status_word}</span>
            finished {escape(string(latest, "finished_at"))} ({_duration(latest)}),
            {new_posts if new_posts is not None else 0} new post(s)</p>
@@ -246,21 +228,20 @@ def status_page() -> HTMLResponse:
         {f'<p class="err">{escape(health_reason)}</p>' if health_reason else ""}
         {f'<p class="warn">{escape(warning)}</p>' if warning and not error else ""}
         """
-    latest_html += "".join(
+    html += "".join(
         f'<p class="err">Alert since {escape(string(a, "raised_at")[:16])}: {escape(string(a, "message"))}</p>'
         for a in alerts
     )
-    state: control.ControlState = control.current_state()
     if state.hold is not None:
-        latest_html += f'<p class="err">Held until unlocked, Instagram needs a person: {escape(short_error(state.hold))}</p>'
+        html += f'<p class="err">Held until unlocked, Instagram needs a person: {escape(short_error(state.hold))}</p>'
     elif state.locked:
-        latest_html += '<p class="warn">Manual lock in place: scheduled runs are held.</p>'
+        html += '<p class="warn">Manual lock in place: scheduled runs are held.</p>'
     if state.scrape_now:
-        latest_html += "<p>A scrape-now request is waiting for the poll loop.</p>"
+        html += "<p>A scrape-now request is waiting for the poll loop.</p>"
     # The same three actions as `scraper.py lock`/`unlock`/`scrape-now`, through the /control routes
     # (feedserver/control.py). A same-origin fetch sends the browser's basic-auth credentials, and the
     # token from a ?token= page URL is forwarded too, so the buttons work however /status was reached.
-    latest_html += (
+    html += (
         "<p>"
         + (
             "<button onclick=\"control('DELETE', '/control/lock')\">Unlock</button> "
@@ -270,58 +251,56 @@ def status_page() -> HTMLResponse:
         + "<button onclick=\"control('POST', '/control/scrape-now')\">Scrape now</button>"
         "</p>"
     )
+    return html
 
-    schedule_html: str = (
-        f"<p>Next run: {escape(_next_run(state, now))}<br>"
-        f"Runs: {escape(_budget(starts, now))}<br>"
-        f"Allowlist: {escape(_allowlist(*following))}<br>"
-        f"Disk: {escape(_disk())}</p>"
+
+def _run_row(run: sqlite3.Row) -> str:
+    new_posts: int | None = cell_int(run, "new_posts")
+    css: str
+    cell_text: str
+    css, cell_text = run_result(run)  # its severity is the cell's css class
+    return (
+        f"<tr><td>{escape(string(run, 'started_at'))}</td><td>{_duration(run)}</td>"
+        f"<td>{new_posts if new_posts is not None else '—'}</td>"
+        f"<td>{escape(_run_count(run, 'new_stories'))}</td>"
+        f"<td>{escape(_run_count(run, 'filtered_posts'))}</td>"
+        f"<td>{escape(_link_failures(run))}</td>"
+        f"<td>{escape(opt_str(run, 'ig_version') or '—')}</td>"
+        f"<td>{escape(_run_memory(run))}</td>"
+        f'<td class="{css}">{escape(cell_text)}</td></tr>'
     )
 
-    def _result_cell(r: sqlite3.Row) -> str:
-        css: str
-        cell_text: str
-        css, cell_text = _run_result(r)
-        return f'<td class="{css}">{escape(cell_text)}</td>'
 
-    def _new_posts_cell(r: sqlite3.Row) -> str:
-        new_posts: int | None = cell_int(r, "new_posts")
-        return f"<td>{new_posts if new_posts is not None else '—'}</td>"
-
-    runs_rows: str = "".join(
-        f"<tr><td>{escape(string(r, 'started_at'))}</td><td>{_duration(r)}</td>"
-        f"{_new_posts_cell(r)}"
-        f"<td>{escape(_run_count(r, 'new_stories'))}</td>"
-        f"<td>{escape(_run_count(r, 'filtered_posts'))}</td>"
-        f"<td>{escape(_link_failures(r))}</td>"
-        f"<td>{escape(opt_str(r, 'ig_version') or '—')}</td>"
-        f"<td>{escape(_run_memory(r))}</td>"
-        f"{_result_cell(r)}</tr>"
-        for r in runs
-    )
-    users_rows: str = "".join(
-        f"<tr><td>{escape(string(u, 'username'))}</td><td>{string(u, 'n')}</td>"
-        f"<td>{escape(text(u, 'latest') or '—')}</td></tr>"
-        for u in users
+def _runs_table(runs: list[sqlite3.Row]) -> str:
+    rows: str = "".join(_run_row(r) for r in runs)
+    return (
+        "<table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Filtered</th>"
+        "<th>Link fails</th><th>Instagram</th><th>Peak mem</th><th>Result</th></tr>"
+        f"{rows or '<tr><td colspan="9">none</td></tr>'}</table>"
     )
 
-    html: str = f"""<!doctype html>
+
+_STYLE: str = (
+    PAGE_STYLE
+    + """h2 { margin-top: 2rem; }
+.badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 0.3rem; font-weight: 600; }
+.badge.good { background: #d7f5da; color: #146c2e; }
+.badge.bad { background: #f8d7da; color: #842029; }
+.badge.warn { background: #fff3cd; color: #664d03; }
+.err { color: #842029; }
+.warn { color: #664d03; }
+"""
+)
+
+
+def _status_html(
+    device_line: str, latest_html: str, schedule_html: str, runs_table: str, totals_html: str
+) -> str:
+    """The page around its already-rendered sections."""
+    return f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta http-equiv="refresh" content="60">
 <title>Instadroid status</title>
-<style>
-body {{ font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem;
-        background: #fafafa; color: #222; }}
-h1 {{ font-size: 1.3rem; }} h2 {{ font-size: 1rem; margin-top: 2rem; }}
-table {{ border-collapse: collapse; width: 100%; }}
-td, th {{ text-align: left; padding: 0.25rem 0.6rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }}
-.badge {{ display: inline-block; padding: 0.1rem 0.5rem; border-radius: 0.3rem; font-weight: 600; }}
-.badge.good {{ background: #d7f5da; color: #146c2e; }}
-.badge.bad {{ background: #f8d7da; color: #842029; }}
-.badge.warn {{ background: #fff3cd; color: #664d03; }}
-.err {{ color: #842029; }}
-.warn {{ color: #664d03; }}
-button {{ font: inherit; padding: 0.2rem 0.7rem; }}
-</style>
+<style>{_STYLE}</style>
 <script>
 async function control(method, path) {{
   const r = await fetch(path + location.search, {{ method, credentials: "same-origin" }});
@@ -340,9 +319,48 @@ async function control(method, path) {{
 <h2>Schedule and storage</h2>
 {schedule_html}
 <h2>Recent runs</h2>
-<table><tr><th>Started</th><th>Duration</th><th>New</th><th>New stories</th><th>Filtered</th><th>Link fails</th><th>Instagram</th><th>Peak mem</th><th>Result</th></tr>{runs_rows or '<tr><td colspan="9">none</td></tr>'}</table>
+{runs_table}
 <h2>Totals</h2>
-<p>{total} post(s) stored across {len(users)} account(s), {stories_count} stor{"y" if stories_count == 1 else "ies"} stored</p>
-<table><tr><th>Account</th><th>Posts</th><th>Latest</th></tr>{users_rows or '<tr><td colspan="3">none</td></tr>'}</table>
+{totals_html}
 </body></html>"""
-    return HTMLResponse(html)
+
+
+@router.get("/status", response_class=HTMLResponse, summary="Status page")
+def status_page() -> HTMLResponse:
+    """A plain-HTML page of recent runs, the device, and per-account totals."""
+    con: sqlite3.Connection
+    health_label: str
+    health_reason: str
+    now: datetime = datetime.now(UTC)
+    with queries.connection() as con:
+        users: list[sqlite3.Row] = queries.user_counts(con)
+        stories_count: int = queries.stories_stats(con)[0]
+        runs: list[sqlite3.Row] = queries.recent_runs(con)
+        device: sqlite3.Row | None = queries.latest_device(con)
+        alerts: list[sqlite3.Row] = queries.open_alerts(con)
+        health_label, health_reason = scraper_health(con, now)  # same verdict /health gives the healthcheck
+        starts: list[str] = queries.starts_since(con, (now - timedelta(days=1)).isoformat())
+        following: tuple[int, str | None, int] = queries.following_state(con)
+    total: int = sum(cell_int(u, "n") or 0 for u in users)
+    state: control.ControlState = control.current_state()
+    latest_html: str = _latest_html(runs[0] if runs else None, alerts, health_label, health_reason, state)
+    schedule_html: str = (
+        f"<p>Next run: {escape(_next_run(state, now))}<br>"
+        f"Runs: {escape(_budget(starts, now))}<br>"
+        f"Allowlist: {escape(_allowlist(*following))}<br>"
+        f"Disk: {escape(_disk())}</p>"
+    )
+    users_rows: str = "".join(
+        f"<tr><td>{escape(string(u, 'username'))}</td><td>{string(u, 'n')}</td>"
+        f"<td>{escape(text(u, 'latest') or '—')}</td></tr>"
+        for u in users
+    )
+    totals_html: str = (
+        f"<p>{total} post(s) stored across {len(users)} account(s), "
+        f"{stories_count} stor{'y' if stories_count == 1 else 'ies'} stored</p>\n"
+        "<table><tr><th>Account</th><th>Posts</th><th>Latest</th></tr>"
+        f"{users_rows or '<tr><td colspan="3">none</td></tr>'}</table>"
+    )
+    return HTMLResponse(
+        _status_html(_device_line(device), latest_html, schedule_html, _runs_table(runs), totals_html)
+    )

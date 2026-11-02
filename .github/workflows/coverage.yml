@@ -1,14 +1,16 @@
 name: Coverage
 
-# The test suite with coverage, measured once, as data: the `coverage-badge` artifact holds the README's
-# two shields.io endpoint files, coverage.json (the total, bright green from pyproject.toml's
-# fail_under) and tests.json (tests passed), written by .github/scripts/coverage_badges.sh. pages.yml
-# fetches the newest one from main and serves it as badges/*.json, so no coverage service, token or
-# badge branch is involved. The gate itself is ci.yml's test job; this workflow only measures.
+# The test suite's coverage, as data: the `coverage-badge` artifact holds the README's two shields.io
+# endpoint files, coverage.json (the total, bright green from pyproject.toml's fail_under) and tests.json
+# (tests passed), written by .github/scripts/coverage_badges.sh. pages.yml fetches the newest one from main
+# and serves it as badges/*.json, so no coverage service, token or badge branch is involved. The gate
+# itself is ci.yml's test job.
 #
-# After every green CI run on a push to main (workflow_run), and on dispatch. workflow_run is safe
-# here: the measuring job runs only for a green push to main or a dispatch, checks out the default
-# branch rather than anything from the triggering run, and holds nothing but a read token.
+# After every green CI run on a push to main (workflow_run), and on dispatch. A green push hands on the
+# figures ci.yml's test job measured, in that run or, when the push reused a same-repository pull request's
+# run of the same tree, in that one; only when neither has them is the suite run here, as on a dispatch.
+# workflow_run is safe here: the job runs only for a green push to main or a dispatch, checks out the
+# default branch rather than anything from the triggering run, and holds nothing but read tokens.
 #
 # On same-repo, non-draft pull requests too, for the `comment` job: the PR's figures beside main's
 # latest, in one comment edited in place on every push. Never a fork's: its token can't comment, and
@@ -49,6 +51,9 @@ jobs:
        !github.event.pull_request.draft)
     runs-on: ubuntu-26.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # the figures CI measured, from another workflow run
     steps:
       - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
@@ -56,28 +61,53 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      # continue-on-error: a failed lookup measures here, never a missing badge
+      - id: measured
+        name: Find the run that measured this commit
+        if: github.event_name == 'workflow_run'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.event.workflow_run.id }}
+          TREE: ${{ github.event.workflow_run.head_commit.tree_id }}
+        run: |
+          set -euo pipefail
+          have="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/artifacts?per_page=100" --jq '.artifacts[].name')"
+          if grep -qxF coverage-badge <<<"$have"; then
+            echo "run=$RUN" | tee -a "$GITHUB_OUTPUT"
+          else
+            .github/scripts/find_tree_run.sh ci.yml "ci-tree-$TREE" coverage-badge | tee -a "$GITHUB_OUTPUT"
+          fi
+      - if: steps.measured.outputs.run != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-badge
+          path: coverage-badge
+          run-id: ${{ steps.measured.outputs.run }}
+          github-token: ${{ github.token }}
+      - if: steps.measured.outputs.run != ''
+        continue-on-error: true # only the report for reading a gap; the badge is what pages.yml needs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-html
+          path: coverage-html
+          run-id: ${{ steps.measured.outputs.run }}
+          github-token: ${{ github.token }}
+      - if: steps.measured.outputs.run == ''
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
-      - run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-build-isolation --no-deps -e .
-      # ci.yml's test command (scripts/check.sh test, floor included), plus a JUnit report for the count
-      - run: scripts/check.sh test -- --junitxml="$RUNNER_TEMP/junit.xml"
-      # Whatever the suite managed to measure, even when a test or the floor failed: the PR comment
-      # still shows the number, and a failed run is never the one pages.yml picks up.
-      - name: Write the badge endpoints
-        if: ${{ !cancelled() }}
-        run: .github/scripts/coverage_badges.sh "$RUNNER_TEMP/junit.xml" coverage-badge
+      - if: steps.measured.outputs.run == ''
+        run: pip install --require-hashes -r app/requirements.txt -r requirements-dev.txt && pip install --no-build-isolation --no-deps -e .
+      - if: steps.measured.outputs.run == ''
+        uses: ./.github/actions/measure-coverage
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && hashFiles('coverage-badge/coverage.json') != '' }}
         with:
           name: coverage-badge
           path: coverage-badge
           if-no-files-found: error
-      # the per-file report, for reading a gap without rerunning anything locally
-      - name: Render the HTML report
-        if: ${{ !cancelled() && hashFiles('local/.coverage') != '' }}
-        run: python -m coverage html --directory coverage-html
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && hashFiles('coverage-html/index.html') != '' }}
         with:

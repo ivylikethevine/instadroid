@@ -34,15 +34,6 @@ def _post_files(con: sqlite3.Connection, post_id: str) -> set[str]:
     return files | {f for r in rows if (f := sqlrows.cell_str(r, 0))}
 
 
-def _delete_posts(con: sqlite3.Connection, post_ids: list[str], files: set[str]) -> None:
-    """Delete post rows and their extra-slide media rows in one transaction, then unlink `files`
-    (_post_files() of those posts)."""
-    con.executemany("DELETE FROM posts WHERE id=?", [(pid,) for pid in post_ids])
-    con.executemany("DELETE FROM media WHERE post_id=?", [(pid,) for pid in post_ids])
-    con.commit()
-    discard_media(*files)
-
-
 def discard_media(*files: str | None) -> None:
     """Unlink media files (relative to MEDIA_DIR), skipping None/empty names and missing files."""
     fn: str | None
@@ -101,7 +92,10 @@ def _enforce_size_cap(con: sqlite3.Connection) -> None:
         removed.append(post_id)
         files |= post_files
     oldest.close()
-    _delete_posts(con, removed, files)
+    con.executemany("DELETE FROM posts WHERE id=?", [(pid,) for pid in removed])
+    con.executemany("DELETE FROM media WHERE post_id=?", [(pid,) for pid in removed])
+    con.commit()
+    discard_media(*files)
     if removed:
         log(f"retention: removed {len(removed)} additional post(s) to stay under {config.MEDIA_MAX_MB}MB")
 
@@ -142,23 +136,27 @@ def prune_old_posts(con: sqlite3.Connection) -> None:
         discard_media(*(sqlrows.cell_str(r, 0) for r in files))
         if removed:
             log(f"retention: removed {removed} post(s) older than {config.RETAIN_DAYS}d")
-    if config.MEDIA_DIR.exists():
-        kept: set[str | None] = {
-            sqlrows.cell_str(r, 0)
-            for r in sqlrows.fetch_all(
-                con.execute("SELECT media_file FROM posts WHERE media_file IS NOT NULL")
-            )
-        }
-        kept |= {sqlrows.cell_str(r, 0) for r in sqlrows.fetch_all(con.execute("SELECT file FROM media"))}
-        # Only ever written media_file names are *.jpg/*.webp (capture.crop_media()), and these globs are
-        # non-recursive, so pointing MEDIA_DIR at the wrong directory can't delete unrelated files
-        # and avatars/ (its own subdirectory) is never touched by this sweep.
-        orphans: list[Path] = [
-            f for ext in config.MEDIA_EXTS for f in config.MEDIA_DIR.glob(f"*{ext}") if f.name not in kept
-        ]
-        f: Path
-        for f in orphans:
-            f.unlink(missing_ok=True)
-        if orphans:
-            log(f"retention: removed {len(orphans)} orphaned media file(s)")
+    _sweep_orphans(con)
     _enforce_size_cap(con)
+
+
+def _sweep_orphans(con: sqlite3.Connection) -> None:
+    """Unlink every media file no row references any more."""
+    if not config.MEDIA_DIR.exists():
+        return
+    kept: set[str | None] = {
+        sqlrows.cell_str(r, 0)
+        for r in sqlrows.fetch_all(con.execute("SELECT media_file FROM posts WHERE media_file IS NOT NULL"))
+    }
+    kept |= {sqlrows.cell_str(r, 0) for r in sqlrows.fetch_all(con.execute("SELECT file FROM media"))}
+    # Only ever written media_file names are *.jpg/*.webp (capture.crop_media()), and these globs are
+    # non-recursive, so pointing MEDIA_DIR at the wrong directory can't delete unrelated files
+    # and avatars/ (its own subdirectory) is never touched by this sweep.
+    orphans: list[Path] = [
+        f for ext in config.MEDIA_EXTS for f in config.MEDIA_DIR.glob(f"*{ext}") if f.name not in kept
+    ]
+    f: Path
+    for f in orphans:
+        f.unlink(missing_ok=True)
+    if orphans:
+        log(f"retention: removed {len(orphans)} orphaned media file(s)")

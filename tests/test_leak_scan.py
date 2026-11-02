@@ -196,7 +196,7 @@ def test_main_reports_and_exits_1_on_a_finding(
 
 
 def test_main_with_nothing_found_exits_0(
-    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(leak_scan, "ROOT", repo)
     leak_scan.main(["--no-history"])

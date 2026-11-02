@@ -5,13 +5,15 @@ import sqlite3
 import urllib.request
 from collections import Counter
 from contextlib import closing
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from enum import Enum, auto
 from pathlib import Path
 from typing import Literal, TypedDict
 
 from lxml import etree
 from shared import env, sqlrows
-from shared.timestamps import parse_iso, window_starts
+from shared.timestamps import next_allowed, parse_iso, window_starts
 
 from . import (
     alerts,
@@ -83,7 +85,7 @@ def budget_wait_seconds(con: sqlite3.Connection, now: datetime | None = None) ->
     starts: list[datetime] = window_starts((sqlrows.cell(r, 0) for r in rows), at)
     if len(starts) < config.MAX_RUNS_PER_DAY:
         return 0.0
-    return max(0.0, (starts[-config.MAX_RUNS_PER_DAY] + timedelta(days=1) - at).total_seconds()) + 1
+    return max(0.0, (next_allowed(starts, config.MAX_RUNS_PER_DAY) - at).total_seconds()) + 1
 
 
 def poll_interval_seconds(failures: int = 0) -> float:
@@ -120,6 +122,41 @@ class RunStats(TypedDict):
 
 
 type StoreResult = Literal["new", "merged", "skipped"]  # what _store_post() did with a card
+type _LinkCheck = Literal["free", "stale", "stored"]  # see _check_permalink()
+
+
+class _CardResult(Enum):
+    """What the walk down the feed does after _handle_card()."""
+
+    NEXT_CARD = auto()  # nothing happened on screen: on to the dump's next card
+    REDUMP = auto()  # the screen may have shifted: dump it again before the next card
+
+
+@dataclass
+class _FeedRun:
+    """What one run carries from screen to screen of the feed."""
+
+    ig_version: str | None
+    followed: set[str] | None  # the followed-accounts allowlist; None filters nothing
+    warnings: list[str]
+    backfills_left: int
+    new: int = 0
+    seen_streak: int = 0
+    this_run: set[str] = field(default_factory=set[str])  # hashes of the cards already handled
+    link_failures: dict[str, int] = field(
+        default_factory=dict[str, int]
+    )  # hash -> failed share-sheet attempts
+    fail_reasons: Counter[str] = field(default_factory=Counter[str])  # failed permalink fetches by reason
+    accounts_seen: set[str] = field(default_factory=set[str])  # usernames already upserted this run
+    avatars_checked: set[str] = field(default_factory=set[str])  # usernames whose avatar was considered
+    filtered_posts: int = 0  # dropped by the followed-accounts allowlist, if enabled
+    screens: int = 0
+    empty_streak: int = 0
+    feed_reopened: bool = False
+    stat_dumps: int = 0
+    stat_cards: int = 0
+    stat_captioned: int = 0
+    stat_complete: int = 0
 
 
 # The methods a READER_REFRESH_URLS entry can name as its prefix (`PUT:https://...`).
@@ -160,16 +197,12 @@ def _ping_readers(new_posts: int, new_stories: int) -> str | None:
     return "; ".join(errors) or None
 
 
-def _ping_heartbeat() -> str | None:
-    """GET HEARTBEAT_URL after a successful run. Best-effort like _ping_readers(): returns a short error
-    rather than raising. None when disabled or delivered."""
-    if not config.HEARTBEAT_URL:
-        return None
-    error: str | None
-    if error := common.send_best_effort("heartbeat", config.HEARTBEAT_URL, config.ALERT_TIMEOUT):
-        return error
-    log(f"pinged heartbeat ({common.redact_url(config.HEARTBEAT_URL)})")
-    return None
+def _ping_heartbeat() -> None:
+    """GET HEARTBEAT_URL after a successful run, if set. Best-effort: send_best_effort() logs a failure."""
+    if config.HEARTBEAT_URL and not common.send_best_effort(
+        "heartbeat", config.HEARTBEAT_URL, config.ALERT_TIMEOUT
+    ):
+        log(f"pinged heartbeat ({common.redact_url(config.HEARTBEAT_URL)})")
 
 
 def scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> RunStats:
@@ -335,8 +368,15 @@ def _fetch_permalink(
 
 
 def _reopen_feed_if_left(d: uidevice.Device) -> bool:
-    """Reopen the target feed if a share sheet left it. True if it had to."""
-    if navigation.on_target_feed(d):
+    """Reopen the target feed if a share sheet left it. True if it had to. Called right after a
+    capture.fetch_permalink(), whose own last look at the screen says whether a feed is showing."""
+    left_on_feed: bool | None = capture.left_on_feed()
+    on_target: bool = (
+        navigation.on_target_feed(d)
+        if left_on_feed is None
+        else left_on_feed and navigation.feed_is_target(d)
+    )
+    if on_target:
         return False
     log(f"WARN: not on the {config.FEED_MODE} feed any more; reopening it")
     navigation.open_target_feed(d)
@@ -389,6 +429,238 @@ def _stop_reason(guard: device.MemoryGuard, clock: device.RunClock) -> str | Non
     return guard.exceeded() or clock.exceeded()
 
 
+def _note_screen(d: uidevice.Device, run: _FeedRun, xml: str) -> list[parsing.Post]:
+    """The cards of a fresh dump the run acts on, after the followed-accounts filter, with the screen
+    added to the selector-drift canary inputs (see db.check_selector_drift()): every hierarchy dump
+    counts toward cards/screen, and every parsed card toward the captioned/complete shares, regardless
+    of that filter — this measures parse yield, not post-filter output."""
+    raw_posts: list[parsing.Post] = parsing.parse_hierarchy(xml)
+    run.stat_dumps += 1
+    run.stat_cards += len(raw_posts)
+    run.stat_captioned += sum(1 for p in raw_posts if not parsing.is_weak_caption(p["caption"] or p["alt"]))
+    run.stat_complete += sum(1 for p in raw_posts if p["complete"])
+    posts: list[parsing.Post] = raw_posts
+    if run.followed is not None:
+        posts = [p for p in raw_posts if not p["username"] or p["username"] in run.followed]
+        run.filtered_posts += len(raw_posts) - len(posts)
+    if run.screens == 0 and not raw_posts:
+        diagnostics.dump_debug(d, "last", xml=xml)
+        log("no posts parsed on first screen — selectors probably need updating; dump saved")
+    run.empty_streak = 0 if posts else run.empty_streak + 1
+    return posts
+
+
+def _reopen_after_empty_screens(d: uidevice.Device, run: _FeedRun, xml: str) -> bool:
+    """Scrolling on regardless was seen live: 2 cards on screen 0, then 24 straight empty screens, with
+    nothing saved to show what was on screen. Whatever it is (a screen we landed on by accident, the
+    end of the feed, a UI change), more swipes won't fix it: reopen the feed once. False, to stop the
+    run, if that didn't help either."""
+    diagnostics.dump_debug(d, f"empty_feed{int(run.feed_reopened)}", xml=xml)
+    if run.feed_reopened:
+        log(f"{run.empty_streak} empty screens again after reopening the feed; stopping (dump saved)")
+        run.warnings.append(f"stopped early: {run.empty_streak} empty screens in a row after reopening")
+        return False
+    log(f"{run.empty_streak} empty screens in a row; reopening the feed (dump saved)")
+    run.warnings.append(f"reopened the feed after {run.empty_streak} empty screens in a row")
+    run.feed_reopened, run.empty_streak = True, 0
+    navigation.open_target_feed(d)
+    return True
+
+
+def _note_accounts(
+    d: uidevice.Device, con: sqlite3.Connection, run: _FeedRun, posts: list[parsing.Post]
+) -> None:
+    """Upsert each account on screen once a run, and capture an avatar that's due."""
+    p: parsing.Post
+    for p in posts:
+        u: str = p["username"]
+        if not u:
+            continue
+        if u not in run.accounts_seen:
+            run.accounts_seen.add(u)
+            db.upsert_account(con, u)
+        # Only mark an avatar "checked" once a header is actually on screen for this account —
+        # the header-less top card (its header already scrolled off) would otherwise block a
+        # retry for the rest of the run even though its avatar was never actually captured.
+        if u not in run.avatars_checked and p["header_bounds"]:
+            run.avatars_checked.add(u)
+            if db.needs_avatar_refresh(con, u):
+                avatar: str | None = capture.capture_avatar(d, p["header_bounds"], u)
+                if avatar:
+                    db.upsert_account(con, u, avatar)
+
+
+def _check_permalink(
+    con: sqlite3.Connection, run: _FeedRun, p: parsing.Post, h: str, pid: str, xml: str
+) -> _LinkCheck:
+    """Whether a card's permalink id `pid` is already stored under another row. "free": it isn't. "stale":
+    another account's post, and the link may be the clipboard's last one rather than this card's. "stored":
+    the post is known, so the hash `h` is recorded for it and a rename suspected if the account differs."""
+    row: sqlite3.Row | None = sqlrows.fetch_one(con.execute("SELECT username FROM posts WHERE id=?", (pid,)))
+    if not row:
+        return "free"
+    owner: str | None = sqlrows.cell_str(row, 0)
+    if owner and owner != p["username"] and not capture.link_was_certain():
+        log(f"WARN: permalink {pid} belongs to {owner}, not {p['username']}; stale clipboard, dropping it")
+        return "stale"
+    if owner and owner != p["username"] and not _shared_post(xml, owner, p["username"]):
+        # The link is this card's, and the post under it is another account's: a rename.
+        db.note_rename_candidate(con, owner, p["username"], pid)
+        note: str = f"{owner} now posts as {p['username']}? `scraper.py rename {owner} {p['username']}` moves its history"
+        log(f"WARN: {note} (seen on {pid})")
+        if note not in run.warnings:
+            run.warnings.append(note)
+    run.seen_streak += 1  # same post, under a caption form (or an edit) not stored yet
+    db.remember_hash(con, pid, h)
+    return "stored"
+
+
+def _handle_card(
+    d: uidevice.Device, con: sqlite3.Connection, run: _FeedRun, p: parsing.Post, xml: str
+) -> _CardResult:
+    """One card of the dump `xml`: skip it, backfill a stored post's permalink, or capture and store it."""
+    h: str = parsing.post_id(p)
+    if h in run.this_run:
+        return _CardResult.NEXT_CARD  # still on screen from the previous scroll
+    if not p["complete"]:
+        return _CardResult.NEXT_CARD  # wait until the whole bottom of the card is on screen (stable identity)
+    stored: sqlite3.Row | None = _find_stored(con, p, h)
+    if stored:
+        run.this_run.add(h)
+        run.seen_streak += 1
+        if run.backfills_left > 0 and _needs_permalink(stored):
+            run.backfills_left -= 1
+            _backfill_permalink(d, con, stored, h, run.fail_reasons)
+            return _CardResult.REDUMP  # the share sheet came and went
+        return _CardResult.NEXT_CARD
+    settle: float = config.VIDEO_SETTLE_SECONDS if p["kind"] == "video" else 0
+    media: str | None = capture.crop_media(
+        d, p["bounds"], h, p["clip_top"], settle=settle
+    )  # before any sheet opens
+    if not media and not p["bounds"]:
+        # Seen 4 times in a row on one Reel card in the 446 validation run, stored with no media,
+        # and never with a dump to show what the card looked like (docs/ROADMAP.md).
+        log("no crop: media node not found for card; dump saved")
+        diagnostics.dump_debug(d, "no_media_node", xml=xml)
+    extra_media: list[str] = capture.capture_carousel(d, p, h) if media and p["kind"] == "carousel" else []
+    url: str | None = _fetch_permalink(d, con, h, run.fail_reasons, p)
+    if not url and run.link_failures.get(h, 0) < config.PERMALINK_RETRIES:
+        # The sheet sometimes fails to open; try again on a later screen.
+        run.link_failures[h] = run.link_failures.get(h, 0) + 1
+        retention.discard_media(media, *extra_media)
+        return _CardResult.REDUMP
+    run.this_run.add(h)
+    if _reopen_feed_if_left(d):
+        run.this_run.discard(h)  # let the card be handled again where it appears
+    pid: str = capture.permalink_code(url) if url else h
+    link: _LinkCheck = _check_permalink(con, run, p, h, pid, xml) if url else "free"
+    if link == "stale":
+        url, pid = None, h
+    elif link == "stored":
+        retention.discard_media(media, *extra_media)
+        return _CardResult.REDUMP
+    run.seen_streak = 0
+    outcome: StoreResult = _store_post(d, con, p, h, pid, url, media, extra_media, run.ig_version)
+    run.this_run.add(parsing.post_id(p))  # the card's hash now that its caption is expanded
+    if outcome == "new":
+        run.new += 1
+    elif outcome == "merged":
+        run.seen_streak += 1
+    return _CardResult.REDUMP
+
+
+def _walk_feed(
+    d: uidevice.Device,
+    con: sqlite3.Connection,
+    guard: device.MemoryGuard,
+    clock: device.RunClock,
+    run: _FeedRun,
+) -> None:
+    """Work down the feed a dump at a time until MAX_SCROLLS, already-seen posts or a stop reason."""
+    while run.screens < config.MAX_SCROLLS:
+        reason: str | None
+        if reason := _stop_reason(guard, clock):
+            log(f"WARN: {reason}; stopping the run early")
+            run.warnings.append(f"stopped early: {reason}")
+            break
+        xml: str = d.dump_hierarchy()
+        navigation.check_restricted(d, xml)
+        diagnostics.capture_screen(d, "feed", xml)
+        posts: list[parsing.Post] = _note_screen(d, run, xml)
+        if config.EMPTY_SCREEN_LIMIT and run.empty_streak >= config.EMPTY_SCREEN_LIMIT:
+            if not _reopen_after_empty_screens(d, run, xml):
+                break
+            continue
+        _note_accounts(d, con, run, posts)
+        p: parsing.Post
+        for p in posts:  # at most one card per dump
+            if _handle_card(d, con, run, p, xml) is _CardResult.REDUMP:
+                break
+        else:  # nothing left to handle on this screen: scroll on
+            log(
+                f"screen {run.screens}: {len(posts)} cards, {run.new} new so far, seen-streak {run.seen_streak}"
+            )
+            if run.seen_streak >= config.STOP_AFTER_SEEN:
+                log("hit already-seen posts; stopping")
+                break
+            device.human_scroll(d)
+            device.human_pause(config.SCROLL_PAUSE_MIN, config.SCROLL_PAUSE_MAX)
+            run.screens += 1
+
+
+def _finish_run(
+    d: uidevice.Device, con: sqlite3.Connection, run: _FeedRun, new_stories: int, stories_from: str
+) -> RunStats:
+    """What follows the walk down the feed: renames, pruning, the backup, pings, and the run's stats."""
+    if config.RENAME_AUTO_APPLY:
+        old_name: str
+        new_name: str
+        for old_name, new_name in db.confirmed_renames(con):
+            applied: str = (
+                f"renamed {old_name} to {new_name}: {db.rename_account(con, old_name, new_name)} post(s) moved"
+                " (the Following list has the new name and not the old)"
+            )
+            log(applied)
+            run.warnings.append(applied)
+    if new_stories:  # after the posts, so a post shared to a story minutes earlier is already stored
+        new_stories -= reshare.drop_reshared_stories(con, stories_from)
+    retention.prune_old_posts(con)
+    retention.prune_expired_stories(con)
+    diagnostics.prune_debug_dumps()  # age-based pruning shouldn't depend on a new dump happening to be taken
+    try:
+        backup.backup_database(con)
+    except (OSError, sqlite3.Error) as e:  # a full or read-only backup disk mustn't fail the scrape
+        log("WARN: database backup failed:", repr(e))
+        run.warnings.append(f"database backup failed: {e}")
+    # Leave the app in a natural state (scrape_once() force-stops it right after)
+    d.press("home")
+    push_error: str | None
+    if push_error := _ping_readers(run.new, new_stories):
+        run.warnings.append(push_error)
+    if versioning.PROFILE_WARNING:  # read at the end: an auto-install mid-run re-resolves the profile
+        run.warnings.append(versioning.PROFILE_WARNING)
+    cards_per_screen: float = run.stat_cards / run.stat_dumps if run.stat_dumps else 0.0
+    share_captioned: float = run.stat_captioned / run.stat_cards if run.stat_cards else 0.0
+    share_complete: float = run.stat_complete / run.stat_cards if run.stat_cards else 0.0
+    drift_warning: str | None
+    if drift_warning := db.check_selector_drift(con, cards_per_screen, share_captioned, share_complete):
+        log(f"WARN: {drift_warning}")
+        run.warnings.append(drift_warning)
+    return {
+        "new": run.new,
+        "metrics": {
+            "new_stories": new_stories,
+            "link_sheet_failures": run.fail_reasons["sheet"],
+            "link_clipboard_failures": run.fail_reasons["clipboard"],
+            "warning": "; ".join(run.warnings) or None,
+            "filtered_posts": run.filtered_posts,
+            "cards_per_screen": cards_per_screen,
+            "share_captioned": share_captioned,
+            "share_complete": share_complete,
+        },
+    }
+
+
 def _scrape_feed(
     d: uidevice.Device, con: sqlite3.Connection, guard: device.MemoryGuard, clock: device.RunClock
 ) -> RunStats:
@@ -427,204 +699,9 @@ def _scrape_feed(
             navigation.open_target_feed(d)  # best-effort recovery back onto the screen the post loop expects
     if new_stories:
         log(f"stories: {new_stories} new")
-    new: int
-    seen_streak: int
-    new = seen_streak = 0
-    this_run: set[str] = set()  # hashes of the cards already handled
-    link_failures: dict[str, int] = {}  # hash -> failed share-sheet attempts
-    fail_reasons: Counter[str] = Counter()  # failed permalink fetches by reason ("sheet"/"clipboard")
-    backfills_left: int = config.PERMALINK_BACKFILL_PER_RUN
-    accounts_seen: set[str] = set()  # usernames already upserted this run
-    avatars_checked: set[str] = set()  # usernames whose avatar has been considered this run
-    filtered_posts: int = 0  # dropped by the followed-accounts allowlist, if enabled
-    screens: int
-    empty_streak: int
-    screens = empty_streak = 0
-    feed_reopened: bool = False
-    # Selector-drift canary inputs (see db.check_selector_drift()): every hierarchy dump counts
-    # toward cards/screen, and every parsed card toward the captioned/complete shares, regardless
-    # of the followed-accounts filter — this measures parse yield, not post-filter output.
-    stat_dumps: int
-    stat_cards: int
-    stat_captioned: int
-    stat_complete: int
-    stat_dumps = stat_cards = stat_captioned = stat_complete = 0
-    while screens < config.MAX_SCROLLS:
-        if reason := _stop_reason(guard, clock):
-            log(f"WARN: {reason}; stopping the run early")
-            warnings.append(f"stopped early: {reason}")
-            break
-        xml: str = d.dump_hierarchy()
-        navigation.check_restricted(d, xml)
-        diagnostics.capture_screen(d, "feed", xml)
-        raw_posts: list[parsing.Post] = parsing.parse_hierarchy(xml)
-        stat_dumps += 1
-        stat_cards += len(raw_posts)
-        stat_captioned += sum(1 for p in raw_posts if not parsing.is_weak_caption(p["caption"] or p["alt"]))
-        stat_complete += sum(1 for p in raw_posts if p["complete"])
-        posts: list[parsing.Post] = raw_posts
-        if followed is not None:
-            posts = [p for p in raw_posts if not p["username"] or p["username"] in followed]
-            filtered_posts += len(raw_posts) - len(posts)
-        if screens == 0 and not raw_posts:
-            diagnostics.dump_debug(d, "last", xml=xml)
-            log("no posts parsed on first screen — selectors probably need updating; dump saved")
-        empty_streak = 0 if posts else empty_streak + 1
-        if config.EMPTY_SCREEN_LIMIT and empty_streak >= config.EMPTY_SCREEN_LIMIT:
-            # Scrolling on regardless was seen live: 2 cards on screen 0, then 24 straight empty
-            # screens, with nothing saved to show what was on screen. Whatever it is (a screen we
-            # landed on by accident, the end of the feed, a UI change), more swipes won't fix it:
-            # reopen the feed once, and stop the run if that doesn't help either.
-            diagnostics.dump_debug(d, f"empty_feed{int(feed_reopened)}", xml=xml)
-            if feed_reopened:
-                log(f"{empty_streak} empty screens again after reopening the feed; stopping (dump saved)")
-                warnings.append(f"stopped early: {empty_streak} empty screens in a row after reopening")
-                break
-            log(f"{empty_streak} empty screens in a row; reopening the feed (dump saved)")
-            warnings.append(f"reopened the feed after {empty_streak} empty screens in a row")
-            feed_reopened, empty_streak = True, 0
-            navigation.open_target_feed(d)
-            continue
-        p: parsing.Post
-        for p in posts:
-            u: str = p["username"]
-            if not u:
-                continue
-            if u not in accounts_seen:
-                accounts_seen.add(u)
-                db.upsert_account(con, u)
-            # Only mark an avatar "checked" once a header is actually on screen for this account —
-            # the header-less top card (its header already scrolled off) would otherwise block a
-            # retry for the rest of the run even though its avatar was never actually captured.
-            if u not in avatars_checked and p["header_bounds"]:
-                avatars_checked.add(u)
-                if db.needs_avatar_refresh(con, u):
-                    avatar: str | None = capture.capture_avatar(d, p["header_bounds"], u)
-                    if avatar:
-                        db.upsert_account(con, u, avatar)
-        for p in posts:  # at most one card per dump: handling a card breaks out to re-dump
-            h: str = parsing.post_id(p)
-            if h in this_run:
-                continue  # still on screen from the previous scroll
-            if not p["complete"]:
-                continue  # wait until the whole bottom of the card is on screen (stable identity)
-            stored: sqlite3.Row | None = _find_stored(con, p, h)
-            if stored:
-                this_run.add(h)
-                seen_streak += 1
-                if backfills_left > 0 and _needs_permalink(stored):
-                    backfills_left -= 1
-                    _backfill_permalink(d, con, stored, h, fail_reasons)
-                    break  # the share sheet came and went; re-dump before the next card
-                continue
-            settle: float = config.VIDEO_SETTLE_SECONDS if p["kind"] == "video" else 0
-            media: str | None = capture.crop_media(
-                d, p["bounds"], h, p.get("clip_top", 0), settle=settle
-            )  # before any sheet opens
-            if not media and not p["bounds"]:
-                # Seen 4 times in a row on one Reel card in the 446 validation run, stored with no media,
-                # and never with a dump to show what the card looked like (docs/ROADMAP.md).
-                log("no crop: media node not found for card; dump saved")
-                diagnostics.dump_debug(d, "no_media_node", xml=xml)
-            extra_media: list[str] = (
-                capture.capture_carousel(d, p, h) if media and p["kind"] == "carousel" else []
-            )
-            url: str | None = _fetch_permalink(d, con, h, fail_reasons, p)
-            if not url and link_failures.get(h, 0) < config.PERMALINK_RETRIES:
-                # The sheet sometimes fails to open; try again on a later screen.
-                link_failures[h] = link_failures.get(h, 0) + 1
-                retention.discard_media(media, *extra_media)
-                break
-            this_run.add(h)
-            if _reopen_feed_if_left(d):
-                this_run.discard(h)  # let the card be handled again where it appears
-            pid: str = capture.permalink_code(url) if url else h
-            row: sqlite3.Row | None = (
-                sqlrows.fetch_one(con.execute("SELECT username FROM posts WHERE id=?", (pid,)))
-                if url
-                else None
-            )
-            owner: str | None = sqlrows.cell_str(row, 0) if row else None
-            if row and owner and owner != p["username"] and not capture.link_was_certain():
-                log(
-                    f"WARN: permalink {pid} belongs to {owner}, not {p['username']}; stale clipboard, dropping it"
-                )
-                url, pid = None, h
-            elif row:
-                if owner and owner != p["username"] and not _shared_post(xml, owner, p["username"]):
-                    # The link is this card's, and the post under it is another account's: a rename.
-                    db.note_rename_candidate(con, owner, p["username"], pid)
-                    note: str = f"{owner} now posts as {p['username']}? `scraper.py rename {owner} {p['username']}` moves its history"
-                    log(f"WARN: {note} (seen on {pid})")
-                    if note not in warnings:
-                        warnings.append(note)
-                seen_streak += 1  # same post, under a caption form (or an edit) not stored yet
-                db.remember_hash(con, pid, h)
-                retention.discard_media(media, *extra_media)
-                break
-            seen_streak = 0
-            outcome: StoreResult = _store_post(d, con, p, h, pid, url, media, extra_media, ig_version)
-            this_run.add(parsing.post_id(p))  # the card's hash now that its caption is expanded
-            if outcome == "new":
-                new += 1
-            elif outcome == "merged":
-                seen_streak += 1
-            break  # the screen may have shifted; re-dump before handling the next card
-        else:  # nothing left to handle on this screen: scroll on
-            log(f"screen {screens}: {len(posts)} cards, {new} new so far, seen-streak {seen_streak}")
-            if seen_streak >= config.STOP_AFTER_SEEN:
-                log("hit already-seen posts; stopping")
-                break
-            device.human_scroll(d)
-            device.human_pause(config.SCROLL_PAUSE_MIN, config.SCROLL_PAUSE_MAX)
-            screens += 1
-    if config.RENAME_AUTO_APPLY:
-        old_name: str
-        new_name: str
-        for old_name, new_name in db.confirmed_renames(con):
-            applied: str = (
-                f"renamed {old_name} to {new_name}: {db.rename_account(con, old_name, new_name)} post(s) moved"
-                " (the Following list has the new name and not the old)"
-            )
-            log(applied)
-            warnings.append(applied)
-    if new_stories:  # after the posts, so a post shared to a story minutes earlier is already stored
-        new_stories -= reshare.drop_reshared_stories(con, stories_from)
-    retention.prune_old_posts(con)
-    retention.prune_expired_stories(con)
-    diagnostics.prune_debug_dumps()  # age-based pruning shouldn't depend on a new dump happening to be taken
-    try:
-        backup.backup_database(con)
-    except (OSError, sqlite3.Error) as e:  # a full or read-only backup disk mustn't fail the scrape
-        log("WARN: database backup failed:", repr(e))
-        warnings.append(f"database backup failed: {e}")
-    # Leave the app in a natural state (scrape_once() force-stops it right after)
-    d.press("home")
-    push_error: str | None
-    if push_error := _ping_readers(new, new_stories):
-        warnings.append(push_error)
-    if versioning.PROFILE_WARNING:  # read at the end: an auto-install mid-run re-resolves the profile
-        warnings.append(versioning.PROFILE_WARNING)
-    cards_per_screen: float = stat_cards / stat_dumps if stat_dumps else 0.0
-    share_captioned: float = stat_captioned / stat_cards if stat_cards else 0.0
-    share_complete: float = stat_complete / stat_cards if stat_cards else 0.0
-    drift_warning: str | None
-    if drift_warning := db.check_selector_drift(con, cards_per_screen, share_captioned, share_complete):
-        log(f"WARN: {drift_warning}")
-        warnings.append(drift_warning)
-    return {
-        "new": new,
-        "metrics": {
-            "new_stories": new_stories,
-            "link_sheet_failures": fail_reasons["sheet"],
-            "link_clipboard_failures": fail_reasons["clipboard"],
-            "warning": "; ".join(warnings) or None,
-            "filtered_posts": filtered_posts,
-            "cards_per_screen": cards_per_screen,
-            "share_captioned": share_captioned,
-            "share_complete": share_complete,
-        },
-    }
+    run: _FeedRun = _FeedRun(ig_version, followed, warnings, config.PERMALINK_BACKFILL_PER_RUN)
+    _walk_feed(d, con, guard, clock, run)
+    return _finish_run(d, con, run, new_stories, stories_from)
 
 
 def run_recorded(con: sqlite3.Connection) -> tuple[RunStats | None, Exception | None]:
@@ -654,7 +731,7 @@ def run_recorded(con: sqlite3.Connection) -> tuple[RunStats | None, Exception | 
     new_posts, metrics = (stats["new"], stats["metrics"]) if stats is not None else (0, db.RunMetrics())
     db.record_run(con, started_at, datetime.now(UTC).isoformat(), new_posts, error, snapshot, **metrics)
     if error is None:
-        _ping_heartbeat()  # a failure is logged; the run it would report on is already recorded
+        _ping_heartbeat()
     if alerts.needs_human(error):
         control.set_hold(error or "")  # no retry until a person has dealt with it
     try:

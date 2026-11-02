@@ -14,7 +14,7 @@ from instadroid import (
 from PIL import Image, ImageDraw, ImageFile, ImageOps
 from shared import sqlrows
 
-from tests.deviceflows import CAPTION, TOP_URL, feed_device, following_screen, top_card_id
+from tests.deviceflows import CAPTION, TOP_URL, feed_device, following_screen, top_card, top_card_id
 from tests.fakedevice import HEIGHT, WIDTH, FakeDevice, FakeSelector, Node, hierarchy, node
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
@@ -30,6 +30,22 @@ def test_fetch_permalink_reports_a_sheet_that_never_opens(fast_offline: Path) ->
     d: FakeDevice = feed_device(top_share="", start="following")
     assert capture.fetch_permalink(d, top_card_id(d)) == (None, "sheet")
     assert (fast_offline / "debug" / "share_sheet_hierarchy.xml").exists()
+    assert capture.left_on_feed() is True
+
+
+def test_fetch_permalink_reports_where_it_left_the_device() -> None:
+    d: FakeDevice = feed_device(start="following")
+    capture.fetch_permalink(d, top_card_id(d))
+    assert capture.left_on_feed() is True
+    capture.fetch_permalink(d, "no-such-card")
+    assert capture.left_on_feed() is None  # returned before opening a sheet: it never looked
+    d = feed_device(start="following")
+    d.screens["profile"] = hierarchy(node(text="Edit profile"))  # the tap lands off the feed, for good
+    d.screens["share_top"] = following_screen(
+        sheet=node(desc="Copy link", bounds=(0, 2240, 1080, 2330), clip=TOP_URL, goto="profile")
+    )
+    capture.fetch_permalink(d, top_card_id(d))
+    assert capture.left_on_feed() is False
 
 
 def test_fetch_permalink_reports_a_clipboard_that_never_updates() -> None:
@@ -92,6 +108,9 @@ def test_fetch_permalink_refuses_to_act_inside_a_stuck_sheet() -> None:
     assert d.taps == []  # never tapped anything inside the sheet
 
 
+TRUNCATED: str = "someone_nice Short start… more"
+
+
 def _caption_card(text: str, goto: str | None = None) -> list[Node]:
     return [
         node(
@@ -105,41 +124,32 @@ def _caption_card(text: str, goto: str | None = None) -> list[Node]:
     ]
 
 
+def _caption_device(text: str = TRUNCATED, goto: str | None = None, **screens: str) -> FakeDevice:
+    """The Following feed showing one card with this caption, plus any other named screens."""
+    return FakeDevice({"following": following_screen(_caption_card(text, goto)), **screens}, "following")
+
+
 def test_expand_caption_taps_more_and_returns_the_full_text() -> None:
-    d: FakeDevice = FakeDevice(
-        {
-            "following": following_screen(_caption_card("someone_nice Short start… more", goto="expanded")),
-            "expanded": following_screen(
-                _caption_card("someone_nice Short start continues on with the full text")
-            ),
-        },
-        "following",
+    d: FakeDevice = _caption_device(
+        goto="expanded",
+        expanded=following_screen(_caption_card("someone_nice Short start continues on with the full text")),
     )
-    p: parsing.Post = parsing.parse_hierarchy(d.dump_hierarchy())[0]
+    p: parsing.Post = top_card(d)
     assert p["caption_truncated"] is True
 
     assert capture.expand_caption(d, p) == "Short start continues on with the full text"
 
 
 def test_expand_caption_falls_back_to_the_truncated_text_when_the_tap_does_nothing() -> None:
-    d: FakeDevice = FakeDevice(
-        {
-            "following": following_screen(_caption_card("someone_nice Short start… more"))
-        },  # no goto: tap is inert
-        "following",
-    )
-    p: parsing.Post = parsing.parse_hierarchy(d.dump_hierarchy())[0]
+    d: FakeDevice = _caption_device()  # no goto: tap is inert
 
-    assert capture.expand_caption(d, p) == "Short start…"
+    assert capture.expand_caption(d, top_card(d)) == "Short start…"
     assert d.screen == "following"  # never knocked off the feed
 
 
 def test_expand_caption_is_a_noop_for_a_caption_that_was_never_truncated() -> None:
-    d: FakeDevice = FakeDevice(
-        {"following": following_screen(_caption_card("someone_nice Whole caption, no more span"))},
-        "following",
-    )
-    p: parsing.Post = parsing.parse_hierarchy(d.dump_hierarchy())[0]
+    d: FakeDevice = _caption_device("someone_nice Whole caption, no more span")
+    p: parsing.Post = top_card(d)
     assert p["caption_truncated"] is False
 
     assert capture.expand_caption(d, p) == "Whole caption, no more span"
@@ -160,7 +170,7 @@ def _story_frame(seed: int, overlay: bool = False) -> Image.Image:
     return img
 
 
-def test_a_recaptured_story_is_not_stored_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_recaptured_story_is_not_stored_twice() -> None:
     con: sqlite3.Connection = db.db_init()
     frame: Image.Image = _story_frame(0)
     d: FakeDevice = feed_device(start="home")
@@ -178,7 +188,7 @@ def test_a_recaptured_story_is_not_stored_twice(monkeypatch: pytest.MonkeyPatch)
     assert len(list((config.MEDIA_DIR / "stories").iterdir())) == 2  # discarded crops removed
 
 
-def test_a_blank_story_frame_is_discarded(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_blank_story_frame_is_discarded() -> None:
     con: sqlite3.Connection = db.db_init()
     d: FakeDevice = feed_device(start="home")
     d.screenshot = lambda: Image.new("RGB", (WIDTH, HEIGHT), (2, 2, 2))
@@ -191,7 +201,7 @@ def test_a_blank_story_frame_is_discarded(monkeypatch: pytest.MonkeyPatch) -> No
 
 @pytest.mark.parametrize("media_format", list(config.MEDIA_FORMATS))
 def test_each_media_format_writes_its_own_encoding_and_extension(
-    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, media_format: str
+    monkeypatch: pytest.MonkeyPatch, media_format: str
 ) -> None:
     monkeypatch.setattr(config, "MEDIA_FORMAT", media_format)
     ext: str
@@ -208,9 +218,7 @@ def test_each_media_format_writes_its_own_encoding_and_extension(
         assert img.format == pil_format
 
 
-def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file(
-    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file() -> None:
     avatars: Path = config.MEDIA_DIR / "avatars"
     avatars.mkdir(parents=True)
     (avatars / "old_user.jpg").write_bytes(b"old jpeg")  # captured before switching MEDIA_FORMAT
@@ -224,19 +232,11 @@ def test_recapturing_an_avatar_in_a_new_format_drops_the_old_file(
 # --- a device that misbehaves mid-capture ---------------------------------------------------------
 
 
-def _no_clipboard(d: FakeDevice) -> str | None:
-    raise RuntimeError("clipboard service unavailable")
-
-
-def _drop_clipboard(d: FakeDevice, value: str | None) -> None:
-    pass  # the Copy link tap still writes; only the read is broken
-
-
 def test_a_clipboard_that_cannot_be_read_is_treated_as_empty(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     d: FakeDevice = feed_device(start="following")
-    monkeypatch.setattr(FakeDevice, "clipboard", property(_no_clipboard, _drop_clipboard), raising=False)
+    d.clipboard_error = RuntimeError("clipboard service unavailable")  # the Copy link tap still writes
     monkeypatch.setattr(capture, "_last_code", "LEFTOVER")
     capture.reset_last_url(d)
     assert capture._last_code == ""  # nothing to compare against: the first link read counts as fresh
@@ -271,16 +271,13 @@ def test_fetch_permalink_reports_a_sheet_whose_copy_link_vanishes(capsys: pytest
 
 
 def _truncated_post(d: FakeDevice) -> parsing.Post:
-    p: parsing.Post = parsing.parse_hierarchy(d.dump_hierarchy())[0]
+    p: parsing.Post = top_card(d)
     assert p["caption_truncated"] is True
     return p
 
 
 def test_expand_caption_gives_up_without_a_distinctive_prefix_or_a_usable_point() -> None:
-    d: FakeDevice = FakeDevice(
-        {"following": following_screen(_caption_card("someone_nice Short start… more", goto="expanded"))},
-        "following",
-    )
+    d: FakeDevice = _caption_device(goto="expanded")
     p: parsing.Post = _truncated_post(d)
     p["caption"] = "…"  # nothing left to recognise the re-read caption node by
     assert capture.expand_caption(d, p) == "…"
@@ -295,9 +292,7 @@ def test_expand_caption_falls_back_when_the_tap_itself_fails(capsys: pytest.Capt
         def click(self, x: int, y: int) -> None:
             raise RuntimeError("uiautomator jsonrpc unreachable")
 
-    d: NoTapDevice = NoTapDevice(
-        {"following": following_screen(_caption_card("someone_nice Short start… more"))}, "following"
-    )
+    d: NoTapDevice = NoTapDevice({"following": following_screen(_caption_card(TRUNCATED))}, "following")
     assert capture.expand_caption(d, _truncated_post(d)) == "Short start…"
     assert "caption expand tap failed" in capsys.readouterr().out
 
@@ -305,16 +300,11 @@ def test_expand_caption_falls_back_when_the_tap_itself_fails(capsys: pytest.Capt
 def test_expand_caption_recovers_the_feed_when_the_tap_opens_another_screen(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    d: FakeDevice = FakeDevice(
-        {
-            "following": following_screen(_caption_card("someone_nice Short start… more", goto="profile")),
-            "profile": hierarchy(
-                node(cls="android.widget.TextView", text="someone_nice", bounds=(0, 0, 1080, 200))
-            ),
-        },
-        "following",
-        back={"profile": "following"},
+    d: FakeDevice = _caption_device(
+        goto="profile",
+        profile=hierarchy(node(cls="android.widget.TextView", text="someone_nice", bounds=(0, 0, 1080, 200))),
     )
+    d.back["profile"] = "following"
     assert capture.expand_caption(d, _truncated_post(d)) == "Short start…"
     assert d.screen == "following" and "recovering" in capsys.readouterr().out
 
@@ -361,8 +351,7 @@ def test_capture_carousel_stops_at_a_slide_that_cannot_be_cropped() -> None:
         "following",
         hswipe={"following": "slide2", "slide2": "slide3"},
     )
-    p: parsing.Post = parsing.parse_hierarchy(d.dump_hierarchy())[0]
-    assert capture.capture_carousel(d, p, "OTHER1") == []
+    assert capture.capture_carousel(d, top_card(d), "OTHER1") == []
     assert len(d.swipes) == 1  # never swiped on to slide 3
 
 

@@ -1,21 +1,17 @@
 """The feed server under test: it reads its settings from the environment at import, so each test
-sets the environment and imports a fresh copy."""
+sets the environment and imports a fresh copy. Tests change its database between requests with hand-written
+SQL: these are the older schemas the server has to keep reading."""
 
 import sqlite3
 import sys
+from collections.abc import Mapping, Sequence
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
-
-
-def fresh_feedserver() -> None:
-    """Forget every feedserver module, so the next `import feedserver` reads the environment again."""
-    name: str
-    for name in [n for n in sys.modules if n == "feedserver" or n.startswith("feedserver.")]:
-        del sys.modules[name]
-
+from shared.sqlrows import SqlValue
 
 # Legacy schema (no media, accounts or stories tables) with two posts, scraped in the order a run actually
 # finds them (newest post first), so scraped_at DESC would get the order backwards; posted_at DESC must
@@ -44,10 +40,46 @@ def make_app(
     con: sqlite3.Connection = sqlite3.connect(db)
     con.executescript(seed)
     con.close()
-    fresh_feedserver()
+    # Forget every feedserver module, so this import reads the environment again.
+    name: str
+    for name in [n for n in sys.modules if n == "feedserver" or n.startswith("feedserver.")]:
+        del sys.modules[name]
     import feedserver
 
     return TestClient(feedserver.app)
+
+
+def feed_sql(tmp_path: Path, *statements: str | tuple[str, Sequence[SqlValue]]) -> None:
+    """Run each statement (SQL, or SQL and its parameters) on make_app's database, and commit."""
+    con: sqlite3.Connection
+    statement: str | tuple[str, Sequence[SqlValue]]
+    with closing(sqlite3.connect(tmp_path / "posts.sqlite")) as con:
+        for statement in statements:
+            if isinstance(statement, str):
+                con.execute(statement)
+            else:
+                con.execute(statement[0], statement[1])
+        con.commit()
+
+
+# The device columns of a legacy runs table; a table without them is older still.
+DEVICE_COLUMNS: tuple[str, ...] = ("android_release TEXT", "android_sdk TEXT", "device_product TEXT")
+
+
+def add_runs(
+    tmp_path: Path, runs: Sequence[Mapping[str, SqlValue]], columns: Sequence[str] = DEVICE_COLUMNS
+) -> None:
+    """Rows, each {column: value}, in make_app's database's legacy runs table: its first columns plus
+    `columns`, created if it isn't there yet."""
+    feed_sql(
+        tmp_path,
+        "CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL,"
+        f" finished_at TEXT NOT NULL, new_posts INTEGER, error TEXT{''.join(f', {c}' for c in columns)})",
+        *(
+            (f"INSERT INTO runs ({', '.join(run)}) VALUES ({', '.join('?' * len(run))})", tuple(run.values()))
+            for run in runs
+        ),
+    )
 
 
 def write_image(path: Path, size: tuple[int, int]) -> None:

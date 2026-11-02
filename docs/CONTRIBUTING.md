@@ -22,18 +22,8 @@ for who decides what, [GOVERNANCE.md](GOVERNANCE.md).
 
 ## Reporting a bug
 
-Use the [bug report form](https://github.com/ivylikethevine/instadroid/issues/new?template=bug_report.yml),
-which asks for the output of `scraper.py doctor` (or `scripts/diagnose.sh`) along with the rest of this. Include:
-
-- the release or commit you're on, and the `IG_PROFILE` in use
-- the installed Instagram version and redroid image (both shown on `/status`)
-- the relevant scraper log lines
-- for a parsing or navigation problem, the debug dump from `local/data/debug` (`last_hierarchy.xml`
-  and friends). **Scrub it first**: dumps and screenshots contain real usernames, captions and
-  photos from your feed.
-
-Never paste `.env`, `READER_REFRESH_URLS` (it carries tokens), or anything from
-`local/data/android`.
+Use the [bug report form](https://github.com/ivylikethevine/instadroid/issues/new?template=bug_report.yml).
+[SUPPORT.md](SUPPORT.md#what-to-include) says what to include and what never to paste.
 
 ## Development setup
 
@@ -65,11 +55,7 @@ scripts/check.sh --lint      # every static check, no tests
 scripts/check.sh shell typos # only those groups or checks; `scripts/check.sh --help` lists them
 ```
 
-The groups mirror CI's jobs: `python` (ruff, basedpyright, `lint-imports`, constricter), `test` (pytest with
-coverage, failing under the floor), `audit` (`pip-audit`), `shell` (shellcheck, shfmt), `docs`
-(markdownlint, prettier, lychee on relative links, typos, and the docs drift check), `workflows`
-(actionlint, `.github/scripts/lint_workflows.sh`, zizmor) and `docker` (hadolint, advisory, and
-`docker compose config`). It takes the Python tools from the dev venv, runs `npm ci` in `.github` for
+`scripts/check.sh --help` lists the groups. It takes the Python tools from the dev venv, runs `npm ci` in `.github` for
 the locked Markdown tools, and reports a tool it can't find as SKIP; under CI a missing tool fails
 instead. The image build, smoke test and Trivy scan stay CI-only, as do gitleaks and dependency
 review.
@@ -145,7 +131,7 @@ freeze from a scrape that ran out of memory. The rules that came out of them:
 
 - On a host redroid hasn't run on before, run `scripts/preflight.sh` first: it fails on two binder
   drivers on one kernel, the cause of the kernel panic.
-- Before a device-driving run (`scraper.py login`, `once`, `scrape-now`, `install`, `new-profile baseline` or
+- Before a device-driving run (`scraper.py login`, `once`, `scrape-now`, `install`, `tune`, `new-profile baseline` or
   `restore`), check `docker stats` headroom and force-stop Instagram. Keep scrape test runs short
   (`MAX_SCROLLS=5`, `MAX_STORIES_PER_RUN=2`), and don't interleave manual `adb`/`am` commands with a
   run.
@@ -169,8 +155,8 @@ dispatch. Each job with a local equivalent runs `scripts/check.sh` with its grou
 until v1.0: every added pin is upkeep.
 
 - a `changes` job first: when a push or pull request touches only Markdown, `docs/` or workflow
-  files, the Python, shell and Docker jobs are skipped. The docs job and the workflow linters always
-  run, and the schedule and a dispatch run everything;
+  files, the Lint, Unit tests and Docker jobs are skipped. `Quick lint` always runs, and the schedule
+  and a dispatch run everything;
 - ruff, basedpyright, import-linter (`lint-imports`) and the variable annotation rule
   (constricter), and the test suite with coverage;
 - `pip-audit` on the hashed dependency locks, and GitHub's dependency review on pull requests, which
@@ -196,16 +182,17 @@ on it. `pip-audit` runs when a lock, `.in` file or `pyproject.toml` changes, and
 `advisories.yml` reports a new advisory against a tree nobody touched.
 
 **A push to `main` whose tree a green pull request run already tested isn't tested twice.** When a
-same-repository run passes with no job skipped, `CI result` records the tree it tested. The push
+same-repository run passes with Lint, Unit tests and Docker all run, `CI result` records the tree it tested. The push
 landing that tree on `main` (merging an up-to-date pull request) finds the record in `Changes`, skips
 every other job, and copies that run's passing checks onto the pushed commit. The push run still
 concludes `success`, which is what `publish.yml`'s gate asks of it. A tree that run never saw runs in
 full, as does a dispatch.
 
 Every job in every workflow starts with `step-security/harden-runner`, which records the runner's
-network egress (and blocks all but an allowlist in the jobs that hold a write token for packages or
-releases: `publish.yml`'s `publish` and `release`, and `prune-images.yml`, each of which first refuses
-a runner in GitHub's DNS experiment, where `block` never lets the job finish);
+network egress (and blocks all but an allowlist in the jobs that hold a write token for packages,
+releases or the site: `publish.yml`'s `publish` and `release`, `pages.yml`'s `deploy` and
+`prune-images.yml`, each of which first refuses a runner in GitHub's DNS experiment, where `block`
+never lets the job finish);
 `lint_workflows.sh` fails a job whose first step isn't one of those two. The same script requires a
 `timeout-minutes` on every job, top-level `permissions:`, `persist-credentials: false` on every
 checkout, a success gate on every `workflow_run` job, and a commit SHA with a version comment on
@@ -217,11 +204,13 @@ The other workflows:
   Dependabot's, re-run when the body is edited. It never fails: a missing or blank `## Release note`
   section is a warning, and the job summary shows the note as the release page would list it
   ([Pull requests](#pull-requests)).
-- `coverage.yml`: the test suite with coverage, measured once as data after every green CI run on a
-  push to `main`: the `coverage-badge` artifact holds the README's coverage and tests-passed badge
-  files, and an HTML report is uploaded beside it. On a same-repository pull request that changes
-  more than Markdown or `docs/`, it also posts the pull request's figures next to `main`'s in one
-  comment, edited in place on every push. The floor itself is enforced by `ci.yml`'s test job.
+- `coverage.yml`: the test suite's coverage as data after every green CI run on a push to `main`: the
+  `coverage-badge` artifact holds the README's coverage and tests-passed badge files, and an HTML
+  report goes beside it. Both are what `ci.yml`'s test job measured, in that run or in the pull request
+  run it reused; only when neither has them, and on a dispatch, does the suite run here. On a
+  same-repository pull request that changes more than Markdown or `docs/`, it runs the suite and posts
+  the figures next to `main`'s in one comment, edited in place on every push. The floor itself is
+  enforced by `ci.yml`'s test job.
 - `pages.yml`: builds the [project site](https://ivylikethevine.github.io/instadroid/) with Jekyll
   from the repository root (`_config.yml`), fetches the newest `coverage-badge` artifact from `main`
   and serves it as `badges/coverage.json` and `badges/tests.json`, so no coverage service, token or
@@ -273,9 +262,9 @@ rather than restating it elsewhere.
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | a setting in compose or the app's environment                         | its commented default in `.env.example` (**enforced** by `docs_drift.py`), and [OPERATIONS.md](OPERATIONS.md) when it changes day-to-day operation |
 | a feed server route                                                   | `docs/openapi.json` via `export-openapi` (**enforced** by the test suite), and [FRESHRSS.md](FRESHRSS.md) if readers see it                        |
-| a new Instagram build checked on a device                             | [COMPATIBILITY.md](COMPATIBILITY.md)'s table, [PROFILES.md](PROFILES.md)'s Status, and a [RUNS.md](RUNS.md) entry                                  |
+| a new Instagram build checked on a device                             | [COMPATIBILITY.md](COMPATIBILITY.md)'s table, and a [RUNS.md](RUNS.md) entry                                                                       |
 | a redroid image tried                                                 | [COMPATIBILITY.md](COMPATIBILITY.md), including "Weighed and not shipped" when it's declined                                                       |
-| an incident on a real device                                          | an [INCIDENTS.md](INCIDENTS.md) write-up, and a short rule in [Running against a real device](#running-against-a-real-device) and `CLAUDE.md`      |
+| an incident on a real device                                          | an [INCIDENTS.md](INCIDENTS.md) write-up, and a short rule in [Running against a real device](#running-against-a-real-device)                      |
 | what a scrape does, as a user sees it                                 | the README's "How a scrape works"                                                                                                                  |
 | a CI job or workflow                                                  | [What CI runs](#what-ci-runs), and [TESTING.md](TESTING.md#what-ci-runs) if it runs tests                                                          |
 | the test harness, fixtures or the coverage floor                      | [TESTING.md](TESTING.md)                                                                                                                           |

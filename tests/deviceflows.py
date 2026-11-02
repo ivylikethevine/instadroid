@@ -1,22 +1,30 @@
 """Shared by the device-flow tests: synthetic screens, a FakeDevice wired up as a Home -> Following feed
-(feed_device) and seeded posts. Their fixture, fast_offline, is in conftest.py."""
+(feed_device). Their fixture, fast_offline, is in conftest.py."""
 
 import sqlite3
 import time
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime, timedelta
+from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from typing import NoReturn, TypedDict, Unpack
 
+import adbutils
 import pytest
+import uiautomator2 as u2
 from igprofiles.v424.selectors import SELECTORS
 from instadroid import (
     config,
+    device,
     diagnostics,
     parsing,
+    scrape,
+    uidevice,
 )
+from shared.sqlrows import SqlValue
 
 from tests.fakedevice import FakeDevice, Node, hierarchy, node
+from tests.support import fetch_row, row_dict
 
 SAVE_FAILURE_LOGCAT: Callable[[str], Path | None] = (
     diagnostics.save_failure_logcat
@@ -254,31 +262,12 @@ def feed_device_with_following(
     return d
 
 
+def top_card(d: FakeDevice) -> parsing.Post:
+    return parsing.parse_hierarchy(d.dump_hierarchy())[0]
+
+
 def top_card_id(d: FakeDevice) -> str:
-    return parsing.post_id(parsing.parse_hierarchy(d.dump_hierarchy())[0])
-
-
-def seed_post(
-    con: sqlite3.Connection,
-    pid: str,
-    username: str,
-    caption: str,
-    days_ago: int,
-    h: str | None = None,
-    url: str | None = None,
-    *,
-    now: datetime | None = None,
-    permalink_attempts: int = 0,
-) -> None:
-    """A photo post scraped, posted and last updated `days_ago` days before `now` (default: the current
-    time), stored under `pid` with hash `h` (default: `pid`)."""
-    ts: str = ((now or datetime.now(UTC)) - timedelta(days=days_ago)).isoformat()
-    con.execute(
-        "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash, url,"
-        " posted_at, updated_at, permalink_attempts) VALUES (?,?,?,?,?,NULL,?,?,?,?,?,?)",
-        (pid, username, "photo", "x", caption, ts, h or pid, url, ts, ts, permalink_attempts),
-    )
-    con.commit()
+    return parsing.post_id(top_card(d))
 
 
 class StopLoop(Exception):
@@ -296,3 +285,70 @@ def stop_after_first_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     monkeypatch.setattr(config, "TIME_DISTRIBUTION", "uniform")
     monkeypatch.setattr(config, "CONTROL_POLL_SECONDS", 10**9)  # one sleep call per wait, not 30s steps
     return sleeps
+
+
+def stop_at_first_run(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """main() skips its startup wait and raises StopLoop as its first run starts; the list gets one
+    entry per run started."""
+    started: list[int] = []
+
+    def no_startup_wait(con: sqlite3.Connection, now: datetime | None = None) -> float:
+        return 0.0
+
+    def run_recorded(con: sqlite3.Connection) -> NoReturn:
+        started.append(1)
+        raise StopLoop
+
+    monkeypatch.setattr(scrape, "_startup_wait_seconds", no_startup_wait)
+    monkeypatch.setattr(scrape, "run_recorded", run_recorded)
+    return started
+
+
+def scrape_returns(monkeypatch: pytest.MonkeyPatch, stats: scrape.RunStats) -> None:
+    def scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> scrape.RunStats:
+        return stats
+
+    monkeypatch.setattr(scrape, "scrape_once", scrape_once)
+
+
+def connect_returns(monkeypatch: pytest.MonkeyPatch, d: FakeDevice) -> None:
+    def connect() -> FakeDevice:
+        return d
+
+    monkeypatch.setattr(device, "connect_device", connect)
+
+
+def u2_connect_returns(monkeypatch: pytest.MonkeyPatch, d: FakeDevice) -> None:
+    """The adb and uiautomator2 connections connect_device() makes succeed, the latter returning `d`."""
+
+    def adb_connect(addr: str, timeout: float | None = None) -> None:
+        pass
+
+    def u2_connect(addr: str | None = None) -> FakeDevice:
+        return d
+
+    monkeypatch.setattr(adbutils.adb, "connect", adb_connect)
+    monkeypatch.setattr(u2, "connect", u2_connect)
+
+
+def recorded_run() -> dict[str, SqlValue]:
+    """The one row of the runs table, read after main() or run_recorded() closed their connection."""
+    con: sqlite3.Connection
+    with closing(sqlite3.connect(config.DB_PATH)) as con:
+        return row_dict(fetch_row(con.execute("SELECT * FROM runs")))
+
+
+def run_caps(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stories: int | None = None,
+    slides: int | None = None,
+    scrolls: int | None = None,
+) -> None:
+    """Cap a run's stories, carousel slides and scrolls; a cap not given keeps its setting."""
+    if stories is not None:
+        monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", stories)
+    if slides is not None:
+        monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", slides)
+    if scrolls is not None:
+        monkeypatch.setattr(config, "MAX_SCROLLS", scrolls)

@@ -370,6 +370,119 @@
         }
       }
     },
+    "/browse": {
+      "get": {
+        "summary": "Browse and search stored posts",
+        "description": "A plain-HTML page: the account list, or with `user` or `q`, matching posts newest first, `limit`\n(capped at 500) to a page.",
+        "operationId": "browse_browse_get",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One account's timeline.",
+              "title": "User"
+            },
+            "description": "One account's timeline."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Caption search: every word must match, each as a prefix of a caption word.",
+              "title": "Q"
+            },
+            "description": "Caption search: every word must match, each as a prefix of a caption word."
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The paging cursor's time, from the Older link.",
+              "title": "Before"
+            },
+            "description": "The paging cursor's time, from the Older link."
+          },
+          {
+            "name": "before_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The paging cursor's post, from the Older link.",
+              "title": "Before Id"
+            },
+            "description": "The paging cursor's post, from the Older link."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Scraper health",

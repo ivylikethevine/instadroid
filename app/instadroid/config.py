@@ -82,8 +82,8 @@ IG_PKG: str = "com.instagram.android"
 # Off (0/false/no) falls back to the original behavior: raise and require a manual `adb install`.
 IG_AUTO_INSTALL: bool = _flag("IG_AUTO_INSTALL", True)
 # On the first connect after a start, wait for Android to finish booting (up to BOOT_WAIT_SECONDS) and
-# tune the device the way scripts/tune-android.sh does (instadroid/tune.py): idempotent, one adb round
-# trip. Off (0/false/no) skips the tuning; the boot wait always runs.
+# tune the device (instadroid/tune.py): idempotent, one adb round trip. Off (0/false/no) skips the tuning;
+# the boot wait always runs, and `scraper.py tune` tunes regardless.
 TUNE_ON_CONNECT: bool = _flag("TUNE_ON_CONNECT", True)
 BOOT_WAIT_SECONDS: float = float(os.environ.get("BOOT_WAIT_SECONDS", "600"))
 # Force one Instagram version profile: a directory under igprofiles/ ("v424", or just "424"). Empty (the
@@ -148,9 +148,9 @@ BACKUP_KEEP: int = int(os.environ.get("BACKUP_KEEP", "7"))
 # histories for good, and no rename has been seen on a device yet. Needs FOLLOWING_REFRESH_DAYS.
 RENAME_AUTO_APPLY: bool = _flag("RENAME_AUTO_APPLY", False)
 MAX_STORIES_PER_RUN: int = int(os.environ.get("MAX_STORIES_PER_RUN", "10"))
-TIME_DISTRIBUTION: str = os.environ.get("TIME_DISTRIBUTION", "uniform")  # uniform | lognormal | daynight
+TIME_DISTRIBUTION: str = _choice("TIME_DISTRIBUTION", "uniform", ("uniform", "lognormal", "daynight"))
 # The device's timezone: DEVICE_TIMEZONE, else TZ (the zone the feeds show times in). Tuning applies it
-# to the device (tune.py, tune-android.sh), bare dates Instagram shows are read in it, and it's "local"
+# to the device (tune.py), bare dates Instagram shows are read in it, and it's "local"
 # for the daynight distribution below. Empty = the device's own timezone is left alone and both are
 # UTC. It should match where the account's network traffic appears to originate (README, "Staying
 # under the radar"), which is what DEVICE_TIMEZONE is for when that isn't TZ.
@@ -200,11 +200,9 @@ SCRAPE_ON_STARTUP: bool = _flag("SCRAPE_ON_STARTUP", False)
 # reader fetches now instead of waiting out its own poll interval or per-feed TTL (see
 # scrape._ping_readers()). A URL is a GET unless prefixed with its method, `PUT:` or `POST:`, and a
 # user:password in it is sent as basic auth: FreshRSS's "online cron" actualize URL as is, Miniflux's
-# `PUT:https://user:password@host/v1/feeds/refresh`. Empty disables. FRESHRSS_REFRESH_URL, the older
-# single-URL name, is still read and joins the list. Both carry tokens, so both take a _FILE variant.
-READER_REFRESH_URLS: list[str] = (
-    env_secret("READER_REFRESH_URLS").split() + env_secret("FRESHRSS_REFRESH_URL").split()
-)
+# `PUT:https://user:password@host/v1/feeds/refresh`. Empty disables. It carries tokens, so it takes a
+# _FILE variant.
+READER_REFRESH_URLS: list[str] = env_secret("READER_REFRESH_URLS").split()
 # Selector-drift canary: every run records cards/screen, the share of cards with a real (non-weak)
 # caption, and the share flagged "complete" (see parsing.is_weak_caption(), post["complete"]). If a run's
 # numbers fall below SELECTOR_DRIFT_THRESHOLD of the rolling average over the last
@@ -239,7 +237,4 @@ ALERT_TIMEOUT: float = float(os.environ.get("ALERT_TIMEOUT", "10.0"))
 # monitor), so a monitor that stops hearing from it notices a host, Docker or scraper that's down, which
 # ALERT_URL can't report. Bounded by ALERT_TIMEOUT. It can carry a token, so HEARTBEAT_URL_FILE works too.
 HEARTBEAT_URL: str = env_secret("HEARTBEAT_URL")
-# Per refresh URL; FRESHRSS_REFRESH_TIMEOUT is the older name.
-READER_REFRESH_TIMEOUT: float = float(
-    os.environ.get("READER_REFRESH_TIMEOUT") or os.environ.get("FRESHRSS_REFRESH_TIMEOUT") or "10.0"
-)
+READER_REFRESH_TIMEOUT: float = float(os.environ.get("READER_REFRESH_TIMEOUT") or "10.0")  # per refresh URL

@@ -10,6 +10,11 @@ Back presses and swipes use per-screen maps: `back`, `scroll` (swipe up) and `hs
 swipe down does nothing. Screens in `foreign` are outside Instagram: app_current() reports the
 launcher there, and app_start() brings Instagram back on `launch_screen`.
 
+A device can misbehave on request: `shell_replies` maps a command prefix to the output it gets or the
+exception it raises ("" matches every command, the first match wins), `fail_taps` lists nodes (by
+content-desc or the id after the slash) whose next tap raises LookupError, once per entry, and
+`clipboard_error` makes reading the clipboard raise.
+
 Only the slice of the uiautomator2 API the scraper actually uses is implemented.
 """
 
@@ -92,10 +97,14 @@ def _matches(n: etree._Element, key: str, value: str | list[str]) -> bool:
         raise NotImplementedError(f"selector {key!r} with a list value")
     if key == "text":
         return (n.get("text") or "") == value
-    if key == "textContains":
-        return value in (n.get("text") or "")
+    if key == "textContains":  # ignores case, as UiSelector's does
+        return value.lower() in (n.get("text") or "").lower()
+    if key == "textMatches":
+        return re.fullmatch(value, n.get("text") or "") is not None
     if key == "description":
         return (n.get("content-desc") or "") == value
+    if key == "descriptionMatches":
+        return re.fullmatch(value, n.get("content-desc") or "") is not None
     if key == "resourceIdMatches":
         return re.fullmatch(value, n.get("resource-id") or "") is not None
     if key == "className":
@@ -164,6 +173,8 @@ class FakeDevice:
         launch_blocked: bool = False,
         installed: Iterable[str] = (IG_PKG,),
         ig_version: str = "445.0.0.45.83",
+        shell_replies: dict[str, str | Exception] | None = None,
+        fail_taps: Iterable[str] = (),
     ) -> None:
         self.screens = {"launcher": hierarchy(), **screens}
         self.screen = start
@@ -175,8 +186,11 @@ class FakeDevice:
             "ro.build.version.sdk": "33",
             "ro.product.name": "redroid",
         }
-        self.clipboard: str | None = ""
+        self._clipboard: str | None = ""
         self.clipboard_settable: bool = True  # False: set_clipboard() changes nothing
+        self.clipboard_error: Exception | None = None
+        self.shell_replies: dict[str, str | Exception] = shell_replies or {}
+        self.fail_taps: list[str] = list(fail_taps)
         self.history = [start]
         self.taps: list[tuple[int, int]] = []
         self.presses: list[str] = []
@@ -195,6 +209,11 @@ class FakeDevice:
         return list(etree.fromstring(self.screens[self.screen].encode()).iter("node"))
 
     def tap(self, n: etree._Element) -> None:
+        label: str
+        for label in (n.get("content-desc") or "", (n.get("resource-id") or "").rpartition("/")[2]):
+            if label in self.fail_taps:
+                self.fail_taps.remove(label)
+                raise LookupError(f"node gone: {label}")
         if n.get("clip") is not None:
             self.clipboard = n.get("clip")
         self._go(n.get("goto") or None)
@@ -202,6 +221,16 @@ class FakeDevice:
     # --- uiautomator2 API ---------------------------------------------------------------------
     def __call__(self, **kwargs: str | list[str]) -> FakeSelector:
         return FakeSelector(self, kwargs)
+
+    @property
+    def clipboard(self) -> str | None:
+        if self.clipboard_error is not None:
+            raise self.clipboard_error
+        return self._clipboard
+
+    @clipboard.setter
+    def clipboard(self, text: str | None) -> None:
+        self._clipboard = text
 
     def set_clipboard(self, text: str, label: str | None = None) -> None:
         if self.clipboard_settable:
@@ -241,12 +270,19 @@ class FakeDevice:
     def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
         joined: str = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
         self.shell_calls.extend(joined.split("; "))  # one entry per command, as the device's sh runs them
+        prefix: str
+        reply: str | Exception
+        for prefix, reply in self.shell_replies.items():
+            if joined.startswith(prefix):
+                if isinstance(reply, Exception):
+                    raise reply
+                return Out(reply)
         if "resolve-activity" in joined:
             return Out(f"priority=0 preferredOrder=0\n{IG_PKG}/com.instagram.mainactivity.LauncherActivity")
         if joined.startswith("dumpsys package"):
             return Out(f"  Package [{IG_PKG}]\n    versionName={self.ig_version}\n")
         if joined.startswith("getprop "):
-            return Out(self.props.get(joined.split()[-1], ""))
+            return Out("\n".join(self.props.get(c.split()[-1], "") for c in joined.split("; ")))
         return Out("")
 
     def press(self, key: str) -> None:

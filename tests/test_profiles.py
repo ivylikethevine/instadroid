@@ -78,35 +78,36 @@ def _fake_profile_dir(
     monkeypatch.setattr(igprofiles.importlib, "import_module", import_module)
 
 
-def test_load_rejects_a_profile_whose_major_does_not_match_its_directory(
-    monkeypatch: pytest.MonkeyPatch,
+class _WrongMajor(BaseProfile):
+    major: int = 446
+    selectors: Selectors = ROOT.selectors
+
+
+class _ValidatedBelowMajor(BaseProfile):
+    major: int = 447
+    selectors: Selectors = ROOT.selectors
+    validated: tuple[str, ...] = ("446.0.0.49.77",)
+
+
+class _DeclaresNothing(BaseProfile):
+    notes: str = "declares nothing"
+
+
+@pytest.mark.parametrize(
+    ("profile_cls", "match"),
+    [
+        (_WrongMajor, "defines major=446, expected 447"),
+        (_ValidatedBelowMajor, "validated builds below 447: 446.0.0.49.77"),
+        (_DeclaresNothing, "v447 Profile is missing major, selectors"),
+        (None, r"must define Profile\(BaseProfile\)"),
+    ],
+    ids=["wrong_major", "validated_below_major", "no_major_or_selectors", "no_profile_class"],
+)
+def test_load_rejects_a_bad_profile_directory(
+    monkeypatch: pytest.MonkeyPatch, profile_cls: type[BaseProfile] | None, match: str
 ) -> None:
-    class Profile(BaseProfile):
-        major: int = 446
-        selectors: Selectors = ROOT.selectors
-
-    _fake_profile_dir(monkeypatch, "v447", Profile)
-    with pytest.raises(ValueError, match="defines major=446, expected 447"):
-        igprofiles.load("v447")
-
-
-def test_load_rejects_validated_builds_below_the_profile(monkeypatch: pytest.MonkeyPatch) -> None:
-    class Profile(BaseProfile):
-        major: int = 447
-        selectors: Selectors = ROOT.selectors
-        validated: tuple[str, ...] = ("446.0.0.49.77",)
-
-    _fake_profile_dir(monkeypatch, "v447", Profile)
-    with pytest.raises(ValueError, match="validated builds below 447: 446.0.0.49.77"):
-        igprofiles.load("v447")
-
-
-def test_load_rejects_a_profile_without_a_major_or_selectors(monkeypatch: pytest.MonkeyPatch) -> None:
-    class Profile(BaseProfile):
-        notes: str = "declares nothing"
-
-    _fake_profile_dir(monkeypatch, "v447", Profile)
-    with pytest.raises(ValueError, match="v447 Profile is missing major, selectors"):
+    _fake_profile_dir(monkeypatch, "v447", profile_cls)
+    with pytest.raises(ValueError, match=match):
         igprofiles.load("v447")
 
 
@@ -131,12 +132,6 @@ def test_selector_key_groups_index_their_declared_types() -> None:
         ROOT.selectors["media_ids"],
         ROOT.selectors["alt_kind"],
     )
-
-
-def test_load_rejects_a_directory_without_a_profile_class(monkeypatch: pytest.MonkeyPatch) -> None:
-    _fake_profile_dir(monkeypatch, "v447", None)
-    with pytest.raises(ValueError, match=r"must define Profile\(BaseProfile\)"):
-        igprofiles.load("v447")
 
 
 @pytest.mark.parametrize(
