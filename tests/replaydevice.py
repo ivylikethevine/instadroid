@@ -14,10 +14,10 @@ same direction; a selector tap, one with the same selector; a key press, the sam
 
 from pathlib import Path
 
-from devtools import jsonvalues
-from devtools.jsonvalues import JSON
 from instadroid import recording
 from lxml import etree
+from shared import jsonvalues
+from shared.jsonvalues import JSON
 
 from tests.fakedevice import IG_PKG, LAUNCHER_PKG, FakeDevice, FakeSelector
 

@@ -28,9 +28,10 @@ from igprofiles.base import Selectors
 from igprofiles.screens import id_matches
 from instadroid import parsing, versioning
 from lxml import etree
+from shared import jsonvalues
+from shared.jsonvalues import JSON
 
-from devtools import ROOT, jsonvalues
-from devtools.jsonvalues import JSON
+from devtools import ROOT
 
 # UI chrome that is the same for everyone; left out of the review list.
 _CHROME: re.Pattern[str] = re.compile(

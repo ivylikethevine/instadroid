@@ -7,42 +7,22 @@ time, mid-run included. scripts/diagnose.sh is the host-side counterpart, which 
 host's kernel log; this runs inside the app container."""
 
 import sqlite3
-import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime
 
 from shared import sqlrows
 from shared.errors import short_error
-from shared.timestamps import parse_iso
+from shared.runs import run_result, run_seconds
 
-from . import alerts, config, control, db, device, diagnostics, scrape, versioning
+from . import adbcli, alerts, config, control, db, device, diagnostics, scrape, versioning
 
 # Runs `adb -s ADB_ADDR <args>`, returns stdout or None on failure.
 type Adb = Callable[[list[str]], str | None]
 
 
-def adb_run(args: list[str]) -> str | None:
-    """`adb -s ADB_ADDR <args>` through the adb CLI (the uiautomator2 connection is often exactly what
-    failed); None when adb can't run or the device doesn't answer."""
-    try:
-        out: subprocess.CompletedProcess[str] = subprocess.run(
-            ["adb", "-s", config.ADB_ADDR, *args],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=config.LOGCAT_TIMEOUT,
-        )
-    except OSError, subprocess.TimeoutExpired:
-        return None
-    return out.stdout if out.returncode == 0 else None
-
-
 def _duration(run: sqlite3.Row) -> str:
-    start: datetime | None = parse_iso(sqlrows.cell_str(run, "started_at"))
-    end: datetime | None = parse_iso(sqlrows.cell_str(run, "finished_at"))
-    if not start or not end:
-        return "?"
-    return f"{int((end - start).total_seconds()) // 60}m{int((end - start).total_seconds()) % 60:02d}s"
+    seconds: int | None = run_seconds(run)
+    return "?" if seconds is None else f"{seconds // 60}m{seconds % 60:02d}s"
 
 
 def _runs_section(con: sqlite3.Connection, now: datetime) -> list[str]:
@@ -52,11 +32,11 @@ def _runs_section(con: sqlite3.Connection, now: datetime) -> list[str]:
         return [*lines, "no runs recorded yet"]
     r: sqlite3.Row
     for r in rows:
-        error: str | None = sqlrows.cell_str(r, "error")
-        warning: str | None = sqlrows.cell_str(r, "warning") if sqlrows.has_column(r, "warning") else None
-        result: str = (
-            f"ERROR {short_error(error)}" if error else f"warn: {short_error(warning)}" if warning else "ok"
-        )
+        severity: str
+        result: str
+        severity, result = run_result(r)
+        if severity == "err":
+            result = f"ERROR {result}"
         peak: int | None = sqlrows.opt_int(r, "mem_peak_mb")
         lines.append(
             f"{(sqlrows.cell_str(r, 'started_at') or '?')[:16]}  {_duration(r):>7}  new={sqlrows.cell_int(r, 'new_posts') or 0}"
@@ -96,6 +76,23 @@ def _control_section(con: sqlite3.Connection) -> list[str]:
     return lines
 
 
+# The device section's questions, asked in one `adb shell`, each answer closed by a marker to split the
+# output on. Ending on the marker's `echo` keeps the exit status 0 (pidof fails when nothing is running,
+# and adb_run drops a failed command's output).
+DEVICE_ANSWER_END: str = "--end-of-answer--"
+DEVICE_QUERY: str = "; ".join(
+    f"{command}; echo {DEVICE_ANSWER_END}"
+    for command in (
+        "getprop sys.boot_completed",
+        "getprop ro.build.version.release",
+        "getprop ro.product.name",
+        f"dumpsys package {config.IG_PKG}",
+        f"pidof {config.IG_PKG}",
+        f"cat {' '.join(device.MEMORY_FILES)}",
+    )
+)
+
+
 def _device_section(adb: Adb) -> list[str]:
     lines: list[str] = ["== device =="]
     state: str | None = adb(["get-state"])
@@ -105,23 +102,19 @@ def _device_section(adb: Adb) -> list[str]:
             f"adb can't reach {config.ADB_ADDR} ({(state or 'no answer').strip()}): redroid still booting,"
             " or crashed before adb came up (scripts/diagnose.sh reads the host dmesg for that)",
         ]
-    booted: str = (adb(["shell", "getprop", "sys.boot_completed"]) or "").strip()
-    lines.append(f"adb: device, boot_completed={booted or '0'}")
-    props: str = adb(["shell", "getprop ro.build.version.release; getprop ro.product.name"]) or ""
+    answers: list[str] = [a.strip() for a in (adb(["shell", DEVICE_QUERY]) or "").split(DEVICE_ANSWER_END)]
+    booted: str
     release: str
-    _: str
     product: str
-    release, _, product = props.strip().partition("\n")
-    lines.append(f"Android {release or '?'} ({product.strip() or '?'})")
-    dumpsys: str = adb(["shell", "dumpsys", "package", config.IG_PKG]) or ""
-    version: str | None = next(
-        (t.split("=", 1)[1] for t in dumpsys.split() if t.startswith("versionName=")), None
-    )
-    running: str = (adb(["shell", "pidof", config.IG_PKG]) or "").strip()
+    dumpsys: str
+    running: str
+    memory: str
+    booted, release, product, dumpsys, running, memory = (*answers, *[""] * 6)[:6]
+    lines.append(f"adb: device, boot_completed={booted or '0'}")
+    lines.append(f"Android {release or '?'} ({product or '?'})")
+    version: str | None = device.parse_version_name(dumpsys)
     lines.append(f"Instagram: {version or 'not installed'}{' (running)' if running else ''}")
-    reading: device.MemoryReading | None = device.parse_memory(
-        adb(["shell", "cat", *device.MEMORY_FILES]) or ""
-    )
+    reading: device.MemoryReading | None = device.parse_memory(memory)
     if reading:  # the guard's accounting (file cache excluded), so it matches `peak=` above
         limit: str = f"{reading['max'] // 2**20} MiB" if reading["max"] is not None else "no limit"
         lines.append(
@@ -142,7 +135,7 @@ def _logcat_section(adb: Adb) -> list[str]:
     return lines + [f"{text.count(sig)}x {sig!r}\n   fix: {fix}" for sig, fix in found.items()]
 
 
-def report(con: sqlite3.Connection, adb: Adb = adb_run, now: datetime | None = None) -> str:
+def report(con: sqlite3.Connection, adb: Adb = adbcli.adb_run, now: datetime | None = None) -> str:
     """The whole report as text; `adb` is swapped out by the tests."""
     at: datetime = now or datetime.now(UTC)
     sections: list[list[str]] = [

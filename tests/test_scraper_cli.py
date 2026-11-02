@@ -1,48 +1,23 @@
 """scraper.py's subcommands, run the way `python scraper.py ...` runs them, with the device, the scrape and
 the installer replaced so nothing reaches a real device."""
 
-import runpy
 import sqlite3
-import subprocess
-import sys
 from pathlib import Path
-from typing import Unpack
 
 import igprofiles
 import pytest
-from devtools import ROOT
-from instadroid import config, db, device, diagnostics, install, navigation, scrape
+from instadroid import config, db, device, diagnostics, install, navigation, scrape, tune
 
-from tests.deviceflows import RunOptions
 from tests.fakedevice import FakeDevice
-from tests.support import record_run_ago
+from tests.support import fake_run, record_run_ago, run_scraper
 
-SCRAPER: str = str(ROOT / "app" / "scraper.py")
-
-
-def _run(monkeypatch: pytest.MonkeyPatch, *args: str) -> None:
-    monkeypatch.setattr(sys, "argv", ["scraper.py", *args])
-    runpy.run_path(SCRAPER, run_name="__main__")
-
-
-@pytest.fixture(autouse=True)
-def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDevice:
-    """A scratch database and debug directory, and a fake device for whatever connects."""
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "debug")
-    fake: FakeDevice = FakeDevice({"home": ""}, "home")
-
-    def connect() -> FakeDevice:
-        return fake
-
-    monkeypatch.setattr(device, "connect_device", connect)
-    return fake
+pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("scraper_cli")
 
 
 def test_profiles_lists_what_each_covers_and_the_default_install(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _run(monkeypatch, "profiles")
+    run_scraper(monkeypatch, "profiles")
     out: str = capsys.readouterr().out
     assert "v424" in out and "covers Instagram 424 and newer" in out
     assert (
@@ -59,7 +34,7 @@ def test_once_prints_the_run_and_exits_non_zero_when_it_failed(
         return {"new": 2, "metrics": {"new_stories": 1}}, None
 
     monkeypatch.setattr(scrape, "run_recorded", good)
-    _run(monkeypatch, "once")
+    run_scraper(monkeypatch, "once")
     assert "2 new posts, 1 new stories" in capsys.readouterr().out
 
     def bad(con: sqlite3.Connection) -> tuple[dict[str, int], Exception]:
@@ -67,7 +42,7 @@ def test_once_prints_the_run_and_exits_non_zero_when_it_failed(
 
     monkeypatch.setattr(scrape, "run_recorded", bad)
     with pytest.raises(SystemExit, match="run failed: RuntimeError"):
-        _run(monkeypatch, "once")
+        run_scraper(monkeypatch, "once")
 
 
 def test_once_refuses_past_the_daily_run_budget(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,15 +58,15 @@ def test_once_refuses_past_the_daily_run_budget(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(scrape, "run_recorded", run)
     with pytest.raises(SystemExit, match="1 runs already started in the last 24h"):
-        _run(monkeypatch, "once")
+        run_scraper(monkeypatch, "once")
     assert ran == []
     monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 0)
-    _run(monkeypatch, "once")
+    run_scraper(monkeypatch, "once")
     assert ran == [1]
 
 
 def test_login_stops_instagram_afterwards_even_when_it_raises(
-    monkeypatch: pytest.MonkeyPatch, isolated: FakeDevice, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     stopped: list[str] = []
 
@@ -106,11 +81,11 @@ def test_login_stops_instagram_afterwards_even_when_it_raises(
 
     monkeypatch.setattr(device, "force_stop", force_stop)
     monkeypatch.setattr(navigation, "ensure_logged_in", logged_in)
-    _run(monkeypatch, "login")
+    run_scraper(monkeypatch, "login")
     assert "logged in" in capsys.readouterr().out
     monkeypatch.setattr(navigation, "ensure_logged_in", challenge)
     with pytest.raises(RuntimeError):
-        _run(monkeypatch, "login")
+        run_scraper(monkeypatch, "login")
     assert stopped == [config.IG_PKG, config.IG_PKG]
 
 
@@ -124,12 +99,12 @@ def test_install_passes_the_version_and_rejects_extra_arguments(
         return version or "446.0.0.49.77"
 
     monkeypatch.setattr(install, "install_instagram_version", install_version)
-    _run(monkeypatch, "install")
-    _run(monkeypatch, "install", "444.0.0.46.85")
+    run_scraper(monkeypatch, "install")
+    run_scraper(monkeypatch, "install", "444.0.0.46.85")
     assert asked == [None, "444.0.0.46.85"]
     assert "installed: 444.0.0.46.85" in capsys.readouterr().out
     with pytest.raises(SystemExit):
-        _run(monkeypatch, "install", "1", "2")
+        run_scraper(monkeypatch, "install", "1", "2")
 
 
 def test_dump_saves_the_current_screen(
@@ -141,21 +116,16 @@ def test_dump_saves_the_current_screen(
         dumps.append(name)
 
     monkeypatch.setattr(diagnostics, "dump_debug", dump_debug)
-    _run(monkeypatch, "dump")
+    run_scraper(monkeypatch, "dump")
     assert dumps == ["manual"] and "wrote" in capsys.readouterr().out
 
 
 def test_doctor_prints_the_report_over_plain_adb(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    calls: list[list[str]] = []
-
-    def offline_run(cmd: list[str], **kwargs: Unpack[RunOptions]) -> subprocess.CompletedProcess[str]:
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error: device offline")
-
-    monkeypatch.setattr(subprocess, "run", offline_run)  # the report's only route to the device
-    _run(monkeypatch, "doctor")
+    # The report's only route to the device.
+    calls: list[list[str]] = fake_run(monkeypatch, returncode=1, stderr="error: device offline")
+    run_scraper(monkeypatch, "doctor")
     out: str = capsys.readouterr().out
     assert "\ninstadroid doctor " in out and "no runs recorded yet" in out  # after db_init's migration log
     assert f"adb can't reach {config.ADB_ADDR} (no answer)" in out
@@ -163,7 +133,7 @@ def test_doctor_prints_the_report_over_plain_adb(
 
 
 def test_compat_lists_run_pairs(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    _run(monkeypatch, "compat")
+    run_scraper(monkeypatch, "compat")
     assert "(no runs that reached the device yet)" in capsys.readouterr().out
     con: sqlite3.Connection = db.db_init()
     snapshot: device.DeviceSnapshot = {
@@ -173,7 +143,7 @@ def test_compat_lists_run_pairs(monkeypatch: pytest.MonkeyPatch, capsys: pytest.
     }
     db.record_run(con, "2026-09-14T10:00:00+00:00", "2026-09-14T10:05:00+00:00", 3, None, snapshot)
     con.close()
-    _run(monkeypatch, "compat")
+    run_scraper(monkeypatch, "compat")
     assert "erstt/redroid:13 | 446.0.0.49.77 | v424 | 1 (1, 1) | 3 | 2026-09-14" in capsys.readouterr().out
 
 
@@ -181,18 +151,18 @@ def test_lock_unlock_and_scrape_now_write_the_control_files(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     control_dir: Path = config.CONTROL_DIR
-    _run(monkeypatch, "lock")
+    run_scraper(monkeypatch, "lock")
     assert (control_dir / "manual.lock").exists() and "locked: True" in capsys.readouterr().out
-    _run(monkeypatch, "unlock")
+    run_scraper(monkeypatch, "unlock")
     assert not (control_dir / "manual.lock").exists() and "unlocked: False" in capsys.readouterr().out
-    _run(monkeypatch, "scrape-now")
+    run_scraper(monkeypatch, "scrape-now")
     assert (control_dir / "scrape-now").exists() and "requested" in capsys.readouterr().out
 
 
 def test_backup_writes_a_copy_now(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _run(monkeypatch, "backup")
+    run_scraper(monkeypatch, "backup")
     assert list(Path(config.BACKUP_DIR).glob("posts-*.sqlite"))
     assert "wrote" in capsys.readouterr().out
 
@@ -206,16 +176,16 @@ def test_rename_moves_history_and_checks_its_arguments(
     )
     con.commit()
     con.close()
-    _run(monkeypatch, "rename", "old_name", "new_name")
+    run_scraper(monkeypatch, "rename", "old_name", "new_name")
     assert "moved 1 post(s) from 'old_name' to 'new_name'" in capsys.readouterr().out
-    _run(monkeypatch, "rename", "--dismiss", "old_name", "new_name")
+    run_scraper(monkeypatch, "rename", "--dismiss", "old_name", "new_name")
     assert (
         "dismissed: 'old_name' is not 'new_name' (0 post(s) of evidence dropped)" in capsys.readouterr().out
     )
     with pytest.raises(SystemExit):
-        _run(monkeypatch, "rename", "only_one")
+        run_scraper(monkeypatch, "rename", "only_one")
     with pytest.raises(SystemExit):
-        _run(monkeypatch, "rename", "--dismiss", "only_one")
+        run_scraper(monkeypatch, "rename", "--dismiss", "only_one")
 
 
 def test_no_subcommand_runs_the_poll_loop(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -225,5 +195,35 @@ def test_no_subcommand_runs_the_poll_loop(monkeypatch: pytest.MonkeyPatch) -> No
         started.append(True)
 
     monkeypatch.setattr(scrape, "main", main)
-    _run(monkeypatch)
+    run_scraper(monkeypatch)
     assert started == [True]
+
+
+def test_an_unknown_subcommand_exits_without_starting_the_poll_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    started: list[bool] = []
+
+    def main() -> None:
+        started.append(True)
+
+    monkeypatch.setattr(scrape, "main", main)
+    with pytest.raises(SystemExit, match="unknown subcommand 'onc'"):
+        run_scraper(monkeypatch, "onc")
+    assert started == []
+
+
+def test_tune_forces_the_tuning_and_exits_non_zero_when_it_failed(
+    monkeypatch: pytest.MonkeyPatch, scraper_cli: FakeDevice
+) -> None:
+    forced: list[tuple[FakeDevice, bool]] = []
+    result: list[bool] = [True]
+
+    def tune_device(d: FakeDevice, *, force: bool = False) -> bool:
+        forced.append((d, force))
+        return result[0]
+
+    monkeypatch.setattr(tune, "tune_device", tune_device)
+    run_scraper(monkeypatch, "tune")
+    assert forced == [(scraper_cli, True)]
+    result[0] = False
+    with pytest.raises(SystemExit, match="tuning failed"):
+        run_scraper(monkeypatch, "tune")

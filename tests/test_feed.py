@@ -1,6 +1,5 @@
 """The subscription routes: /instagram.xml, /stories.xml, /users and /opml."""
 
-import sqlite3
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -8,9 +7,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from httpx2 import Response
+from shared.captions import caption_html
 from shared.timestamps import parse_iso
 
-from tests.feedclient import make_app, write_image
+from tests.feedclient import TWO_POSTS, feed_sql, make_app, write_image
 from tests.support import json_body
 
 
@@ -60,7 +60,6 @@ def test_user_filter_and_users_endpoint(tmp_path: Path, monkeypatch: pytest.Monk
     assert json_body(client.get("/users")) == ["other", "someone"]
     body: str = client.get("/instagram.xml", params={"user": "other"}).text
     assert "other" in body and "someone" not in body
-    assert json_body(client.get("/health")) == {"ok": True, "posts": 2}
 
 
 def test_limit_is_clamped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,11 +68,25 @@ def test_limit_is_clamped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert r.status_code == 200  # doesn't try to scan an unbounded result set
 
 
-def test_conditional_get_returns_304_when_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    client: TestClient = make_app(tmp_path, monkeypatch)
-    first: Response = client.get("/instagram.xml")
+# A stories table with nothing in it; the other routes get make_app's default seed.
+STORIES_TABLE: str = """
+CREATE TABLE stories (id TEXT PRIMARY KEY, username TEXT, media_file TEXT, kind TEXT,
+    posted_date TEXT, scraped_at TEXT);
+"""
+
+
+@pytest.mark.parametrize(
+    ("path", "seed"),
+    [("/instagram.xml", TWO_POSTS), ("/stories.xml", STORIES_TABLE), ("/opml", TWO_POSTS)],
+    ids=["instagram", "stories", "opml"],
+)
+def test_conditional_get_returns_304_when_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str, seed: str
+) -> None:
+    client: TestClient = make_app(tmp_path, monkeypatch, seed)
+    first: Response = client.get(path)
     etag: str = first.headers["etag"]
-    second: Response = client.get("/instagram.xml", headers={"if-none-match": etag})
+    second: Response = client.get(path, headers={"if-none-match": etag})
     assert second.status_code == 304
 
 
@@ -81,15 +94,12 @@ def test_per_user_etag_ignores_other_accounts_new_posts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
-    con: sqlite3.Connection = sqlite3.connect(tmp_path / "posts.sqlite")
-    con.execute("ALTER TABLE posts ADD COLUMN updated_at TEXT")
-    con.commit()
+    feed_sql(tmp_path, "ALTER TABLE posts ADD COLUMN updated_at TEXT")
     etag: str = client.get("/instagram.xml", params={"user": "someone"}).headers["etag"]
-    con.execute(
-        "INSERT INTO posts (id, username, scraped_at) VALUES ('NEW', 'other', '2026-09-09T00:00:00+00:00')"
+    feed_sql(
+        tmp_path,
+        "INSERT INTO posts (id, username, scraped_at) VALUES ('NEW', 'other', '2026-09-09T00:00:00+00:00')",
     )
-    con.commit()
-    con.close()
     cached: Response = client.get(
         "/instagram.xml", params={"user": "someone"}, headers={"if-none-match": etag}
     )
@@ -112,7 +122,6 @@ def test_etag_changes_when_a_row_is_merged_in_place(tmp_path: Path, monkeypatch:
     # A driver-side merge (e.g. a placeholder caption replaced once the real one renders) updates
     # an existing row without changing its scraped_at or the post count — updated_at is what the
     # ETag must key off, or FreshRSS keeps getting a 304 with the stale caption.
-    db: Path = tmp_path / "posts.sqlite"
     client: TestClient = make_app(
         tmp_path,
         monkeypatch,
@@ -131,13 +140,11 @@ def test_etag_changes_when_a_row_is_merged_in_place(tmp_path: Path, monkeypatch:
     etag: str = first.headers["etag"]
 
     # Simulate the merge: real caption in, updated_at bumped, scraped_at/count untouched.
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute(
+    feed_sql(
+        tmp_path,
         "UPDATE posts SET caption = 'The real caption', updated_at = '2026-09-08T12:00:00+00:00'"
-        " WHERE id = 'ABC'"
+        " WHERE id = 'ABC'",
     )
-    con.commit()
-    con.close()
 
     second: Response = client.get("/instagram.xml", headers={"if-none-match": etag})
     assert second.status_code == 200
@@ -170,16 +177,7 @@ def test_feed_renders_extra_carousel_slides_and_avatar(
     assert "http://feed.test/media/avatars/carouseler.jpg" in body
 
 
-def test_feed_falls_back_to_cover_image_without_media_or_accounts_tables(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    client: TestClient = make_app(tmp_path, monkeypatch)  # legacy schema: no media/accounts tables at all
-    body: str = client.get("/instagram.xml").text
-    assert "http://feed.test/media/ABC.jpg" in body
-
-
 def test_etag_changes_when_a_carousel_slide_is_added(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    db: Path = tmp_path / "posts.sqlite"
     client: TestClient = make_app(
         tmp_path,
         monkeypatch,
@@ -196,10 +194,7 @@ def test_etag_changes_when_a_carousel_slide_is_added(tmp_path: Path, monkeypatch
     first: Response = client.get("/instagram.xml")
     etag: str = first.headers["etag"]
 
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute("INSERT INTO media VALUES ('C1', 1, 'C1_1.jpg')")  # a slide captured on a later run
-    con.commit()
-    con.close()
+    feed_sql(tmp_path, "INSERT INTO media VALUES ('C1', 1, 'C1_1.jpg')")  # a slide captured on a later run
 
     second: Response = client.get("/instagram.xml", headers={"if-none-match": etag})
     assert second.status_code == 200
@@ -207,20 +202,19 @@ def test_etag_changes_when_a_carousel_slide_is_added(tmp_path: Path, monkeypatch
 
 
 def test_etag_changes_when_an_avatar_is_captured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    db: Path = tmp_path / "posts.sqlite"
     client: TestClient = make_app(tmp_path, monkeypatch)
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute("CREATE TABLE accounts (username TEXT PRIMARY KEY, avatar_file TEXT, avatar_updated_at TEXT)")
-    con.commit()
-    con.close()
+    feed_sql(
+        tmp_path,
+        "CREATE TABLE accounts (username TEXT PRIMARY KEY, avatar_file TEXT, avatar_updated_at TEXT)",
+    )
 
     first: Response = client.get("/instagram.xml")
     etag: str = first.headers["etag"]
 
-    con = sqlite3.connect(db)
-    con.execute("INSERT INTO accounts VALUES ('someone', 'avatars/someone.jpg', '2026-09-08T12:00:00+00:00')")
-    con.commit()
-    con.close()
+    feed_sql(
+        tmp_path,
+        "INSERT INTO accounts VALUES ('someone', 'avatars/someone.jpg', '2026-09-08T12:00:00+00:00')",
+    )
 
     second: Response = client.get("/instagram.xml", headers={"if-none-match": etag})
     assert second.status_code == 200
@@ -245,43 +239,29 @@ def test_per_user_etag_ignores_other_accounts_new_slides(
         """,
     )
     etag: str = client.get("/instagram.xml", params={"user": "someone"}).headers["etag"]
-    con: sqlite3.Connection = sqlite3.connect(tmp_path / "posts.sqlite")
-    con.execute("INSERT INTO media VALUES ('C2', 1, 'C2_1.jpg')")
-    con.commit()
+    feed_sql(tmp_path, "INSERT INTO media VALUES ('C2', 1, 'C2_1.jpg')")
     params: dict[str, str] = {"user": "someone"}
     headers: dict[str, str] = {"if-none-match": etag}
     assert client.get("/instagram.xml", params=params, headers=headers).status_code == 304
-    con.execute("INSERT INTO media VALUES ('C1', 1, 'C1_1.jpg')")
-    con.commit()
-    con.close()
+    feed_sql(tmp_path, "INSERT INTO media VALUES ('C1', 1, 'C1_1.jpg')")
     assert client.get("/instagram.xml", params=params, headers=headers).status_code == 200
 
 
-def _make_stories_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, TestClient]:
-    seed: str = """
-    CREATE TABLE stories (id TEXT PRIMARY KEY, username TEXT, media_file TEXT, kind TEXT,
-        posted_date TEXT, scraped_at TEXT);
-    """
-    return tmp_path / "posts.sqlite", make_app(tmp_path, monkeypatch, seed)
-
-
-def _add_story(db: Path, story_id: str, username: str, media_file: str, hours_ago: float = 1) -> None:
+def _add_story(tmp_path: Path, story_id: str, username: str, media_file: str, hours_ago: float = 1) -> None:
     scraped: str = (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat()
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute(
-        "INSERT INTO stories VALUES (?, ?, ?, 'story', ?, ?)",
-        (story_id, username, media_file, f"{hours_ago:g}h", scraped),
+    feed_sql(
+        tmp_path,
+        (
+            "INSERT INTO stories VALUES (?, ?, ?, 'story', ?, ?)",
+            (story_id, username, media_file, f"{hours_ago:g}h", scraped),
+        ),
     )
-    con.commit()
-    con.close()
 
 
 def test_stories_feed_lists_stored_stories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    db: Path
-    client: TestClient
-    db, client = _make_stories_db(tmp_path, monkeypatch)
-    _add_story(db, "s1", "alice", "stories/s1.jpg", hours_ago=1)
-    _add_story(db, "s2", "bob", "stories/s2.jpg", hours_ago=30)
+    client: TestClient = make_app(tmp_path, monkeypatch, STORIES_TABLE)
+    _add_story(tmp_path, "s1", "alice", "stories/s1.jpg", hours_ago=1)
+    _add_story(tmp_path, "s2", "bob", "stories/s2.jpg", hours_ago=30)
 
     body: str = client.get("/stories.xml").text
     assert "alice" in body
@@ -296,33 +276,18 @@ def test_stories_feed_empty_when_table_missing(tmp_path: Path, monkeypatch: pyte
     assert "<entry>" not in r.text
 
 
-def test_stories_feed_conditional_get_returns_304(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _: Path
-    client: TestClient
-    _, client = _make_stories_db(tmp_path, monkeypatch)
-    first: Response = client.get("/stories.xml")
-    etag: str = first.headers["etag"]
-    second: Response = client.get("/stories.xml", headers={"if-none-match": etag})
-    assert second.status_code == 304
-
-
 def test_stories_feed_etag_changes_when_a_story_is_removed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db: Path
-    client: TestClient
-    db, client = _make_stories_db(tmp_path, monkeypatch)
-    _add_story(db, "s1", "alice", "stories/s1.jpg")
+    client: TestClient = make_app(tmp_path, monkeypatch, STORIES_TABLE)
+    _add_story(tmp_path, "s1", "alice", "stories/s1.jpg")
 
     first: Response = client.get("/stories.xml")
     assert "alice" in first.text
     etag: str = first.headers["etag"]
 
     # Simulate the retention sweep removing the story (as _prune_expired_stories() eventually does).
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute("DELETE FROM stories WHERE id = 's1'")
-    con.commit()
-    con.close()
+    feed_sql(tmp_path, "DELETE FROM stories WHERE id = 's1'")
 
     second: Response = client.get("/stories.xml", headers={"if-none-match": etag})
     assert second.status_code == 200
@@ -365,14 +330,11 @@ def test_opml_can_leave_the_aggregate_feed_out(tmp_path: Path, monkeypatch: pyte
 
 def test_opml_escapes_and_quotes_unusual_usernames(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
-    db: Path = tmp_path / "posts.sqlite"
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute(
+    feed_sql(
+        tmp_path,
         "INSERT INTO posts VALUES ('w1', 'a & b', 'photo', 'now', '', NULL,"
-        " '2026-09-08T08:00:00+00:00', 'h3', NULL, NULL, NULL)"
+        " '2026-09-08T08:00:00+00:00', 'h3', NULL, NULL, NULL)",
     )
-    con.commit()
-    con.close()
 
     r: Response = client.get("/opml")
     root: ET.Element = ET.fromstring(r.text)  # raises if the & wasn't escaped into valid XML
@@ -392,16 +354,6 @@ def test_opml_without_a_posts_table_returns_an_empty_category_instead_of_500(
     outlines: list[ET.Element] = root.findall("./body/outline/outline")
     xml_urls: set[str | None] = {o.get("xmlUrl") for o in outlines}
     assert xml_urls == {"http://feed.test/instagram.xml", "http://feed.test/stories.xml"}
-
-
-def test_opml_conditional_get_returns_304_when_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    client: TestClient = make_app(tmp_path, monkeypatch)
-    first: Response = client.get("/opml")
-    etag: str = first.headers["etag"]
-    second: Response = client.get("/opml", headers={"if-none-match": etag})
-    assert second.status_code == 304
 
 
 def test_parse_iso_handles_naive_and_malformed_timestamps() -> None:
@@ -428,21 +380,18 @@ def test_feed_images_carry_their_dimensions_and_a_thumbnail(
     assert '<media:thumbnail url="http://feed.test/media/ABC.jpg" height="1350" width="1080"/>' in body
 
 
-def test_feed_image_without_a_file_on_disk_has_no_dimensions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    client: TestClient = make_app(tmp_path, monkeypatch)  # ABC.jpg is in the DB but was never written
-    body: str = unescaped(client.get("/instagram.xml").text)
-    assert '<img src="http://feed.test/media/ABC.jpg" alt="" />' in body
-    assert '<media:thumbnail url="http://feed.test/media/ABC.jpg"/>' in body
-
-
-def test_feed_image_that_is_not_an_image_has_no_dimensions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "stored",
+    [None, b"not a jpeg at all"],  # in the DB but never written; truncated by a crash mid-write
+    ids=["no-file", "not-an-image"],
+)
+def test_feed_image_without_a_readable_file_has_no_dimensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stored: bytes | None
 ) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
-    (tmp_path / "media").mkdir(exist_ok=True)
-    (tmp_path / "media" / "ABC.jpg").write_bytes(b"not a jpeg at all")  # truncated by a crash mid-write
+    if stored is not None:
+        (tmp_path / "media").mkdir(exist_ok=True)
+        (tmp_path / "media" / "ABC.jpg").write_bytes(stored)
     body: str = unescaped(client.get("/instagram.xml").text)
     assert '<img src="http://feed.test/media/ABC.jpg" alt="" />' in body
     assert '<media:thumbnail url="http://feed.test/media/ABC.jpg"/>' in body
@@ -475,11 +424,9 @@ def test_video_titles_get_a_play_marker(tmp_path: Path, monkeypatch: pytest.Monk
 def test_stories_feed_images_carry_dimensions_and_a_thumbnail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db: Path
-    client: TestClient
-    db, client = _make_stories_db(tmp_path, monkeypatch)
+    client: TestClient = make_app(tmp_path, monkeypatch, STORIES_TABLE)
     write_image(tmp_path / "media" / "stories" / "s1.webp", (1080, 1900))
-    _add_story(db, "s1", "alice", "stories/s1.webp")
+    _add_story(tmp_path, "s1", "alice", "stories/s1.webp")
     body: str = client.get("/stories.xml").text
     assert 'width="1080" height="1900"' in unescaped(body)
     assert (
@@ -489,9 +436,8 @@ def test_stories_feed_images_carry_dimensions_and_a_thumbnail(
 
 def test_caption_mentions_and_hashtags_become_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     make_app(tmp_path, monkeypatch)
-    from feedserver import render
 
-    html: str = render.caption_html("Dinner with @jane.doe and @bob_99. #foodie #2024 #année\nnext line")
+    html: str = caption_html("Dinner with @jane.doe and @bob_99. #foodie #2024 #année\nnext line")
     assert '<a href="https://www.instagram.com/jane.doe/">@jane.doe</a>' in html
     assert '<a href="https://www.instagram.com/bob_99/">@bob_99</a>.' in html  # full stop left outside
     assert '<a href="https://www.instagram.com/explore/tags/foodie/">#foodie</a>' in html
@@ -504,24 +450,20 @@ def test_caption_links_leave_emails_urls_and_entities_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     make_app(tmp_path, monkeypatch)
-    from feedserver import render
 
-    html: str = render.caption_html("mail me@example.com, see example.com/#top, C# and it's <b>@x</b>")
+    html: str = caption_html("mail me@example.com, see example.com/#top, C# and it's <b>@x</b>")
     assert "me@example.com" in html and "instagram.com/example" not in html
     assert "tags/top" not in html and "tags/C" not in html
     assert "it&#x27;s" in html and "tags/x27" not in html  # an escaped quote is not a hashtag
     assert "&lt;b&gt;" in html and "<b>" not in html  # still escaped around a link
     assert '<a href="https://www.instagram.com/x/">@x</a>' in html
     too_long: str = "@" + "a" * 31
-    assert render.caption_html(too_long) == too_long
+    assert caption_html(too_long) == too_long
 
 
 def test_feed_entry_links_caption_mentions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
-    con: sqlite3.Connection = sqlite3.connect(tmp_path / "posts.sqlite")
-    con.execute("UPDATE posts SET caption = 'shot by @photog #sunset' WHERE id = 'ABC'")
-    con.commit()
-    con.close()
+    feed_sql(tmp_path, "UPDATE posts SET caption = 'shot by @photog #sunset' WHERE id = 'ABC'")
     body: str = client.get("/instagram.xml").text
     content: str = unescaped(body)
     assert '<a href="https://www.instagram.com/photog/">@photog</a>' in content

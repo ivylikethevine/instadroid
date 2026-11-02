@@ -1,14 +1,14 @@
 import pytest
 from devtools.export_openapi import SPEC
-from devtools.jsonvalues import JSON, as_json
+from shared.jsonvalues import JSON, as_json, loads
 
-from tests.support import json_at, parse_json
+from tests.support import json_at
 
 # That docs/openapi.json matches the routes is tests/test_scripts_cli.py's `export-openapi --check`.
 
 
 def test_spec_describes_the_json_endpoints() -> None:
-    spec: JSON = parse_json(SPEC.read_text())
+    spec: JSON = loads(SPEC.read_text())
     health: JSON = json_at(spec, "paths", "/health", "get", "responses")
     assert json_at(health, "200", "content", "application/json", "schema") == {
         "$ref": "#/components/schemas/Health"

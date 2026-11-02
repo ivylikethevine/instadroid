@@ -1,11 +1,11 @@
 name: Publish
 
 # A pushed v* tag releases the app image unattended: gate (signed tag on main, green CI) -> build and push
-# by digest -> scan that digest (fixable HIGH/CRITICAL blocks) -> publish: promote it to its release tags
+# by digest -> scan that digest (a fixable HIGH/CRITICAL finding warns) -> publish: promote it to its release tags
 # with signed provenance and SBOM attestations -> release: the GitHub Release, with the deploy bundle
 # (.github/scripts/release_bundle.sh) attached. Each job needs the one before it (and any whose outputs it
-# reads), and a job whose need failed or was skipped is skipped too, so nothing is promoted unless gate,
-# build and scan all passed. Only the jobs that push, attest or upload take
+# reads), and a job whose need failed or was skipped is skipped too, so nothing is promoted unless gate and
+# build passed and the scan ran. Only the jobs that push, attest or upload take
 # write permissions, each scoped to what it does.
 #
 # A manual dispatch is a rehearsal of the same pipeline on the dispatched commit: gate (green CI only),
@@ -199,14 +199,16 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: ./.github/scripts/smoke-test.sh "$IMAGE@$DIGEST"
 
-  # The gate between build and publish: trivy over the exact digest publish would tag. A fixable HIGH or
-  # CRITICAL finding fails this job, so nothing reaches a release tag; the fix is usually a rebuild or a
-  # base-image repin. An accepted finding goes in .trivyignore, with a reason and an expiry date.
+  # Trivy over the exact digest publish would tag. A fixable HIGH or CRITICAL finding is a warning, in the
+  # Security tab and on the release page, and the release ships: the tag alone decides a release. A scan
+  # that didn't run fails this job, and a re-run clears that.
   scan:
     name: scan release image (trivy)
     needs: build
     runs-on: ubuntu-26.04
     timeout-minutes: 15
+    outputs:
+      found: ${{ steps.scan.outputs.found }}
     permissions:
       contents: read # checkout: setup-tool, trivy_scan.sh and .trivyignore
       packages: read # pull the pushed digest
@@ -240,23 +242,14 @@ jobs:
         with:
           sarif_file: ${{ runner.temp }}/trivy.sarif
           category: release-image
-      - name: Block publish on a fixable finding
-        if: steps.scan.outputs.found != '0'
-        env:
-          IMAGE: ${{ needs.build.outputs.image }}
-          DIGEST: ${{ needs.build.outputs.digest }}
-        run: |
-          {
-            echo "### Fixable HIGH/CRITICAL vulnerabilities block this release"
-            echo
-            echo "In \`$IMAGE@$DIGEST\`, also in the Security tab under \`release-image\`."
-            echo
-            echo '````'
-            cat "$RUNNER_TEMP/trivy.txt"
-            echo '````'
-          } >>"$GITHUB_STEP_SUMMARY"
-          echo "::error title=trivy::fixable HIGH/CRITICAL vulnerabilities in the release image; nothing was tagged"
-          exit 1
+      - if: steps.scan.outputs.found != '0'
+        uses: ./.github/actions/advisory-note
+        with:
+          title: trivy
+          warning-body: fixable HIGH/CRITICAL vulnerabilities in the release image; it ships, and the release page says so
+          heading: Fixable HIGH/CRITICAL vulnerabilities in this release
+          body: In `${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}`, also in the Security tab under `release-image`.
+          report-file: ${{ runner.temp }}/trivy.txt
 
   publish:
     name: promote and tag release image (imagetools + attest)
@@ -377,7 +370,7 @@ jobs:
   release:
     name: create GitHub Release (release notes)
     # No `if:` of its own: publish is skipped on a rehearsal, so this is too, and it never creates a release.
-    needs: [gate, build, publish]
+    needs: [gate, build, scan, publish]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -431,13 +424,13 @@ jobs:
       # non-prerelease tag and this one, so a release
       # covers its release candidates too. Only when no pull request wrote a note does that generated list
       # stand in. A squash-merged dev -> main pull request is the only one main's history shows, so its own
-      # section carries the notes of everything it brings (CONTRIBUTING).
-      - name: Write the release notes
+      # section carries the notes of everything it brings (CONTRIBUTING). continue-on-error: a failure here
+      # costs the page this list, never the release.
+      - id: changes
+        name: Work out what changed
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          IMAGE: ${{ needs.build.outputs.image }}
-          DIGEST: ${{ needs.publish.outputs.digest }}
-          TAGS: ${{ needs.publish.outputs.tags }}
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
@@ -450,61 +443,77 @@ jobs:
             printf '%s\n' "$TAG"
           } | sort -uV | awk -v tag="$TAG" '$0 == tag { print prev; exit } { prev = $0 }')"
           echo "previous non-prerelease tag: ${prev:-none}"
+          echo "previous=$prev" >>"$GITHUB_OUTPUT"
           args=(-f "tag_name=$TAG")
           [ -z "$prev" ] || args+=(-f "previous_tag_name=$prev")
           gh api -X POST "repos/$REPO/releases/generate-notes" "${args[@]}" --jq .body >"$RUNNER_TEMP/generated.md"
           .github/scripts/release_notes.sh "$REPO" "$RUNNER_TEMP/generated.md" >"$RUNNER_TEMP/changed.md"
+      - name: Write the release notes
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          TAGS: ${{ needs.publish.outputs.tags }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PREV: ${{ steps.changes.outputs.previous }}
+          CHANGES: ${{ steps.changes.outcome }}
+          FOUND: ${{ needs.scan.outputs.found }}
+        run: |
+          set -euo pipefail
+          [ "$CHANGES" = success ] || echo "::warning title=release notes::couldn't work out what changed; the release ships without all of that list"
           {
             if [ -s "$RUNNER_TEMP/changed.md" ]; then
               cat "$RUNNER_TEMP/changed.md"
-              [ -z "$prev" ] || printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$REPO" "$prev" "$TAG"
-            else
-              echo "No merged pull request wrote a release note; the merged pull requests:"
-              echo
+              [ -z "$PREV" ] || printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$REPO" "$PREV" "$TAG"
+            elif [ -s "$RUNNER_TEMP/generated.md" ]; then
+              printf 'The merged pull requests:\n\n'
               cat "$RUNNER_TEMP/generated.md"
+            else
+              echo "The list of what changed couldn't be generated for this release."
             fi
-            echo
-            echo "## Images"
-            echo
-            echo "| Image | Tag | Digest |"
-            echo "|---|---|---|"
+            if [ "$FOUND" != 0 ]; then
+              printf '\n## Known vulnerabilities\n\nThe scan found fixable HIGH or CRITICAL vulnerabilities in this image: see the [Security tab](https://github.com/%s/security/code-scanning?query=tool%%3ATrivy), category release-image.\n' "$REPO"
+            fi
+            printf '\n## Images\n\n| Image | Tag | Digest |\n|---|---|---|\n'
             while IFS= read -r tag; do
               [ -n "$tag" ] || continue
               echo "| \`$IMAGE\` | \`${tag#*:}\` | \`$DIGEST\` |"
-            done <<< "$TAGS"
-            echo
-            echo "### Pull"
-            echo
-            echo '```bash'
-            echo "docker pull $IMAGE@$DIGEST"
-            first_tag=$(head -n1 <<< "$TAGS")
-            echo "# or by tag: docker pull $first_tag"
-            echo '```'
-            echo
-            echo "### Run it without a clone"
-            echo
-            echo "\`instadroid-$TAG.tar.gz\` below holds \`docker-compose.yml\` with this image pinned by"
-            echo "digest, \`.env.example\` and the host scripts. No checkout or image build needed:"
-            echo
-            echo '```bash'
-            echo "tar -xzf instadroid-$TAG.tar.gz && cd instadroid-$TAG"
-            echo "cp .env.example .env    # fill in IG_USERNAME / IG_PASSWORD"
-            echo "scripts/preflight.sh    # checks the host before redroid's first start"
-            echo "docker compose pull && docker compose up -d"
-            echo '```'
-            echo
-            echo "### Verify provenance"
-            echo
-            echo '```bash'
-            echo "gh attestation verify oci://$IMAGE@$DIGEST --repo $REPO"
-            echo '```'
-            echo
-            echo "### Verify the SBOM"
-            echo
-            echo '```bash'
-            echo "gh attestation verify oci://$IMAGE@$DIGEST --repo $REPO \\"
-            echo "  --predicate-type https://spdx.dev/Document/v2.3"
-            echo '```'
+            done <<<"$TAGS"
+            first_tag="$(head -n1 <<<"$TAGS")"
+            cat <<EOF
+
+          ### Pull
+
+          \`\`\`bash
+          docker pull $IMAGE@$DIGEST
+          # or by tag: docker pull $first_tag
+          \`\`\`
+
+          ### Run it without a clone
+
+          \`instadroid-$TAG.tar.gz\` below holds \`docker-compose.yml\` with this image pinned by
+          digest, \`.env.example\` and the host scripts. No checkout or image build needed:
+
+          \`\`\`bash
+          tar -xzf instadroid-$TAG.tar.gz && cd instadroid-$TAG
+          cp .env.example .env    # fill in IG_USERNAME / IG_PASSWORD
+          scripts/preflight.sh    # checks the host before redroid's first start
+          docker compose pull && docker compose up -d
+          \`\`\`
+
+          ### Verify provenance
+
+          \`\`\`bash
+          gh attestation verify oci://$IMAGE@$DIGEST --repo $REPO
+          \`\`\`
+
+          ### Verify the SBOM
+
+          \`\`\`bash
+          gh attestation verify oci://$IMAGE@$DIGEST --repo $REPO \\
+            --predicate-type https://spdx.dev/Document/v2.3
+          \`\`\`
+          EOF
           } >"$RUNNER_TEMP/release-notes.md"
           cat "$RUNNER_TEMP/release-notes.md" >>"$GITHUB_STEP_SUMMARY"
       # gh, which the runner already has, rather than a release action (zizmor: superfluous-actions). A

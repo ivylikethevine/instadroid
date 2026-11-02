@@ -16,6 +16,11 @@ class _Row(Protocol):
     def __getitem__(self, key: int | str, /) -> object: ...
 
 
+def column_names(con: sqlite3.Connection, table: str) -> set[str]:
+    """The columns `table` has now, none if it doesn't exist. The table name comes from code, never input."""
+    return {must_str(r, "name") for r in fetch_all(con.execute(f"PRAGMA table_info({table})"))}
+
+
 def _item(row: _Row, key: int | str) -> object:
     """row[key] through sqlite3.Row's own lookup (case-insensitive for a name, done in C): IndexError
     for a column the row doesn't have."""

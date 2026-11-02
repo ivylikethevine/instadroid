@@ -1,12 +1,13 @@
 import random
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 from igprofiles.screens import id_matches
 from instadroid import capture, common, config, device, parsing, stories, versioning
+from PIL import Image, ImageFile
 
 from tests.fakedevice import hierarchy, node
 from tests.support import FEED_445
@@ -193,13 +194,17 @@ def test_header_regex(desc: str, expected: tuple[str, str, str | None, str] | No
         assert (m.group("user"), m.group("kind"), m.group("place"), m.group("date")) == expected
 
 
-def test_clean_caption_strips_user_and_more() -> None:
-    assert parsing.clean_caption("user Hello there… more", "user") == "Hello there…"
-    assert parsing.clean_caption("user Short", "user") == "Short"
-
-
-def test_clean_caption_strips_nbsp() -> None:
-    assert parsing.clean_caption("user Hello there", "user") == "Hello there"
+@pytest.mark.parametrize(
+    ("raw", "cleaned"),
+    [
+        ("user Hello there… more", "Hello there…"),
+        ("user Short", "Short"),
+        ("user Hello there", "Hello there"),
+    ],
+    ids=["more", "short", "nbsp"],
+)
+def test_clean_caption_strips_user_more_and_nbsp(raw: str, cleaned: str) -> None:
+    assert parsing.clean_caption(raw, "user") == cleaned
 
 
 def test_permalink_regex_accepts_reel_and_p_with_tracking_params() -> None:
@@ -251,9 +256,9 @@ def test_parse_posted_at_reads_a_bare_date_as_a_day_on_the_device() -> None:
     )
 
 
-def test_parse_posted_at_rejects_unknown_formats() -> None:
-    assert parsing.parse_posted_at("", NOW) is None
-    assert parsing.parse_posted_at("sometime", NOW) is None
+@pytest.mark.parametrize("text", ["", "sometime", "Someday 5", "February 30", "April 31, 2024"])
+def test_parse_posted_at_rejects_unknown_formats_and_impossible_dates(text: str) -> None:
+    assert parsing.parse_posted_at(text, NOW) is None
 
 
 def test_parse_posted_at_leap_day_rollback_into_non_leap_year_does_not_raise() -> None:
@@ -280,33 +285,49 @@ def test_same_post_merges_a_weak_caption_placeholder_into_the_real_row() -> None
     assert parsing.same_post(weak, real_precise) is True  # or vice versa
 
 
-def test_same_post_refuses_two_real_differing_captions_same_day() -> None:
-    a: parsing.PostIdentity = {"username": "club", "caption": "First post of the day", "posted_at": NOW}
-    b: parsing.PostIdentity = {
-        "username": "club",
-        "caption": "Second, unrelated post",
-        "posted_at": NOW,
-        "posted_at_precision": 86400,
-    }
-    assert parsing.same_post(a, b) is False
-
-
-def test_same_post_respects_time_tolerance() -> None:
-    from datetime import timedelta
-
-    existing: parsing.PostIdentity = {"username": "u", "caption": "", "posted_at": NOW}
-    far: parsing.PostIdentity = {
-        "username": "u",
-        "caption": "",
-        "posted_at": NOW - timedelta(hours=3),
-        "posted_at_precision": 60,
-    }
-    assert parsing.same_post(existing, far) is False  # 3h apart, 60s-precision candidate
-
-
-def test_same_post_requires_matching_username() -> None:
-    a: parsing.PostIdentity = {"username": "alice", "caption": "", "posted_at": NOW}
-    b: parsing.PostIdentity = {"username": "bob", "caption": "", "posted_at": NOW, "posted_at_precision": 60}
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        (
+            {"username": "club", "caption": "First post of the day", "posted_at": NOW},
+            {
+                "username": "club",
+                "caption": "Second, unrelated post",
+                "posted_at": NOW,
+                "posted_at_precision": 86400,
+            },
+        ),
+        (  # 3h apart, 60s-precision candidate
+            {"username": "u", "caption": "", "posted_at": NOW},
+            {
+                "username": "u",
+                "caption": "",
+                "posted_at": NOW - timedelta(hours=3),
+                "posted_at_precision": 60,
+            },
+        ),
+        (
+            {"username": "alice", "caption": "", "posted_at": NOW},
+            {"username": "bob", "caption": "", "posted_at": NOW, "posted_at_precision": 60},
+        ),
+        (
+            {"username": "u", "caption": "", "posted_at": NOW},
+            {"username": "u", "caption": "", "posted_at": None},
+        ),
+        (
+            {"username": "u", "caption": "", "posted_at": None},
+            {"username": "u", "caption": "", "posted_at": NOW},
+        ),
+    ],
+    ids=[
+        "two-real-captions-same-day",
+        "outside-the-time-tolerance",
+        "different-usernames",
+        "candidate-undated",
+        "existing-undated",
+    ],
+)
+def test_same_post_refuses(a: parsing.PostIdentity, b: parsing.PostIdentity) -> None:
     assert parsing.same_post(a, b) is False
 
 
@@ -376,39 +397,35 @@ def test_parse_story_tray_empty_when_tray_not_on_screen() -> None:
     assert parsing.parse_story_tray("<hierarchy><node /></hierarchy>") == []
 
 
-def test_capture_story_media_returns_none_for_malformed_bounds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from PIL import Image
-
+@pytest.fixture
+def story_frame(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Image.Image:
+    """A frame to capture, with MEDIA_DIR at tmp_path."""
     monkeypatch.setattr(config, "MEDIA_DIR", tmp_path)
-    img: Image.Image = Image.new("RGB", (200, 400), "red")
-
-    assert stories.capture_story_media(img, "not-bounds", 0, "tmp") is None
-    assert stories.capture_story_media(img, None, 0, "tmp") is None
+    return Image.new("RGB", (200, 400), "red")
 
 
-def test_capture_story_media_returns_none_when_clip_leaves_too_little_height(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("bounds", "clip_top"),
+    [
+        ("not-bounds", 0),
+        (None, 0),
+        ("[0,0][100,150]", 0),
+        ("[0,0][200,400]", 250),  # 150 rows of body
+    ],
+    ids=["malformed-bounds", "no-bounds", "short-bounds", "clip-leaves-too-little-height"],
+)
+def test_capture_story_media_returns_none_without_a_usable_body(
+    story_frame: Image.Image, bounds: str | None, clip_top: int
 ) -> None:
-    from PIL import Image
-
-    monkeypatch.setattr(config, "MEDIA_DIR", tmp_path)
-    img: Image.Image = Image.new("RGB", (200, 400), "red")
-
-    assert stories.capture_story_media(img, "[0,0][100,150]", 0, "tmp") is None
-    assert stories.capture_story_media(img, "[0,0][200,400]", 250, "tmp") is None  # 150 rows of body
+    assert stories.capture_story_media(story_frame, bounds, clip_top, "tmp") is None
 
 
 def test_capture_story_media_saves_the_whole_frame_under_a_stories_subdirectory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, story_frame: Image.Image
 ) -> None:
-    from PIL import Image, ImageFile
-
-    monkeypatch.setattr(config, "MEDIA_DIR", tmp_path)
-    img: Image.Image = Image.new("RGB", (200, 400), "red")
-
-    saved: tuple[Path, int] | None = stories.capture_story_media(img, "[0,20][200,400]", 70, "tmpstory")
+    saved: tuple[Path, int] | None = stories.capture_story_media(
+        story_frame, "[0,20][200,400]", 70, "tmpstory"
+    )
 
     assert saved == (tmp_path / "stories" / "tmpstory.webp", 50)  # the header overlay covers 50 rows
     stored: ImageFile.ImageFile
@@ -416,23 +433,35 @@ def test_capture_story_media_saves_the_whole_frame_under_a_stories_subdirectory(
         assert stored.size == (200, 380)  # nothing above the body is cut off
 
 
-def test_carousel_count_parses_slide_total() -> None:
-    assert parsing.carousel_count("Photo 1 of 7 by Other User, 317 likes, 10 comments") == 7
-    assert parsing.carousel_count("Video 3 of 3 by X") == 3
+@pytest.mark.parametrize(
+    ("alt", "count"),
+    [
+        ("Photo 1 of 7 by Other User, 317 likes, 10 comments", 7),
+        ("Video 3 of 3 by X", 3),
+        ("Reel by Someone Nice, Liked by a_friend and others", 1),  # not a carousel
+        ("", 1),
+    ],
+)
+def test_carousel_count_is_the_slide_total_or_one(alt: str, count: int) -> None:
+    assert parsing.carousel_count(alt) == count
 
 
-def test_carousel_count_defaults_to_one_for_non_carousel_alt() -> None:
-    assert parsing.carousel_count("Reel by Someone Nice, Liked by a_friend and others") == 1
-    assert parsing.carousel_count("") == 1
-
-
-def test_safe_filename_accepts_plausible_handles() -> None:
-    assert common.safe_filename("some.user_92") == "some.user_92"
-
-
-@pytest.mark.parametrize("bad", ["../etc/passwd", "..", ".", "", "has space", "has/slash"])
-def test_safe_filename_rejects_unsafe_input(bad: str) -> None:
-    assert common.safe_filename(bad) is None
+@pytest.mark.parametrize(
+    ("name", "safe"),
+    [
+        ("some.user_92", "some.user_92"),
+        ("../etc/passwd", None),
+        ("..", None),
+        (".", None),
+        ("", None),
+        ("has space", None),
+        ("has/slash", None),
+    ],
+)
+def test_safe_filename_accepts_plausible_handles_and_rejects_unsafe_input(
+    name: str, safe: str | None
+) -> None:
+    assert common.safe_filename(name) == safe
 
 
 def test_avatar_bounds_crops_a_square_inside_the_header() -> None:
@@ -453,21 +482,23 @@ def test_avatar_bounds_returns_none_for_missing_or_malformed_bounds(bad: str) ->
     assert capture._avatar_bounds(bad) is None
 
 
-def test_in_quiet_hours_respects_the_configured_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "DAYNIGHT_QUIET_START", 0)
-    monkeypatch.setattr(config, "DAYNIGHT_QUIET_END", 6)
-    assert device._in_quiet_hours(datetime(2026, 1, 1, 3, tzinfo=UTC)) is True  # 3am: quiet
-    assert device._in_quiet_hours(datetime(2026, 1, 1, 14, tzinfo=UTC)) is False  # 2pm: not quiet
-    assert device._in_quiet_hours(datetime(2026, 1, 1, 6, tzinfo=UTC)) is False  # end is exclusive
-
-
-def test_in_quiet_hours_wraps_past_midnight(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A window like 22:00-06:00 has start > end and must wrap around midnight.
-    monkeypatch.setattr(config, "DAYNIGHT_QUIET_START", 22)
-    monkeypatch.setattr(config, "DAYNIGHT_QUIET_END", 6)
-    assert device._in_quiet_hours(datetime(2026, 1, 1, 23, tzinfo=UTC)) is True
-    assert device._in_quiet_hours(datetime(2026, 1, 1, 2, tzinfo=UTC)) is True
-    assert device._in_quiet_hours(datetime(2026, 1, 1, 12, tzinfo=UTC)) is False
+@pytest.mark.parametrize(
+    ("start", "end", "hour", "quiet"),
+    [
+        (0, 6, 3, True),
+        (0, 6, 14, False),
+        (0, 6, 6, False),  # end is exclusive
+        (22, 6, 23, True),  # start > end wraps around midnight
+        (22, 6, 2, True),
+        (22, 6, 12, False),
+    ],
+)
+def test_in_quiet_hours_respects_the_configured_window(
+    monkeypatch: pytest.MonkeyPatch, start: int, end: int, hour: int, quiet: bool
+) -> None:
+    monkeypatch.setattr(config, "DAYNIGHT_QUIET_START", start)
+    monkeypatch.setattr(config, "DAYNIGHT_QUIET_END", end)
+    assert device._in_quiet_hours(datetime(2026, 1, 1, hour, tzinfo=UTC)) is quiet
 
 
 def test_in_quiet_hours_uses_device_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -478,14 +509,9 @@ def test_in_quiet_hours_uses_device_timezone(monkeypatch: pytest.MonkeyPatch) ->
     assert device._in_quiet_hours(datetime(2026, 1, 1, 2, tzinfo=UTC)) is False
 
 
-def test_sample_duration_uniform_stays_within_bounds() -> None:
-    for _ in range(200):
-        v: float = device.sample_duration(1.0, 3.0)
-        assert 1.0 <= v <= 3.0
-
-
-def test_sample_duration_lognormal_stays_within_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "TIME_DISTRIBUTION", "lognormal")
+@pytest.mark.parametrize("distribution", ["uniform", "lognormal"])
+def test_sample_duration_stays_within_bounds(monkeypatch: pytest.MonkeyPatch, distribution: str) -> None:
+    monkeypatch.setattr(config, "TIME_DISTRIBUTION", distribution)
     for _ in range(200):
         v: float = device.sample_duration(1.0, 3.0)
         assert 1.0 <= v <= 3.0
@@ -528,17 +554,6 @@ def test_bounds_helpers_reject_malformed_bounds() -> None:
     assert common.bounds_center("[0,0][10,20]") == (5, 10)
     assert common.bounds_bottom_right("[0,0][100,200]") == (90, 190)
     assert common.bounds_center("nope") is None and common.bounds_bottom_right(None) is None
-
-
-@pytest.mark.parametrize("text", ["Someday 5", "February 30", "April 31, 2024"])
-def test_parse_posted_at_rejects_impossible_dates(text: str) -> None:
-    assert parsing.parse_posted_at(text, NOW) is None
-
-
-def test_same_post_needs_a_time_on_both_sides() -> None:
-    dated: parsing.PostIdentity = {"username": "u", "caption": "", "posted_at": NOW}
-    undated: parsing.PostIdentity = {"username": "u", "caption": "", "posted_at": None}
-    assert parsing.same_post(dated, undated) is False and parsing.same_post(undated, dated) is False
 
 
 @pytest.mark.parametrize(

@@ -3,7 +3,7 @@
 import re
 import sqlite3
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
@@ -23,6 +23,15 @@ class CapturedStory(TypedDict):
     posted_date: str
     path: Path  # the saved crop, under a temporary name until it's stored
     body_top: int  # rows of the crop above its body, the part a story is identified by
+
+
+class _ViewerRead(TypedDict):
+    """What _read_viewer() finds on a story viewer's screen."""
+
+    media_bounds: str | None
+    clip_top: int  # 0 without a header shadow node
+    posted_date: str  # the timestamp node's text, else the age the header shows
+    masks: list[str | None]  # bounds of the header's avatar and texts
 
 
 @versioned
@@ -103,10 +112,9 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
     if not point:
         return None
     d.click(*point)
-    if not d(resourceIdMatches=f".*:id/{SELECTORS['story_viewer_id']}").exists(timeout=5):
+    if not device.by_id(d, "story_viewer_id").exists(timeout=5):
         log(f"WARN: story for {item['username']} didn't open; skipping")
-        d.press("back")
-        device.human_pause(1, 1.5)
+        _step_back(d)
         return None
     xml: str = d.dump_hierarchy()
     nodes: list[tuple[str, etree._Element]] = [
@@ -116,8 +124,7 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
     if not any(id_matches(rid, SELECTORS["story_viewer_id"]) for rid, _ in nodes):
         log(f"WARN: story for {item['username']} closed before it could be read; dump saved")
         diagnostics.dump_debug(d, f"story_{common.safe_filename(item['username']) or 'unknown'}", xml=xml)
-        d.press("back")
-        device.human_pause(1, 1.5)
+        _step_back(d)
         return None
     img: Image.Image = d.screenshot()
     if _brightness(img) < DARK_FRAME_MEAN:  # possibly a video story's fade-in: look once more
@@ -125,8 +132,27 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
         if _brightness(retake) > _brightness(img):
             img = retake
     diagnostics.capture_screen(d, "story_viewer", xml, image=img)
-    d.press("back")  # off the device from here on; cropping/saving below never risks the timer
-    device.human_pause(1, 1.5)
+    _step_back(d)  # off the device from here on; cropping/saving below never risks the timer
+    viewer: _ViewerRead = _read_viewer(nodes)
+    saved: tuple[Path, int] | None = capture_story_media(
+        img,
+        viewer["media_bounds"],
+        viewer["clip_top"],
+        f"tmp_{item['username']}_{int(time.time() * 1000)}",
+        viewer["masks"],
+    )
+    if not saved:
+        return None
+    return {
+        "username": item["username"],
+        "posted_date": viewer["posted_date"],
+        "path": saved[0],
+        "body_top": saved[1],
+    }
+
+
+def _read_viewer(nodes: list[tuple[str, etree._Element]]) -> _ViewerRead:
+    """What a story viewer's (resource-id, node) pairs say about the frame on screen."""
     media_bounds: str | None
     clip_top: int | None
     media_bounds = clip_top = None
@@ -155,17 +181,31 @@ def capture_story(d: uidevice.Device, item: parsing.StoryItem) -> CapturedStory 
                     masks.append((text if row is None or row is n else row).get("bounds"))
                     if not header_age and _STORY_AGE.match(text.get("text") or ""):
                         header_age = text.get("text") or ""
-    saved: tuple[Path, int] | None = capture_story_media(
-        img, media_bounds, clip_top or 0, f"tmp_{item['username']}_{int(time.time() * 1000)}", masks
-    )
-    if not saved:
-        return None
     return {
-        "username": item["username"],
+        "media_bounds": media_bounds,
+        "clip_top": clip_top or 0,
         "posted_date": posted_date or header_age,
-        "path": saved[0],
-        "body_top": saved[1],
+        "masks": masks,
     }
+
+
+def _reach_home(d: uidevice.Device, recover: Callable[[uidevice.Device], None]) -> bool:
+    """Whether the Home feed is showing, with up to three `recover` attempts to get it there."""
+    for _ in range(3):
+        if navigation.on_home_feed(d):
+            return True
+        recover(d)
+    return False
+
+
+def _step_back(d: uidevice.Device) -> None:
+    d.press("back")
+    device.human_pause(1, 1.5)
+
+
+def _relaunch(d: uidevice.Device) -> None:
+    device.launch_app(d)
+    device.human_pause(2, 3)
 
 
 @versioned
@@ -176,12 +216,7 @@ def scrape_stories(d: uidevice.Device, con: sqlite3.Connection) -> int:
     the DB only afterwards: a blank frame, or one that looks like a story stored in the last day
     (_find_story_duplicate()), is discarded. That check, and the id, read the crop's body, below the
     header overlay."""
-    for _ in range(3):
-        if navigation.on_home_feed(d):
-            break
-        d.press("back")
-        device.human_pause(1, 1.5)
-    else:
+    if not _reach_home(d, _step_back):
         log("WARN: could not reach the Home feed for stories; skipping this run")
         diagnostics.capture_screen(d, "home_feed", failure=True)
         return 0
@@ -196,52 +231,52 @@ def scrape_stories(d: uidevice.Device, con: sqlite3.Connection) -> int:
             # this item's now-stale tray coordinates against whatever's currently on screen would be
             # a shot in the dark, so recover onto Home first.
             log("WARN: not on the Home feed any more; recovering before the next story")
-            for _ in range(3):
-                if navigation.on_home_feed(d):
-                    break
-                device.launch_app(d)
-                device.human_pause(2, 3)
-            else:
+            if not _reach_home(d, _relaunch):
                 log("WARN: could not recover the Home feed; stopping story capture for this run")
                 break
         captured: CapturedStory | None = capture_story(d, item)
-        if not captured:
-            continue
-        path: Path
-        username: str
-        path, username = captured["path"], captured["username"]
-        img: ImageFile.ImageFile
-        with Image.open(path) as img:
-            body: Image.Image = img.crop((0, captured["body_top"], img.width, img.height)).convert("RGB")
-        blank: bool = _is_blank_frame(body)
-        phash: str = _dhash(body)
-        if blank or _find_story_duplicate(con, username, phash):
-            log(f"story for {username}: {'blank frame' if blank else 'already stored'}; discarding")
-            path.unlink(missing_ok=True)
-            continue
-        digest: str = common.digest(body.tobytes())
-        cur: sqlite3.Cursor = con.execute(
-            "INSERT OR IGNORE INTO stories (id, username, media_file, kind, posted_date, scraped_at, phash)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (
-                digest,
-                username,
-                f"stories/{digest}{path.suffix}",
-                "story",
-                captured["posted_date"],
-                datetime.now(UTC).isoformat(),
-                phash,
-            ),
-        )
-        con.commit()
-        if cur.rowcount:
-            path.rename(config.MEDIA_DIR / "stories" / f"{digest}{path.suffix}")
+        if captured and _store_story(con, captured):
             new += 1
-            log(f"new story: {username}")
-        else:
-            path.unlink(missing_ok=True)  # byte-identical to one already stored
     navigation.open_target_feed(d)
     return new
+
+
+def _store_story(con: sqlite3.Connection, captured: CapturedStory) -> bool:
+    """File a captured frame under its content hash. A blank frame, a duplicate of a stored story, or
+    a byte-identical one is discarded instead. True when it was stored."""
+    path: Path
+    username: str
+    path, username = captured["path"], captured["username"]
+    img: ImageFile.ImageFile
+    with Image.open(path) as img:
+        body: Image.Image = img.crop((0, captured["body_top"], img.width, img.height)).convert("RGB")
+    blank: bool = _is_blank_frame(body)
+    phash: str = _dhash(body)
+    if blank or _find_story_duplicate(con, username, phash):
+        log(f"story for {username}: {'blank frame' if blank else 'already stored'}; discarding")
+        path.unlink(missing_ok=True)
+        return False
+    digest: str = common.digest(body.tobytes())
+    cur: sqlite3.Cursor = con.execute(
+        "INSERT OR IGNORE INTO stories (id, username, media_file, kind, posted_date, scraped_at, phash)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (
+            digest,
+            username,
+            f"stories/{digest}{path.suffix}",
+            "story",
+            captured["posted_date"],
+            datetime.now(UTC).isoformat(),
+            phash,
+        ),
+    )
+    con.commit()
+    if not cur.rowcount:
+        path.unlink(missing_ok=True)  # byte-identical to one already stored
+        return False
+    path.rename(config.MEDIA_DIR / "stories" / f"{digest}{path.suffix}")
+    log(f"new story: {username}")
+    return True
 
 
 # Max differing bits (of 64) for two story crops to count as the same frame. Re-captures of one

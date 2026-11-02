@@ -9,7 +9,7 @@ library alone (the project's Python, 3.14, but none of its dependencies and no a
 - links: a page the Pages site publishes doesn't link relatively into a path the site leaves out
   (the root _config.yml's `exclude:`, and any dot-path); those links need a github.com URL.
 
-A script rather than a test under tests/: ci.yml's docs job, which runs on every pull request, calls
+A script rather than a test under tests/: ci.yml's `Quick lint`, which runs on every pull request, calls
 it through scripts/check.sh, while the Python jobs skip Markdown-only changes.
 
 Usage: .github/scripts/docs_drift.py [env|contents|links]...   (no argument: all three)"""

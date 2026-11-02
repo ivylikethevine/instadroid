@@ -31,13 +31,6 @@ def _basic(user: str, password: str) -> dict[str, str]:
     return {"Authorization": "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()}
 
 
-@pytest.fixture(autouse=True)
-def no_token_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A FEED_TOKEN in the developer's own environment would otherwise leak into make_app()."""
-    monkeypatch.delenv("FEED_TOKEN", raising=False)
-    monkeypatch.delenv("FEED_TOKEN_FILE", raising=False)
-
-
 def test_serving_beyond_localhost_without_a_token_is_warned_about(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

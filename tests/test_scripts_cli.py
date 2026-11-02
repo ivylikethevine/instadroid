@@ -2,7 +2,6 @@
 new_profile's subcommands, with anything that would touch docker or a device replaced."""
 
 import runpy
-import subprocess
 import sys
 import types
 from collections.abc import Sequence
@@ -12,50 +11,40 @@ import igprofiles
 import pytest
 from devtools import check_new_builds, export_openapi, new_profile, promote_dump, resource_ids
 
-from tests.support import FEED_445
+from tests.profilecli import decline, host_state
+from tests.support import FEED_445, fake_run
 
 
 @pytest.mark.parametrize(
-    ("module", "argument", "output"),
-    [
-        (new_profile, "--help", "usage: "),
-        (promote_dump, "--help", "usage: "),
-        (check_new_builds, "--help", "usage: "),
-        (export_openapi, "--help", "usage: "),
-        (resource_ids, "--help", "usage: "),
-    ],
+    "module",
+    [new_profile, promote_dump, check_new_builds, export_openapi, resource_ids],
     ids=["new_profile", "promote_dump", "check_new_builds", "export_openapi", "resource_ids"],
 )
 def test_each_tool_runs_as_a_script(
     module: types.ModuleType,
-    argument: str,
-    output: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Run as `python -m devtools.<tool> ...`, the `__main__` block hands the command line to main() and
     exits with its return code (--help exits 0 from argparse)."""
-    monkeypatch.delenv("FEED_TOKEN", raising=False)
-    monkeypatch.setattr(sys, "argv", [module.__name__, argument])
+    monkeypatch.setattr(sys, "argv", [module.__name__, "--help"])
     exit_info: pytest.ExceptionInfo[SystemExit]
     with pytest.raises(SystemExit) as exit_info:
         runpy.run_path(str(module.__file__), run_name="__main__")
     assert exit_info.value.code == 0
-    assert capsys.readouterr().out.startswith(output)
+    assert capsys.readouterr().out.startswith("usage: ")
 
 
 # --- export_openapi -----------------------------------------------------------------------------
 
 
-def test_export_openapi_check_passes_on_the_committed_spec(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FEED_TOKEN", raising=False)
+def test_export_openapi_check_passes_on_the_committed_spec() -> None:
     assert export_openapi.main(["--check"]) == 0
 
 
 def test_export_openapi_writes_and_detects_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.delenv("FEED_TOKEN", raising=False)
     spec: Path = tmp_path / "docs" / "openapi.json"
     spec.parent.mkdir()
     monkeypatch.setattr(export_openapi, "ROOT", tmp_path)
@@ -132,17 +121,6 @@ def test_promote_dump_main_exits_with_the_scrubbing_error(monkeypatch: pytest.Mo
 # --- new_profile --------------------------------------------------------------------------------
 
 
-def _host(**changes: bool | str | int) -> new_profile.HostState:
-    state: new_profile.HostState = new_profile.HostState(
-        redroid_running=True, app_running=False, redroid_mem="1.0GiB / 3GiB", host_available_mib=8000
-    )
-    key: str
-    value: bool | str | int
-    for key, value in changes.items():
-        setattr(state, key, value)
-    return state
-
-
 def test_read_host_state_asks_docker_and_proc(monkeypatch: pytest.MonkeyPatch) -> None:
     answers: dict[str, str] = {"ig-redroid": "true", "ig-app": "false"}
 
@@ -175,39 +153,27 @@ def test_restore_refuses_without_a_device_and_installs_the_default_build(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     def no_redroid() -> new_profile.HostState:
-        return _host(redroid_running=False, redroid_mem="")
-
-    def decline(prompt: str) -> bool:
-        return False
+        return host_state(redroid_running=False, redroid_mem="")
 
     monkeypatch.setattr(new_profile, "read_host_state", no_redroid)
     assert new_profile.restore(yes=True) == 1
     assert "redroid isn't running" in capsys.readouterr().out
 
-    ran: list[list[str]] = []
-
-    def run(cmd: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-        ran.append(list(cmd))
-        return subprocess.CompletedProcess(list(cmd), 0)
-
-    monkeypatch.setattr(new_profile, "read_host_state", _host)
-    monkeypatch.setattr(new_profile.subprocess, "run", run)
+    ran: list[list[str]] = fake_run(monkeypatch)
+    monkeypatch.setattr(new_profile, "read_host_state", host_state)
     monkeypatch.setattr(new_profile, "_confirm", decline)
     assert new_profile.restore() == 1 and not ran  # declined
     assert new_profile.restore(yes=True) == 0
     assert ran[0][-2:] == ["install", igprofiles.DEFAULT_BUILD]
 
 
+@pytest.mark.usefixtures("dev_dirs")
 def test_new_profile_main_dispatches_and_reports_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def dev_dir(build: str) -> Path:
-        return tmp_path / build.split(".")[0]
-
     def app_running() -> new_profile.HostState:
-        return _host(app_running=True)
+        return host_state(app_running=True)
 
-    monkeypatch.setattr(new_profile, "dev_dir", dev_dir)
     assert new_profile.main(["check", "445.0.0.45.83"]) == 1  # nothing captured
     assert "No captured screens" in capsys.readouterr().out
     assert new_profile.main(["promote", "445.0.0.45.83"]) == 1

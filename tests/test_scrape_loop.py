@@ -11,7 +11,6 @@ from typing import NoReturn
 import adbutils
 import igprofiles
 import pytest
-import uiautomator2 as u2
 from instadroid import (
     alerts,
     backup,
@@ -34,26 +33,33 @@ from tests.deviceflows import (
     CAPTION,
     TOP_URL,
     StopLoop,
+    connect_returns,
     feed_device,
     following_screen,
-    seed_post,
+    recorded_run,
+    run_caps,
+    scrape_returns,
     stop_after_first_sleep,
+    stop_at_first_run,
     top_card_id,
+    u2_connect_returns,
 )
 from tests.fakedevice import FakeDevice, Node, node
-from tests.support import V424, UrlResponse, fetch_row, record_run_ago, row_dict
+from tests.support import V424, fetch_row, insert_post, record_run_ago, record_urlopen, row_dict
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
 
 def test_scrape_once_end_to_end(fast_offline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 3)
+    run_caps(monkeypatch, slides=3)
     monkeypatch.setattr(config, "STOP_AFTER_SEEN", 1)
     media: Path = fast_offline / "media"
     con: sqlite3.Connection = db.db_init()
     d: FakeDevice = feed_device()
     old_card: parsing.Post = parsing.parse_hierarchy(d.screens["older"])[0]
-    seed_post(con, "OLD1", "old_user", "Old caption", 2, h=parsing.post_id(old_card))
+    insert_post(
+        con, "OLD1", username="old_user", caption="Old caption", days_old=2, h=parsing.post_id(old_card)
+    )
 
     stats: scrape.RunStats = scrape.scrape_once(d, con)
 
@@ -112,14 +118,12 @@ def test_scrape_once_end_to_end(fast_offline: Path, monkeypatch: pytest.MonkeyPa
 def test_scrape_once_without_permalinks_falls_back_to_hash_ids_and_merges_a_placeholder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(config, "MAX_SCROLLS", 2)
+    run_caps(monkeypatch, stories=0, slides=1, scrolls=2)
     monkeypatch.setattr(config, "PERMALINK_RETRIES", 1)
     monkeypatch.setattr(config, "SHARE_TAP_TRIES", 1)
     con: sqlite3.Connection = db.db_init()
     # Stored earlier, before the caption rendered: same author and day, placeholder caption.
-    seed_post(con, "placeholder", "someone_nice", "Reel by Someone Nice", 3)
+    insert_post(con, "placeholder", username="someone_nice", caption="Reel by Someone Nice", days_old=3)
     d: FakeDevice = feed_device(top_share="", other_share="")
     d.scroll = {}  # scrolling shows nothing new: only the two cards above are in play
 
@@ -142,11 +146,9 @@ def test_scrape_once_without_permalinks_falls_back_to_hash_ids_and_merges_a_plac
 def test_scrape_once_drops_a_permalink_that_belongs_to_another_account(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    run_caps(monkeypatch, stories=0, slides=1, scrolls=1)
     con: sqlite3.Connection = db.db_init()
-    seed_post(con, "TOP123", "someone_else", "Unrelated", 10, h="unrelated")
+    insert_post(con, "TOP123", username="someone_else", caption="Unrelated", days_old=10, h="unrelated")
     d: FakeDevice = feed_device()
     # A clipboard that can't be emptied: the link read may be an earlier copy landing late.
     d.clipboard, d.clipboard_settable = "https://www.instagram.com/p/EARLIER/", False
@@ -161,11 +163,11 @@ def test_scrape_once_drops_a_permalink_that_belongs_to_another_account(
 
 
 def test_scrape_once_treats_an_edited_caption_as_the_same_post(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    run_caps(monkeypatch, stories=0, slides=1, scrolls=1)
     con: sqlite3.Connection = db.db_init()
-    seed_post(con, "TOP123", "someone_nice", "Caption before the edit", 3, h="old-hash")
+    insert_post(
+        con, "TOP123", username="someone_nice", caption="Caption before the edit", days_old=3, h="old-hash"
+    )
     d: FakeDevice = feed_device()
 
     stats: scrape.RunStats = scrape.scrape_once(d, con)
@@ -178,18 +180,9 @@ def test_scrape_once_treats_an_edited_caption_as_the_same_post(monkeypatch: pyte
     assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts WHERE username='someone_nice'")) == 1
 
 
-def fake_adb_connect(addr: str, timeout: float | None = None) -> None:
-    pass
-
-
 def test_connect_device(monkeypatch: pytest.MonkeyPatch) -> None:
     dev: FakeDevice = feed_device()
-    monkeypatch.setattr(adbutils.adb, "connect", fake_adb_connect)
-
-    def fake_u2_connect(addr: str | None = None) -> FakeDevice:
-        return dev
-
-    monkeypatch.setattr(u2, "connect", fake_u2_connect)
+    u2_connect_returns(monkeypatch, dev)
     booted: list[str] = []
 
     def fake_wait(addr: str, timeout: float) -> bool:
@@ -211,12 +204,7 @@ def test_connect_device_warns_about_an_installed_version_nobody_has_validated(
     dev: FakeDevice = feed_device()
     dev.ig_version = "999.0.0.1.1"
     monkeypatch.setattr(config, "IG_PROFILE", "")
-    monkeypatch.setattr(adbutils.adb, "connect", fake_adb_connect)
-
-    def fake_u2_connect(addr: str | None = None) -> FakeDevice:
-        return dev
-
-    monkeypatch.setattr(u2, "connect", fake_u2_connect)
+    u2_connect_returns(monkeypatch, dev)
     device.connect_device()
     assert versioning.PROFILE.name == igprofiles.available()[-1]  # the newest profile covers it
     assert (versioning.PROFILE_WARNING or "").startswith(
@@ -225,8 +213,7 @@ def test_connect_device_warns_about_an_installed_version_nobody_has_validated(
 
 
 def test_scrape_once_reports_the_profile_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    run_caps(monkeypatch, stories=0, scrolls=1)
     monkeypatch.setattr(
         versioning, "PROFILE_WARNING", "Instagram 999.0.0.1.1 hasn't been validated with profile v424"
     )
@@ -235,9 +222,7 @@ def test_scrape_once_reports_the_profile_warning(monkeypatch: pytest.MonkeyPatch
     assert "Instagram 999.0.0.1.1 hasn't been validated with profile v424" in warning
 
 
-def test_main_records_a_transient_failure_and_retries_early(
-    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_records_a_transient_failure_and_retries_early(monkeypatch: pytest.MonkeyPatch) -> None:
     sleeps: list[float] = stop_after_first_sleep(monkeypatch)
     monkeypatch.setattr(config, "RETRY_DELAYS_MINUTES", [2.0])
 
@@ -249,16 +234,13 @@ def test_main_records_a_transient_failure_and_retries_early(
     with pytest.raises(StopLoop):
         scrape.main()
 
-    con: sqlite3.Connection
-    error: SqlValue
-    with closing(sqlite3.connect(fast_offline / "posts.sqlite")) as con:
-        error = sqlrows.scalar(con.execute("SELECT error FROM runs"))
+    error: SqlValue = recorded_run()["error"]
     assert isinstance(error, str) and error.startswith("AdbError")
     assert 2 * 60 <= sleeps[0] <= 3 * 60
 
 
 def test_main_counts_earlier_failures_from_the_runs_table(
-    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A restart doesn't reset the backoff: two failed runs already recorded plus this one is three."""
     sleeps: list[float] = stop_after_first_sleep(monkeypatch)
@@ -283,7 +265,7 @@ def test_main_counts_earlier_failures_from_the_runs_table(
 
 
 def test_the_daily_budget_holds_the_loop_until_the_oldest_run_ages_out(
-    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     sleeps: list[float] = stop_after_first_sleep(monkeypatch)
     monkeypatch.setattr(config, "MAX_RUNS_PER_DAY", 3)
@@ -312,28 +294,26 @@ def test_the_daily_budget_holds_the_loop_until_the_oldest_run_ages_out(
         assert scrape.budget_wait_seconds(con) == 0  # disabled
 
 
-def test_main_records_a_successful_run_with_device_versions(
-    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_records_a_successful_run_with_device_versions(monkeypatch: pytest.MonkeyPatch) -> None:
     sleeps: list[float] = stop_after_first_sleep(monkeypatch)
     monkeypatch.setattr(device, "connect_device", feed_device)
-    stats: scrape.RunStats = {
-        "new": 2,
-        "metrics": {"new_stories": 1, "link_sheet_failures": 1, "link_clipboard_failures": 0, "warning": "w"},
-    }
-
-    def fake_scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> scrape.RunStats:
-        return stats
-
-    monkeypatch.setattr(scrape, "scrape_once", fake_scrape_once)
+    scrape_returns(
+        monkeypatch,
+        {
+            "new": 2,
+            "metrics": {
+                "new_stories": 1,
+                "link_sheet_failures": 1,
+                "link_clipboard_failures": 0,
+                "warning": "w",
+            },
+        },
+    )
 
     with pytest.raises(StopLoop):
         scrape.main()
 
-    con: sqlite3.Connection
-    run: dict[str, SqlValue]
-    with closing(sqlite3.connect(fast_offline / "posts.sqlite")) as con:
-        run = row_dict(fetch_row(con.execute("SELECT * FROM runs")))
+    run: dict[str, SqlValue] = recorded_run()
     assert (run["new_posts"], run["new_stories"], run["warning"], run["error"]) == (2, 1, "w", None)
     assert (run["android_release"], run["ig_version"]) == ("13", "445.0.0.45.83")
     assert run["selector_profile"] == "v424"
@@ -352,23 +332,27 @@ def poll_window(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "SCRAPE_ON_STARTUP", False)
 
 
-def test_startup_scrapes_immediately_with_no_recorded_run(poll_window: None) -> None:
+@pytest.mark.usefixtures("poll_window")
+def test_startup_scrapes_immediately_with_no_recorded_run() -> None:
     assert scrape._startup_wait_seconds(db.db_init()) == 0
 
 
-def test_startup_waits_out_the_rest_of_the_poll_interval(poll_window: None) -> None:
+@pytest.mark.usefixtures("poll_window")
+def test_startup_waits_out_the_rest_of_the_poll_interval() -> None:
     con: sqlite3.Connection = db.db_init()
     record_run_ago(con, 60)
     wait: float = scrape._startup_wait_seconds(con)
     assert 1.5 * 3600 - 5 <= wait <= 3.5 * 3600
 
 
-def test_startup_does_not_wait_when_the_last_run_is_old(poll_window: None) -> None:
+@pytest.mark.usefixtures("poll_window")
+def test_startup_does_not_wait_when_the_last_run_is_old() -> None:
     con: sqlite3.Connection = db.db_init()
     record_run_ago(con, 5 * 60)
     assert scrape._startup_wait_seconds(con) == 0
 
 
+@pytest.mark.usefixtures("poll_window")
 @pytest.mark.parametrize(
     "error",
     [
@@ -377,28 +361,28 @@ def test_startup_does_not_wait_when_the_last_run_is_old(poll_window: None) -> No
         "AdbError('offline')",
     ],
 )
-def test_startup_after_a_transient_failure_waits_only_for_the_first_retry(
-    poll_window: None, error: str
-) -> None:
+def test_startup_after_a_transient_failure_waits_only_for_the_first_retry(error: str) -> None:
     con: sqlite3.Connection = db.db_init()
     record_run_ago(con, 0.5, error=error)
     assert 85 <= scrape._startup_wait_seconds(con) <= 90  # 2 minutes, minus the 30s already passed
 
 
-def test_startup_after_a_non_transient_failure_waits_a_full_interval(poll_window: None) -> None:
+@pytest.mark.usefixtures("poll_window")
+def test_startup_after_a_non_transient_failure_waits_a_full_interval() -> None:
     con: sqlite3.Connection = db.db_init()
     record_run_ago(con, 1, error="RuntimeError(\"Instagram wants a human: 'Confirm it's you'\")")
     assert scrape._startup_wait_seconds(con) >= 2.5 * 3600 - 65
 
 
-def test_scrape_on_startup_skips_the_wait(poll_window: None, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("poll_window")
+def test_scrape_on_startup_skips_the_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "SCRAPE_ON_STARTUP", True)
     con: sqlite3.Connection = db.db_init()
     record_run_ago(con, 1)
     assert scrape._startup_wait_seconds(con) == 0
 
 
-def test_main_waits_before_its_first_scrape(fast_offline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_waits_before_its_first_scrape(monkeypatch: pytest.MonkeyPatch) -> None:
     sleeps: list[float] = stop_after_first_sleep(monkeypatch)
 
     def fixed_wait(con: sqlite3.Connection, now: datetime | None = None) -> float:
@@ -415,14 +399,8 @@ def test_main_waits_before_its_first_scrape(fast_offline: Path, monkeypatch: pyt
 # --- surprises one run survives -------------------------------------------------------------------
 
 
-def _one_screen(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A run over the first Following screen only: no stories, one slide per carousel, no scroll."""
-    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
-
-
-def test_startup_wait_is_zero_for_an_unreadable_runs_table_or_finish_time(poll_window: None) -> None:
+@pytest.mark.usefixtures("poll_window")
+def test_startup_wait_is_zero_for_an_unreadable_runs_table_or_finish_time() -> None:
     empty: sqlite3.Connection
     with closing(sqlite3.connect(":memory:")) as empty:
         assert scrape._startup_wait_seconds(empty) == 0  # no runs table at all
@@ -434,7 +412,7 @@ def test_startup_wait_is_zero_for_an_unreadable_runs_table_or_finish_time(poll_w
 def test_a_failed_following_refresh_does_not_sink_the_run(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _one_screen(monkeypatch)
+    run_caps(monkeypatch, stories=0, slides=1, scrolls=1)
     monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 7)
 
     def never_opens(d: uidevice.Device, con: sqlite3.Connection) -> NoReturn:
@@ -449,8 +427,7 @@ def test_a_failed_following_refresh_does_not_sink_the_run(
 def test_a_failed_story_capture_does_not_sink_the_run(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    run_caps(monkeypatch, slides=1, scrolls=1)
 
     def viewer_crashed(d: uidevice.Device, con: sqlite3.Connection) -> NoReturn:
         raise RuntimeError("story viewer never opened")
@@ -462,7 +439,7 @@ def test_a_failed_story_capture_does_not_sink_the_run(
 
 
 def test_a_failed_backup_is_a_warning_not_a_failed_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    _one_screen(monkeypatch)
+    run_caps(monkeypatch, stories=0, slides=1, scrolls=1)
 
     def disk_full(con: sqlite3.Connection, force: bool = False, now: datetime | None = None) -> NoReturn:
         raise OSError("No space left on device")
@@ -473,13 +450,9 @@ def test_a_failed_backup_is_a_warning_not_a_failed_run(monkeypatch: pytest.Monke
 
 
 def test_an_unreachable_reader_is_a_warning_not_a_failed_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    _one_screen(monkeypatch)
+    run_caps(monkeypatch, stories=0, slides=1, scrolls=1)
     monkeypatch.setattr(config, "READER_REFRESH_URLS", ["http://127.0.0.1:9/i/?c=feed&a=actualize&token=t"])
-
-    def refused(request: str | urllib.request.Request, timeout: float) -> NoReturn:
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(urllib.request, "urlopen", refused)
+    record_urlopen(monkeypatch, fail=OSError("connection refused"))
     stats: scrape.RunStats = scrape.scrape_once(feed_device(), db.db_init())
     warning: str | None = stats["metrics"].get("warning")
     assert stats["new"] == 2 and warning is not None
@@ -499,22 +472,12 @@ BLOCK_DIALOG: Node = node(
 def test_a_restriction_mid_run_stops_and_holds_without_dismissing_it(
     fast_offline: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
+    run_caps(monkeypatch, stories=0, slides=1)
     monkeypatch.setattr(config, "HEARTBEAT_URL", "https://hc.example/ping/uuid")
-    pings: list[str | urllib.request.Request] = []
-
-    def urlopen(request: str | urllib.request.Request, timeout: float) -> None:
-        pings.append(request)
-
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    pings: list[urllib.request.Request] = record_urlopen(monkeypatch).requests
     d: FakeDevice = feed_device()
     d.screens["older"] = following_screen(sheet=BLOCK_DIALOG)  # met on the second screen
-
-    def connect() -> FakeDevice:
-        return d
-
-    monkeypatch.setattr(device, "connect_device", connect)
+    connect_returns(monkeypatch, d)
     con: sqlite3.Connection = db.db_init()
     stats: scrape.RunStats | None
     exc: Exception | None
@@ -529,47 +492,37 @@ def test_a_restriction_mid_run_stops_and_holds_without_dismissing_it(
 
 
 def test_a_successful_run_sends_a_heartbeat(
-    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(config, "HEARTBEAT_URL", "https://hc.example/ping/uuid?token=secret")
-    pings: list[str | urllib.request.Request] = []
+    outcomes: Iterator[OSError | None] = iter([None, OSError("connection refused")])
 
-    def urlopen(request: str | urllib.request.Request, timeout: float) -> UrlResponse:
-        pings.append(request)
-        if len(pings) > 1:
-            raise OSError("connection refused")
-        return UrlResponse()
+    def second_fails(request: urllib.request.Request) -> OSError | None:
+        return next(outcomes)
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    pings: list[urllib.request.Request] = record_urlopen(monkeypatch, fail=second_fails).requests
     monkeypatch.setattr(device, "connect_device", feed_device)
     stats: scrape.RunStats = {"new": 0, "metrics": {}}
-
-    def fake_scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> scrape.RunStats:
-        return stats
-
-    monkeypatch.setattr(scrape, "scrape_once", fake_scrape_once)
+    scrape_returns(monkeypatch, stats)
     con: sqlite3.Connection = db.db_init()
     assert scrape.run_recorded(con) == (stats, None)
     assert scrape.run_recorded(con) == (stats, None)  # an unreachable monitor doesn't fail it
-    assert pings == ["https://hc.example/ping/uuid?token=secret"] * 2
+    assert [p.full_url for p in pings] == ["https://hc.example/ping/uuid?token=secret"] * 2
     out: str = capsys.readouterr().out
     assert "pinged heartbeat (https://hc.example/ping/uuid)" in out
     assert "heartbeat to https://hc.example/ping/uuid failed" in out and "secret" not in out
 
 
 def test_run_recorded_survives_an_alert_bookkeeping_failure(
-    fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(device, "connect_device", feed_device)
     stats: scrape.RunStats = {"new": 0, "metrics": {}}
 
-    def fake_scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> scrape.RunStats:
-        return stats
-
     def table_locked(con: sqlite3.Connection, now: datetime | None = None) -> NoReturn:
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(scrape, "scrape_once", fake_scrape_once)
+    scrape_returns(monkeypatch, stats)
     monkeypatch.setattr(alerts, "update", table_locked)
     con: sqlite3.Connection = db.db_init()
     assert scrape.run_recorded(con) == (stats, None)
@@ -577,29 +530,20 @@ def test_run_recorded_survives_an_alert_bookkeeping_failure(
     assert "could not update alerts" in capsys.readouterr().out
 
 
-def test_the_loop_rechecks_the_lock_and_budget_after_a_budget_wait(
-    fast_offline: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_loop_rechecks_the_lock_and_budget_after_a_budget_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     budgets: Iterator[float] = iter([10.0, 0.0])  # over budget once, then clear
 
     def budget(con: sqlite3.Connection, now: datetime | None = None) -> float:
         return next(budgets)
-
-    def no_startup_wait(con: sqlite3.Connection, now: datetime | None = None) -> float:
-        return 0.0
 
     waits: list[float] = []
 
     def wait(con: sqlite3.Connection, seconds: float) -> None:
         waits.append(seconds)
 
-    def run_recorded(con: sqlite3.Connection) -> NoReturn:
-        raise StopLoop
-
     monkeypatch.setattr(scrape, "budget_wait_seconds", budget)
-    monkeypatch.setattr(scrape, "_startup_wait_seconds", no_startup_wait)
     monkeypatch.setattr(control, "wait", wait)
-    monkeypatch.setattr(scrape, "run_recorded", run_recorded)
+    stop_at_first_run(monkeypatch)
     with pytest.raises(StopLoop):
         scrape.main()
     assert waits == [10.0]  # waited the budget out once, re-checked, then ran
@@ -608,7 +552,7 @@ def test_the_loop_rechecks_the_lock_and_budget_after_a_budget_wait(
 def test_a_share_sheet_that_leaves_the_feed_reopens_it_and_keeps_the_post(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _one_screen(monkeypatch)
+    run_caps(monkeypatch, stories=0, slides=1, scrolls=1)
     d: FakeDevice = feed_device()
     # Copy link works, but tapping it lands on the Home feed instead of back on Following.
     d.screens["share_top"] = following_screen(
@@ -621,23 +565,22 @@ def test_a_share_sheet_that_leaves_the_feed_reopens_it_and_keeps_the_post(
     assert "not on the chrono feed any more; reopening it" in capsys.readouterr().out
 
 
-def _media_less_card() -> list[Node]:
-    """A card whose media node never rendered: header, share button and caption only."""
-    return [
-        node(
-            "row_feed_profile_header", desc="text_user posted a photo 2 days ago", bounds=(0, 300, 1080, 437)
-        ),
-        node("row_feed_button_share", bounds=(390, 1500, 453, 1621), goto="share_top"),
-        node(cls=CAPTION, text="text_user Words only", bounds=(32, 1630, 1080, 1700)),
-    ]
-
-
 def test_a_card_without_a_media_node_is_stored_without_media_and_dumped(
     fast_offline: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _one_screen(monkeypatch)
+    run_caps(monkeypatch, stories=0, slides=1, scrolls=1)
     d: FakeDevice = feed_device()
-    d.screens["following"] = following_screen(_media_less_card())
+    d.screens["following"] = following_screen(
+        [  # the media node never rendered: header, share button and caption only
+            node(
+                "row_feed_profile_header",
+                desc="text_user posted a photo 2 days ago",
+                bounds=(0, 300, 1080, 437),
+            ),
+            node("row_feed_button_share", bounds=(390, 1500, 453, 1621), goto="share_top"),
+            node(cls=CAPTION, text="text_user Words only", bounds=(32, 1630, 1080, 1700)),
+        ]
+    )
     con: sqlite3.Connection = db.db_init()
     assert scrape.scrape_once(d, con)["new"] == 1
     assert (fast_offline / "debug" / "no_media_node_hierarchy.xml").exists()
@@ -649,7 +592,7 @@ def test_a_card_without_a_media_node_is_stored_without_media_and_dumped(
 
 
 def test_a_card_whose_bottom_is_off_screen_waits_for_a_later_dump(monkeypatch: pytest.MonkeyPatch) -> None:
-    _one_screen(monkeypatch)
+    run_caps(monkeypatch, stories=0, slides=1, scrolls=1)
     d: FakeDevice = feed_device()
     d.screens["following"] = following_screen(
         [
@@ -672,7 +615,7 @@ def test_a_card_whose_bottom_is_off_screen_waits_for_a_later_dump(monkeypatch: p
 
 def test_a_card_the_profile_cannot_attribute_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
     """parse_hierarchy() itself drops username-less cards, but a profile override may not."""
-    _one_screen(monkeypatch)
+    run_caps(monkeypatch, stories=0, slides=1, scrolls=1)
 
     class Unattributed(type(V424)):
         def parse_hierarchy(self, base: Callable[[str], list[parsing.Post]], xml: str) -> list[parsing.Post]:

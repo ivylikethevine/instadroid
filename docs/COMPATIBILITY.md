@@ -87,7 +87,7 @@ configured image's Android version differs. Give another Android version its own
 No Android 14 image with ARM translation was found (`erstt/redroid` publishes 11, 12, 13 and 15
 only). Instagram builds older than 424 aren't supported by any profile (`igprofiles.MIN_MAJOR`), and don't
 launch on this image anyway. The profile column shows today's names: the root profile was `v440`
-until 2026-09-15. A fresh install gets 445.0.0.45.83 (`igprofiles.DEFAULT_BUILD`) while 446 crashes.
+until 2026-09-15. Builds 425-439 and 447-449 are suspected to work, between confirmed builds.
 
 ## Weighed and not shipped
 

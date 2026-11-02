@@ -6,9 +6,10 @@ from pathlib import Path
 
 import pytest
 from instadroid import config, retention
+from shared import sqlrows
 from shared.sqlrows import SqlValue
 
-from tests.support import insert_post, sql_column
+from tests.support import insert_post, insert_story, sql_column
 
 
 def test_prune_old_posts_deletes_rows_and_media_past_retain_days(
@@ -16,8 +17,8 @@ def test_prune_old_posts_deletes_rows_and_media_past_retain_days(
 ) -> None:
     media: Path = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 30)
-    insert_post(con, media, "old", days_old=45, media_file="old.jpg")
-    insert_post(con, media, "new", days_old=1, media_file="new.jpg")
+    insert_post(con, "old", days_old=45, media_file="old.jpg")
+    insert_post(con, "new", days_old=1, media_file="new.jpg")
 
     retention.prune_old_posts(con)
 
@@ -32,25 +33,12 @@ def test_prune_old_posts_disabled_when_retain_days_is_zero(
 ) -> None:
     media: Path = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
-    insert_post(con, media, "ancient", days_old=9999, media_file="ancient.jpg")
+    insert_post(con, "ancient", days_old=9999, media_file="ancient.jpg")
 
     retention.prune_old_posts(con)
 
-    assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 1
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts")) == 1
     assert (media / "ancient.jpg").exists()
-
-
-def test_prune_old_posts_removes_orphaned_media_regardless_of_retain_days(
-    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    media: Path = config.MEDIA_DIR
-    monkeypatch.setattr(config, "RETAIN_DAYS", 0)
-    insert_post(con, media, "kept", days_old=1, media_file="kept.jpg")
-    (media / "orphan.jpg").write_bytes(b"x")  # e.g. left behind by an interrupted run
-
-    retention.prune_old_posts(con)
-
-    assert {f.name for f in media.iterdir()} == {"kept.jpg"}
 
 
 def test_orphan_sweep_covers_both_media_formats(
@@ -58,8 +46,8 @@ def test_orphan_sweep_covers_both_media_formats(
 ) -> None:
     media: Path = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
-    insert_post(con, media, "old", days_old=1, media_file="old.jpg")
-    insert_post(con, media, "new", days_old=1, media_file="new.webp")
+    insert_post(con, "old", days_old=1, media_file="old.jpg")
+    insert_post(con, "new", days_old=1, media_file="new.webp")
     (media / "orphan.jpg").write_bytes(b"x")
     (media / "orphan.webp").write_bytes(b"x")
     (media / "notes.txt").write_bytes(b"x")  # not media: never touched
@@ -71,7 +59,6 @@ def test_orphan_sweep_covers_both_media_formats(
 
 def _insert_story(
     con: sqlite3.Connection,
-    media_dir: Path,
     story_id: str,
     days_old: float,
     username: str = "u",
@@ -79,13 +66,9 @@ def _insert_story(
 ) -> None:
     scraped_at: str = (datetime.now(UTC) - timedelta(days=days_old)).isoformat()
     if media_file:
-        (media_dir / "stories").mkdir(parents=True, exist_ok=True)
-        (media_dir / media_file).write_bytes(b"x")
-    con.execute(
-        "INSERT INTO stories (id, username, media_file, kind, posted_date, scraped_at) VALUES (?,?,?,?,?,?)",
-        (story_id, username, media_file, "story", "1h", scraped_at),
-    )
-    con.commit()
+        (config.MEDIA_DIR / "stories").mkdir(parents=True, exist_ok=True)
+        (config.MEDIA_DIR / media_file).write_bytes(b"x")
+    insert_story(con, story_id, scraped_at, username=username, media_file=media_file)
 
 
 def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(
@@ -93,8 +76,8 @@ def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(
 ) -> None:
     media: Path = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 30)
-    _insert_story(con, media, "old", days_old=45, media_file="stories/old.jpg")
-    _insert_story(con, media, "fresh", days_old=1, media_file="stories/fresh.jpg")
+    _insert_story(con, "old", days_old=45, media_file="stories/old.jpg")
+    _insert_story(con, "fresh", days_old=1, media_file="stories/fresh.jpg")
 
     retention.prune_expired_stories(con)
 
@@ -104,28 +87,16 @@ def test_prune_expired_stories_deletes_rows_and_media_past_retain_days(
     assert (media / "stories" / "fresh.jpg").exists()
 
 
-def test_prune_expired_stories_noop_when_none_past_retain_days(
-    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    media: Path = config.MEDIA_DIR
-    monkeypatch.setattr(config, "RETAIN_DAYS", 30)
-    _insert_story(con, media, "fresh", days_old=1, media_file="stories/fresh.jpg")
-
-    retention.prune_expired_stories(con)
-
-    assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 1
-
-
 def test_prune_expired_stories_disabled_when_retain_days_is_zero(
     con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     media: Path = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 0)
-    _insert_story(con, media, "ancient", days_old=9999, media_file="ancient.jpg")
+    _insert_story(con, "ancient", days_old=9999, media_file="ancient.jpg")
 
     retention.prune_expired_stories(con)
 
-    assert con.execute("SELECT COUNT(*) FROM stories").fetchone()[0] == 1
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM stories")) == 1
     assert (media / "ancient.jpg").exists()
 
 
@@ -134,15 +105,15 @@ def test_prune_old_posts_also_removes_extra_carousel_media(
 ) -> None:
     media: Path = config.MEDIA_DIR
     monkeypatch.setattr(config, "RETAIN_DAYS", 30)
-    insert_post(con, media, "old", days_old=45, media_file="old.jpg")
+    insert_post(con, "old", days_old=45, media_file="old.jpg")
     (media / "old_1.jpg").write_bytes(b"x")
     con.execute("INSERT INTO media (post_id, idx, file) VALUES ('old', 1, 'old_1.jpg')")
     con.commit()
 
     retention.prune_old_posts(con)
 
-    assert con.execute("SELECT COUNT(*) FROM posts WHERE id='old'").fetchone()[0] == 0
-    assert con.execute("SELECT COUNT(*) FROM media WHERE post_id='old'").fetchone()[0] == 0
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts WHERE id='old'")) == 0
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM media WHERE post_id='old'")) == 0
     assert not (media / "old.jpg").exists()
     assert not (media / "old_1.jpg").exists()
 
@@ -167,20 +138,20 @@ def test_size_cap_disabled_when_media_max_mb_is_zero(
 ) -> None:
     media: Path = config.MEDIA_DIR
     monkeypatch.setattr(config, "MEDIA_MAX_MB", 0)
-    insert_post(con, media, "a", days_old=1, media_file="a.jpg")
+    insert_post(con, "a", days_old=1, media_file="a.jpg")
     (media / "a.jpg").write_bytes(b"x" * 500_000)
 
     retention.prune_old_posts(con)
 
-    assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 1
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts")) == 1
 
 
 def test_size_cap_removes_oldest_posts_first_when_over_budget(
     con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     media: Path = config.MEDIA_DIR
-    insert_post(con, media, "older", days_old=5, media_file="older.jpg")
-    insert_post(con, media, "newer", days_old=1, media_file="newer.jpg")
+    insert_post(con, "older", days_old=5, media_file="older.jpg")
+    insert_post(con, "newer", days_old=1, media_file="newer.jpg")
     (media / "older.jpg").write_bytes(b"x" * 500_000)
     (media / "newer.jpg").write_bytes(b"x" * 10_000)
 
@@ -198,22 +169,21 @@ def test_size_cap_removes_oldest_posts_first_when_over_budget(
 def test_size_cap_stops_when_no_posts_remain(
     con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    media: Path = config.MEDIA_DIR
     monkeypatch.setattr(config, "MEDIA_MAX_MB", 0.0000001)  # unreachable even with zero posts
-    insert_post(con, media, "only", days_old=1, media_file="only.jpg")
+    insert_post(con, "only", days_old=1, media_file="only.jpg")
 
     retention.prune_old_posts(con)  # must terminate rather than spin
 
-    assert con.execute("SELECT COUNT(*) FROM posts").fetchone()[0] == 0
+    assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts")) == 0
 
 
 def test_size_cap_counts_a_media_file_that_is_already_gone_as_empty(
     con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     media: Path = config.MEDIA_DIR
-    insert_post(con, media, "gone", days_old=3, media_file="gone.jpg")
+    insert_post(con, "gone", days_old=3, media_file="gone.jpg")
     (media / "gone.jpg").unlink()  # e.g. removed by hand between runs
-    insert_post(con, media, "big", days_old=1, media_file="big.jpg")
+    insert_post(con, "big", days_old=1, media_file="big.jpg")
     (media / "big.jpg").write_bytes(b"x" * 500_000)
     baseline: float = retention._media_and_db_size_mb(con)
     monkeypatch.setattr(config, "MEDIA_MAX_MB", baseline - 0.3)
@@ -228,7 +198,7 @@ def test_size_cap_leaves_everything_alone_while_under_budget(
 ) -> None:
     media: Path = config.MEDIA_DIR
     monkeypatch.setattr(config, "MEDIA_MAX_MB", 10_000)
-    insert_post(con, media, "a", days_old=1, media_file="a.jpg")
+    insert_post(con, "a", days_old=1, media_file="a.jpg")
 
     retention.prune_old_posts(con)
 

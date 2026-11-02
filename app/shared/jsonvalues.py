@@ -1,5 +1,5 @@
 """JSON with a real type: `json.loads` returns Any, so decoded values are checked all the way down and
-typed as `JSON` instead. Shared by the scripts and the tests (the feed server has no JSON to read)."""
+typed as `JSON` instead."""
 
 import json
 from collections.abc import Callable

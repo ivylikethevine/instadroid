@@ -52,7 +52,7 @@ any run that stores something new, the scraper requests each URL listed (whitesp
 one scraper can wake several readers), so the reader fetches immediately. A URL is a GET unless
 it starts with its method, `PUT:` or `POST:`, and a `user:password@` in it is sent as HTTP basic
 auth. A reader being unreachable is logged as a run warning (shows yellow on `/status`), never
-fails the scrape. `FRESHRSS_REFRESH_URL`, the setting's older name, still works and joins the list.
+fails the scrape.
 
 - **FreshRSS**: its "online cron" actualize URL,
   `http://<freshrss-host>/i/?c=feed&a=actualize&user=<name>&token=<token>`, with the token of the

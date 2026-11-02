@@ -151,10 +151,10 @@ line shows the host's real ~64GiB, not the `mem_limit` cgroup ceiling), so lmkd'
 thresholds — calibrated for a 64GiB device — never trip. Cached apps just accumulate for the
 container's lifetime instead of being evicted.
 
-`scripts/tune-android.sh` now `pm disable-user`s these apps (extending the existing Google-app
-disable list), which stops them from ever launching rather than relying on a reclaim that doesn't
-happen here. The list now lives in `app/instadroid/tune_packages.txt`, which the app's first-connect
-tuning (`app/instadroid/tune.py`) applies too.
+The device tuning now `pm disable-user`s these apps (extending the existing Google-app disable
+list), which stops them from ever launching rather than relying on a reclaim that doesn't happen
+here. The list lives in `app/instadroid/tune_packages.txt`, which the app's first-connect tuning and
+`scraper.py tune` (`app/instadroid/tune.py`) apply.
 
 Deliberately left alone: `com.android.settings` (the single largest cached entry at ~78MiB, but a
 core app — too risky to disable), `com.android.provision`/`com.android.managedprovisioning`
@@ -198,7 +198,7 @@ measurement (previously only estimated). `docker stats` hit **1.98GiB of the 2Gi
 far above the 1.1-1.26GiB figure in "Memory limits" above, which was evidently measured under a
 lighter run. `dumpsys meminfo` explained why: `com.instagram.android` alone was 702MiB resident,
 plus a 116MiB `:fbns` (push-notification) subprocess the scraper has no use for (it polls, it's
-never woken by a push) — ~820MiB neither `tune-android.sh` nor the app-sweep above ever touched,
+never woken by a push) — ~820MiB neither the device tuning nor the app-sweep above ever touched,
 because both only look at _other_ apps. Same root cause as "Reducing idle memory": this container's
 `lmkd` never reclaims anything, so once Instagram is opened by a run it just sits there fully
 resident for the entire ~2.5-4.5h gap until the next one — every run before this fix was paying that

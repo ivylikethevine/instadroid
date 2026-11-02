@@ -57,6 +57,7 @@ _last_code: str = ""  # the shortcode of the last permalink handed out, to spot 
 # an emptied clipboard left it empty.
 _clearing: bool = True
 _certain: bool = False  # the last link fetch_permalink() returned came off an emptied clipboard
+_left_on_feed: bool | None = None  # see left_on_feed()
 
 
 def reset_last_url(d: uidevice.Device) -> None:
@@ -76,6 +77,23 @@ def link_was_certain() -> bool:
     empty before the tap. One taken for differing from the last link handed out could still be an
     earlier copy landing late."""
     return _certain
+
+
+def left_on_feed() -> bool | None:
+    """Whether a feed was showing when the last fetch_permalink() backed out of its share sheet (what
+    navigation.back_to_feed() saw), or None if it returned before opening one and never looked."""
+    return _left_on_feed
+
+
+def _leave_sheet(d: uidevice.Device) -> None:
+    global _left_on_feed
+    navigation.close_sheets(d)
+    _left_on_feed = navigation.back_to_feed(d)
+
+
+def _card_on_screen(d: uidevice.Device, key: str) -> parsing.Post | None:
+    """The card with this post id in a new dump, or None."""
+    return next((p for p in parsing.parse_hierarchy(d.dump_hierarchy()) if parsing.post_id(p) == key), None)
 
 
 def _clear_clipboard(d: uidevice.Device) -> bool:
@@ -112,14 +130,12 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
     tap, and Copy link is tapped once more if nothing arrives. Only when the clipboard couldn't be
     emptied is one still holding the last link handed out (that url, "repeat"): a copy that didn't
     land, or the same post copied again, which only the caller can tell apart."""
-    global _clearing, _certain
-    _certain = False
+    global _clearing, _certain, _left_on_feed
+    _certain, _left_on_feed = False, None
     if not navigation.close_sheets(d):
         log("WARN: a sheet is stuck open; skipping permalink")
         return None, "sheet"
-    fresh: parsing.Post | None = next(
-        (p for p in parsing.parse_hierarchy(d.dump_hierarchy()) if parsing.post_id(p) == post_hash), None
-    )
+    fresh: parsing.Post | None = _card_on_screen(d, post_hash)
     point: tuple[int, int] | None = common.bounds_center(fresh["share_bounds"]) if fresh else None
     if not point:
         log("WARN: card moved before the share tap; no permalink")
@@ -133,11 +149,10 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
         device.human_pause(2, 3)
         if link.exists(timeout=10):
             break
-    if not link.exists(timeout=1):
+    else:
         log("WARN: no share sheet with 'Copy link'; dump saved")
         diagnostics.dump_debug(d, "share_sheet")
-        navigation.close_sheets(d)
-        navigation.back_to_feed(d)
+        _leave_sheet(d)
         return None, "sheet"
     diagnostics.capture_screen(d, "share_sheet")
     device.human_pause(0.8, 1.2)  # let the sheet finish animating
@@ -148,8 +163,7 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
         cx, cy = (b["left"] + b["right"]) // 2, (b["top"] + b["bottom"]) // 2
     except Exception as e:  # the sheet re-rendered and the node vanished
         log("WARN: Copy link vanished before click:", repr(e))
-        navigation.close_sheets(d)
-        navigation.back_to_feed(d)
+        _leave_sheet(d)
         return None, "sheet"
     cleared: bool = _clear_clipboard(d)
     d.click(cx, cy)
@@ -163,8 +177,7 @@ def fetch_permalink(d: uidevice.Device, post_hash: str) -> tuple[str | None, str
         if cleared and not url:
             _clearing = False
             log("WARN: Copy link left an emptied clipboard empty; not emptying it again this run")
-    navigation.close_sheets(d)  # the sheet stays open after Copy link
-    navigation.back_to_feed(d)
+    _leave_sheet(d)  # the sheet stays open after Copy link
     _certain = cleared and bool(url)
     m: re.Match[str] | None = SELECTORS["permalink"].match(url or repeat)
     if not m:
@@ -200,8 +213,7 @@ def _poll_clipboard(d: uidevice.Device, cleared: bool) -> tuple[str, str]:
 
 def permalink_code(url: str) -> str:
     """The shortcode of a permalink fetch_permalink() returned: the id the post is stored under."""
-    m: re.Match[str] | None = SELECTORS["permalink"].match(url)
-    return m.group("code") if m else url
+    return _code_of(url) or url
 
 
 def media_ext() -> str:
@@ -271,16 +283,12 @@ def capture_carousel(d: uidevice.Device, p: parsing.Post, pid: str) -> list[str]
     for slide in range(2, total + 1):
         d.swipe(x2 - inset, cy, x1 + inset, cy, duration=device.swipe_duration())
         device.human_pause(0.8, 1.6)
-        fresh: parsing.Post | None = next(
-            (c for c in parsing.parse_hierarchy(d.dump_hierarchy()) if parsing.post_id(c) == key), None
-        )
+        fresh: parsing.Post | None = _card_on_screen(d, key)
         sm: re.Match[str] | None = SELECTORS["slide_index"].match(fresh["alt"]) if fresh else None
         if not fresh or not sm or int(sm.group(1)) != slide:
             log(f"carousel: swipe didn't land on slide {slide}; stopping with {len(files)} extra")
             break
-        fn: str | None = crop_media(
-            d, fresh["bounds"] or p["bounds"], f"{pid}_{slide - 1}", p.get("clip_top", 0)
-        )
+        fn: str | None = crop_media(d, fresh["bounds"] or p["bounds"], f"{pid}_{slide - 1}", p["clip_top"])
         if not fn:
             break
         files.append(fn)

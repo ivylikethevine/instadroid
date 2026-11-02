@@ -1,38 +1,32 @@
-import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from devtools.jsonvalues import JSON as Json
 from fastapi.testclient import TestClient
 from httpx2 import Response
+from shared.jsonvalues import JSON as Json
 
-from tests.feedclient import make_app
+from tests.feedclient import DEVICE_COLUMNS, add_runs, feed_sql, make_app
 from tests.support import json_body, json_object
 
 
-def _add_runs(db: Path, runs: list[tuple[float, str | None, str | None]]) -> None:
+def _add_runs(tmp_path: Path, runs: list[tuple[float, str | None, str | None]]) -> None:
     """runs: [(finished_hours_ago, error, warning)] — each run took 5 minutes."""
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute(
-        """CREATE TABLE IF NOT EXISTS runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
-            new_posts INTEGER, error TEXT, android_release TEXT, android_sdk TEXT, device_product TEXT,
-            warning TEXT
-        )"""
-    )
     now: datetime = datetime.now(UTC)
-    hours_ago: float
-    error: str | None
-    warning: str | None
-    for hours_ago, error, warning in sorted(runs, key=lambda r: -r[0]):  # oldest first, like real ids
-        finished: datetime = now - timedelta(hours=hours_ago)
-        con.execute(
-            "INSERT INTO runs (started_at, finished_at, new_posts, error, warning) VALUES (?,?,?,?,?)",
-            ((finished - timedelta(minutes=5)).isoformat(), finished.isoformat(), 0, error, warning),
-        )
-    con.commit()
-    con.close()
+    add_runs(
+        tmp_path,
+        [
+            {
+                "started_at": (now - timedelta(hours=hours_ago, minutes=5)).isoformat(),
+                "finished_at": (now - timedelta(hours=hours_ago)).isoformat(),
+                "new_posts": 0,
+                "error": error,
+                "warning": warning,
+            }
+            for hours_ago, error, warning in sorted(runs, key=lambda r: -r[0])  # oldest first, like real ids
+        ],
+        (*DEVICE_COLUMNS, "warning TEXT"),
+    )
 
 
 def test_health_ok_with_no_runs_yet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -43,7 +37,7 @@ def test_health_ok_with_no_runs_yet(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 def test_health_ok_after_a_recent_successful_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
-    _add_runs(tmp_path / "posts.sqlite", [(1, None, None)])
+    _add_runs(tmp_path, [(1, None, None)])
     assert client.get("/health").status_code == 200
 
 
@@ -52,7 +46,7 @@ def test_health_503_when_no_run_has_finished_for_too_long(
 ) -> None:
     monkeypatch.setenv("POLL_MAX_HOURS", "4.5")
     client: TestClient = make_app(tmp_path, monkeypatch)
-    _add_runs(tmp_path / "posts.sqlite", [(6, None, None)])  # past 4.5h + 30min
+    _add_runs(tmp_path, [(6, None, None)])  # past 4.5h + 30min
     r: Response = client.get("/health")
     assert r.status_code == 503
     body: dict[str, Json] = json_object(r)
@@ -65,7 +59,7 @@ def test_health_503_when_runs_keep_failing(tmp_path: Path, monkeypatch: pytest.M
     client: TestClient = make_app(tmp_path, monkeypatch)
     # Runs are still happening on schedule, but none has succeeded in 11h (> 2 * 4.5h + 1h).
     _add_runs(
-        tmp_path / "posts.sqlite",
+        tmp_path,
         [(11, None, None), (7, "RuntimeError('challenge')", None), (2, "RuntimeError('challenge')", None)],
     )
     r: Response = client.get("/health")
@@ -77,13 +71,13 @@ def test_health_ok_while_the_first_runs_are_still_failing_briefly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
-    _add_runs(tmp_path / "posts.sqlite", [(1, "ConnectError('not online')", None)])
+    _add_runs(tmp_path, [(1, "ConnectError('not online')", None)])
     assert client.get("/health").status_code == 200
 
 
 def test_status_page_shows_a_warning_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
-    _add_runs(tmp_path / "posts.sqlite", [(0.1, None, "stopped early: 3 empty screens in a row")])
+    _add_runs(tmp_path, [(0.1, None, "stopped early: 3 empty screens in a row")])
     body: str = client.get("/status").text
     assert "WARN" in body
     assert "stopped early: 3 empty screens in a row" in body
@@ -93,17 +87,14 @@ def test_status_page_shows_instagram_version_and_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
-    db: Path = tmp_path / "posts.sqlite"
-    _add_runs(db, [(0.1, None, None)])
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute("ALTER TABLE runs ADD COLUMN ig_version TEXT")
-    con.execute("ALTER TABLE runs ADD COLUMN redroid_image TEXT")
-    con.execute(
+    _add_runs(tmp_path, [(0.1, None, None)])
+    feed_sql(
+        tmp_path,
+        "ALTER TABLE runs ADD COLUMN ig_version TEXT",
+        "ALTER TABLE runs ADD COLUMN redroid_image TEXT",
         "UPDATE runs SET android_release='13', ig_version='445.0.0.45.83',"
-        " redroid_image='erstt/redroid:13.0.0_ndk_ChromeOS'"
+        " redroid_image='erstt/redroid:13.0.0_ndk_ChromeOS'",
     )
-    con.commit()
-    con.close()
     body: str = client.get("/status").text
     assert "Instagram 445.0.0.45.83" in body  # device line
     assert "<td>445.0.0.45.83</td>" in body  # per-run column
@@ -113,36 +104,34 @@ def test_status_page_shows_instagram_version_and_image(
 
 def test_status_page_shows_the_selector_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
-    db: Path = tmp_path / "posts.sqlite"
-    _add_runs(db, [(0.1, None, None)])
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute("ALTER TABLE runs ADD COLUMN ig_version TEXT")
-    con.execute("ALTER TABLE runs ADD COLUMN selector_profile TEXT")
-    con.execute("UPDATE runs SET android_release='13', ig_version='446.0.0.49.77', selector_profile='v445'")
-    con.commit()
-    con.close()
+    _add_runs(tmp_path, [(0.1, None, None)])
+    feed_sql(
+        tmp_path,
+        "ALTER TABLE runs ADD COLUMN ig_version TEXT",
+        "ALTER TABLE runs ADD COLUMN selector_profile TEXT",
+        "UPDATE runs SET android_release='13', ig_version='446.0.0.49.77', selector_profile='v445'",
+    )
     assert "Instagram 446.0.0.49.77 (profile v445)" in client.get("/status").text
 
 
 def test_status_page_shows_the_health_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLL_MAX_HOURS", "4.5")
     client: TestClient = make_app(tmp_path, monkeypatch)
-    _add_runs(tmp_path / "posts.sqlite", [(6, None, None)])
+    _add_runs(tmp_path, [(6, None, None)])
     body: str = client.get("/status").text
     assert "OVERDUE" in body and "no scrape run has finished" in body
 
 
 def test_status_page_shows_peak_memory_and_oom_kills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
-    db: Path = tmp_path / "posts.sqlite"
-    _add_runs(db, [(0.2, None, None), (0.1, None, None)])
-    con: sqlite3.Connection = sqlite3.connect(db)
-    con.execute("ALTER TABLE runs ADD COLUMN mem_peak_mb INTEGER")
-    con.execute("ALTER TABLE runs ADD COLUMN oom_kills INTEGER")
-    con.execute("UPDATE runs SET mem_peak_mb=1843, oom_kills=0 WHERE id=1")
-    con.execute("UPDATE runs SET mem_peak_mb=2012, oom_kills=7 WHERE id=2")
-    con.commit()
-    con.close()
+    _add_runs(tmp_path, [(0.2, None, None), (0.1, None, None)])
+    feed_sql(
+        tmp_path,
+        "ALTER TABLE runs ADD COLUMN mem_peak_mb INTEGER",
+        "ALTER TABLE runs ADD COLUMN oom_kills INTEGER",
+        "UPDATE runs SET mem_peak_mb=1843, oom_kills=0 WHERE id=1",
+        "UPDATE runs SET mem_peak_mb=2012, oom_kills=7 WHERE id=2",
+    )
     body: str = client.get("/status").text
     assert "<th>Peak mem</th>" in body
     assert "<td>1843 MiB</td>" in body

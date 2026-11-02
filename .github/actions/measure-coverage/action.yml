@@ -1,0 +1,20 @@
+name: Measure coverage
+# ci.yml's test command (scripts/check.sh test, floor included), plus what the badges and a reader of a
+# gap need from it: coverage-badge/ (.github/scripts/coverage_badges.sh) and coverage-html/, both written
+# from whatever the suite managed to measure, even when a test or the floor failed. A failed run is never
+# the one coverage.yml or pages.yml picks up. Run from the repository root in the dev environment.
+description: Run the test suite with coverage, and write the badge endpoints and the HTML report
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: scripts/check.sh test -- --junitxml="$RUNNER_TEMP/junit.xml"
+    - name: Write the badge endpoints
+      if: ${{ !cancelled() }}
+      shell: bash
+      run: .github/scripts/coverage_badges.sh "$RUNNER_TEMP/junit.xml" coverage-badge
+    - name: Render the HTML report
+      if: ${{ !cancelled() && hashFiles('local/.coverage') != '' }}
+      shell: bash
+      run: python -m coverage html --directory coverage-html

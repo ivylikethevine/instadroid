@@ -16,7 +16,8 @@ from instadroid import (
 )
 
 from tests.deviceflows import RunOptions, home_screen
-from tests.fakedevice import IG_PKG, FakeDevice, Node, Out, hierarchy, node
+from tests.fakedevice import IG_PKG, FakeDevice, Node, hierarchy, node
+from tests.support import fake_run
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
@@ -38,6 +39,22 @@ def login_screen(button_goto: str = "notnow") -> str:
 
 def text_screen(text: str, goto: str | None = None) -> str:
     return hierarchy(node(cls="android.widget.TextView", text=text, bounds=(0, 1000, 1080, 1100), goto=goto))
+
+
+def _missing_ig() -> FakeDevice:
+    return FakeDevice({"home": home_screen()}, "launcher", installed=())
+
+
+def _first(calls: list[list[str]], tool: str) -> list[str]:
+    """The first command `_apk_run` recorded for this tool."""
+    return next(c for c in calls if c[0] == tool)
+
+
+def _cached_apk(name: str, content: bytes = b"base") -> None:
+    """A file in the folder apkeep's bundle unpacks to, as an earlier fetch leaves it."""
+    xapk_dir: Path = config.APK_CACHE_DIR / "xapk"
+    xapk_dir.mkdir(parents=True)
+    (xapk_dir / name).write_bytes(content)
 
 
 def test_login_fills_the_form_and_dismisses_interstitials() -> None:
@@ -77,6 +94,18 @@ def test_login_dismisses_a_stray_ok_alert_and_accepts_a_live_session() -> None:
         ({"login": login_screen(button_goto="challenge"), "challenge": text_screen("Enter the code")}, "login", "wants a human"),
         ({"login": login_screen(button_goto="")}, "login", "wrong password"),
         ({"markers": text_screen("Forgot password?")}, "markers", "form not recognised"),
+        # The hints are there but only one EditText is: the Compose form is still building, or changed shape.
+        (
+            {
+                "login": hierarchy(
+                    node(cls="android.widget.TextView", text="Password", bounds=(0, 700, 1080, 740)),
+                    node(cls="android.widget.EditText", bounds=(0, 750, 1080, 850)),
+                    node(cls="android.widget.TextView", text="Forgot password?", bounds=(0, 1100, 1080, 1150)),
+                )
+            },
+            "login",
+            "form not recognised",
+        ),
     ],
 )  # fmt: skip
 def test_login_failures_raise_with_a_debug_dump(
@@ -87,17 +116,13 @@ def test_login_failures_raise_with_a_debug_dump(
     assert (fast_offline / "debug" / "login_hierarchy.xml").exists()
 
 
-def block_dialog() -> str:
-    return hierarchy(
-        node(cls="android.widget.TextView", text="Try Again Later", bounds=(0, 900, 1080, 980)),
-        node(cls="android.widget.Button", text="OK", bounds=(0, 1200, 1080, 1300), goto="home"),
-    )
-
-
 @pytest.mark.parametrize("start", ["blocked", "login"])  # at launch, or right after logging in
 def test_a_restriction_raises_before_its_ok_is_tapped(start: str, fast_offline: Path) -> None:
     screens: dict[str, str] = {
-        "blocked": block_dialog(),
+        "blocked": hierarchy(
+            node(cls="android.widget.TextView", text="Try Again Later", bounds=(0, 900, 1080, 980)),
+            node(cls="android.widget.Button", text="OK", bounds=(0, 1200, 1080, 1300), goto="home"),
+        ),
         "login": login_screen(button_goto="blocked"),
         "home": home_screen(),
     }
@@ -119,40 +144,35 @@ def test_login_raises_when_instagram_is_not_installed_and_auto_install_is_off(
 ) -> None:
     monkeypatch.setattr(config, "IG_AUTO_INSTALL", False)
     with pytest.raises(RuntimeError, match="not installed"):
-        navigation.ensure_logged_in(FakeDevice({}, "launcher", installed=()))
+        navigation.ensure_logged_in(_missing_ig())
 
 
 def test_login_trusts_pm_path_over_an_app_list_that_misses_instagram(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """app_list() saying "missing" alone must not trigger a reinstall over a live login."""
-
-    class Settling(FakeDevice):
-        def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
-            joined: str = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
-            if joined == f"pm path {IG_PKG}":
-                return Out(f"package:/data/app/{IG_PKG}-1/base.apk")
-            return super().shell(cmdargs, timeout)
-
     installs: list[str] = []
 
     def fake_install(d: FakeDevice) -> None:
         installs.append("x")
 
     monkeypatch.setattr(install, "install_instagram", fake_install)
-    navigation.ensure_logged_in(Settling({"home": home_screen()}, "launcher", installed=()))
+    d: FakeDevice = _missing_ig()
+    d.shell_replies = {f"pm path {IG_PKG}": f"package:/data/app/{IG_PKG}-1/base.apk"}
+    navigation.ensure_logged_in(d)
     assert installs == [] and "not reinstalling" in capsys.readouterr().out
 
 
 def _apk_run(
-    monkeypatch: pytest.MonkeyPatch, d: FakeDevice, calls: list[list[str]], *, fail_on: str | None = None
-) -> None:
+    monkeypatch: pytest.MonkeyPatch, d: FakeDevice, *, fail_on: str | None = None
+) -> list[list[str]]:
     """Patch subprocess.run to fake apkeep + adb install without touching the network or a
-    real device, recording every invocation into `calls`. `fail_on` (argv[0], "apkeep" or "adb")
-    makes that step raise CalledProcessError. A successful "adb install"/"install-multiple" flips
-    `d`'s installed set, same as a real adb install would."""
+    real device. `fail_on` (argv[0], "apkeep" or "adb") makes that step raise CalledProcessError.
+    A successful "adb install"/"install-multiple" flips `d`'s installed set, same as a real adb
+    install would. Returns the list the commands are recorded in."""
+    calls: list[list[str]] = []
 
-    def fake_run(cmd: list[str], **kwargs: Unpack[RunOptions]) -> subprocess.CompletedProcess[str]:
+    def apk_run(cmd: list[str], **kwargs: Unpack[RunOptions]) -> subprocess.CompletedProcess[str]:
         zf: zipfile.ZipFile
         calls.append(cmd)
         if fail_on and cmd[0] == fail_on:
@@ -169,18 +189,18 @@ def _apk_run(
             d.install()
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", apk_run)
+    return calls
 
 
 def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    d: FakeDevice = FakeDevice({"home": home_screen()}, "launcher", installed=())
-    calls: list[list[str]] = []
-    _apk_run(monkeypatch, d, calls)
+    d: FakeDevice = _missing_ig()
+    calls: list[list[str]] = _apk_run(monkeypatch, d)
     navigation.ensure_logged_in(d)
-    apkeep_call: list[str] = next(c for c in calls if c[0] == "apkeep")
+    apkeep_call: list[str] = _first(calls, "apkeep")
     assert apkeep_call[:3] == ["apkeep", "-a", config.IG_PKG]
     assert apkeep_call[-3:-1] == ["-o", "acknowledge_dangers=true"]
-    install_call: list[str] = next(c for c in calls if c[0] == "adb")
+    install_call: list[str] = _first(calls, "adb")
     assert install_call[3] == "install-multiple"
     assert install_call[4].endswith(f"{config.IG_PKG}.apk")
     assert install_call[5].endswith("config.arm64_v8a.apk")
@@ -192,8 +212,8 @@ def test_ensure_logged_in_installs_instagram_when_missing(monkeypatch: pytest.Mo
 
 
 def test_installing_instagram_reactivates_the_profile(monkeypatch: pytest.MonkeyPatch) -> None:
-    d: FakeDevice = FakeDevice({"home": home_screen()}, "launcher", installed=())
-    _apk_run(monkeypatch, d, [])
+    d: FakeDevice = _missing_ig()
+    _apk_run(monkeypatch, d)
     monkeypatch.setattr(versioning, "PROFILE_WARNING", "stale warning from before the install")
     navigation.ensure_logged_in(d)
     assert versioning.PROFILE.name == "v424" and versioning.PROFILE_WARNING is None  # installed 445.0.0.45.83
@@ -202,28 +222,24 @@ def test_installing_instagram_reactivates_the_profile(monkeypatch: pytest.Monkey
 def test_auto_install_fetches_the_default_build(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "IG_APK_VERSION", "")
     monkeypatch.setattr(config, "IG_PROFILE", "")
-    d: FakeDevice = FakeDevice({"home": home_screen()}, "launcher", installed=(), ig_version="445.0.0.45.83")
-    calls: list[list[str]] = []
-    _apk_run(monkeypatch, d, calls)
+    d: FakeDevice = _missing_ig()  # reports 445.0.0.45.83 once installed
+    calls: list[list[str]] = _apk_run(monkeypatch, d)
     navigation.ensure_logged_in(d)
-    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{config.IG_PKG}@{igprofiles.DEFAULT_BUILD}"
+    assert _first(calls, "apkeep")[2] == f"{config.IG_PKG}@{igprofiles.DEFAULT_BUILD}"
     assert versioning.PROFILE.name == "v424" and versioning.PROFILE_WARNING is None
 
 
 def test_a_pinned_apk_version_gets_its_own_cache_folder(monkeypatch: pytest.MonkeyPatch) -> None:
     # An unpinned bundle already cached at the top level must not be installed for a pinned version.
-    xapk_dir: Path = config.APK_CACHE_DIR / "xapk"
-    xapk_dir.mkdir(parents=True)
-    (xapk_dir / f"{config.IG_PKG}.apk").write_bytes(b"latest")
+    _cached_apk(f"{config.IG_PKG}.apk", b"latest")
     monkeypatch.setattr(config, "IG_APK_VERSION", "445.0.0.45.83")
-    d: FakeDevice = FakeDevice({"home": home_screen()}, "launcher", installed=())
-    calls: list[list[str]] = []
-    _apk_run(monkeypatch, d, calls)
+    d: FakeDevice = _missing_ig()
+    calls: list[list[str]] = _apk_run(monkeypatch, d)
     navigation.ensure_logged_in(d)
-    apkeep_call: list[str] = next(c for c in calls if c[0] == "apkeep")
+    apkeep_call: list[str] = _first(calls, "apkeep")
     assert apkeep_call[2] == f"{config.IG_PKG}@445.0.0.45.83"
     assert apkeep_call[-1] == str(config.APK_CACHE_DIR / "445.0.0.45.83")
-    install_call: list[str] = next(c for c in calls if c[0] == "adb")
+    install_call: list[str] = _first(calls, "adb")
     assert all("/445.0.0.45.83/" in arg for arg in install_call[4:])
 
 
@@ -234,11 +250,10 @@ def test_install_version_replaces_a_newer_install_in_place(monkeypatch: pytest.M
         d.ig_version = "445.0.0.45.83"  # what the downgrade installs
 
     d.install = downgrade
-    calls: list[list[str]] = []
-    _apk_run(monkeypatch, d, calls)
+    calls: list[list[str]] = _apk_run(monkeypatch, d)
     assert install.install_instagram_version(d, "445.0.0.45.83") == "445.0.0.45.83"
-    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{config.IG_PKG}@445.0.0.45.83"
-    install_call: list[str] = next(c for c in calls if c[0] == "adb")
+    assert _first(calls, "apkeep")[2] == f"{config.IG_PKG}@445.0.0.45.83"
+    install_call: list[str] = _first(calls, "adb")
     assert install_call[3:6] == ["install-multiple", "-r", "-d"]
 
 
@@ -247,8 +262,7 @@ def test_install_version_defaults_to_the_pinned_version_and_skips_when_already_i
 ) -> None:
     monkeypatch.setattr(config, "IG_APK_VERSION", "445.0.0.45.83")
     d: FakeDevice = FakeDevice({"home": home_screen()}, "launcher")  # already reports 445.0.0.45.83
-    calls: list[list[str]] = []
-    _apk_run(monkeypatch, d, calls)
+    calls: list[list[str]] = _apk_run(monkeypatch, d)
     assert install.install_instagram_version(d) == "445.0.0.45.83"
     assert calls == []
 
@@ -257,34 +271,27 @@ def test_install_version_raises_when_the_device_reports_another_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     d: FakeDevice = FakeDevice({"home": home_screen()}, "launcher", ig_version="446.0.0.49.77")
-    _apk_run(monkeypatch, d, [])  # the fake install leaves the version untouched
+    _apk_run(monkeypatch, d)  # the fake install leaves the version untouched
     with pytest.raises(device.DeviceNotReady, match="device reports 446.0.0.49.77"):
         install.install_instagram_version(d, "445.0.0.45.83")
 
 
 def test_ensure_logged_in_reuses_a_cached_apk(monkeypatch: pytest.MonkeyPatch) -> None:
-    xapk_dir: Path = config.APK_CACHE_DIR / "xapk"
-    xapk_dir.mkdir(parents=True)
-    (xapk_dir / f"{config.IG_PKG}.apk").write_bytes(b"base")
-    d: FakeDevice = FakeDevice({"home": home_screen()}, "launcher", installed=())
-    calls: list[list[str]] = []
-    _apk_run(monkeypatch, d, calls)
+    _cached_apk(f"{config.IG_PKG}.apk")
+    d: FakeDevice = _missing_ig()
+    calls: list[list[str]] = _apk_run(monkeypatch, d)
     navigation.ensure_logged_in(d)
     assert not any(c[0] == "apkeep" for c in calls)
-    install_call: list[str] = next(c for c in calls if c[0] == "adb")
+    install_call: list[str] = _first(calls, "adb")
     assert install_call[3] == "install"  # single apk: no -multiple
 
 
-def test_ensure_logged_in_raises_transiently_when_apkeep_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    d: FakeDevice = FakeDevice({}, "launcher", installed=())
-    _apk_run(monkeypatch, d, [], fail_on="apkeep")
-    with pytest.raises(device.DeviceNotReady):
-        navigation.ensure_logged_in(d)
-
-
-def test_ensure_logged_in_raises_transiently_when_install_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    d: FakeDevice = FakeDevice({}, "launcher", installed=())
-    _apk_run(monkeypatch, d, [], fail_on="adb")
+@pytest.mark.parametrize("fail_on", ["apkeep", "adb"])
+def test_ensure_logged_in_raises_transiently_when_a_step_of_the_install_fails(
+    monkeypatch: pytest.MonkeyPatch, fail_on: str
+) -> None:
+    d: FakeDevice = _missing_ig()
+    _apk_run(monkeypatch, d, fail_on=fail_on)
     with pytest.raises(device.DeviceNotReady):
         navigation.ensure_logged_in(d)
 
@@ -315,18 +322,6 @@ def test_an_app_that_dies_right_after_launch_is_not_logged_in() -> None:
     assert device.is_transient(exc.value)  # retried, with a logcat saved, like any device failure
 
 
-def test_login_page_with_too_few_fields_is_not_recognised_as_a_form(fast_offline: Path) -> None:
-    # The hints are there but only one EditText is: the Compose form is still building, or changed shape.
-    half_form: str = hierarchy(
-        node(cls="android.widget.TextView", text="Password", bounds=(0, 700, 1080, 740)),
-        node(cls="android.widget.EditText", bounds=(0, 750, 1080, 850)),
-        node(cls="android.widget.TextView", text="Forgot password?", bounds=(0, 1100, 1080, 1150)),
-    )
-    with pytest.raises(RuntimeError, match="form not recognised"):
-        navigation.ensure_logged_in(FakeDevice({"login": half_form}, "login"))
-    assert (fast_offline / "debug" / "login_hierarchy.xml").exists()
-
-
 def test_login_submits_with_enter_when_no_login_button_is_found() -> None:
     class EnterSubmits(FakeDevice):
         def press(self, key: str) -> None:
@@ -346,16 +341,11 @@ def test_login_submits_with_enter_when_no_login_button_is_found() -> None:
 
 
 def test_a_failing_pm_path_counts_as_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
-    class Flaky(FakeDevice):
-        def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
-            joined: str = " ".join(cmdargs) if isinstance(cmdargs, list) else cmdargs
-            if joined == f"pm path {IG_PKG}":
-                raise OSError("adb shell: closed")
-            return super().shell(cmdargs, timeout)
-
+    d: FakeDevice = _missing_ig()
+    d.shell_replies = {f"pm path {IG_PKG}": OSError("adb shell: closed")}
     monkeypatch.setattr(config, "IG_AUTO_INSTALL", False)
     with pytest.raises(RuntimeError, match="not installed"):
-        navigation.ensure_logged_in(Flaky({}, "launcher", installed=()))
+        navigation.ensure_logged_in(d)
 
 
 def test_an_install_that_leaves_instagram_missing_is_a_transient_device_failure(
@@ -367,7 +357,7 @@ def test_an_install_that_leaves_instagram_missing_is_a_transient_device_failure(
     monkeypatch.setattr(install, "install_instagram", install_nothing)
     exc: pytest.ExceptionInfo[device.DeviceNotReady]
     with pytest.raises(device.DeviceNotReady, match="still not present after install") as exc:
-        navigation.ensure_logged_in(FakeDevice({}, "launcher", installed=()))
+        navigation.ensure_logged_in(_missing_ig())
     assert device.is_transient(exc.value)
 
 
@@ -375,18 +365,13 @@ def test_an_install_that_leaves_instagram_missing_is_a_transient_device_failure(
 
 
 def test_fetch_raises_transiently_when_apkeep_leaves_nothing_behind(monkeypatch: pytest.MonkeyPatch) -> None:
-    def silent_apkeep(cmd: list[str], **kwargs: Unpack[RunOptions]) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(subprocess, "run", silent_apkeep)
+    fake_run(monkeypatch)
     with pytest.raises(device.DeviceNotReady, match="apkeep reported success but no"):
         install._fetch_instagram_apk()
 
 
 def test_fetch_raises_transiently_when_the_cache_holds_only_splits() -> None:
-    xapk_dir: Path = config.APK_CACHE_DIR / "xapk"
-    xapk_dir.mkdir(parents=True)
-    (xapk_dir / "config.arm64_v8a.apk").write_bytes(b"split")  # the base apk is missing
+    _cached_apk("config.arm64_v8a.apk", b"split")  # the base apk is missing
     with pytest.raises(device.DeviceNotReady, match="no base apk"):
         install._fetch_instagram_apk()
 
@@ -396,12 +381,12 @@ def test_fetch_raises_transiently_when_the_cache_holds_only_splits() -> None:
 
 def _outdated(
     monkeypatch: pytest.MonkeyPatch,
-    calls: list[list[str]],
     *,
     after: str = "home",
     version: str = "446.0.0.49.77",
-) -> FakeDevice:
-    """A device whose Instagram shows only the update screen, and goes to `after` once adb replaces it."""
+) -> tuple[FakeDevice, list[list[str]]]:
+    """A device whose Instagram shows only the update screen, and goes to `after` once adb replaces it,
+    with the list its install commands are recorded in."""
     d: FakeDevice = FakeDevice(
         {"update": text_screen("Update Instagram"), "home": home_screen()}, "update", ig_version=version
     )
@@ -411,19 +396,20 @@ def _outdated(
         d.screen = after
 
     d.install = replace
-    _apk_run(monkeypatch, d, calls)
+    calls: list[list[str]] = _apk_run(monkeypatch, d)
     monkeypatch.setattr(config, "IG_APK_VERSION", "")
-    return d
+    return d, calls
 
 
 def test_an_update_screen_installs_a_newer_validated_build_in_place(
     monkeypatch: pytest.MonkeyPatch, fast_offline: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    calls: list[list[str]] = []
-    d: FakeDevice = _outdated(monkeypatch, calls)
+    calls: list[list[str]]
+    d: FakeDevice
+    d, calls = _outdated(monkeypatch)
     navigation.ensure_logged_in(d)
-    assert next(c for c in calls if c[0] == "apkeep")[2] == f"{config.IG_PKG}@{igprofiles.DEFAULT_BUILD}"
-    assert next(c for c in calls if c[0] == "adb")[4:6] == ["-r", "-d"]
+    assert _first(calls, "apkeep")[2] == f"{config.IG_PKG}@{igprofiles.DEFAULT_BUILD}"
+    assert _first(calls, "adb")[4:6] == ["-r", "-d"]
     assert d.screen == "home"
     assert (fast_offline / "debug" / "update_hierarchy.xml").exists()
     assert (fast_offline / "debug" / "updated_hierarchy.xml").exists()
@@ -435,7 +421,7 @@ def test_an_update_without_a_recent_snapshot_goes_ahead_with_a_warning(
 ) -> None:
     monkeypatch.setattr(config, "SNAPSHOT_MAX_DAYS", 7)
     monkeypatch.setattr(config, "SNAPSHOT_DIR", fast_offline / "snapshots")
-    d: FakeDevice = _outdated(monkeypatch, [])
+    d: FakeDevice = _outdated(monkeypatch)[0]
     navigation.ensure_logged_in(d)
     assert d.screen == "home"
     warnings: list[str] = install.take_warnings()
@@ -446,11 +432,12 @@ def test_an_update_without_a_recent_snapshot_goes_ahead_with_a_warning(
 def test_latest_as_the_pinned_version_updates_to_the_newest_on_apkpure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[list[str]] = []
-    d: FakeDevice = _outdated(monkeypatch, calls, version="450.0.0.50.77")
+    calls: list[list[str]]
+    d: FakeDevice
+    d, calls = _outdated(monkeypatch, version="450.0.0.50.77")
     monkeypatch.setattr(config, "IG_APK_VERSION", "latest")
     navigation.ensure_logged_in(d)
-    assert next(c for c in calls if c[0] == "apkeep")[2] == config.IG_PKG
+    assert _first(calls, "apkeep")[2] == config.IG_PKG
 
 
 @pytest.mark.parametrize(
@@ -464,8 +451,9 @@ def test_latest_as_the_pinned_version_updates_to_the_newest_on_apkpure(
 def test_an_update_that_cannot_be_made_waits_for_a_person(
     setting: str, value: bool | str, version: str, match: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[list[str]] = []
-    d: FakeDevice = _outdated(monkeypatch, calls, version=version)
+    calls: list[list[str]]
+    d: FakeDevice
+    d, calls = _outdated(monkeypatch, version=version)
     monkeypatch.setattr(config, setting, value)
     with pytest.raises(
         RuntimeError, match=f"wants a human: 'Update Instagram' screen on {version}, and {match}"
@@ -475,7 +463,7 @@ def test_an_update_that_cannot_be_made_waits_for_a_person(
 
 
 def test_a_new_build_that_asks_for_an_update_too_waits_for_a_person(monkeypatch: pytest.MonkeyPatch) -> None:
-    d: FakeDevice = _outdated(monkeypatch, [], after="update")
+    d: FakeDevice = _outdated(monkeypatch, after="update")[0]
     with pytest.raises(RuntimeError, match="wants a human: 'Update Instagram' screen still showing on 450"):
         navigation.ensure_logged_in(d)
 
@@ -483,7 +471,7 @@ def test_a_new_build_that_asks_for_an_update_too_waits_for_a_person(monkeypatch:
 def test_an_update_that_leaves_instagram_in_the_background_is_a_device_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    d: FakeDevice = _outdated(monkeypatch, [], after="launcher")
+    d: FakeDevice = _outdated(monkeypatch, after="launcher")[0]
     d.launch_blocked = True
     with pytest.raises(device.DeviceNotReady, match="did not come to the foreground after the update"):
         navigation.ensure_logged_in(d)
@@ -492,8 +480,7 @@ def test_an_update_that_leaves_instagram_in_the_background_is_a_device_failure(
 def test_the_update_wording_in_a_feed_is_not_the_update_screen(monkeypatch: pytest.MonkeyPatch) -> None:
     caption: Node = node(cls="android.widget.TextView", text="Update Instagram", bounds=(0, 1000, 1080, 1100))
     d: FakeDevice = FakeDevice({"home": home_screen(extra=[caption])}, "home")
-    calls: list[list[str]] = []
-    _apk_run(monkeypatch, d, calls)
+    calls: list[list[str]] = _apk_run(monkeypatch, d)
     navigation.ensure_logged_in(d)
     assert calls == []
 

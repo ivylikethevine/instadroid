@@ -28,11 +28,13 @@ pushed back to the launcher, a run that parses nothing):
 - the relevant lines of `docker compose logs app`;
 - the instadroid release or commit, the Instagram build and profile, and the redroid image (all but
   the first are shown on `/status`);
-- the host OS and kernel (`uname -r`).
+- the host OS and kernel (`uname -r`);
+- for a parsing or navigation problem, the debug dump from `local/data/debug` (`last_hierarchy.xml`
+  and friends).
 
 Scrub account content first: logs, debug dumps and screenshots can contain real usernames, captions
-and photos. Never paste `.env`, `READER_REFRESH_URLS` or anything from `local/data/android`.
-[CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-bug) has more on debug dumps.
+and photos. Never paste `.env`, `READER_REFRESH_URLS` (it carries tokens) or anything from
+`local/data/android`.
 
 ## Unsupported setups
 

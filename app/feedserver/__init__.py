@@ -8,6 +8,7 @@ and imports nothing from the scraper: the database is the only thing the two sha
 /opml                     -> one-step bulk subscribe: every feed above, as an OPML outline
 /media/<file>             -> cropped post images
 /status                   -> plain-HTML health/status page
+/browse                   -> plain-HTML account list, timelines (?user=) and caption search (?q=)
 /health, /users           -> JSON (docs/openapi.json is the committed spec)
 /control                  -> the manual lock and scrape-now requests
 
@@ -19,6 +20,7 @@ FEED_TOKEN (or FEED_TOKEN_FILE) turns on auth for everything except /health, see
     render     timestamps, ETags, media URLs and images, captions
     entries    what each post, story and alert says, for either feed format
     feeds      /instagram.xml and .json, /stories.xml and .json, /users, /opml
+    browse     /browse
     control    /control
     status     /health, /status
 """
@@ -28,7 +30,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, control, feeds, settings, status
+from . import auth, browse, control, feeds, settings, status
 
 # uvicorn configures its loggers before importing this module, so a filter added here sticks.
 logging.getLogger("uvicorn.access").addFilter(auth.SkipHealthcheck())
@@ -52,5 +54,6 @@ settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=settings.MEDIA_DIR), name="media")
 app.middleware("http")(auth.require_token)
 app.include_router(feeds.router)
+app.include_router(browse.router)
 app.include_router(status.router)
 app.include_router(control.router)

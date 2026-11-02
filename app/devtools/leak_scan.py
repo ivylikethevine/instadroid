@@ -134,11 +134,7 @@ def from_database(path: Path) -> dict[str, str]:
         column: str
         kind: str
         for table, column, kind in _COLUMNS:
-            columns: set[str | None] = {
-                sqlrows.cell_str(r, "name")
-                for r in sqlrows.fetch_all(con.execute(f"PRAGMA table_info({table})"))
-            }
-            if column not in columns:
+            if column not in sqlrows.column_names(con, table):
                 continue
             row: sqlite3.Row
             for row in sqlrows.fetch_all(con.execute(f"SELECT DISTINCT {column} FROM {table}")):

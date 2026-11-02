@@ -1,9 +1,6 @@
 """redroid memory housekeeping: force-stopping Instagram around a run, the memory guard, OOM kill reporting."""
 
-import sqlite3
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import closing
-from pathlib import Path
 from typing import NoReturn
 
 import pytest
@@ -15,11 +12,17 @@ from instadroid import (
     scrape,
     uidevice,
 )
-from shared import sqlrows
+from shared.sqlrows import SqlValue
 
-from tests.deviceflows import StopLoop, feed_device, stop_after_first_sleep
+from tests.deviceflows import (
+    StopLoop,
+    feed_device,
+    recorded_run,
+    run_caps,
+    scrape_returns,
+    stop_after_first_sleep,
+)
 from tests.fakedevice import FakeDevice, Out
-from tests.support import fetch_row
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("fast_offline")
 
@@ -31,10 +34,7 @@ def test_force_stop_is_one_shell_call_and_best_effort() -> None:
 
     assert d.shell_calls == [f"am force-stop {pkg}" for pkg in (*device.CACHED_APP_SWEEP, config.IG_PKG)]
 
-    def raising_shell(cmdargs: str | list[str], timeout: float = 60) -> NoReturn:
-        raise RuntimeError("device offline")
-
-    d.shell = raising_shell
+    d.shell_replies = {"": RuntimeError("device offline")}
     device.force_stop(d, config.IG_PKG)  # must not raise
 
 
@@ -90,8 +90,7 @@ def test_redroid_memory_excludes_reclaimable_file_cache() -> None:
 
 
 def test_scrape_once_starts_and_ends_with_instagram_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    run_caps(monkeypatch, stories=0, scrolls=1)
     d: FakeDevice = feed_device()
     scrape.scrape_once(d, db.db_init())
     stops: list[int] = [i for i, c in enumerate(d.shell_calls) if c == f"am force-stop {config.IG_PKG}"]
@@ -118,7 +117,7 @@ def test_scrape_once_still_stops_instagram_when_the_run_raises(monkeypatch: pyte
 
 def test_memory_guard_stops_the_run_before_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MEMORY_GUARD_PERCENT", 85)
-    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    run_caps(monkeypatch, stories=0)
     # start, before stories, first screen: fine; second screen check: 2700 of 3072 MiB is 88%.
     d: FakeDevice = with_cgroup(
         feed_device(), [cgroup_output(900), cgroup_output(1200), cgroup_output(1500), cgroup_output(2700)]
@@ -133,8 +132,7 @@ def test_memory_guard_stops_the_run_before_the_limit(monkeypatch: pytest.MonkeyP
 
 def test_memory_guard_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "MEMORY_GUARD_PERCENT", 0)
-    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    run_caps(monkeypatch, stories=0, scrolls=1)
     metrics: db.RunMetrics = scrape.scrape_once(
         with_cgroup(feed_device(), [cgroup_output(3000)]), db.db_init()
     )["metrics"]
@@ -143,7 +141,7 @@ def test_memory_guard_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_memory_guard_skips_stories_when_already_over(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    run_caps(monkeypatch, scrolls=1)
     d: FakeDevice = with_cgroup(feed_device(), [cgroup_output(2900)])
     metrics: db.RunMetrics = scrape.scrape_once(d, db.db_init())["metrics"]
     assert metrics.get("new_stories") == 0
@@ -154,7 +152,7 @@ def test_memory_guard_skips_stories_when_already_over(monkeypatch: pytest.Monkey
 
 def test_run_time_budget_stops_the_run_early(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "RUN_MAX_MINUTES", 30)
-    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
+    run_caps(monkeypatch, stories=0)
     ticks: Iterator[float] = iter(
         [0.0, 10 * 60, 20 * 60, 31 * 60, 40 * 60]
     )  # start, stories, screen 0, 1, ...
@@ -173,8 +171,7 @@ def test_run_time_budget_stops_the_run_early(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_oom_kills_during_a_run_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "MAX_STORIES_PER_RUN", 0)
-    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    run_caps(monkeypatch, stories=0, scrolls=1)
     d: FakeDevice = with_cgroup(
         feed_device(), [cgroup_output(900, oom_kill=7), cgroup_output(1000, oom_kill=9)]
     )
@@ -185,31 +182,21 @@ def test_oom_kills_during_a_run_are_reported(monkeypatch: pytest.MonkeyPatch) ->
     assert "redroid OOM-killed 2 Android process(es)" in warning
 
 
-def test_main_records_memory_stats(fast_offline: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_records_memory_stats(monkeypatch: pytest.MonkeyPatch) -> None:
     stop_after_first_sleep(monkeypatch)
     monkeypatch.setattr(device, "connect_device", feed_device)
-    stats: scrape.RunStats = {
-        "new": 0,
-        "metrics": {"new_stories": 0, "warning": None, "mem_peak_mb": 1843, "oom_kills": 1},
-    }
-
-    def fake_scrape_once(d: uidevice.Device, con: sqlite3.Connection) -> scrape.RunStats:
-        return stats
-
-    monkeypatch.setattr(scrape, "scrape_once", fake_scrape_once)
+    scrape_returns(
+        monkeypatch,
+        {"new": 0, "metrics": {"new_stories": 0, "warning": None, "mem_peak_mb": 1843, "oom_kills": 1}},
+    )
     with pytest.raises(StopLoop):
         scrape.main()
-    con: sqlite3.Connection
-    with closing(sqlite3.connect(fast_offline / "posts.sqlite")) as con:
-        assert sqlrows.values(fetch_row(con.execute("SELECT mem_peak_mb, oom_kills FROM runs"))) == (1843, 1)
+    run: dict[str, SqlValue] = recorded_run()
+    assert (run["mem_peak_mb"], run["oom_kills"]) == (1843, 1)
 
 
 def test_redroid_memory_is_off_when_the_cgroup_read_itself_fails() -> None:
-    class NoShell(FakeDevice):
-        def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
-            raise RuntimeError("adb: device offline")
-
-    d: NoShell = NoShell({}, "launcher")
+    d: FakeDevice = FakeDevice({}, "launcher", shell_replies={"": RuntimeError("adb: device offline")})
     assert device._redroid_memory(d) is None
     guard: device.MemoryGuard = device.MemoryGuard(d)
     assert guard.exceeded() is None and guard.peak_mb() is None and guard.oom_kills() is None

@@ -3,7 +3,7 @@
 import heapq
 import math
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple, Protocol
 
@@ -236,25 +236,55 @@ def find_reshared(frame: Frame, posts: Sequence[PostImage]) -> tuple[PostImage, 
     return best
 
 
-def _post_images(con: sqlite3.Connection) -> Iterator[PostImage]:
-    """Every stored post's cover and slides that can still be read."""
+# A file's mtime in nanoseconds and its thumbnails; None for an image too featureless to place.
+type _Thumbnails = tuple[int, PostImage | None]
+
+# Thumbnails of the files read on the last pass, by file name. Each costs about 4 KiB of RSS, so the
+# cap keeps what stays resident between runs to about a quarter of the app container's 256 MiB. Every
+# pass reads every file, so a file past the cap is simply decoded each time.
+THUMBNAIL_CACHE_MAX: int = 16_000
+_thumbnails: dict[str, _Thumbnails] = {}
+
+
+def _read_thumbnails(post_id: str, name: str) -> _Thumbnails:
+    """A stored file's thumbnails, decoding it only when its mtime has changed. Raises OSError for a
+    file pruned from disk or no longer an image."""
+    path: Path = config.MEDIA_DIR / name
+    mtime: int = path.stat().st_mtime_ns
+    cached: _Thumbnails | None = _thumbnails.get(name)
+    if cached and cached[0] == mtime:
+        return cached
+    img: ImageFile.ImageFile
+    with Image.open(path) as img:
+        return mtime, post_image(post_id, img)
+
+
+def _post_images(con: sqlite3.Connection) -> list[PostImage]:
+    """Every stored post's cover and slides that can still be read. What the pass didn't read leaves
+    the cache, so it never outlives a stored file."""
+    global _thumbnails
     rows: list[sqlite3.Row] = sqlrows.fetch_all(
         con.execute(
             "SELECT id, media_file FROM posts WHERE media_file IS NOT NULL"
             " UNION ALL SELECT post_id, file FROM media"
         )
     )
+    posts: list[PostImage] = []
+    kept: dict[str, _Thumbnails] = {}
     row: sqlite3.Row
     for row in rows:
-        path: Path = config.MEDIA_DIR / sqlrows.must_str(row, 1)
+        post_id: str = sqlrows.must_str(row, 0)
+        name: str = sqlrows.must_str(row, 1)
         try:
-            img: ImageFile.ImageFile
-            with Image.open(path) as img:
-                post: PostImage | None = post_image(sqlrows.must_str(row, 0), img)
-        except OSError:  # pruned from disk, or not an image any more
+            read: _Thumbnails = _read_thumbnails(post_id, name)
+        except OSError:
             continue
-        if post:
-            yield post
+        if len(kept) < THUMBNAIL_CACHE_MAX:
+            kept[name] = read
+        if read[1]:
+            posts.append(read[1]._replace(post_id=post_id))
+    _thumbnails = kept
+    return posts
 
 
 def drop_reshared_stories(con: sqlite3.Connection, since: str) -> int:
@@ -266,7 +296,7 @@ def drop_reshared_stories(con: sqlite3.Connection, since: str) -> int:
     )
     if not stories:
         return 0
-    posts: list[PostImage] = list(_post_images(con))
+    posts: list[PostImage] = _post_images(con)
     dropped: int = 0
     row: sqlite3.Row
     for row in stories:

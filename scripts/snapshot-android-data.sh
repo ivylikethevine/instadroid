@@ -32,17 +32,18 @@ fi
 name="android-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
 mkdir -p local/data/backups
 echo "writing local/data/backups/$name (this can take a few minutes)"
-docker compose run --rm --no-deps --user 0:0 --entrypoint sh \
-  -v "$root/local/data:/data" init -c \
-  "tar -czf /data/backups/$name -C /data android android.image 2>/dev/null || tar -czf /data/backups/$name -C /data android"
+parts=(android)
+[ ! -e local/data/android.image ] || parts+=(android.image)
+docker compose run --rm --no-deps --user 0:0 --entrypoint tar \
+  -v "$root/local/data:/data" init -czf "/data/backups/$name" -C /data "${parts[@]}"
 ls -lh "local/data/backups/$name"
 
 if [ "$keep" -gt 0 ]; then
   # Newest first; everything past the first $keep is removed.
   mapfile -t old < <(ls -1t local/data/backups/android-*.tar.gz | tail -n +"$((keep + 1))")
-  for f in "${old[@]}"; do
-    echo "removing old snapshot $f"
+  if [ "${#old[@]}" -gt 0 ]; then
+    printf 'removing old snapshot %s\n' "${old[@]}"
     docker compose run --rm --no-deps --user 0:0 --entrypoint rm -v "$root/local/data:/data" init \
-      -f "/data/backups/$(basename "$f")"
-  done
+      -f "${old[@]/#local\/data//data}"
+  fi
 fi

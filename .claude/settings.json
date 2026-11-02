@@ -6,6 +6,7 @@
       "Bash(*scraper.py once*)",
       "Bash(*scraper.py scrape-now*)",
       "Bash(*scraper.py install*)",
+      "Bash(*scraper.py tune*)",
       "Bash(*new-profile baseline*)",
       "Bash(*new-profile restore*)"
     ]

@@ -138,8 +138,6 @@ def db_init() -> sqlite3.Connection:
             "alt_hash": "TEXT",
         },
     )
-    # Backfill for rows written before updated_at existed, and a no-op once that's done.
-    con.execute("UPDATE posts SET updated_at = scraped_at WHERE updated_at IS NULL")
     con.execute("CREATE INDEX IF NOT EXISTS posts_hash ON posts(hash)")
     con.execute("CREATE INDEX IF NOT EXISTS posts_alt_hash ON posts(alt_hash)")
     con.execute("CREATE INDEX IF NOT EXISTS posts_username_posted_at ON posts(username, posted_at)")
@@ -275,9 +273,7 @@ def _migrate(con: sqlite3.Connection) -> None:
 
 def _add_columns(con: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
     """ALTER TABLE ADD COLUMN for each {name: type} the table doesn't have yet."""
-    existing: set[sqlrows.SqlValue] = {
-        sqlrows.cell(r, 1) for r in sqlrows.fetch_all(con.execute(f"PRAGMA table_info({table})"))
-    }
+    existing: set[str] = sqlrows.column_names(con, table)
     col: str
     kind: str
     for col, kind in columns.items():
@@ -526,15 +522,8 @@ def rename_account(con: sqlite3.Connection, old: str, new: str) -> int:
     con.execute("DELETE FROM accounts WHERE username=?", (old,))
     # Keep the followed-accounts allowlist (if in use) in step with a rename too — otherwise every
     # post from `new` would be filtered out as "not followed" until the next scheduled refresh.
-    following_row: sqlite3.Row | None = sqlrows.fetch_one(
-        con.execute("SELECT updated_at FROM following WHERE username=?", (old,))
-    )
-    if following_row:
-        con.execute(
-            "INSERT INTO following (username, updated_at) VALUES (?, ?) ON CONFLICT(username) DO NOTHING",
-            (new, sqlrows.cell(following_row, "updated_at")),
-        )
-        con.execute("DELETE FROM following WHERE username=?", (old,))
+    con.execute("UPDATE OR IGNORE following SET username=? WHERE username=?", (new, old))
+    con.execute("DELETE FROM following WHERE username=?", (old,))
     con.execute("DELETE FROM rename_candidates WHERE old IN (?, ?) OR new IN (?, ?)", (old, new, old, new))
     con.commit()
     retention.discard_media(dropped_avatar)
@@ -664,10 +653,7 @@ def _migrate_accounts(con: sqlite3.Connection) -> None:
 
 def _migrate_story_retention(con: sqlite3.Connection) -> None:
     """Migration 3: drop stories.expires_at now that stories share RETAIN_DAYS with posts."""
-    cols: set[sqlrows.SqlValue] = {
-        sqlrows.cell(r, "name") for r in sqlrows.fetch_all(con.execute("PRAGMA table_info(stories)"))
-    }
-    if "expires_at" in cols:
+    if "expires_at" in sqlrows.column_names(con, "stories"):
         log("running one-time story-retention migration")
         con.execute("DROP INDEX IF EXISTS stories_expires_at")
         con.execute("ALTER TABLE stories DROP COLUMN expires_at")
@@ -780,6 +766,55 @@ def _migrate_merge_twins(con: sqlite3.Connection) -> None:
     log(f"twin-merge migration: merged {merged} twin row(s)")
 
 
+def _fts_drop(row: str) -> str:
+    """Trigger statements removing a post from the search index; `row` is OLD or NEW."""
+    return f"""
+        DELETE FROM posts_fts WHERE rowid = (SELECT fts_id FROM posts_fts_ids WHERE post_id = {row}.id);
+        DELETE FROM posts_fts_ids WHERE post_id = {row}.id;"""
+
+
+_FTS_ADD: str = """
+        INSERT INTO posts_fts_ids (post_id) SELECT NEW.id WHERE NEW.id IS NOT NULL;
+        INSERT INTO posts_fts (rowid, caption)
+            SELECT fts_id, NEW.caption FROM posts_fts_ids WHERE post_id = NEW.id;"""
+
+
+def _migrate_search_index(con: sqlite3.Connection) -> None:
+    """Add the caption search index, kept in step by triggers, and fill it from the stored posts.
+
+    It's keyed through posts_fts_ids because posts has no INTEGER PRIMARY KEY: VACUUM and INSERT OR
+    REPLACE both change its rowids, so an index on them would drift. For the same reason the insert
+    trigger clears any entry for the id first: INSERT OR REPLACE (write_merged()) fires no delete trigger."""
+    log("running one-time search index migration")
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS posts_fts_ids (fts_id INTEGER PRIMARY KEY, post_id TEXT NOT NULL UNIQUE)"
+    )
+    con.execute("CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(caption)")
+    con.execute(
+        f"CREATE TRIGGER IF NOT EXISTS posts_fts_insert AFTER INSERT ON posts BEGIN{_fts_drop('NEW')}{_FTS_ADD} END"
+    )
+    con.execute(
+        "CREATE TRIGGER IF NOT EXISTS posts_fts_update AFTER UPDATE OF id, caption ON posts"
+        f" BEGIN{_fts_drop('OLD')}{_FTS_ADD} END"
+    )
+    con.execute(
+        f"CREATE TRIGGER IF NOT EXISTS posts_fts_delete AFTER DELETE ON posts BEGIN{_fts_drop('OLD')} END"
+    )
+    # All inside SQLite, so the size of the history costs no memory here; a retry starts over.
+    con.execute("DELETE FROM posts_fts")
+    con.execute("DELETE FROM posts_fts_ids")
+    con.execute("INSERT INTO posts_fts_ids (post_id) SELECT id FROM posts WHERE id IS NOT NULL")
+    con.execute(
+        "INSERT INTO posts_fts (rowid, caption)"
+        " SELECT fts_id, caption FROM posts_fts_ids JOIN posts ON id = post_id"
+    )
+
+
+def _migrate_updated_at(con: sqlite3.Connection) -> None:
+    """Give rows from before posts.updated_at existed the time they were first seen."""
+    con.execute("UPDATE posts SET updated_at = scraped_at WHERE updated_at IS NULL")
+
+
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_dedupe,
     _migrate_accounts,
@@ -788,6 +823,8 @@ MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_rehash,
     _migrate_alt_hash,
     _migrate_merge_twins,
+    _migrate_search_index,
+    _migrate_updated_at,
 )
 
 

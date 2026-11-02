@@ -22,11 +22,11 @@ what an agent needs beyond it.
 
 From the repository root, with the dev venv set up
 ([CONTRIBUTING.md](docs/CONTRIBUTING.md#development-setup)), `scripts/check.sh` runs the same
-commands CI's blocking jobs run, grouped as those jobs are (`scripts/check.sh --help` lists them):
+commands CI's blocking jobs run (`scripts/check.sh --help` lists the groups):
 
 ```bash
-scripts/check.sh --install   # once: tools.txt's pinned actionlint, shellcheck, hadolint, lychee, zizmor
-scripts/check.sh             # everything: python, test, audit, shell, docs, workflows, docker
+scripts/check.sh --install   # once: tools.txt's pinned tools
+scripts/check.sh             # everything
 scripts/check.sh --fast      # python + test, the inner loop for a Python change
 scripts/check.sh docs        # one group (or one check, e.g. `typos`)
 ```
@@ -45,7 +45,7 @@ The rules and the incidents behind them are in
   redroid images at the same volume; give another version its own path (e.g.
   `./local/data/android-15`). The `init` service's guard (`scripts/guard-android-data.sh`) refuses
   a mismatch; don't route around it by deleting `local/data/android.image`.
-- **Ask the user before any device-driving run**: `scraper.py login`, `once`, `scrape-now`, `install`, a manual
+- **Ask the user before any device-driving run**: `scraper.py login`, `once`, `scrape-now`, `install`, `tune`, a manual
   scrape, `new-profile baseline` and `new-profile restore` (`.claude/settings.json` asks for these).
   First check `docker stats` headroom and force-stop Instagram. `new-profile baseline` checks headroom
   and refuses while the `app` service runs, but that doesn't replace asking; its other subcommands
@@ -82,66 +82,36 @@ after any device failure (`local/data/debug/logcat_<time>.txt`), so check there 
 `scripts/diagnose.sh` runs this triage, plus a host `dmesg` check for failures before adb is even up,
 and prints the matching fix.
 
-**`docker logs ig-redroid` stays almost empty even during a real startup failure, by design.**
-redroid's `ENTRYPOINT` is Android's `/init`, which (privileged) writes to the _host's_ kernel ring
-buffer, so a binder-level or pre-`adb` crash only shows up in host `dmesg`/`journalctl -k`. No
-`androidboot.*` flag changes this. `scripts/diagnose.sh` checks both sources.
+**`docker logs ig-redroid` stays almost empty even during a real startup failure, by design.** A
+pre-`adb` crash only shows up in host `dmesg` ([docs/INCIDENTS.md](docs/INCIDENTS.md)).
 
 ### Recovering a corrupted `/data`
 
 **A corrupted `/data` can look like "redroid still works, just slow".** The pattern: `adb root` (this
 image's adbd runs unauthenticated, `ro.adb.secure=0`), move the bad file aside (never delete it),
 restart the container; Android regenerates it on next boot. App state (login session, installed APK)
-lives elsewhere in `/data` and survives. Known cases, each written up in
-[docs/INCIDENTS.md](docs/INCIDENTS.md):
-
-- `Bad operation #N` from `AppOpsService.readUidOps`, system_server crash loop →
-  `mv /data/system/appops.xml /data/system/appops.xml.corrupt-bak`.
-- `Version mismatch in Idmap`, `idmap2d` restarting, boot taking minutes →
-  `scripts/reset-resource-cache.sh` (run that first if boot is slow and `idmap` shows up in logcat).
-- `Can't downgrade database` in `com.android.phone`, Instagram pushed back to the launcher mid-scrape
-  → `am force-stop com.android.phone`, then move `telephony.db`, `mmssms.db`,
-  `carrierIdentification.db` and their journals aside, in
-  `/data/user_de/0/com.android.providers.telephony/databases/` (not `/data/data`).
-- `There must be exactly one installer; found []` → move
-  `/data/system/users/0/package-restrictions.xml` aside; that re-enables every disabled app, so
-  re-run `scripts/tune-android.sh` afterward.
-- system_server deadlocked in `PermissionPolicyService.grantOrUpgradeDefaultRuntimePermissionsIfNeeded`
-  and Watchdog-killed every few minutes, never reaching `sys.boot_completed` (a code-level hang;
-  resetting `package-restrictions.xml` alone doesn't fix it) → move `/data/system`,
-  `/data/system_ce` and `/data/system_de` aside. Leave `/data/data` alone: Instagram's login survives.
-  The orphaned Instagram install is reinstalled automatically by `ensure_logged_in()`
-  (`app/instadroid/navigation.py`, via `apkeep`, cached under `local/data/apk`; `IG_AUTO_INSTALL`
-  opts out).
+lives elsewhere in `/data` and survives. Each known case and its fix is a row of
+`app/instadroid/crash_signatures.tsv`, which `scripts/diagnose.sh` prints, with the write-up in
+[docs/INCIDENTS.md](docs/INCIDENTS.md).
 
 Before a risky recovery step, stop redroid and snapshot `/data` with
 `scripts/snapshot-android-data.sh`.
 
 ### Memory
 
-**This container's Android never reclaims memory on its own.** It sees the host's full RAM, not the
-cgroup limit, so `lmkd` never trips, and cached apps and a closed-but-running Instagram stay
-resident. So it's done explicitly:
-
-- The first-connect tuning (`app/instadroid/tune.py`, the list in `tune_packages.txt`, and
-  `scripts/tune-android.sh` by hand) `pm disable-user`s the unused AOSP/Google apps. Deliberately left enabled:
-  `com.android.settings`, `com.android.provision`/`com.android.managedprovisioning` (may need to run
-  after a `/data/system` reset), and anything telephony/Bluetooth/secure-element-related.
-- `scrape_once()` (`app/instadroid/scrape.py`) force-stops Instagram and the cached apps at the start
-  and end of every run, the end in a `finally`; `scraper.py login` force-stops Instagram when it
-  finishes.
+**This container's Android never reclaims memory on its own.** `lmkd` never trips, so the tuning
+disables unused apps and each run force-stops apps explicitly
+([docs/OPERATIONS.md](docs/OPERATIONS.md), [docs/INCIDENTS.md](docs/INCIDENTS.md)). Keep
+`com.android.settings`, `com.android.provision`/`com.android.managedprovisioning` and anything
+telephony, Bluetooth or secure-element related enabled.
 
 **A `pm disable-user` change can pass a live test and crash-loop the very next boot.** Some AOSP
 roles (the installer here) are only validated during `PackageManagerService` startup. Test any
 change to the disable list against a full cold restart, not just the already-booted instance you
 disabled it on.
 
-**Counting file cache makes the memory guard stop healthy runs.** The guard (`device.MemoryGuard`,
-`MEMORY_GUARD_PERCENT`, default 85) reads redroid's cgroup v2 files through adb and counts usage like
-`docker stats` does, excluding `inactive_file`; counting that cache once stopped a run far below real
-pressure. It checks before stories and every screen, stops a run early with a warning past the
-threshold, and records `runs.mem_peak_mb` and `runs.oom_kills`; any OOM kill is a run warning. Keep
-that accounting if you touch it.
+**Counting file cache makes the memory guard stop healthy runs.** `device.MemoryGuard` counts usage
+like `docker stats` does, excluding `inactive_file`. Keep that accounting if you touch it.
 
 ### Device-driving runs
 
@@ -172,7 +142,7 @@ stops each OOM kill from dumping every process to the kernel log.
 - Image compatibility history lives in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), dated incident
   write-ups in [docs/INCIDENTS.md](docs/INCIDENTS.md), and dated device runs (with peak memory) in
   [docs/RUNS.md](docs/RUNS.md), newest at the bottom. A new rule from an incident goes in
-  CONTRIBUTING's device-run rules and here, kept short, with the story in INCIDENTS.
+  CONTRIBUTING's device-run rules, with the story in INCIDENTS; only a trap an agent would hit goes here.
 - No Jekyll front matter in any Markdown file: the site is built from the repository root
   (`_config.yml`), with `README.md` as its home page.
 
@@ -188,9 +158,8 @@ stops each OOM kill from dumping every process to the kernel log.
 - **Pins.** Every action is pinned to a commit SHA with a version comment. Python dependencies are
   hashed pip-compile locks: edit the `.in` files and regenerate app first
   ([CONTRIBUTING.md](docs/CONTRIBUTING.md#development-setup)). markdownlint-cli2 and prettier are
-  locked in `.github/package-lock.json`. The CI tools (actionlint, shellcheck, hadolint, trivy,
-  lychee) are sha256-pinned rows in `.github/actions/setup-tool/tools.txt`; move a pin there, not in
-  a workflow. Images are pinned by digest (the Dockerfile's base, and compose's redroid and FreshRSS).
+  locked in `.github/package-lock.json`. The CI tools are sha256-pinned rows in
+  `.github/actions/setup-tool/tools.txt`; move a pin there, not in a workflow. Images are pinned by digest (the Dockerfile's base, and compose's redroid and FreshRSS).
   `apkeep` is pinned by URL and checksum in `app/Dockerfile`'s `ADD`, which `new-builds.yml` reads,
   so keep that line's shape. Dependabot opens no version-update pull request: `tool-versions.yml`
   drift-checks every pin into one tracking issue, and each bump is a hand edit.

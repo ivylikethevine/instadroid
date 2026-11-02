@@ -8,7 +8,7 @@ import pytest
 from instadroid import config, db, device, recording, scrape, uidevice
 from shared import sqlrows
 
-from tests.deviceflows import feed_device
+from tests.deviceflows import feed_device, run_caps, u2_connect_returns
 from tests.fakedevice import IG_PKG, LAUNCHER_PKG, FakeDevice, hierarchy, node
 from tests.replaydevice import ReplayDevice, load_tape, same_action
 
@@ -22,8 +22,7 @@ def _post_ids(con: sqlite3.Connection) -> list[str]:
 
 
 def test_a_recorded_run_replays_to_the_same_posts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "MAX_CAROUSEL_SLIDES", 1)
-    monkeypatch.setattr(config, "MAX_SCROLLS", 1)
+    run_caps(monkeypatch, slides=1, scrolls=1)
     recorded: sqlite3.Connection = db.db_init()
     first: scrape.RunStats = scrape.scrape_once(
         recording.Recorder(feed_device(), tmp_path / "tape"), recorded
@@ -132,15 +131,7 @@ def test_connecting_with_a_record_dir_wraps_the_device(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     d: FakeDevice = FakeDevice(_screens(), "a")
-
-    def connect(addr: str, timeout: float = 0) -> str:
-        return "connected"
-
-    def fake_u2(addr: str) -> FakeDevice:
-        return d
-
-    monkeypatch.setattr(device.adbutils.adb, "connect", connect)
-    monkeypatch.setattr(device.u2, "connect", fake_u2)
+    u2_connect_returns(monkeypatch, d)
     monkeypatch.setattr(config, "RECORD_DIR", str(tmp_path))
     recorded: uidevice.Device = device.connect_device()
     assert isinstance(recorded, recording.Recorder)

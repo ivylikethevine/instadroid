@@ -3,15 +3,13 @@
 # <out-dir>/coverage.json (the total from coverage's data file) and <out-dir>/tests.json (tests passed,
 # from the JUnit report). coverage.yml uploads them as the `coverage-badge` artifact, which pages.yml
 # serves as badges/*.json. Either figure missing is written as "not measured" rather than failing, so
-# a partial run still publishes what it has. --not-measured writes only that fallback for the named
-# badge, with no run and no Python: pages.yml's stand-in for a missing or malformed artifact.
+# a partial run still publishes what it has.
 #
 # Usage: .github/scripts/coverage_badges.sh <junit.xml> <out-dir>
-#        .github/scripts/coverage_badges.sh --not-measured <out-dir> <badge>   (coverage or tests)
 # Run from the repository root in the dev venv (it reads pyproject.toml and coverage's data file).
 set -euo pipefail
 
-usage="usage: $0 <junit.xml> <out-dir> | --not-measured <out-dir> <badge>"
+usage="usage: $0 <junit.xml> <out-dir>"
 
 # badge <file> <label> <message> <color>
 badge() {
@@ -19,13 +17,6 @@ badge() {
     "$2" "$3" "$4" >"$out/$1"
   echo "$2 badge: $3"
 }
-
-if [ "${1:-}" = --not-measured ]; then
-  out="${2:?$usage}"
-  mkdir -p "$out"
-  badge "${3:?$usage}.json" "$3" "not measured" lightgrey
-  exit 0
-fi
 
 junit="${1:?$usage}"
 out="${2:?$usage}"

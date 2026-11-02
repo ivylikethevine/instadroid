@@ -7,40 +7,19 @@ import pytest
 from instadroid import config, db, device, diagnostics
 from shared import sqlrows
 
-from tests.fakedevice import FakeDevice, Out
+from tests.fakedevice import FakeDevice
 from tests.support import fetch_row
-
-
-class VersionedDevice(FakeDevice):
-    def __init__(self) -> None:
-        super().__init__({}, "launcher")
-
-    def shell(self, cmdargs: str | list[str], timeout: float = 60) -> Out:
-        if isinstance(cmdargs, list):
-            if cmdargs[:2] == ["dumpsys", "package"]:
-                return Out(
-                    "Packages:\n  Package [com.instagram.android]\n    versionCode=385111379\n"
-                    "    versionName=445.0.0.45.83\n"
-                )
-            return Out("")
-        props: dict[str, str] = {
-            "getprop ro.build.version.release": "13",
-            "getprop ro.build.version.sdk": "33",
-        }
-        return Out(props.get(cmdargs, ""))
 
 
 def test_device_snapshot_records_instagram_version_and_image(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDROID_IMAGE", "erstt/redroid:13.0.0_ndk_ChromeOS")
-    snapshot: device.DeviceSnapshot = device.device_snapshot(VersionedDevice())
+    snapshot: device.DeviceSnapshot = device.device_snapshot(FakeDevice({}, "launcher"))
     assert snapshot.get("android_release") == "13"
     assert snapshot.get("ig_version") == "445.0.0.45.83"
     assert snapshot.get("redroid_image") == "erstt/redroid:13.0.0_ndk_ChromeOS"
 
 
-def test_record_run_stores_versions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
-    con: sqlite3.Connection = db.db_init()
+def test_record_run_stores_versions(con: sqlite3.Connection) -> None:
     db.record_run(
         con, "2026-09-11T00:00:00+00:00", "2026-09-11T00:05:00+00:00", 0, None,
         {"ig_version": "445.0.0.45.83", "redroid_image": "img:tag"},

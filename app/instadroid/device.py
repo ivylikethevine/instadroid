@@ -6,7 +6,7 @@ import os
 import random
 import re
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
@@ -14,12 +14,13 @@ from weakref import WeakKeyDictionary
 
 import adbutils
 import uiautomator2 as u2
+from igprofiles.base import StrKey
 from shared import env
 from uiautomator2.exceptions import DeviceError as U2DeviceError
 
 from . import config, recording, tune, uidevice, versioning
 from .common import log
-from .versioning import versioned
+from .versioning import SELECTORS, versioned
 
 
 class DeviceSnapshot(TypedDict, total=False):
@@ -93,14 +94,26 @@ def instagram_version(d: uidevice.Device, *, fresh: bool = False) -> str | None:
     if not fresh and d in _ig_versions:
         return _ig_versions[d]
     try:
-        m: re.Match[str] | None = re.search(
-            r"versionName=(\S+)", d.shell(["dumpsys", "package", config.IG_PKG]).output or ""
-        )
+        output: str = d.shell(["dumpsys", "package", config.IG_PKG]).output or ""
     except Exception:
         return None
     version: str | None
-    version = _ig_versions[d] = m.group(1) if m else None
+    version = _ig_versions[d] = parse_version_name(output)
     return version
+
+
+def parse_version_name(dumpsys: str) -> str | None:
+    """The versionName in `dumpsys package` output, or None."""
+    m: re.Match[str] | None = re.search(r"versionName=(\S+)", dumpsys)
+    return m.group(1) if m else None
+
+
+_SNAPSHOT_PROPS: tuple[str, ...] = (
+    "ro.build.version.release",
+    "ro.build.version.sdk",
+    "ro.product.name",
+    "ro.build.product",
+)
 
 
 def device_snapshot(d: uidevice.Device) -> DeviceSnapshot:
@@ -108,12 +121,15 @@ def device_snapshot(d: uidevice.Device) -> DeviceSnapshot:
     installed Instagram versionName, and the redroid image tag compose passes in — so "which
     Instagram update broke the selectors" is a lookup. Uses plain adb shell calls rather than
     uiautomator2's jsonrpc info, so a wedged automation service can't also blank this out."""
+    try:
+        # One shell: getprop prints a line for each property, an empty one for an unset property.
+        output: str = d.shell("; ".join(f"getprop {name}" for name in _SNAPSHOT_PROPS)).output
+    except Exception:
+        output = ""
+    values: dict[str, str] = dict(zip(_SNAPSHOT_PROPS, output.splitlines(), strict=False))
 
     def prop(name: str) -> str | None:
-        try:
-            return d.shell(f"getprop {name}").output.strip() or None
-        except Exception:
-            return None
+        return values.get(name, "").strip() or None
 
     return {
         "android_release": prop("ro.build.version.release"),
@@ -249,20 +265,44 @@ def human_scroll_list(d: uidevice.Device) -> None:
     human_scroll(d, start=(0.55, 0.65), distance=(0.15, 0.25))
 
 
-def first(d: uidevice.Device, **kinds: Iterable[str]) -> uidevice.Selector | None:
+def by_id(d: uidevice.Device, key: StrKey, *, anchored: bool = False, **also: str) -> uidevice.Selector:
+    """The selector for the resource id SELECTORS[key] in any package, with `$` closing the pattern
+    when `anchored`."""
+    return d(resourceIdMatches=f".*:id/{SELECTORS[key]}{'$' if anchored else ''}", **also)
+
+
+def _any_of(kind: str, values: Sequence[str]) -> dict[str, str]:
+    """One regex selector for what `kind` ("text", "description" or "textContains") finds with any of
+    `values`. UiSelector matches a regex against the whole text; textContains ignores case and sees
+    across lines, hence its flags. re.escape() only adds a backslash before non-letters, which Android's
+    regex reads as that character too."""
+    alternatives: str = "|".join(re.escape(v) for v in values)
+    if kind == "textContains":
+        return {"textMatches": f"(?is).*(?:{alternatives}).*"}
+    return {f"{kind}Matches": alternatives}
+
+
+def match(d: uidevice.Device, kind: str, values: Sequence[str], timeout: float) -> str | None:
+    """The first of `values`, in list order, that selector `kind` finds on screen, or None. One regex
+    query waits up to `timeout` per candidate and returns on the first hit, so only a real miss waits
+    it out; an instant check of each candidate then picks the match."""
+    if not values or not d(**_any_of(kind, values)).exists(timeout=timeout * len(values)):
+        return None
+    return next((v for v in values if d(**{kind: v}).exists()), None)
+
+
+def first(d: uidevice.Device, **kinds: Sequence[str]) -> uidevice.Selector | None:
     """Return the first existing selector among the given candidate lists."""
     kind: str
-    values: Iterable[str]
+    values: Sequence[str]
     for kind, values in kinds.items():
-        v: str
-        for v in values:
-            sel: uidevice.Selector = d(**{kind: v})
-            if sel.exists(timeout=1):
-                return sel
+        v: str | None
+        if v := match(d, kind, values, 1):
+            return d(**{kind: v})
     return None
 
 
-# Cached-tier system apps left enabled by tune-android.sh (see there for why: com.android.settings
+# Cached-tier system apps left enabled by the tuning (tune_packages.txt says why: com.android.settings
 # is core, the rest may be needed again after a /data reset or a real permission/keychain prompt),
 # but that this container's lmkd never reclaims on its own — it judges free memory against the
 # host, not the container's mem_limit, so a once-launched cached app just sits there for the rest

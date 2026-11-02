@@ -11,7 +11,7 @@ from igprofiles.screens import screen_of_dump
 from PIL import Image
 from shared.errors import short_error
 
-from . import config, uidevice
+from . import adbcli, config, uidevice
 from .common import log
 
 _captured: dict[str, int] = {}  # screen -> pairs saved to PROFILE_CAPTURE_DIR by this process
@@ -115,12 +115,8 @@ def save_failure_logcat(error: str) -> Path | None:
     rather than the uiautomator2 connection, which is often exactly what failed. Best-effort: a device
     too far gone for adb just gets a log line."""
     try:
-        out: subprocess.CompletedProcess[str] = subprocess.run(
-            ["adb", "-s", config.ADB_ADDR, "logcat", "-d", "-v", "threadtime"],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=config.LOGCAT_TIMEOUT,
+        out: subprocess.CompletedProcess[str] = adbcli.adb_call(
+            ["logcat", "-d", "-v", "threadtime"], config.ADB_ADDR, config.LOGCAT_TIMEOUT
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         log("WARN: could not read logcat after the failure:", repr(e))

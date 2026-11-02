@@ -103,12 +103,11 @@ def _unknown_hooks(profile: BaseProfile) -> list[str]:
     return sorted(
         a
         for a in dir(profile)
-        if not a.startswith("_") and a not in base and _is_method(profile, a) and a not in _VERSIONED
+        if not a.startswith("_")
+        and a not in base
+        and callable(getattr(profile, a, None))
+        and a not in _VERSIONED
     )
-
-
-def _is_method(profile: BaseProfile, name: str) -> bool:
-    return callable(getattr(profile, name, None))
 
 
 def activate_profile(installed: str | None) -> None:

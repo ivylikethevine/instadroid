@@ -1,30 +1,31 @@
-"""What used to be two manual first-time steps, done by the app on its first connect after each
-start: waiting for Android to finish booting, and the device tuning scripts/tune-android.sh does
-by hand (animations off, sync and location off, the screen never sleeping, the timezone, and the
-unused Google/AOSP apps in tune_packages.txt disabled so they never sit resident: CLAUDE.md,
-"Memory"). Every command is idempotent, so running it on every start costs one batched adb round
-trip and changes nothing on an already-tuned device."""
+"""What the app does on its first connect after each start: waiting for Android to finish booting, and
+the device tuning `scraper.py tune` also runs by hand (animations off, sync and location off, the screen
+never sleeping, the timezone, and the unused Google/AOSP apps in tune_packages.txt disabled so they never
+sit resident: CLAUDE.md, "Memory"). Every command is idempotent, so running it on every start costs one
+batched adb round trip and changes nothing on an already-tuned device."""
 
 import shlex
 import subprocess
 import time
 from pathlib import Path
 
-from . import config, uidevice
+from . import adbcli, config, uidevice
 from .common import log
 
 PACKAGES_FILE: Path = Path(__file__).with_name("tune_packages.txt")
 
 
-def load_packages(path: Path = PACKAGES_FILE) -> list[str]:
-    """The packages to `pm disable-user`, from the file scripts/tune-android.sh reads too."""
+def load_packages() -> list[str]:
+    """The packages to `pm disable-user`."""
     return [
-        line.strip() for line in path.read_text().splitlines() if line.strip() and not line.startswith("#")
+        line.strip()
+        for line in PACKAGES_FILE.read_text().splitlines()
+        if line.strip() and not line.startswith("#")
     ]
 
 
-def tune_commands(timezone: str = "", packages: list[str] | None = None) -> list[str]:
-    """The device shell commands, in order, that tuning runs: the same ones as scripts/tune-android.sh."""
+def tune_commands(timezone: str, packages: list[str]) -> list[str]:
+    """The device shell commands, in order, that tuning runs."""
     commands: list[str] = []
     if timezone:
         commands.append(f"service call alarm 3 s16 {shlex.quote(timezone)}")
@@ -36,7 +37,7 @@ def tune_commands(timezone: str = "", packages: list[str] | None = None) -> list
         "settings put system screen_off_timeout 2147483647",
         "settings put secure location_mode 0",
     ]
-    commands += [f"pm disable-user --user 0 {p}" for p in (load_packages() if packages is None else packages)]
+    commands += [f"pm disable-user --user 0 {p}" for p in packages]
     return commands
 
 
@@ -58,7 +59,7 @@ def tune_device(d: uidevice.Device, *, force: bool = False) -> bool:
     try:
         out: str = d.shell(script, timeout=120).output or ""
     except Exception as e:
-        log("WARN: device tuning failed (scripts/tune-android.sh does the same by hand):", repr(e))
+        log("WARN: device tuning failed (`scraper.py tune` runs it again by hand):", repr(e))
         return False
     _tuned = True
     marks: list[str] = out.split()
@@ -83,11 +84,8 @@ def wait_for_boot(addr: str, timeout: float) -> bool:
             _: subprocess.CompletedProcess[str] = subprocess.run(
                 ["adb", "connect", addr], capture_output=True, text=True, timeout=15
             )
-            out: subprocess.CompletedProcess[str] = subprocess.run(
-                ["adb", "-s", addr, "shell", "getprop", "sys.boot_completed"],
-                capture_output=True,
-                text=True,
-                timeout=15,
+            out: subprocess.CompletedProcess[str] = adbcli.adb_call(
+                ["shell", "getprop", "sys.boot_completed"], addr, 15
             )
             booted: bool = out.returncode == 0 and out.stdout.strip() == "1"
         except OSError, subprocess.TimeoutExpired:

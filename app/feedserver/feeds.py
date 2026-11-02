@@ -10,6 +10,8 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from feedgen.entry import FeedEntry
 from feedgen.feed import FeedGenerator
+from shared.captions import profile_url
+from shared.jsonvalues import JSON
 
 from . import queries, render, settings
 from .entries import Entry, alert_entries, post_entries, story_entries
@@ -25,8 +27,7 @@ KINDS: dict[str, str] = {
     "post": "post",
 }
 JSON_FEED: str = "application/feed+json"
-
-type Json = str | int | float | bool | None | list[Json] | dict[str, Json]
+INSTAGRAM_HOME: str = "https://www.instagram.com/"
 
 
 def _kinds(kind: str | None) -> tuple[str, ...]:
@@ -73,8 +74,8 @@ def _atom(feed_url: str, title: str, entries: list[Entry], etag: str) -> Respons
     return Response(fg.atom_str(pretty=True), media_type="application/atom+xml", headers={"ETag": etag})
 
 
-def _json_item(e: Entry) -> dict[str, Json]:
-    item: dict[str, Json] = {
+def _json_item(e: Entry) -> dict[str, JSON]:
+    item: dict[str, JSON] = {
         "id": e.id,
         "url": e.url,
         "title": e.title,
@@ -86,7 +87,7 @@ def _json_item(e: Entry) -> dict[str, Json]:
     if e.image:
         item["image"] = render.media_url(e.image)
     if e.author:
-        author: dict[str, Json] = {"name": e.author, "url": e.author_url}
+        author: dict[str, JSON] = {"name": e.author, "url": e.author_url}
         if e.avatar:
             author["avatar"] = render.media_url(e.avatar)
         item["authors"] = [author]
@@ -95,7 +96,7 @@ def _json_item(e: Entry) -> dict[str, Json]:
 
 def _json(feed_url: str, title: str, home: str, entries: list[Entry], etag: str) -> Response:
     """A JSON Feed 1.1 document (https://www.jsonfeed.org/version/1.1/)."""
-    body: dict[str, Json] = {
+    body: dict[str, JSON] = {
         "version": "https://jsonfeed.org/version/1.1",
         "title": title,
         "home_page_url": home,
@@ -143,7 +144,7 @@ def _posts_feed(
         entries: list[Entry] = alert_entries(alerts) + post_entries(con, queries.posts(con, where, limit))
     feed_url: str = render.feed_url(f"/instagram.{fmt}", token=False, user=user, kind=kind, since=since, q=q)
     title: str = f"Instagram — {user}" if user else "Instagram — Following"
-    home: str = render.profile_url(user) if user else "https://www.instagram.com/"
+    home: str = profile_url(user) if user else INSTAGRAM_HOME
     return _respond(fmt, feed_url, title, home, entries, etag)
 
 
@@ -157,7 +158,7 @@ def _stories_feed(request: Request, fmt: str, limit: int) -> Response:
             return not_modified
         entries: list[Entry] = story_entries(queries.stories(con, limit))
     feed_url: str = f"{settings.PUBLIC_URL}/stories.{fmt}"
-    return _respond(fmt, feed_url, "Instagram — Stories", "https://www.instagram.com/", entries, etag)
+    return _respond(fmt, feed_url, "Instagram — Stories", INSTAGRAM_HOME, entries, etag)
 
 
 _KIND_HELP: str = "Comma-separated: photo, carousel, reel (or video), post."
@@ -240,6 +241,10 @@ def users() -> list[str]:
         return queries.usernames(con)
 
 
+def _feed_outline(text: str, xml_url: str, html_url: str) -> Element:
+    return Element("outline", type="rss", text=text, title=text, xmlUrl=xml_url, htmlUrl=html_url)
+
+
 @router.get(
     "/opml",
     response_class=Response,
@@ -268,28 +273,14 @@ def opml(request: Request, aggregate: bool = True) -> Response:
     SubElement(head, "dateCreated").text = datetime.now(UTC).strftime("%a, %d %b %Y %H:%M:%S GMT")
     body: Element = SubElement(root, "body")
     category: Element = SubElement(body, "outline", text="Instagram", title="Instagram")
-
-    def _feed_outline(parent: Element, text: str, xml_url: str, html_url: str) -> None:
-        SubElement(
-            parent,
-            "outline",
-            type="rss",
-            text=text,
-            title=text,
-            xmlUrl=xml_url,
-            htmlUrl=html_url,
-        )
-
     if aggregate:
-        _feed_outline(
-            category, "Instagram — Following", render.feed_url("/instagram.xml"), "https://www.instagram.com/"
+        category.append(
+            _feed_outline("Instagram — Following", render.feed_url("/instagram.xml"), INSTAGRAM_HOME)
         )
-    _feed_outline(
-        category, "Instagram — Stories", render.feed_url("/stories.xml"), "https://www.instagram.com/"
-    )
+    category.append(_feed_outline("Instagram — Stories", render.feed_url("/stories.xml"), INSTAGRAM_HOME))
     u: str
     for u in usernames:
-        _feed_outline(category, u, render.feed_url("/instagram.xml", user=u), render.profile_url(u))
+        category.append(_feed_outline(u, render.feed_url("/instagram.xml", user=u), profile_url(u)))
 
     xml_bytes: bytes = (
         b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="unicode").encode()

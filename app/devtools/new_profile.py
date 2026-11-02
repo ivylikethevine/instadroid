@@ -62,6 +62,7 @@ DEFAULT_STORIES: int = 2
 # free memory than this: the run adds Instagram's ~800MiB on top (docs/INCIDENTS.md).
 MAX_START_PERCENT: int = 60
 MIN_HOST_AVAILABLE_MIB: int = 2048
+MEMINFO: Path = Path("/proc/meminfo")
 
 
 # --- builds and forks ------------------------------------------------------------------------------
@@ -190,8 +191,6 @@ def baseline_env(
         "FOLLOWING_REFRESH_DAYS": "1" if following else "0",
         "READER_REFRESH_URLS": "",
         "READER_REFRESH_URLS_FILE": "",
-        "FRESHRSS_REFRESH_URL": "",
-        "FRESHRSS_REFRESH_URL_FILE": "",
     }
 
 
@@ -290,7 +289,7 @@ def read_host_state() -> HostState:
     redroid: bool = running("ig-redroid")
     meminfo: str
     try:
-        meminfo = Path("/proc/meminfo").read_text()
+        meminfo = MEMINFO.read_text()
     except OSError:
         meminfo = ""
     return HostState(

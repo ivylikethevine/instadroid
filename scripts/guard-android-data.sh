@@ -4,16 +4,23 @@
 # (docs/INCIDENTS.md). Run by scripts/init-data.sh (the one-shot `init` compose service) before
 # redroid starts.
 #
-#   guard-android-data.sh <redroid image> <marker file>
+#   guard-android-data.sh [--check] <redroid image> <marker file>
 #
 # The marker records the image that last used the volume. With no marker yet (a fresh volume, or one
 # from before this guard existed) the current image is recorded and redroid starts. A different
 # Android major version fails with instructions; a different image of the same major (a new build
 # of Android 13, say) just updates the marker.
+#
+# --check, for scripts/preflight.sh, writes and prints nothing: exit 1 on what would refuse, else 0.
 set -eu
 
-image="${1:?usage: $0 <redroid image> <marker file>}"
-marker="${2:?usage: $0 <redroid image> <marker file>}"
+check=false
+if [ "${1:-}" = "--check" ]; then
+  check=true
+  shift
+fi
+image="${1:?usage: $0 [--check] <redroid image> <marker file>}"
+marker="${2:?usage: $0 [--check] <redroid image> <marker file>}"
 
 # The Android major version in a redroid tag: "erstt/redroid:13.0.0_ndk_ChromeOS" -> 13,
 # "abing7k/redroid:a11_ndk_amd" -> 11. Empty when the tag doesn't say.
@@ -23,6 +30,7 @@ android_major() {
 
 current=$(android_major "$image")
 if [ ! -s "$marker" ]; then
+  [ "$check" = true ] && exit 0
   printf '%s\n' "$image" >"$marker"
   echo "android-data-guard: recorded $image for this /data volume"
   exit 0
@@ -31,6 +39,7 @@ fi
 recorded_image=$(head -n 1 "$marker")
 recorded=$(android_major "$recorded_image")
 if [ -n "$current" ] && [ -n "$recorded" ] && [ "$current" != "$recorded" ]; then
+  [ "$check" = true ] && exit 1
   cat >&2 <<EOF
 android-data-guard: refusing to start redroid.
   This /data volume was last used by $recorded_image (Android $recorded),
@@ -42,6 +51,7 @@ android-data-guard: refusing to start redroid.
 EOF
   exit 1
 fi
+[ "$check" = true ] && exit 0
 if [ "$recorded_image" != "$image" ]; then
   printf '%s\n' "$image" >"$marker"
   echo "android-data-guard: $recorded_image -> $image (same Android $current), marker updated"

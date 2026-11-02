@@ -6,11 +6,15 @@
     install [--force] [VERSION|latest]
                              install an Instagram build (default: igprofiles.DEFAULT_BUILD); refused
                              without a /data snapshot younger than SNAPSHOT_MAX_DAYS unless --force
+    tune                     apply the device tuning now, whatever TUNE_ON_CONNECT says
     dump                     save the current screen's hierarchy + screenshot to DEBUG_DIR
     doctor                   one report: control state, recent runs, device over plain adb, logcat
                              crash signatures with their fixes (never drives the device)
     compat                   redroid image / Instagram build pairs this database has run
     backup                   copy the database to BACKUP_DIR now
+    export DIR [--format html|json]
+                             write every stored post and its media under DIR, to keep past
+                             RETAIN_DAYS; a rerun adds to it (default html: JSON plus static pages)
     lock / unlock            hold scheduled runs while driving the device by hand, then release
                              (unlock also clears the hold a login challenge raised)
     scrape-now               ask the poll loop to run now (rate-limited, see instadroid/control.py)
@@ -24,7 +28,9 @@ The scraper itself lives in the instadroid/ package.
 
 import sqlite3
 import sys
+from collections.abc import Callable
 from contextlib import closing
+from typing import Concatenate
 
 from igprofiles import BaseProfile, default_build, version_key
 from igprofiles import available as available_profiles
@@ -37,63 +43,104 @@ from instadroid import (
     device,
     diagnostics,
     doctor,
+    export,
     install,
     navigation,
     scrape,
+    tune,
     uidevice,
     versioning,
 )
 from instadroid.db import VersionPair
 from instadroid.scrape import RunStats
 
-if __name__ == "__main__":
+
+def _with_db[**P, R](
+    action: Callable[Concatenate[sqlite3.Connection, P], R], *args: P.args, **kwargs: P.kwargs
+) -> R:
+    """Run `action` on an open database connection, closed afterward."""
+    con: sqlite3.Connection
+    with closing(db.db_init()) as con:
+        return action(con, *args, **kwargs)
+
+
+def _run_once(con: sqlite3.Connection) -> None:
+    wait: float
+    if wait := scrape.budget_wait_seconds(con):
+        sys.exit(
+            f"{config.MAX_RUNS_PER_DAY} runs already started in the last 24h (MAX_RUNS_PER_DAY);"
+            f" the next is allowed in {wait / 3600:.1f}h. MAX_RUNS_PER_DAY=0 disables the budget."
+        )
+    stats: RunStats | None
+    exc: Exception | None
+    stats, exc = scrape.run_recorded(con)  # recorded in runs, like a scheduled run
+    if exc or stats is None:
+        sys.exit(f"run failed: {exc!r}")
+    print(stats["new"], "new posts,", stats["metrics"].get("new_stories", 0), "new stories")
+
+
+def _print_profiles() -> None:
+    names: list[str] = available_profiles()
+    name: str
+    following: str | None
+    for name, following in zip(names, [*names[1:], None], strict=True):
+        p: BaseProfile = load_profile(name)
+        covers: str = f"{p.major}-{int(following[1:]) - 1}" if following else f"{p.major} and newer"
+        active: str = " (active)" if p.name == versioning.PROFILE.name else ""
+        confirmed: str = ", ".join(sorted(p.own_validated, key=version_key)) or "none yet"
+        suspected: str = (
+            ", ".join(str(low) if low == high else f"{low}-{high}" for low, high in p.suspected()) or "none"
+        )
+        print(
+            f"{p.name}{active}  covers Instagram {covers}  {p.notes}\n"
+            f"  verified (confirmed by a run): {confirmed}\n"
+            f"  verified (suspected, between confirmed builds): {suspected}"
+        )
+    print("default install:", default_build() or "latest")
+
+
+def _print_compat(pairs: list[VersionPair]) -> None:
+    print("redroid image | Instagram | profile | runs (ok, clean) | new posts | last run")
+    pair: VersionPair
+    for pair in pairs:
+        print(
+            f"{pair['redroid_image'] or '?'} | {pair['ig_version']}"
+            f" | {pair['selector_profile'] or '?'} | {pair['runs']}"
+            f" ({pair['ok_runs']}, {pair['clean_runs']}) | {pair['new_posts']}"
+            f" | {pair['last_run'][:10]}"
+        )
+    if not pairs:
+        print("(no runs that reached the device yet)")
+
+
+def _print_following(con: sqlite3.Connection, accept: bool) -> None:
+    if accept:
+        print(f"stored the held refresh: {db.accept_following(con)} account(s)")
+    print(db.following_summary(con))
+
+
+def main(argv: list[str]) -> None:
     version: list[str]
     args: list[str]
     action: str
     old: str
     new: str
-    match sys.argv[1:]:
+    directory: str
+    d: uidevice.Device
+    match argv:
+        case []:
+            scrape.main()
         case ["once", *_]:
-            con: sqlite3.Connection
-            stats: RunStats | None
-            exc: Exception | None
-            with closing(db.db_init()) as con:
-                wait: float
-                if wait := scrape.budget_wait_seconds(con):
-                    sys.exit(
-                        f"{config.MAX_RUNS_PER_DAY} runs already started in the last 24h (MAX_RUNS_PER_DAY);"
-                        f" the next is allowed in {wait / 3600:.1f}h. MAX_RUNS_PER_DAY=0 disables the budget."
-                    )
-                stats, exc = scrape.run_recorded(con)  # recorded in runs, like a scheduled run
-            if exc or stats is None:
-                sys.exit(f"run failed: {exc!r}")
-            print(stats["new"], "new posts,", stats["metrics"].get("new_stories", 0), "new stories")
+            _with_db(_run_once)
         case ["login", *_]:
-            d: uidevice.Device = device.connect_device()
+            d = device.connect_device()
             try:
                 navigation.ensure_logged_in(d)
                 print("logged in")
             finally:
                 device.force_stop(d, config.IG_PKG)  # don't leave ~800MiB resident for whatever runs next
         case ["profiles", *_]:
-            names: list[str] = available_profiles()
-            name: str
-            following: str | None
-            for name, following in zip(names, [*names[1:], None], strict=True):
-                p: BaseProfile = load_profile(name)
-                covers: str = f"{p.major}-{int(following[1:]) - 1}" if following else f"{p.major} and newer"
-                active: str = " (active)" if p.name == versioning.PROFILE.name else ""
-                confirmed: str = ", ".join(sorted(p.own_validated, key=version_key)) or "none yet"
-                suspected: str = (
-                    ", ".join(str(low) if low == high else f"{low}-{high}" for low, high in p.suspected())
-                    or "none"
-                )
-                print(
-                    f"{p.name}{active}  covers Instagram {covers}  {p.notes}\n"
-                    f"  verified (confirmed by a run): {confirmed}\n"
-                    f"  verified (suspected, between confirmed builds): {suspected}"
-                )
-            print("default install:", default_build() or "latest")
+            _print_profiles()
         case ["install", *args] if len([a for a in args if a != "--force"]) <= 1:
             version = [a for a in args if a != "--force"]
             snapshot: str | None
@@ -109,28 +156,17 @@ if __name__ == "__main__":
                 "usage: scraper.py install [--force] [VERSION|latest]   (default: igprofiles.DEFAULT_BUILD)"
             )
             sys.exit(1)
+        case ["tune", *_]:
+            if not tune.tune_device(device.connect_device(), force=True):
+                sys.exit("tuning failed; see the log above")
         case ["dump", *_]:
             d = device.connect_device()
             diagnostics.dump_debug(d, "manual")
             print("wrote", config.DEBUG_DIR)
         case ["doctor", *_]:
-            with closing(db.db_init()) as con:
-                print(doctor.report(con), end="")
+            print(_with_db(doctor.report), end="")
         case ["compat", *_]:
-            pairs: list[VersionPair]
-            with closing(db.db_init()) as con:
-                pairs = db.version_pairs(con)
-            print("redroid image | Instagram | profile | runs (ok, clean) | new posts | last run")
-            pair: VersionPair
-            for pair in pairs:
-                print(
-                    f"{pair['redroid_image'] or '?'} | {pair['ig_version']}"
-                    f" | {pair['selector_profile'] or '?'} | {pair['runs']}"
-                    f" ({pair['ok_runs']}, {pair['clean_runs']}) | {pair['new_posts']}"
-                    f" | {pair['last_run'][:10]}"
-                )
-            if not pairs:
-                print("(no runs that reached the device yet)")
+            _print_compat(_with_db(db.version_pairs))
         case ["lock" | "unlock" as action, *_]:
             control.set_lock(action == "lock")
             print(f"{action}ed:", control.locked())
@@ -142,27 +178,37 @@ if __name__ == "__main__":
                 "seconds if due",
             )
         case ["backup", *_]:
-            with closing(db.db_init()) as con:
-                print("wrote", backup.backup_database(con, force=True))
+            print("wrote", _with_db(backup.backup_database, force=True))
+        case ["export", directory, *args] if not directory.startswith("-") and args in (
+            [],
+            ["--format", "html"],
+            ["--format", "json"],
+        ):
+            summary: export.Summary
+            try:
+                summary = _with_db(export.export_posts, directory, html=args != ["--format", "json"])
+            except OSError as e:
+                sys.exit(f"export failed: {e}")
+            print(f"exported {summary['posts']} post(s) of {summary['accounts']} account(s) to {directory}")
+        case ["export", *_]:
+            print("usage: scraper.py export <directory> [--format html|json]")
+            sys.exit(1)
         case ["following", *args] if args in ([], ["--accept"]):
-            with closing(db.db_init()) as con:
-                if args:
-                    print(f"stored the held refresh: {db.accept_following(con)} account(s)")
-                print(db.following_summary(con))
+            _with_db(_print_following, bool(args))
         case ["following", *_]:
             print("usage: scraper.py following [--accept]")
             sys.exit(1)
         case ["rename", old, new] if not old.startswith("-"):
-            n: int
-            with closing(db.db_init()) as con:
-                n = db.rename_account(con, old, new)
-            print(f"moved {n} post(s) from {old!r} to {new!r}")
+            print(f"moved {_with_db(db.rename_account, old, new)} post(s) from {old!r} to {new!r}")
         case ["rename", "--dismiss", old, new]:
-            with closing(db.db_init()) as con:
-                n = db.dismiss_rename(con, old, new)
+            n: int = _with_db(db.dismiss_rename, old, new)
             print(f"dismissed: {old!r} is not {new!r} ({n} post(s) of evidence dropped)")
         case ["rename", *_]:
             print("usage: scraper.py rename [--dismiss] <old_username> <new_username>")
             sys.exit(1)
         case _:
-            scrape.main()
+            sys.exit(f"unknown subcommand {argv[0]!r}\n\n{__doc__}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

@@ -10,7 +10,7 @@
 #   docker-compose.yml   the app image pulled by digest instead of built from ./app
 #   .env.example         the settings, to copy to .env
 #   scripts/             init's /data guard, and the host scripts (preflight, diagnose, snapshot, ...)
-#   app/instadroid/      the two data files diagnose.sh and tune-android.sh read
+#   app/instadroid/      the data file diagnose.sh reads
 # and prints the archive's path. Run from the repository root.
 set -euo pipefail
 
@@ -57,8 +57,8 @@ printf '%s\n' "${compose/"$build_block"/"$pull_block"}" >"$dir/docker-compose.ym
 
 cp .env.example "$dir/.env.example"
 cp scripts/init-data.sh scripts/guard-android-data.sh scripts/preflight.sh scripts/diagnose.sh \
-  scripts/snapshot-android-data.sh scripts/tune-android.sh scripts/reset-resource-cache.sh "$dir/scripts/"
-cp app/instadroid/crash_signatures.tsv app/instadroid/tune_packages.txt "$dir/app/instadroid/"
+  scripts/snapshot-android-data.sh scripts/reset-resource-cache.sh "$dir/scripts/"
+cp app/instadroid/crash_signatures.tsv "$dir/app/instadroid/"
 
 mkdir -p "$out"
 archive="$(cd "$out" && pwd)/$name.tar.gz"
