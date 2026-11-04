@@ -88,18 +88,18 @@ Open investigations, new capture mechanisms, or changes to the container/process
 - **Real video capture**: still a poster-frame still — Reels/videos never get the actual video. Likely needs screen recording rather than a screenshot,
   plus somewhere to store and serve a video file per post, and meaningfully longer dwell time per
   video post (see README.md's "Staying under the radar") — a real cost/benefit call, not just effort.
-- **Full story-reel capture**: only a story's current frame is captured (see README.md's
-  "Stories") — a deliberate scope decision, not a gap left for later, given that tapping to advance
-  a story has been observed to eject the app to the OS launcher on this host once its queue is
-  exhausted. Worth revisiting only with a materially different navigation approach (e.g. reading the
-  tray's own `total` count to know exactly how many frames to expect, so the loop never has to
-  discover exhaustion by tapping past the end).
 - **Turn on automatic username changes**: a suspected rename is applied without a person once the
   Following list has the new username and not the old one, and a wrong suspicion can be dismissed
   ([README](../README.md#how-a-scrape-works)), but only with `RENAME_AUTO_APPLY=1`. It stays off
   until a real rename has gone through it: none has been seen on a device yet, and a wrong merge
   joins two accounts' histories for good. Still open either way: an account none of whose stored
   posts are still in the feed, which only a visit to its profile would catch.
+
+Not doing: full story-reel capture. Only a story's current frame is captured (see README.md's
+"Stories"): tapping to advance a story has been observed to eject the app to the OS launcher on this
+host once its queue is exhausted. Worth revisiting only with a materially different navigation
+approach, such as reading the tray's own `total` count to know exactly how many frames to expect, so
+the loop never has to discover exhaustion by tapping past the end.
 
 ## Cleanup
 

@@ -231,6 +231,12 @@ def usernames(con: sqlite3.Connection) -> list[str]:
     return [string(r, 0) for r in all_rows(con, "SELECT DISTINCT username FROM posts ORDER BY username")]
 
 
+def has_posts_table(con: sqlite3.Connection) -> bool:
+    """Whether the scraper has created the posts table yet: before its first start, "no accounts" and
+    "not ready" look the same to every other query here."""
+    return one_row(con, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'posts'") is not None
+
+
 # --- runs and accounts ----------------------------------------------------------------------------
 
 

@@ -45,6 +45,35 @@ def test_serving_beyond_localhost_without_a_token_is_warned_about(
     assert "without FEED_TOKEN" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("public_url", "feed_host", "expected"),
+    [
+        ("feed.test:8000", "127.0.0.1", "PUBLIC_URL=feed.test:8000 has no http:// or https:// scheme"),
+        ("http://localhost:8000", "127.0.0.1", "PUBLIC_URL=http://localhost:8000 names localhost"),
+        ("http://localhost:8000", "0.0.0.0", ""),  # bound on every address, ::1 included
+        ("http://127.0.0.1:8000", "127.0.0.1", ""),
+        ("https://feeds.example", "127.0.0.1", ""),
+    ],
+)
+def test_a_public_url_a_reader_cannot_use_is_warned_about(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    public_url: str,
+    feed_host: str,
+    expected: str,
+) -> None:
+    monkeypatch.setenv("FEED_TOKEN", TOKEN)  # so the FEED_HOST warning stays out of the way
+    monkeypatch.setenv("FEED_HOST", feed_host)
+    with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+        client: TestClient = make_app(tmp_path, monkeypatch, public_url=public_url)
+    if expected:
+        assert expected in caplog.text
+    else:
+        assert "PUBLIC_URL=" not in caplog.text
+    assert client.get("/health").status_code == 200
+
+
 def test_without_a_token_everything_stays_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
     path: str
