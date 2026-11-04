@@ -237,4 +237,6 @@ ALERT_TIMEOUT: float = float(os.environ.get("ALERT_TIMEOUT", "10.0"))
 # monitor), so a monitor that stops hearing from it notices a host, Docker or scraper that's down, which
 # ALERT_URL can't report. Bounded by ALERT_TIMEOUT. It can carry a token, so HEARTBEAT_URL_FILE works too.
 HEARTBEAT_URL: str = env_secret("HEARTBEAT_URL")
-READER_REFRESH_TIMEOUT: float = float(os.environ.get("READER_REFRESH_TIMEOUT") or "10.0")  # per refresh URL
+# Per refresh URL. FreshRSS answers its actualize URL only after fetching every feed that's due (each
+# per-account feed from /opml is one), so this is a whole refresh's worth, not one round trip.
+READER_REFRESH_TIMEOUT: float = float(os.environ.get("READER_REFRESH_TIMEOUT") or "60.0")

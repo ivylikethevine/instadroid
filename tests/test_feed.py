@@ -316,6 +316,31 @@ def test_opml_lists_every_account_plus_the_aggregate_and_stories_feeds(
     assert "http://feed.test/instagram.xml?user=someone" in xml_urls
     assert len(outlines) == 4  # aggregate + stories + 2 accounts
     assert all(o.get("type") == "rss" for o in outlines)
+    assert all(o.get("text") and o.get("htmlUrl") for o in outlines)
+    assert r.headers["content-disposition"] == 'inline; filename="instadroid.opml"'
+    # Without OPML_FEED_TTL, no FreshRSS attribute (and no namespace) is written.
+    assert "frss" not in r.text
+
+
+def test_opml_feed_ttl_is_written_as_freshrss_s_namespaced_attribute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FreshRSS's importer reads the refresh interval from the literal qualified name `frss:ttl`, so
+    the prefix in the document has to be `frss`, declared on the root."""
+    monkeypatch.setenv("OPML_FEED_TTL", "300")
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    r: Response = client.get("/opml")
+    assert r.status_code == 200
+    assert 'xmlns:frss="https://freshrss.org/opml"' in r.text
+    assert r.text.count('frss:ttl="300"') == 4  # every feed outline, not the category
+    root: ET.Element = ET.fromstring(r.text)
+    outlines: list[ET.Element] = root.findall("./body/outline/outline")
+    assert all(o.get("{https://freshrss.org/opml}ttl") == "300" for o in outlines)
+    category: ET.Element | None = root.find("./body/outline")
+    assert category is not None and category.get("{https://freshrss.org/opml}ttl") is None
+
+    monkeypatch.setenv("OPML_FEED_TTL", "0")
+    assert "frss" not in make_app(tmp_path, monkeypatch, seed="").get("/opml").text  # already seeded
 
 
 def test_opml_can_leave_the_aggregate_feed_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -343,16 +368,26 @@ def test_opml_escapes_and_quotes_unusual_usernames(tmp_path: Path, monkeypatch: 
     assert weird.get("xmlUrl") == "http://feed.test/instagram.xml?user=a%20%26%20b"
 
 
-def test_opml_without_a_posts_table_returns_an_empty_category_instead_of_500(
+def test_opml_without_a_posts_table_is_a_503_not_an_outline_without_accounts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A reader re-reading a Dynamic OPML that lists no accounts mutes every account feed, so before
+    the scraper's first run the answer is an error it keeps its old list through."""
     client: TestClient = make_app(tmp_path, monkeypatch, seed="")  # an empty file, no table
 
     r: Response = client.get("/opml")
+    assert r.status_code == 503
+    assert "etag" not in r.headers
+    assert json_body(r) == {
+        "detail": "the scraper hasn't created the database yet; try again after its first run"
+    }
+
+    # A table with no posts yet is a real, if short, outline.
+    feed_sql(tmp_path, "CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT)")
+    r = client.get("/opml")
     assert r.status_code == 200
     root: ET.Element = ET.fromstring(r.text)
-    outlines: list[ET.Element] = root.findall("./body/outline/outline")
-    xml_urls: set[str | None] = {o.get("xmlUrl") for o in outlines}
+    xml_urls: set[str | None] = {o.get("xmlUrl") for o in root.findall("./body/outline/outline")}
     assert xml_urls == {"http://feed.test/instagram.xml", "http://feed.test/stories.xml"}
 
 

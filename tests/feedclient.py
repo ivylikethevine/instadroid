@@ -28,14 +28,19 @@ INSERT INTO posts VALUES ('h2', 'other', 'video', 'August 1', '', NULL,
 
 
 def make_app(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed: str = TWO_POSTS, tz: str = ""
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    seed: str = TWO_POSTS,
+    tz: str = "",
+    public_url: str = "http://feed.test",
 ) -> TestClient:
     """A fresh feed server over tmp_path/posts.sqlite, created by the SQL script `seed` ("" leaves the
-    database an empty file with no tables), with TZ set to `tz` whatever the environment has."""
+    database an empty file with no tables), with TZ set to `tz` and PUBLIC_URL to `public_url` whatever
+    the environment has."""
     db: Path = tmp_path / "posts.sqlite"
     monkeypatch.setenv("DB_PATH", str(db))
     monkeypatch.setenv("MEDIA_DIR", str(tmp_path / "media"))
-    monkeypatch.setenv("PUBLIC_URL", "http://feed.test")
+    monkeypatch.setenv("PUBLIC_URL", public_url)
     monkeypatch.setenv("TZ", tz)
     con: sqlite3.Connection = sqlite3.connect(db)
     con.executescript(seed)

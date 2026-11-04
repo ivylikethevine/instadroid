@@ -29,7 +29,7 @@ def test_no_op_when_nothing_new_was_stored(monkeypatch: pytest.MonkeyPatch) -> N
     assert requested == []
 
 
-def test_fires_on_new_posts_as_a_get_and_appends_ajax_param(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fires_on_new_posts_as_a_get_and_appends_freshrss_params(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "READER_REFRESH_URLS", [FRESHRSS])
     monkeypatch.setattr(config, "READER_REFRESH_TIMEOUT", 5.0)
     calls: UrlopenCalls = record_urlopen(monkeypatch)
@@ -37,7 +37,7 @@ def test_fires_on_new_posts_as_a_get_and_appends_ajax_param(monkeypatch: pytest.
     request: urllib.request.Request
     [request] = calls.requests
     assert request.get_method() == "GET"
-    assert request.full_url == FRESHRSS + "&ajax=1"
+    assert request.full_url == FRESHRSS + "&ajax=1&maxFeeds=1000"
     assert calls.timeouts == [5.0]
 
 
@@ -55,6 +55,26 @@ def test_does_not_duplicate_an_already_present_ajax_param(monkeypatch: pytest.Mo
     request: urllib.request.Request
     [request] = requested
     assert request.full_url.count("ajax=") == 1
+    assert request.full_url.endswith("&ajax=1&maxFeeds=1000")
+
+
+def test_an_entry_keeps_its_own_max_feeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A user who caps the refresh themselves (maxFeeds=5) isn't overridden; only ajax is added."""
+    monkeypatch.setattr(config, "READER_REFRESH_URLS", [FRESHRSS + "&maxFeeds=5"])
+    requested: list[urllib.request.Request] = record_urlopen(monkeypatch).requests
+    scrape._ping_readers(1, 0)
+    request: urllib.request.Request
+    [request] = requested
+    assert request.full_url == FRESHRSS + "&maxFeeds=5&ajax=1"
+
+
+def test_a_non_freshrss_url_gets_no_freshrss_params(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "READER_REFRESH_URLS", [MINIFLUX])
+    requested: list[urllib.request.Request] = record_urlopen(monkeypatch).requests
+    scrape._ping_readers(1, 0)
+    request: urllib.request.Request
+    [request] = requested
+    assert "ajax" not in request.full_url and "maxFeeds" not in request.full_url
 
 
 def test_a_method_prefix_and_url_credentials_become_the_request(monkeypatch: pytest.MonkeyPatch) -> None:

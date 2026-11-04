@@ -25,8 +25,8 @@ URL, so importing it (or a Dynamic OPML category, itself subscribed with `?token
 setup. A `?token=` value is blanked in the access log. Browsers get a basic-auth prompt on `/status`.
 Without a token, a non-loopback `FEED_HOST` logs a warning at startup.
 
-If FreshRSS runs on the same host (see below), set `PUBLIC_URL=http://127.0.0.1:8000`, not
-`http://localhost:8000` (the default): a FreshRSS container's `localhost` can resolve to `::1`
+If FreshRSS runs on the same host (see below), keep `PUBLIC_URL` on `http://127.0.0.1:8000` (the
+default), not `http://localhost:8000`: a FreshRSS container's `localhost` can resolve to `::1`
 first, and the feed server only binds the IPv4 loopback (`FEED_HOST=127.0.0.1` default), so
 every subscription fails with "Failed to resolve domain".
 
@@ -39,12 +39,24 @@ category. It's a subscription list, not a feed: adding `/opml` as a feed URL fai
   `/opml`.
 - **Keep it in sync** (FreshRSS 1.20+): create a category and set its _Dynamic OPML_ URL to
   `$PUBLIC_URL/opml`. FreshRSS then re-reads the outline on its own schedule, so accounts that
-  appear later (or a rename via `scraper.py rename`) are picked up without re-importing.
+  appear later (or a rename via `scraper.py rename`) are picked up without re-importing. It re-reads
+  during a whole-account refresh only (the scraper's ping below, or its own cron), every 12 hours by
+  default (_Dynamic OPML refresh interval_ in the user's settings); a feed that has left the outline
+  is muted, not deleted, and unmuted when it returns, so an account whose stored posts all aged past
+  `RETAIN_DAYS` goes quiet until it posts again. Before the scraper's first run there is no database,
+  and `/opml` answers 503 rather than an outline without accounts, so a re-read then keeps the
+  category as it was instead of muting every account feed.
 
 The outline holds the aggregate feed and every per-account feed, and a reader dedupes entries within
 a feed, not across feeds: subscribed to all of it, every post shows up twice. `/opml?aggregate=0`
 leaves the aggregate feed out; to keep only the aggregate, subscribe to `/instagram.xml` and
 `/stories.xml` directly.
+
+With `OPML_FEED_TTL` set (seconds), each feed in the outline carries that as its FreshRSS refresh
+interval (`frss:ttl`), so a ping fetches it however recently it was last fetched: FreshRSS skips a
+feed whose interval hasn't passed, and its default is an hour. It applies when the OPML is imported
+or re-read, not to feeds already subscribed; edit those in FreshRSS, or set the user's default
+interval there instead.
 
 **Push instead of poll**: by default a reader finds new posts on its own poll interval. To have
 the scraper tell it instead, set `READER_REFRESH_URLS` in `.env` to the reader's refresh URL; after
@@ -56,7 +68,11 @@ fails the scrape.
 
 - **FreshRSS**: its "online cron" actualize URL,
   `http://<freshrss-host>/i/?c=feed&a=actualize&user=<name>&token=<token>`, with the token of the
-  user you create below. The scraper adds `ajax=1`, so FreshRSS answers without rendering a page.
+  user you create below. The scraper adds `ajax=1`, so FreshRSS answers without rendering a page, and
+  `maxFeeds=1000`, since FreshRSS otherwise refreshes at most 10 feeds per request, the stalest
+  first, and leaves the rest of an `/opml` import for the next ping; set either in the URL to override.
+  A wrong user or token is a 403, reported as a run warning. FreshRSS answers once every due feed is
+  fetched, which `READER_REFRESH_TIMEOUT` (60 s) allows for.
 - **Miniflux**: its refresh-all API, `PUT:http://<user>:<password>@<miniflux-host>/v1/feeds/refresh`.
   Miniflux's API takes basic auth with the account's own login, and the call queues a refresh of
   every feed, the Instagram ones included.
@@ -80,5 +96,39 @@ docker compose exec --user root freshrss ./cli/access-permissions.sh
 That token is what the FreshRSS URL in `READER_REFRESH_URLS` above is built from. FreshRSS listens on
 `127.0.0.1:8080` by default (`FRESHRSS_LISTEN`) — loopback only, matching `FEED_HOST`, since the
 feed itself has no auth unless `FEED_TOKEN` is set (see "Feed auth" above). It needs
-`FRESHRSS_INTERNAL_HOST_ALLOWLIST` (defaulted in compose) to be allowed to fetch a feed on
-`127.0.0.1` at all — FreshRSS 1.30+ blocks that as an SSRF guard otherwise.
+`FRESHRSS_INTERNAL_HOST_ALLOWLIST` (defaulted in compose to `127.0.0.1:<FEED_PORT>`) to be allowed
+to fetch a feed on `127.0.0.1` at all — FreshRSS 1.30+ blocks that as an SSRF guard otherwise. Its
+own poller runs every 20 minutes by default (`FRESHRSS_CRON_MIN`), a fallback for when the ping is
+unset or fails that costs a conditional GET per feed, answered 304 unless a run stored something;
+set `FRESHRSS_CRON_MIN` empty to turn it off and refresh only on the scraper's ping.
+
+## Troubleshooting
+
+Symptoms as FreshRSS shows them (_Subscription management_, or `docker compose logs freshrss`),
+and the setting behind each:
+
+- **"Failed to resolve domain"** or **"Failed to connect"** on every feed: `PUBLIC_URL` names a host
+  FreshRSS can't reach. From a container, `localhost` can resolve to `::1`, which the feed server
+  doesn't bind (`FEED_HOST=127.0.0.1`); use `http://127.0.0.1:8000`. A FreshRSS without host
+  networking has its own loopback, so it needs the host's LAN address, `FEED_HOST=0.0.0.0` and a
+  `FEED_TOKEN`. The feed server warns at startup about a `PUBLIC_URL` that names `localhost` or has
+  no scheme.
+- **"Fetching this URL is not allowed, because the host's IP is not in the allowlist"** in the log, or
+  feeds that fetch nothing with no error shown (FreshRSS 1.30+): the SSRF guard. The compose service
+  sets `INTERNAL_HOST_ALLOWLIST` from `FEED_PORT`; a FreshRSS run any other way needs the same
+  `host:port` entries under _System configuration_ or in its environment.
+- **"Error getting dynamic OPML"**: the same two causes, for the `/opml` URL itself; with
+  `FEED_TOKEN` set, the URL needs `?token=`. Before the scraper's first run it is expected: `/opml`
+  answers 503 until the database exists.
+- **Feeds subscribed but never refreshed**: nothing triggers a refresh. `FRESHRSS_CRON_MIN` was set
+  empty (FreshRSS's own poller off) without `READER_REFRESH_URLS` (the scraper's ping), or the
+  FreshRSS runs outside compose with no cron of its own. A ping refreshes only feeds whose interval
+  has passed (`OPML_FEED_TTL` above), and the scraper logs each failed ping as a run warning on
+  `/status`.
+- **Only some accounts refresh per run**: a `READER_REFRESH_URLS` entry that sets its own `maxFeeds`
+  below the account count.
+- **Every post twice**: the aggregate feed beside the per-account ones; `/opml?aggregate=0`.
+- **Images missing in entries**: image URLs are `PUBLIC_URL` plus `/media/…`, so the reader's browser
+  must reach `PUBLIC_URL` too, not only the FreshRSS container.
+- **The import rejects the saved file**: FreshRSS guesses a file's type from its name; keep `opml` in
+  it (the server suggests `instadroid.opml`) or end it in `.xml`.

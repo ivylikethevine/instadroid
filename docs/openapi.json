@@ -333,7 +333,7 @@
     "/opml": {
       "get": {
         "summary": "Subscription list",
-        "description": "One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed\nper username in /users — a single FreshRSS import subscribes to everything this instance\nserves instead of pasting ?user= URLs in one at a time. `aggregate=0` leaves the aggregate feed\nout: a reader dedupes entries within a feed, so beside the per-account feeds it shows every post twice.",
+        "description": "One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed\nper username in /users — a single FreshRSS import subscribes to everything this instance\nserves instead of pasting ?user= URLs in one at a time. `aggregate=0` leaves the aggregate feed\nout: a reader dedupes entries within a feed, so beside the per-account feeds it shows every post twice.\nBefore the scraper's first start there is no posts table, and the answer is a 503 rather than an\noutline without accounts: a reader re-reading it as a Dynamic OPML would mute every account feed.",
         "operationId": "opml_opml_get",
         "parameters": [
           {
@@ -356,6 +356,9 @@
           },
           "304": {
             "description": "Not Modified"
+          },
+          "503": {
+            "description": "The scraper hasn't created the database yet; the outline would be empty."
           },
           "422": {
             "description": "Validation Error",

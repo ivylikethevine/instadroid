@@ -127,10 +127,13 @@ services:
     environment:
       LISTEN: ${FRESHRSS_LISTEN:-127.0.0.1:8080}
       TZ: ${TZ:-${DEVICE_TIMEZONE:-UTC}}
-      CRON_MIN: ${FRESHRSS_CRON_MIN:-} # empty: the scraper pings FreshRSS instead of it polling
+      # FreshRSS's own poller, a fallback for the scraper's ping (READER_REFRESH_URLS): a conditional GET
+      # per feed, 304 unless something was stored. Set FRESHRSS_CRON_MIN= (empty) to turn it off.
+      CRON_MIN: ${FRESHRSS_CRON_MIN-*/20}
       # Required: FreshRSS 1.30+ refuses to fetch internal hosts (an SSRF guard), so without this the
-      # subscription to 127.0.0.1 silently fetches nothing.
-      INTERNAL_HOST_ALLOWLIST: ${FRESHRSS_INTERNAL_HOST_ALLOWLIST:-127.0.0.1:8000 localhost:8000}
+      # subscription to 127.0.0.1 silently fetches nothing. Entries are host:port as PUBLIC_URL spells
+      # them, so the default follows FEED_PORT.
+      INTERNAL_HOST_ALLOWLIST: ${FRESHRSS_INTERNAL_HOST_ALLOWLIST:-127.0.0.1:${FEED_PORT:-8000} localhost:${FEED_PORT:-8000}}
     volumes:
       - ./local/data/freshrss/data:/var/www/FreshRSS/data
       - ./local/data/freshrss/extensions:/var/www/FreshRSS/extensions

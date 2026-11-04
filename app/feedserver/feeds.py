@@ -5,7 +5,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from typing import Annotated
-from xml.etree.ElementTree import Element, SubElement, tostring
+from xml.etree.ElementTree import Element, SubElement, register_namespace, tostring
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from feedgen.entry import FeedEntry
@@ -28,6 +28,10 @@ KINDS: dict[str, str] = {
 }
 JSON_FEED: str = "application/feed+json"
 INSTAGRAM_HOME: str = "https://www.instagram.com/"
+# FreshRSS's OPML extension namespace, which its importer reads per-feed settings from (frss:ttl, the
+# refresh interval). The prefix has to be literally "frss": the importer matches the qualified name.
+FRSS_NS: str = "https://freshrss.org/opml"
+register_namespace("frss", FRSS_NS)
 
 
 def _kinds(kind: str | None) -> tuple[str, ...]:
@@ -242,27 +246,41 @@ def users() -> list[str]:
 
 
 def _feed_outline(text: str, xml_url: str, html_url: str) -> Element:
-    return Element("outline", type="rss", text=text, title=text, xmlUrl=xml_url, htmlUrl=html_url)
+    outline: Element = Element("outline", type="rss", text=text, title=text, xmlUrl=xml_url, htmlUrl=html_url)
+    if settings.OPML_FEED_TTL > 0:
+        outline.set(f"{{{FRSS_NS}}}ttl", str(settings.OPML_FEED_TTL))
+    return outline
 
 
 @router.get(
     "/opml",
     response_class=Response,
-    responses={200: {"content": {"text/x-opml": {}}, "description": "An OPML outline."}, 304: {}},
+    responses={
+        200: {"content": {"text/x-opml": {}}, "description": "An OPML outline."},
+        304: {},
+        503: {"description": "The scraper hasn't created the database yet; the outline would be empty."},
+    },
     summary="Subscription list",
 )
 def opml(request: Request, aggregate: bool = True) -> Response:
     """One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed
     per username in /users — a single FreshRSS import subscribes to everything this instance
     serves instead of pasting ?user= URLs in one at a time. `aggregate=0` leaves the aggregate feed
-    out: a reader dedupes entries within a feed, so beside the per-account feeds it shows every post twice."""
+    out: a reader dedupes entries within a feed, so beside the per-account feeds it shows every post twice.
+    Before the scraper's first start there is no posts table, and the answer is a 503 rather than an
+    outline without accounts: a reader re-reading it as a Dynamic OPML would mute every account feed."""
     con: sqlite3.Connection
+    usernames: list[str]
     with queries.connection() as con:
-        usernames: list[str] = queries.usernames(con)
+        if not queries.has_posts_table(con):
+            raise HTTPException(
+                503, "the scraper hasn't created the database yet; try again after its first run"
+            )
+        usernames = queries.usernames(con)
     etag: str
     not_modified: Response | None
     etag, not_modified = render.cached(
-        request, settings.PUBLIC_URL, settings.FEED_TOKEN, aggregate, *usernames
+        request, settings.PUBLIC_URL, settings.FEED_TOKEN, settings.OPML_FEED_TTL, aggregate, *usernames
     )
     if not_modified:
         return not_modified
@@ -285,4 +303,8 @@ def opml(request: Request, aggregate: bool = True) -> Response:
     xml_bytes: bytes = (
         b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="unicode").encode()
     )
-    return Response(xml_bytes, media_type="text/x-opml; charset=utf-8", headers={"ETag": etag})
+    # The filename is for "save, then import the file": FreshRSS guesses a file's type from its name,
+    # so a browser's default name for this path ("opml", no extension) still imports, but a renamed
+    # download does too as long as it keeps the extension.
+    headers: dict[str, str] = {"ETag": etag, "Content-Disposition": 'inline; filename="instadroid.opml"'}
+    return Response(xml_bytes, media_type="text/x-opml; charset=utf-8", headers=headers)

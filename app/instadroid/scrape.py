@@ -161,19 +161,29 @@ class _FeedRun:
 
 # The methods a READER_REFRESH_URLS entry can name as its prefix (`PUT:https://...`).
 _REFRESH_METHODS: tuple[str, ...] = ("GET", "POST", "PUT")
+# What FreshRSS's actualize URL gets when the entry doesn't set them itself: `ajax=1` makes it answer
+# without rendering a page, and `maxFeeds` lifts its cap of 10 feeds per request, under which a ping
+# with more per-account feeds than that (one /opml import's worth) would leave the rest unrefreshed
+# until a later ping. FreshRSS refreshes the stalest feeds first, up to this many, skipping any
+# whose own interval hasn't passed (docs/FRESHRSS.md, "Push instead of poll").
+_FRESHRSS_PARAMS: dict[str, str] = {"ajax": "1", "maxFeeds": "1000"}
 
 
 def _refresh_request(entry: str) -> urllib.request.Request:
     """The request for one READER_REFRESH_URLS entry: its method prefix, if any, split off, and
-    FreshRSS's actualize URL given `ajax=1`, which makes it answer without rendering a page."""
+    FreshRSS's actualize URL given _FRESHRSS_PARAMS's defaults."""
     method: str
     sep: str
     url: str
     method, sep, url = entry.partition(":")
     if not sep or method not in _REFRESH_METHODS:
         method, url = "GET", entry
-    if "a=actualize" in url and "ajax=" not in url:
-        url += ("&" if "?" in url else "?") + "ajax=1"
+    if "a=actualize" in url:
+        name: str
+        value: str
+        for name, value in _FRESHRSS_PARAMS.items():
+            if f"{name}=" not in url:
+                url += ("&" if "?" in url else "?") + f"{name}={value}"
     return common.web_request(url, method)
 
 
