@@ -7,6 +7,7 @@ import pytest
 from devtools import new_profile
 from instadroid import capture, config, db, device, diagnostics, tune, versioning
 
+from tests.deviceflows import connect_returns
 from tests.fakedevice import FakeDevice
 from tests.profilecli import host_state
 from tests.support import V424
@@ -169,11 +170,7 @@ def scraper_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDevice:
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "posts.sqlite"))
     monkeypatch.setattr(config, "DEBUG_DIR", tmp_path / "debug")
     fake: FakeDevice = FakeDevice({"home": ""}, "home")
-
-    def connect() -> FakeDevice:
-        return fake
-
-    monkeypatch.setattr(device, "connect_device", connect)
+    connect_returns(monkeypatch, fake)
     return fake
 
 

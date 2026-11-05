@@ -48,15 +48,11 @@ def test_merge_bumps_updated_at_without_touching_scraped_at(
 ) -> None:
     # The feed's ETag keys off updated_at precisely so a merge like this is visible even though
     # scraped_at (when the post was first seen) never changes.
-    scraped_at: str = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-    con.execute(
-        "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at,"
-        " hash, url, place, posted_at, updated_at)"
-        " VALUES ('h1','club','carousel','3 days ago','Photo 1 of 2 by Club, 5 likes',NULL,?,"
-        "'h1',NULL,NULL,?,?)",
-        (scraped_at, scraped_at, scraped_at),
-    )
-    con.commit()
+    seen: datetime = datetime.now(UTC) - timedelta(hours=1)
+    insert_post(
+        con, "h1", username="club", kind="carousel", posted_date="3 days ago",
+        caption="Photo 1 of 2 by Club, 5 likes", now=seen, days_old=0,
+    )  # fmt: skip
 
     existing: sqlite3.Row = fetch_row(con.execute("SELECT * FROM posts WHERE id='h1'"))
     now: datetime = datetime.now(UTC)
@@ -68,7 +64,7 @@ def test_merge_bumps_updated_at_without_touching_scraped_at(
 
     row: sqlite3.Row = fetch_row(con.execute("SELECT * FROM posts WHERE id=?", (merged["id"],)))
     assert row["caption"] == "The real caption"
-    assert row["scraped_at"] == scraped_at  # unchanged: still when it was first seen
+    assert row["scraped_at"] == seen.isoformat()  # unchanged: still when it was first seen
     assert row["updated_at"] == now.isoformat()  # changed: this is when the content changed
     assert media_to_drop is None
 
@@ -228,9 +224,8 @@ def test_db_init_migration_skips_a_row_the_merge_raises_on(
 def test_accounts_backfill_skips_a_username_the_insert_rejects(
     con: sqlite3.Connection, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    now: str = datetime.now(UTC).isoformat()
-    con.execute("INSERT INTO posts (id, username, scraped_at) VALUES ('p1', 'fine', ?)", (now,))
-    con.execute("INSERT INTO posts (id, username, scraped_at) VALUES ('p2', 'cursed', ?)", (now,))
+    insert_post(con, "p1", username="fine")
+    insert_post(con, "p2", username="cursed")
     con.execute(
         "CREATE TRIGGER no_cursed BEFORE INSERT ON accounts WHEN NEW.username = 'cursed'"
         " BEGIN SELECT RAISE(ABORT, 'no such account'); END"
@@ -262,13 +257,10 @@ def test_migration_drops_the_stories_expiry_column(con: sqlite3.Connection) -> N
 def test_merge_keeps_the_stored_crop_and_drops_a_second_one(
     con: sqlite3.Connection, stored_media: str | None, kept: str, dropped: str | None
 ) -> None:
-    now: str = datetime.now(UTC).isoformat()
-    con.execute(
-        "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash,"
-        " posted_at, updated_at) VALUES ('h1','u','carousel','3 days ago','Real caption',?,?,'h1',?,?)",
-        (stored_media, now, now, now),
-    )
-    con.commit()
+    insert_post(
+        con, "h1", kind="carousel", posted_date="3 days ago", caption="Real caption", days_old=0,
+        media_file=stored_media, media=None,
+    )  # fmt: skip
     existing: sqlite3.Row = fetch_row(con.execute("SELECT * FROM posts WHERE id='h1'"))
     merged: db.StoredPost
     media_to_drop: str | None
@@ -277,13 +269,7 @@ def test_merge_keeps_the_stored_crop_and_drops_a_second_one(
 
 
 def test_write_merged_replaces_a_hash_id_row_with_the_permalink_one(con: sqlite3.Connection) -> None:
-    now: str = datetime.now(UTC).isoformat()
-    con.execute(
-        "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash,"
-        " posted_at, updated_at) VALUES ('h1','u','carousel','3 days ago','Real caption',NULL,?,'h1',?,?)",
-        (now, now, now),
-    )
-    con.commit()
+    insert_post(con, "h1", kind="carousel", posted_date="3 days ago", caption="Real caption", days_old=0)
     existing: sqlite3.Row = fetch_row(con.execute("SELECT * FROM posts WHERE id='h1'"))
     merged: db.StoredPost
     _: str | None

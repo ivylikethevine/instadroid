@@ -108,6 +108,4 @@ small unless sized. Items that change what users or CI see say so.
 
 ### CI and scripts
 
-- **The suite runs twice on a pull request into main**: `coverage.yml`'s comment still runs what
-  `ci.yml`'s test job runs. Have it read the test job's figures instead, which restructures its
-  triggers. A push to main already hands on what the test job measured. Medium.
+Nothing open.

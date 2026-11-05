@@ -16,7 +16,7 @@ from instadroid import alerts, config, db
 from shared.sqlrows import SqlValue
 
 from tests.feedclient import feed_sql, make_app
-from tests.support import record_run_ago, record_urlopen, sql_column
+from tests.support import insert_post, record_run_ago, record_urlopen, sql_column
 
 if TYPE_CHECKING:
     from _typeshed import SupportsRead
@@ -87,10 +87,7 @@ def test_no_new_posts_waits_for_a_full_window(
     assert alerts.conditions(con, NOW) == {}  # the scraper hasn't run for 48h yet
     _run(con, 60)
     assert set(alerts.conditions(con, NOW)) == {alerts.NO_POSTS}
-    con.execute(
-        "INSERT INTO posts (id, username, scraped_at) VALUES ('p', 'u', ?)",
-        ((NOW - timedelta(hours=5)).isoformat(),),
-    )
+    insert_post(con, "p", now=NOW - timedelta(hours=5), days_old=0)
     assert alerts.conditions(con, NOW) == {}
 
 

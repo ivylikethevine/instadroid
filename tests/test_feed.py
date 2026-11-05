@@ -10,13 +10,24 @@ from httpx2 import Response
 from shared.captions import caption_html
 from shared.timestamps import parse_iso
 
-from tests.feedclient import TWO_POSTS, feed_sql, make_app, write_image
+from tests.feedclient import MEDIA_TABLE, POSTS_UPDATED_AT, TWO_POSTS, feed_sql, make_app, write_image
 from tests.support import json_body
 
 
 def unescaped(body: str) -> str:
     """A feed's HTML content, as Atom escapes it, read as HTML."""
     return body.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+
+
+def _etag_changes(client: TestClient, tmp_path: Path, path: str, *statements: str) -> Response:
+    """What `path` serves once `statements` have run on the database, asked with the ETag it served before
+    them: a 200 under a new ETag."""
+    etag: str = client.get(path).headers["etag"]
+    feed_sql(tmp_path, *statements)
+    second: Response = client.get(path, headers={"if-none-match": etag})
+    assert second.status_code == 200
+    assert second.headers["etag"] != etag
+    return second
 
 
 def test_feed_lists_posts_with_permalinks_and_escaping(
@@ -125,31 +136,24 @@ def test_etag_changes_when_a_row_is_merged_in_place(tmp_path: Path, monkeypatch:
     client: TestClient = make_app(
         tmp_path,
         monkeypatch,
-        seed="""
-        CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT,
-            caption TEXT, media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT,
-            posted_at TEXT, updated_at TEXT);
+        seed=POSTS_UPDATED_AT
+        + """
         INSERT INTO posts VALUES ('ABC', 'someone', 'carousel', '2 days ago',
             'Photo 1 of 2 by Someone, 5 likes', NULL, '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL,
             '2026-09-08T09:00:00+00:00', '2026-09-08T08:00:00+00:00');
         """,
     )
-
-    first: Response = client.get("/instagram.xml")
-    assert "Photo 1 of 2 by Someone" in first.text
-    etag: str = first.headers["etag"]
+    assert "Photo 1 of 2 by Someone" in client.get("/instagram.xml").text
 
     # Simulate the merge: real caption in, updated_at bumped, scraped_at/count untouched.
-    feed_sql(
+    second: Response = _etag_changes(
+        client,
         tmp_path,
+        "/instagram.xml",
         "UPDATE posts SET caption = 'The real caption', updated_at = '2026-09-08T12:00:00+00:00'"
         " WHERE id = 'ABC'",
     )
-
-    second: Response = client.get("/instagram.xml", headers={"if-none-match": etag})
-    assert second.status_code == 200
     assert "The real caption" in second.text
-    assert second.headers["etag"] != etag
 
 
 def test_feed_renders_extra_carousel_slides_and_avatar(
@@ -161,7 +165,9 @@ def test_feed_renders_extra_carousel_slides_and_avatar(
         seed="""
         CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,
             media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT);
-        CREATE TABLE media (post_id TEXT, idx INTEGER, file TEXT);
+        """
+        + MEDIA_TABLE
+        + """
         CREATE TABLE accounts (username TEXT PRIMARY KEY, avatar_file TEXT, avatar_updated_at TEXT);
         INSERT INTO posts VALUES ('C1', 'carouseler', 'carousel', '1 day ago', 'Look at these',
             'C1.jpg', '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL, '2026-09-08T09:00:00+00:00');
@@ -181,24 +187,16 @@ def test_etag_changes_when_a_carousel_slide_is_added(tmp_path: Path, monkeypatch
     client: TestClient = make_app(
         tmp_path,
         monkeypatch,
-        seed="""
-        CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,
-            media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT, updated_at TEXT);
-        CREATE TABLE media (post_id TEXT, idx INTEGER, file TEXT);
+        seed=POSTS_UPDATED_AT
+        + MEDIA_TABLE
+        + """
         INSERT INTO posts VALUES ('C1', 'someone', 'carousel', '1 day ago', 'cap', 'C1.jpg',
             '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL, '2026-09-08T09:00:00+00:00',
             '2026-09-08T08:00:00+00:00');
         """,
     )
-
-    first: Response = client.get("/instagram.xml")
-    etag: str = first.headers["etag"]
-
-    feed_sql(tmp_path, "INSERT INTO media VALUES ('C1', 1, 'C1_1.jpg')")  # a slide captured on a later run
-
-    second: Response = client.get("/instagram.xml", headers={"if-none-match": etag})
-    assert second.status_code == 200
-    assert second.headers["etag"] != etag
+    # a slide captured on a later run
+    _etag_changes(client, tmp_path, "/instagram.xml", "INSERT INTO media VALUES ('C1', 1, 'C1_1.jpg')")
 
 
 def test_etag_changes_when_an_avatar_is_captured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -207,19 +205,13 @@ def test_etag_changes_when_an_avatar_is_captured(tmp_path: Path, monkeypatch: py
         tmp_path,
         "CREATE TABLE accounts (username TEXT PRIMARY KEY, avatar_file TEXT, avatar_updated_at TEXT)",
     )
-
-    first: Response = client.get("/instagram.xml")
-    etag: str = first.headers["etag"]
-
-    feed_sql(
+    second: Response = _etag_changes(
+        client,
         tmp_path,
+        "/instagram.xml",
         "INSERT INTO accounts VALUES ('someone', 'avatars/someone.jpg', '2026-09-08T12:00:00+00:00')",
     )
-
-    second: Response = client.get("/instagram.xml", headers={"if-none-match": etag})
-    assert second.status_code == 200
     assert "avatars/someone.jpg" in second.text
-    assert second.headers["etag"] != etag
 
 
 def test_per_user_etag_ignores_other_accounts_new_slides(
@@ -228,10 +220,9 @@ def test_per_user_etag_ignores_other_accounts_new_slides(
     client: TestClient = make_app(
         tmp_path,
         monkeypatch,
-        seed="""
-        CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,
-            media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT, updated_at TEXT);
-        CREATE TABLE media (post_id TEXT, idx INTEGER, file TEXT);
+        seed=POSTS_UPDATED_AT
+        + MEDIA_TABLE
+        + """
         INSERT INTO posts VALUES ('C1', 'someone', 'carousel', '1 day ago', 'cap', 'C1.jpg',
             '2026-09-08T08:00:00+00:00', 'h1', NULL, NULL, NULL, '2026-09-08T08:00:00+00:00');
         INSERT INTO posts VALUES ('C2', 'other', 'carousel', '1 day ago', 'cap', 'C2.jpg',
@@ -281,18 +272,11 @@ def test_stories_feed_etag_changes_when_a_story_is_removed(
 ) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch, STORIES_TABLE)
     _add_story(tmp_path, "s1", "alice", "stories/s1.jpg")
-
-    first: Response = client.get("/stories.xml")
-    assert "alice" in first.text
-    etag: str = first.headers["etag"]
+    assert "alice" in client.get("/stories.xml").text
 
     # Simulate the retention sweep removing the story (as _prune_expired_stories() eventually does).
-    feed_sql(tmp_path, "DELETE FROM stories WHERE id = 's1'")
-
-    second: Response = client.get("/stories.xml", headers={"if-none-match": etag})
-    assert second.status_code == 200
+    second: Response = _etag_changes(client, tmp_path, "/stories.xml", "DELETE FROM stories WHERE id = 's1'")
     assert "alice" not in second.text
-    assert second.headers["etag"] != etag
 
 
 def test_opml_lists_every_account_plus_the_aggregate_and_stories_feeds(

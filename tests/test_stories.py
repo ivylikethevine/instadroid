@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 from instadroid import (
     config,
-    db,
     parsing,
     stories,
 )
@@ -44,7 +43,7 @@ def test_capture_story_skips_an_item_without_usable_bounds() -> None:
 
 
 def test_a_story_that_closes_before_it_is_read_is_skipped_with_a_dump(
-    fast_offline: Path, capsys: pytest.CaptureFixture[str]
+    con: sqlite3.Connection, fast_offline: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     class AutoExiting(FakeDevice):
         """The viewer answers the cheap exists() check, then is gone by the time of the full dump."""
@@ -52,7 +51,6 @@ def test_a_story_that_closes_before_it_is_read_is_skipped_with_a_dump(
         def dump_hierarchy(self) -> str:
             return hierarchy() if self.screen == "story_alice" else super().dump_hierarchy()
 
-    con: sqlite3.Connection = db.db_init()
     d: AutoExiting = AutoExiting(feed_device(start="home").screens, "home", back={"story_alice": "home"})
     assert stories.scrape_stories(d, con) == 0
     assert "closed before it could be read" in capsys.readouterr().out
@@ -60,15 +58,18 @@ def test_a_story_that_closes_before_it_is_read_is_skipped_with_a_dump(
     assert d.presses[0] == "back"  # still backed out of wherever the viewer left us
 
 
-def test_scrape_stories_skips_the_run_when_home_is_out_of_reach(capsys: pytest.CaptureFixture[str]) -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_scrape_stories_skips_the_run_when_home_is_out_of_reach(
+    con: sqlite3.Connection, capsys: pytest.CaptureFixture[str]
+) -> None:
     d: FakeDevice = FakeDevice({"following": following_screen()}, "following")  # back leads nowhere
     assert stories.scrape_stories(d, con) == 0
     assert d.presses == ["back"] * 3
     assert "could not reach the Home feed" in capsys.readouterr().out
 
 
-def test_scrape_stories_stops_early_when_home_cannot_be_recovered(capsys: pytest.CaptureFixture[str]) -> None:
+def test_scrape_stories_stops_early_when_home_cannot_be_recovered(
+    con: sqlite3.Connection, capsys: pytest.CaptureFixture[str]
+) -> None:
     class Stubborn(FakeDevice):
         """Ejected to the launcher by alice's story; the next few relaunches are ignored, then the
         run's own return to the feed works, so the early stop is what gets tested, not a crash."""
@@ -82,7 +83,6 @@ def test_scrape_stories_stops_early_when_home_cannot_be_recovered(capsys: pytest
                 return
             super().app_start(package_name, activity, stop)
 
-    con: sqlite3.Connection = db.db_init()
     base: FakeDevice = feed_device(start="home")
     d: Stubborn = Stubborn(base.screens, "home", back=base.back)
     d.screenshot = _frame
@@ -93,10 +93,9 @@ def test_scrape_stories_stops_early_when_home_cannot_be_recovered(capsys: pytest
     assert d.screen == "following"  # the run still ended up back on its feed
 
 
-def test_a_byte_identical_recapture_is_dropped_by_the_stories_table() -> None:
+def test_a_byte_identical_recapture_is_dropped_by_the_stories_table(con: sqlite3.Connection) -> None:
     # The perceptual check only looks a day back; an older row with the same content digest still
     # blocks the insert, and the fresh crop is removed rather than left orphaned.
-    con: sqlite3.Connection = db.db_init()
     assert stories.scrape_stories(_home_device(), con) == 1
     stale: str = (datetime.now(UTC) - timedelta(days=2)).isoformat()
     con.execute("UPDATE stories SET scraped_at=?", (stale,))
@@ -108,8 +107,7 @@ def test_a_byte_identical_recapture_is_dropped_by_the_stories_table() -> None:
     assert len(list((config.MEDIA_DIR / "stories").iterdir())) == 1
 
 
-def test_a_story_is_saved_whole_and_identified_by_what_is_below_its_header() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_a_story_is_saved_whole_and_identified_by_what_is_below_its_header(con: sqlite3.Connection) -> None:
     assert stories.scrape_stories(_home_device(), con) == 1
     saved: ImageFile.ImageFile
     with Image.open(next((config.MEDIA_DIR / "stories").iterdir())) as saved:
@@ -124,16 +122,14 @@ def test_a_story_is_saved_whole_and_identified_by_what_is_below_its_header() -> 
     assert stories.scrape_stories(_home_device(other_header), con) == 0
 
 
-def test_a_dark_first_frame_is_retaken() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_a_dark_first_frame_is_retaken(con: sqlite3.Connection) -> None:
     shots: list[Image.Image] = [Image.new("RGB", (WIDTH, HEIGHT), (3, 3, 3)), _frame()]
     d: FakeDevice = _home_device(lambda: shots.pop(0))
     assert stories.scrape_stories(d, con) == 1  # the fade-in frame alone would have been blank
     assert shots == []
 
 
-def test_another_accounts_frame_has_to_match_more_closely() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_another_accounts_frame_has_to_match_more_closely(con: sqlite3.Connection) -> None:
     now: str = datetime.now(UTC).isoformat()
     con.execute(
         "INSERT INTO stories (id, username, scraped_at, phash) VALUES ('s1', 'alice', ?, ?)",
@@ -146,20 +142,18 @@ def test_another_accounts_frame_has_to_match_more_closely() -> None:
     assert stories._find_story_duplicate(con, "bob", near)  # the frame both accounts reshared
 
 
-def test_a_story_viewer_without_a_media_node_stores_nothing() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_a_story_viewer_without_a_media_node_stores_nothing(con: sqlite3.Connection) -> None:
     d: FakeDevice = feed_device(start="home")
     d.screens["story_alice"] = hierarchy(node("reel_viewer_root", bounds=(0, 0, WIDTH, HEIGHT)))
     assert stories.scrape_stories(d, con) == 0
     assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM stories")) == 0
 
 
-def test_the_header_avatar_and_texts_are_painted_over_in_the_saved_frame() -> None:
+def test_the_header_avatar_and_texts_are_painted_over_in_the_saved_frame(con: sqlite3.Connection) -> None:
     avatar: tuple[int, int, int, int] = (32, 200, 116, 284)
     name: tuple[int, int, int, int] = (148, 200, 317, 244)
     age: tuple[int, int, int, int] = (341, 200, 407, 244)
     reshared_avatar: tuple[int, int, int, int] = (148, 260, 190, 300)  # no node of its own, beside its text
-    con: sqlite3.Connection = db.db_init()
     d: FakeDevice = feed_device(start="home")
     d.screens["story_alice"] = hierarchy(
         node(

@@ -70,8 +70,8 @@ These run over `app/` and `tests/` alike and are part of the test contract, not 
 - **Typing.** basedpyright strict with `reportAny`, plus ruff's `ANN` rules, so no value typed `Any`
   gets through, and [constricter](https://github.com/ivylikethevine/python-constricter) at its
   strictest level for the rule that every variable is annotated, which ruff doesn't have.
-  `tests/test_typing_policy.py` runs constricter too
-  and catches the suppression comments the linters can't forbid on their own. The rules are in
+  `tests/test_typing_policy.py` catches the suppression comments the linters can't forbid on their
+  own. The rules are in
   [CONTRIBUTING.md](CONTRIBUTING.md#typing-and-coverage).
 - **Import boundaries.** import-linter's contracts in `pyproject.toml`: the feed server doesn't import
   the scraper, the scraper doesn't import the feed server, `shared` imports neither, profiles don't
@@ -148,8 +148,8 @@ On every non-draft pull request and every push to `main`, `ci.yml` runs tiers 1 
 job runs the whole suite with coverage (replay and contract tests included), and the `Lint` job runs
 ruff, basedpyright, `lint-imports` and constricter, each through `scripts/check.sh`. Both are skipped when a
 change touches only Markdown, `docs/` or workflow files. `coverage.yml` hands on the `Unit tests` job's
-figures after each green CI run on a push to `main`, for the badge, and runs the suite again on a
-same-repository pull request, where it comments the pull request's coverage and test count next to `main`'s.
+figures after each green CI run on a push to `main`, for the badge, and after CI on a same-repository
+pull request into `main`, where it comments the pull request's coverage and test count next to `main`'s.
 Tier 4 never runs in CI. Everything else CI checks (dependencies, shell,
 docs, the image, workflows) is in [CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs).
 
