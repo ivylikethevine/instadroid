@@ -196,6 +196,12 @@ def test_a_build_below_the_floor_is_only_evaluated_on_request() -> None:
         new_profile.validate("423.0.0.47.66")  # validating stays within the floor
 
 
+def test_a_build_no_profile_covers_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(igprofiles, "available", lambda: ["v450"])
+    with pytest.raises(ValueError, match="no profile covers Instagram 445: the oldest is v450"):
+        new_profile.covering_profile("445.0.0.45.83")
+
+
 @pytest.fixture
 def scratch_profiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A directory forked profiles land in, importable as igprofiles.vXYZ next to the real ones. Tests
@@ -256,6 +262,34 @@ def test_a_forked_profile_without_builds_runs_with_a_warning(
     )
 
 
+def test_fork_refuses_to_overwrite_a_directory_already_there(tmp_path: Path) -> None:
+    target: Path = tmp_path / "v499"
+    target.mkdir()
+    with pytest.raises(ValueError, match=re.escape(f"{target} already exists")):
+        new_profile.fork("499.0.0.34.72", root=tmp_path)
+    assert not list(target.iterdir())
+
+
+def test_main_fork_reports_the_new_profile(
+    scratch_profiles: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(new_profile, "ROOT", tmp_path)
+    real_fork: Callable[[str, Path], Path] = new_profile.fork
+
+    def fork_into_scratch(build: str) -> Path:  # fork()'s default root is bound to the real app/igprofiles/
+        return real_fork(build, scratch_profiles)
+
+    monkeypatch.setattr(new_profile, "fork", fork_into_scratch)
+    assert new_profile.main(["fork", "499.0.0.34.72"]) == 0
+    assert capsys.readouterr().out == (
+        "created igprofiles/v499; override what drifted, then `check 499.0.0.34.72` again\n"
+    )
+    assert (scratch_profiles / "v499" / "selectors.py").exists()
+
+
 def test_add_validated_keeps_one_sorted_tuple(tmp_path: Path) -> None:
     init: Path = tmp_path / "__init__.py"
     init.write_text(
@@ -276,6 +310,14 @@ def test_add_validated_extends_the_root_profile(tmp_path: Path) -> None:
     init.write_text(Path(igprofiles.__file__).with_name("v424").joinpath("__init__.py").read_text())
     new_profile.add_validated(init, "499.0.0.50.1")
     assert '",\n        "499.0.0.50.1",\n    )\n' in init.read_text()
+
+
+def test_add_validated_needs_a_class_to_add_to(tmp_path: Path) -> None:
+    init: Path = tmp_path / "__init__.py"
+    init.write_text("class Profile(Base):\n    major = 499\n")
+    with pytest.raises(ValueError, match="no `validated` or `selectors` line"):
+        new_profile.add_validated(init, "499.0.0.40.1")
+    assert init.read_text() == "class Profile(Base):\n    major = 499\n"
 
 
 # --- baseline ------------------------------------------------------------------------------------
@@ -306,8 +348,25 @@ def test_parse_mem_usage(text: str, used: int, limit: int) -> None:
     assert new_profile.parse_mem_usage(text) == (used, limit)
 
 
+def test_parse_mem_usage_rejects_what_it_cannot_read() -> None:
+    with pytest.raises(ValueError, match="unrecognized docker stats memory usage"):
+        new_profile.parse_mem_usage("-- / --")
+
+
 def test_host_available_mib() -> None:
     assert new_profile.host_available_mib("MemTotal: 64000000 kB\nMemAvailable:   4194304 kB\n") == 4096
+
+
+def test_read_host_state_without_docker_or_meminfo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def nothing(cmd: Sequence[str]) -> str:
+        return ""
+
+    monkeypatch.setattr(new_profile, "_output", nothing)
+    monkeypatch.setattr(new_profile, "MEMINFO", tmp_path / "missing")  # no /proc/meminfo outside Linux
+    state: new_profile.HostState = new_profile.read_host_state()
+    assert state == new_profile.HostState(
+        redroid_running=False, app_running=False, redroid_mem="", host_available_mib=0
+    )
 
 
 def _no_commands(cmd: Sequence[str], log_path: Path) -> NoReturn:
@@ -353,6 +412,19 @@ def test_baseline_asks_first(monkeypatch: pytest.MonkeyPatch) -> None:
     assert new_profile.baseline("445.0.0.45.83") == 1
 
 
+@pytest.mark.parametrize(("answer", "confirmed"), [("y", True), (" Yes ", True), ("", False), ("no", False)])
+def test_confirm_reads_a_yes(monkeypatch: pytest.MonkeyPatch, answer: str, confirmed: bool) -> None:
+    prompts: list[str] = []
+
+    def fake_input(prompt: object = "") -> str:
+        prompts.append(str(prompt))
+        return answer
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    assert new_profile._confirm("Drive the device now?") is confirmed
+    assert prompts == ["Drive the device now? [y/N] "]
+
+
 @pytest.mark.usefixtures("ready_baseline")
 def test_baseline_installs_runs_and_checks(
     dev_dirs: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -369,6 +441,34 @@ def test_baseline_installs_runs_and_checks(
     assert (dev_dirs / "445" / "dumps").is_dir()
     out: str = capsys.readouterr().out
     assert "No captured screens" in out and "new-profile restore" in out
+
+
+@pytest.mark.usefixtures("ready_baseline")
+def test_baseline_stops_when_the_install_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commands: list[list[str]] = []
+
+    def failing_install(cmd: Sequence[str], log_path: Path) -> int:
+        commands.append(list(cmd))
+        return 1
+
+    monkeypatch.setattr(new_profile, "_run_logged", failing_install)
+    assert new_profile.baseline("445.0.0.45.83", yes=True) == 1
+    assert [c[-2:] for c in commands] == [["install", "445.0.0.45.83"]]  # no run after a failed install
+    assert "install failed; see dev/445/baseline.log" in capsys.readouterr().out
+
+
+def test_restore_needs_a_default_build(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_build(profile: str | None = None) -> str | None:
+        return None
+
+    monkeypatch.setattr(igprofiles, "default_build", no_build)
+    monkeypatch.setattr(new_profile, "_run_logged", _no_commands)
+    assert new_profile.restore(yes=True) == 1
+    assert "no default build" in capsys.readouterr().out
 
 
 # --- check, promote, validate --------------------------------------------------------------------
@@ -443,6 +543,40 @@ def _record_run(db_path: Path, **values: str | int | None) -> None:
     con.close()
 
 
+def test_run_summary_is_none_without_a_recorded_run(tmp_path: Path) -> None:
+    db_path: Path = tmp_path / "posts.sqlite"
+    assert new_profile.run_summary(db_path) is None  # no database at all
+    db_path.touch()
+    assert new_profile.run_summary(db_path) is None  # an empty database: no runs table
+    con: sqlite3.Connection = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, ig_version TEXT)")
+    con.commit()
+    con.close()
+    assert new_profile.run_summary(db_path) is None  # a runs table with no rows
+
+
+def test_check_report_describes_the_latest_baseline_run(tmp_path: Path) -> None:
+    db_path: Path = tmp_path / "posts.sqlite"
+    _record_run(
+        db_path,
+        ig_version="445.0.0.45.83",
+        error="DeviceNotReady('could not bring com.instagram.android to the foreground')",
+        warning="memory guard stopped the run at 90%",
+        mem_peak_mb=1800,
+    )
+    run: new_profile.RunSummary | None = new_profile.run_summary(db_path)
+    assert run is not None and run.mem_peak_mb == 1800
+    text: str = new_profile.render_report("499.0.0.34.72", V424, [], run)
+    assert "Latest baseline run: Instagram 445.0.0.45.83, error: `DeviceNotReady" in text
+    assert "3 new post(s), 1 new stor(ies), peak 1800 MiB." in text
+    assert "Run warning: memory guard stopped the run at 90%" in text
+    assert "**The run scraped Instagram 445.0.0.45.83, not 499.0.0.34.72.**" in text
+    assert text.endswith("No captured screens. Run `new-profile baseline` first.\n")
+    _record_run(db_path)  # a clean run of the right build
+    text = new_profile.render_report("499.0.0.34.72", V424, [], new_profile.run_summary(db_path))
+    assert "no error" in text and "Run warning" not in text and "not 499.0.0.34.72" not in text
+
+
 def test_validating_a_build_records_it_and_its_fixtures_with_the_covering_profile(
     scratch_profiles: Path, dev_dirs: Path
 ) -> None:
@@ -475,6 +609,18 @@ def test_validating_a_build_records_it_and_its_fixtures_with_the_covering_profil
     )
 
 
+@pytest.mark.usefixtures("dev_dirs")
+def test_validate_lists_what_is_still_missing(
+    scratch_profiles: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    new_profile.fork("499.0.0.34.72", root=scratch_profiles)
+    assert new_profile.validate("499.0.0.34.72") == 1
+    out: str = capsys.readouterr().out
+    assert "can't be marked validated with v499 yet:" in out
+    assert "  - no replay fixtures for 499" in out and "  - no baseline run recorded" in out
+    assert "validated: tuple[str, ...] = ()" in (scratch_profiles / "v499" / "__init__.py").read_text()
+
+
 def test_promote_skips_screens_without_a_clean_capture(tmp_path: Path) -> None:
     empty_feed: str = hierarchy(
         node("android:id/list"), node("row_feed_profile_header"), node("row_feed_button_share")
@@ -483,6 +629,34 @@ def test_promote_skips_screens_without_a_clean_capture(tmp_path: Path) -> None:
         V424, _dumps(tmp_path, {"001-feed": empty_feed, "002-home_feed-fail": FEED_XML})
     )
     assert new_profile.pick_fixtures(reports) == {}
+
+
+# --- promote_dump --------------------------------------------------------------------------------
+
+
+def _write_fixture(directory: Path, name: str, xml: str, recorded: str | None = None) -> Path:
+    """A fixture pair in `directory`: the dump and its .expected.json (what parses now, unless given)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}.xml").write_text(xml)
+    expected: Path = directory / f"{name}.expected.json"
+    expected.write_text(recorded if recorded is not None else json.dumps(promote_dump.expected(xml)))
+    return expected
+
+
+def test_fixture_problems_catch_a_changed_parse_and_a_missing_screen_key(tmp_path: Path) -> None:
+    stale: Path = _write_fixture(
+        tmp_path, "feed_445", FEED_XML, '{"posts": [], "story_tray": [], "following_list": []}'
+    )
+    assert promote_dump.fixture_problems(V424, stale) == [
+        "feed_445.expected.json no longer parses as recorded (re-record with promote-dump --update)"
+    ]
+    moved: Path = _write_fixture(
+        tmp_path / "moved", "feed_445", FEED_XML.replace("row_feed_button_share", "x")
+    )
+    assert promote_dump.fixture_problems(V424, moved) == [
+        "fixture feed_445.xml is missing required keys share_id"
+    ]
+    assert promote_dump.fixture_problems(V424, _write_fixture(tmp_path / "ok", "feed_445", FEED_XML)) == []
 
 
 def test_pseudonymize_catches_names_no_parser_returns() -> None:
@@ -523,183 +697,6 @@ def test_pseudonymize_catches_names_no_parser_returns() -> None:
     ):
         assert name not in clean, name
     assert "Follow Display 1" in clean and "@user" in clean and "Reel by Display 2," in clean
-
-
-# --- the paths a healthy run never takes ---------------------------------------------------------
-
-
-def test_a_build_no_profile_covers_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(igprofiles, "available", lambda: ["v450"])
-    with pytest.raises(ValueError, match="no profile covers Instagram 445: the oldest is v450"):
-        new_profile.covering_profile("445.0.0.45.83")
-
-
-def test_fork_refuses_to_overwrite_a_directory_already_there(tmp_path: Path) -> None:
-    target: Path = tmp_path / "v499"
-    target.mkdir()
-    with pytest.raises(ValueError, match=re.escape(f"{target} already exists")):
-        new_profile.fork("499.0.0.34.72", root=tmp_path)
-    assert not list(target.iterdir())
-
-
-def test_parse_mem_usage_rejects_what_it_cannot_read() -> None:
-    with pytest.raises(ValueError, match="unrecognized docker stats memory usage"):
-        new_profile.parse_mem_usage("-- / --")
-
-
-def test_read_host_state_without_docker_or_meminfo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def nothing(cmd: Sequence[str]) -> str:
-        return ""
-
-    monkeypatch.setattr(new_profile, "_output", nothing)
-    monkeypatch.setattr(new_profile, "MEMINFO", tmp_path / "missing")  # no /proc/meminfo outside Linux
-    state: new_profile.HostState = new_profile.read_host_state()
-    assert state == new_profile.HostState(
-        redroid_running=False, app_running=False, redroid_mem="", host_available_mib=0
-    )
-
-
-@pytest.mark.parametrize(("answer", "confirmed"), [("y", True), (" Yes ", True), ("", False), ("no", False)])
-def test_confirm_reads_a_yes(monkeypatch: pytest.MonkeyPatch, answer: str, confirmed: bool) -> None:
-    prompts: list[str] = []
-
-    def fake_input(prompt: object = "") -> str:
-        prompts.append(str(prompt))
-        return answer
-
-    monkeypatch.setattr("builtins.input", fake_input)
-    assert new_profile._confirm("Drive the device now?") is confirmed
-    assert prompts == ["Drive the device now? [y/N] "]
-
-
-@pytest.mark.usefixtures("ready_baseline")
-def test_baseline_stops_when_the_install_fails(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    commands: list[list[str]] = []
-
-    def failing_install(cmd: Sequence[str], log_path: Path) -> int:
-        commands.append(list(cmd))
-        return 1
-
-    monkeypatch.setattr(new_profile, "_run_logged", failing_install)
-    assert new_profile.baseline("445.0.0.45.83", yes=True) == 1
-    assert [c[-2:] for c in commands] == [["install", "445.0.0.45.83"]]  # no run after a failed install
-    assert "install failed; see dev/445/baseline.log" in capsys.readouterr().out
-
-
-def test_restore_needs_a_default_build(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def no_build(profile: str | None = None) -> str | None:
-        return None
-
-    monkeypatch.setattr(igprofiles, "default_build", no_build)
-    monkeypatch.setattr(new_profile, "_run_logged", _no_commands)
-    assert new_profile.restore(yes=True) == 1
-    assert "no default build" in capsys.readouterr().out
-
-
-def test_run_summary_is_none_without_a_recorded_run(tmp_path: Path) -> None:
-    db_path: Path = tmp_path / "posts.sqlite"
-    assert new_profile.run_summary(db_path) is None  # no database at all
-    db_path.touch()
-    assert new_profile.run_summary(db_path) is None  # an empty database: no runs table
-    con: sqlite3.Connection = sqlite3.connect(db_path)
-    con.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, ig_version TEXT)")
-    con.commit()
-    con.close()
-    assert new_profile.run_summary(db_path) is None  # a runs table with no rows
-
-
-def test_check_report_describes_the_latest_baseline_run(tmp_path: Path) -> None:
-    db_path: Path = tmp_path / "posts.sqlite"
-    _record_run(
-        db_path,
-        ig_version="445.0.0.45.83",
-        error="DeviceNotReady('could not bring com.instagram.android to the foreground')",
-        warning="memory guard stopped the run at 90%",
-        mem_peak_mb=1800,
-    )
-    run: new_profile.RunSummary | None = new_profile.run_summary(db_path)
-    assert run is not None and run.mem_peak_mb == 1800
-    text: str = new_profile.render_report("499.0.0.34.72", V424, [], run)
-    assert "Latest baseline run: Instagram 445.0.0.45.83, error: `DeviceNotReady" in text
-    assert "3 new post(s), 1 new stor(ies), peak 1800 MiB." in text
-    assert "Run warning: memory guard stopped the run at 90%" in text
-    assert "**The run scraped Instagram 445.0.0.45.83, not 499.0.0.34.72.**" in text
-    assert text.endswith("No captured screens. Run `new-profile baseline` first.\n")
-    _record_run(db_path)  # a clean run of the right build
-    text = new_profile.render_report("499.0.0.34.72", V424, [], new_profile.run_summary(db_path))
-    assert "no error" in text and "Run warning" not in text and "not 499.0.0.34.72" not in text
-
-
-def test_add_validated_needs_a_class_to_add_to(tmp_path: Path) -> None:
-    init: Path = tmp_path / "__init__.py"
-    init.write_text("class Profile(Base):\n    major = 499\n")
-    with pytest.raises(ValueError, match="no `validated` or `selectors` line"):
-        new_profile.add_validated(init, "499.0.0.40.1")
-    assert init.read_text() == "class Profile(Base):\n    major = 499\n"
-
-
-@pytest.mark.usefixtures("dev_dirs")
-def test_validate_lists_what_is_still_missing(
-    scratch_profiles: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    new_profile.fork("499.0.0.34.72", root=scratch_profiles)
-    assert new_profile.validate("499.0.0.34.72") == 1
-    out: str = capsys.readouterr().out
-    assert "can't be marked validated with v499 yet:" in out
-    assert "  - no replay fixtures for 499" in out and "  - no baseline run recorded" in out
-    assert "validated: tuple[str, ...] = ()" in (scratch_profiles / "v499" / "__init__.py").read_text()
-
-
-def test_main_fork_reports_the_new_profile(
-    scratch_profiles: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(new_profile, "ROOT", tmp_path)
-    real_fork: Callable[[str, Path], Path] = new_profile.fork
-
-    def fork_into_scratch(build: str) -> Path:  # fork()'s default root is bound to the real app/igprofiles/
-        return real_fork(build, scratch_profiles)
-
-    monkeypatch.setattr(new_profile, "fork", fork_into_scratch)
-    assert new_profile.main(["fork", "499.0.0.34.72"]) == 0
-    assert capsys.readouterr().out == (
-        "created igprofiles/v499; override what drifted, then `check 499.0.0.34.72` again\n"
-    )
-    assert (scratch_profiles / "v499" / "selectors.py").exists()
-
-
-# --- promote_dump --------------------------------------------------------------------------------
-
-
-def _write_fixture(directory: Path, name: str, xml: str, recorded: str | None = None) -> Path:
-    """A fixture pair in `directory`: the dump and its .expected.json (what parses now, unless given)."""
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{name}.xml").write_text(xml)
-    expected: Path = directory / f"{name}.expected.json"
-    expected.write_text(recorded if recorded is not None else json.dumps(promote_dump.expected(xml)))
-    return expected
-
-
-def test_fixture_problems_catch_a_changed_parse_and_a_missing_screen_key(tmp_path: Path) -> None:
-    stale: Path = _write_fixture(
-        tmp_path, "feed_445", FEED_XML, '{"posts": [], "story_tray": [], "following_list": []}'
-    )
-    assert promote_dump.fixture_problems(V424, stale) == [
-        "feed_445.expected.json no longer parses as recorded (re-record with promote-dump --update)"
-    ]
-    moved: Path = _write_fixture(
-        tmp_path / "moved", "feed_445", FEED_XML.replace("row_feed_button_share", "x")
-    )
-    assert promote_dump.fixture_problems(V424, moved) == [
-        "fixture feed_445.xml is missing required keys share_id"
-    ]
-    assert promote_dump.fixture_problems(V424, _write_fixture(tmp_path / "ok", "feed_445", FEED_XML)) == []
 
 
 def test_pseudonymize_covers_the_story_tray_and_the_following_list() -> None:

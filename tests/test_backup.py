@@ -6,15 +6,14 @@ from pathlib import Path
 import pytest
 from instadroid import backup, config
 
+from tests.support import insert_post
+
 
 @pytest.fixture
 def con(con: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
     """conftest's database, holding one post, with backups under tmp_path."""
     monkeypatch.setattr(config, "BACKUP_DIR", str(tmp_path / "backups"))
-    con.execute(
-        "INSERT INTO posts (id, username, scraped_at) VALUES ('p1', 'someone', '2026-09-14T00:00:00+00:00')"
-    )
-    con.commit()
+    insert_post(con, "p1", username="someone")
     return con
 
 

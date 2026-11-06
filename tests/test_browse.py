@@ -2,6 +2,7 @@
 
 import re
 import sqlite3
+from datetime import UTC, datetime
 from html import unescape
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from httpx2 import Response
 
 from tests.feedclient import make_app
+from tests.support import insert_post
 
 TOKEN: str = "s3cret-token"
 
@@ -22,13 +24,11 @@ def _post(
     day: int = 1,
     media: str | None = None,
 ) -> None:
-    at: str = f"2026-09-{day:02d}T12:00:00+00:00"
-    con.execute(
-        "INSERT INTO posts (id, username, kind, caption, media_file, scraped_at, posted_at)"
-        " VALUES (?,?,'photo',?,?,?,?)",
-        (post_id, username, caption, media, at, at),
-    )
-    con.commit()
+    """A photo seen at noon on September `day`, showing no relative date; any media file isn't written."""
+    insert_post(
+        con, post_id, username=username, caption=caption, posted_date=None,
+        now=datetime(2026, 9, day, 12, tzinfo=UTC), days_old=0, media_file=media, media=None,
+    )  # fmt: skip
 
 
 @pytest.fixture

@@ -27,6 +27,14 @@ INSERT INTO posts VALUES ('h2', 'other', 'video', 'August 1', '', NULL,
 """
 
 
+# The posts table once updated_at was added, and the carousel slides' media table; a seed adds its rows.
+POSTS_UPDATED_AT: str = """
+CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT, caption TEXT,
+    media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT, updated_at TEXT);
+"""
+MEDIA_TABLE: str = "CREATE TABLE media (post_id TEXT, idx INTEGER, file TEXT);\n"
+
+
 def make_app(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

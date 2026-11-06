@@ -1,15 +1,12 @@
-"""The typing rules, from the test suite as well as scripts/check.sh. Every variable is annotated where
-it's first bound (constricter, at pyproject.toml's [tool.constricter] level). And the escape hatches: ruff
-bans importing Any and cast (TID251) and blanket ignores (PGH); basedpyright ignores `# type: ignore`
-(enableTypeIgnoreComments=false) and reports Any values (reportAny). What's left is a suppression comment
-that silences basedpyright itself, or a noqa that switches off the annotation rules (ruff's ANN or
-constricter's LVA), and that's what this test catches."""
+"""The escape hatches from the typing rules: ruff bans importing Any and cast (TID251) and blanket ignores
+(PGH); basedpyright ignores `# type: ignore` (enableTypeIgnoreComments=false) and reports Any values
+(reportAny). What's left is a suppression comment that silences basedpyright itself, or a noqa that switches
+off the annotation rules (ruff's ANN or constricter's LVA), and that's what this test catches. constricter
+itself runs in scripts/check.sh's python group."""
 
 import re
 from pathlib import Path
 
-import pytest
-from constricter.cli import command
 from devtools import ROOT
 
 SOURCES: list[Path] = sorted(
@@ -35,12 +32,3 @@ def test_no_type_checker_suppressions_or_annotation_noqa() -> None:
         if FORBIDDEN.search(line) and path.name != "test_typing_policy.py"
     ]
     assert not offences, "type-checker suppressions aren't allowed:\n" + "\n".join(offences)
-
-
-def test_every_variable_is_annotated(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The same files and settings as the constricter check in scripts/check.sh's python group."""
-    monkeypatch.chdir(ROOT)  # constricter reads [tool.constricter] from the nearest pyproject.toml
-    status: int = command.main(["app", "tests", ".github/scripts"])
-    assert status == 0, "every variable is annotated where it's first bound:\n" + capsys.readouterr().out

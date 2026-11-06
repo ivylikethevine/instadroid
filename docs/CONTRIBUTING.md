@@ -207,10 +207,10 @@ The other workflows:
 - `coverage.yml`: the test suite's coverage as data after every green CI run on a push to `main`: the
   `coverage-badge` artifact holds the README's coverage and tests-passed badge files, and an HTML
   report goes beside it. Both are what `ci.yml`'s test job measured, in that run or in the pull request
-  run it reused; only when neither has them, and on a dispatch, does the suite run here. On a
-  same-repository pull request that changes more than Markdown or `docs/`, it runs the suite and posts
-  the figures next to `main`'s in one comment, edited in place on every push. The floor itself is
-  enforced by `ci.yml`'s test job.
+  run it reused; only when neither has them, and on a dispatch, does the suite run here. After CI on a
+  same-repository pull request into `main` whose test job ran, it posts that job's figures next to
+  `main`'s in one comment, edited in place on every push. The floor itself is enforced by `ci.yml`'s
+  test job.
 - `pages.yml`: builds the [project site](https://ivylikethevine.github.io/instadroid/) with Jekyll
   from the repository root (`_config.yml`), fetches the newest `coverage-badge` artifact from `main`
   and serves it as `badges/coverage.json` and `badges/tests.json`, so no coverage service, token or

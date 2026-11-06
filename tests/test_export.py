@@ -1,13 +1,14 @@
 """`scraper.py export`: the archive's layout, reruns past retention, and staying inside its directory."""
 
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from instadroid import config, export, retention
 from shared.jsonvalues import JSON, loads
 
-from tests.support import run_scraper
+from tests.support import insert_post, run_scraper
 
 
 def _post(
@@ -19,17 +20,12 @@ def _post(
     day: int = 1,
     url: str | None = None,
 ) -> None:
-    at: str = f"2026-09-{day:02d}T12:00:00+00:00"
-    if media:
-        path: Path = config.MEDIA_DIR / media
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"image " + media.encode())
-    con.execute(
-        "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, posted_at, url, place)"
-        " VALUES (?,?,'photo','2 days ago',?,?,?,?,?,'Anytown')",
-        (post_id, username, caption, media, at, at, url),
-    )
-    con.commit()
+    """A photo seen at noon on September `day`, with its media file (holding "image <name>") when given."""
+    insert_post(
+        con, post_id, username=username, caption=caption, posted_date="2 days ago", place="Anytown",
+        now=datetime(2026, 9, day, 12, tzinfo=UTC), days_old=0, media_file=media,
+        media=None if media is None else b"image " + media.encode(), url=url,
+    )  # fmt: skip
 
 
 def _read(path: Path) -> JSON:
@@ -152,14 +148,8 @@ def test_stored_names_cannot_write_outside_the_directory(con: sqlite3.Connection
     _post(con, "../../../evil-id", username="../../../evil-user")
     _post(con, "p2", username="..")
     _post(con, "p3", username="")
-    con.execute(
-        "INSERT INTO posts (id, username, media_file, scraped_at) VALUES ('p4', 'm', '../secret.txt', '2026')"
-    )
-    con.execute(
-        "INSERT INTO posts (id, username, media_file, scraped_at) VALUES ('p5', 'm', ?, '2026')",
-        (str(secret),),
-    )
-    con.commit()
+    insert_post(con, "p4", username="m", media_file="../secret.txt", media=None)
+    insert_post(con, "p5", username="m", media_file=str(secret), media=None)
     out: Path = tmp_path / "deep" / "archive"
     before: set[str] = _tree(tmp_path) - _tree(out)
     export.export_posts(con, str(out))
@@ -192,10 +182,7 @@ def test_a_media_symlink_pointing_out_of_media_dir_is_not_copied(
     secret: Path = tmp_path / "secret.txt"
     secret.write_text("private")
     (config.MEDIA_DIR / "link.webp").symlink_to(secret)
-    con.execute(
-        "INSERT INTO posts (id, username, media_file, scraped_at) VALUES ('p', 'u', 'link.webp', '2026')"
-    )
-    con.commit()
+    insert_post(con, "p", media_file="link.webp", media=None)
     out: Path = tmp_path / "archive"
     export.export_posts(con, str(out))
     assert not (out / "media").exists()

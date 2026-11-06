@@ -75,8 +75,7 @@ def _expanding_device() -> FakeDevice:
     return _device(_card(COLLAPSED, goto="expanded"), _card(f"someone_nice {LONG}", share="share_expanded"))
 
 
-def test_a_card_is_not_captured_again_once_its_caption_is_expanded() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_a_card_is_not_captured_again_once_its_caption_is_expanded(con: sqlite3.Connection) -> None:
     d: FakeDevice = _expanding_device()
     collapsed: str = _hash(_card(COLLAPSED))
 
@@ -90,8 +89,7 @@ def test_a_card_is_not_captured_again_once_its_caption_is_expanded() -> None:
     assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts")) == 1
 
 
-def test_a_later_run_recognises_the_post_under_either_caption_form() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_a_later_run_recognises_the_post_under_either_caption_form(con: sqlite3.Connection) -> None:
     scrape.scrape_once(_expanding_device(), con)
     cards: list[Node]
     for cards in (_card(COLLAPSED), _card(f"someone_nice {LONG}")):
@@ -101,8 +99,7 @@ def test_a_later_run_recognises_the_post_under_either_caption_form() -> None:
     assert sqlrows.scalar(con.execute("SELECT COUNT(*) FROM posts")) == 1
 
 
-def test_a_card_with_no_date_is_matched_to_its_stored_post_by_caption() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_a_card_with_no_date_is_matched_to_its_stored_post_by_caption(con: sqlite3.Connection) -> None:
     insert_post(
         con, "TOP123", username="someone_nice", caption=LONG, days_old=0, h="stored-key", url=PERMALINK
     )
@@ -117,10 +114,9 @@ def test_a_card_with_no_date_is_matched_to_its_stored_post_by_caption() -> None:
 
 
 def test_a_header_less_card_with_no_date_and_no_permalink_is_not_stored(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(config, "PERMALINK_RETRIES", 0)
-    con: sqlite3.Connection = db.db_init()
     d: FakeDevice = _device(_card(f"someone_nice {LONG}", header=False, share="share_noclip"))
 
     stats: scrape.RunStats = scrape.scrape_once(d, con)
@@ -131,10 +127,9 @@ def test_a_header_less_card_with_no_date_and_no_permalink_is_not_stored(
     assert "header-less card: no date and no permalink" in capsys.readouterr().out
 
 
-def test_the_same_shortcode_twice_is_the_same_post_copied_again() -> None:
+def test_the_same_shortcode_twice_is_the_same_post_copied_again(con: sqlite3.Connection) -> None:
     """The clipboard still holds the link the last run ended on, and this run's first card is that
     post under a hash nobody stored: Copy link "repeats", and the stored row says why."""
-    con: sqlite3.Connection = db.db_init()
     insert_post(con, "TOP123", username="someone_nice", caption=TOP_CAPTION, h="stale", url=PERMALINK)
     d: FakeDevice = feed_device()
     d.clipboard, d.clipboard_settable = TOP_URL, False
@@ -148,11 +143,11 @@ def test_the_same_shortcode_twice_is_the_same_post_copied_again() -> None:
 
 
 def test_a_repeated_shortcode_for_a_post_that_is_not_stored_is_a_clipboard_failure(
+    con: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(config, "PERMALINK_RETRIES", 0)
     run_caps(monkeypatch, slides=1)
-    con: sqlite3.Connection = db.db_init()
     d: FakeDevice = feed_device()
     d.clipboard, d.clipboard_settable = TOP_URL, False
 
@@ -166,10 +161,10 @@ def test_a_repeated_shortcode_for_a_post_that_is_not_stored_is_a_clipboard_failu
 
 
 def test_a_repeated_shortcode_stored_for_another_caption_is_a_clipboard_failure(
+    con: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(config, "PERMALINK_RETRIES", 0)
-    con: sqlite3.Connection = db.db_init()
     insert_post(
         con,
         "TOP123",
@@ -194,8 +189,7 @@ def test_same_caption_accepts_a_collapsed_start_and_a_placeholder() -> None:
     assert not parsing.same_caption("First line", "Another line")
 
 
-def test_a_stored_post_back_under_another_username_is_a_suspected_rename() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_a_stored_post_back_under_another_username_is_a_suspected_rename(con: sqlite3.Connection) -> None:
     insert_post(con, "TOP123", username="former_name", caption=TOP_CAPTION, h="old", url=PERMALINK)
     d: FakeDevice = feed_device()
 
@@ -211,8 +205,7 @@ def test_a_stored_post_back_under_another_username_is_a_suspected_rename() -> No
     assert db.rename_candidates(con) == [] and alerts.RENAME not in alerts.conditions(con)
 
 
-def test_a_post_two_accounts_share_is_not_a_rename() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_a_post_two_accounts_share_is_not_a_rename(con: sqlite3.Connection) -> None:
     insert_post(con, "TOP123", username="former_name", caption=TOP_CAPTION, h="old", url=PERMALINK)
     d: FakeDevice = feed_device()
     shared: Node = node(
@@ -233,8 +226,9 @@ def _suspect(con: sqlite3.Connection) -> None:
     assert db.rename_candidates(con) == [("former_name", "someone_nice", 1)]
 
 
-def test_the_following_list_confirms_a_rename_only_with_the_new_name_and_not_the_old() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_the_following_list_confirms_a_rename_only_with_the_new_name_and_not_the_old(
+    con: sqlite3.Connection,
+) -> None:
     _suspect(con)
     assert db.confirmed_renames(con) == []  # no stored list
     db.store_following(con, ["former_name", "someone_nice"], force=True)
@@ -245,8 +239,7 @@ def test_the_following_list_confirms_a_rename_only_with_the_new_name_and_not_the
     assert db.confirmed_renames(con) == [("former_name", "someone_nice")]
 
 
-def test_a_rename_with_more_than_one_reading_is_left_for_a_person() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_a_rename_with_more_than_one_reading_is_left_for_a_person(con: sqlite3.Connection) -> None:
     _suspect(con)
     db.store_following(con, ["someone_nice", "other_user"], force=True)
     insert_post(con, "OTHER9", username="former_name", caption="Another caption", days_old=2, h="other9")
@@ -258,8 +251,9 @@ def test_a_rename_with_more_than_one_reading_is_left_for_a_person() -> None:
     assert db.confirmed_renames(con) == []  # two old names, one new one
 
 
-def test_a_confirmed_rename_is_applied_only_when_that_is_turned_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_a_confirmed_rename_is_applied_only_when_that_is_turned_on(
+    con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _suspect(con)
     db.store_following(con, ["someone_nice", "other_user"], force=True)
     monkeypatch.setattr(config, "FOLLOWING_REFRESH_DAYS", 0)  # the stored list is read, never refreshed here
@@ -275,8 +269,7 @@ def test_a_confirmed_rename_is_applied_only_when_that_is_turned_on(monkeypatch: 
     assert db.rename_candidates(con) == [] and alerts.RENAME not in alerts.conditions(con)
 
 
-def test_a_dismissed_rename_is_not_suspected_again() -> None:
-    con: sqlite3.Connection = db.db_init()
+def test_a_dismissed_rename_is_not_suspected_again(con: sqlite3.Connection) -> None:
     _suspect(con)
     assert db.dismiss_rename(con, "former_name", "someone_nice") == 1
     assert db.rename_candidates(con) == [] and alerts.RENAME not in alerts.conditions(con)

@@ -9,7 +9,7 @@ import pytest
 from instadroid import config, db, device, diagnostics, install, navigation, scrape, tune
 
 from tests.fakedevice import FakeDevice
-from tests.support import fake_run, record_run_ago, run_scraper
+from tests.support import fake_run, insert_post, record_run_ago, run_scraper
 
 pytestmark: pytest.MarkDecorator = pytest.mark.usefixtures("scraper_cli")
 
@@ -171,10 +171,7 @@ def test_rename_moves_history_and_checks_its_arguments(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     con: sqlite3.Connection = db.db_init()
-    con.execute(
-        "INSERT INTO posts (id, username, scraped_at) VALUES ('p1', 'old_name', '2026-09-14T00:00:00+00:00')"
-    )
-    con.commit()
+    insert_post(con, "p1", username="old_name")
     con.close()
     run_scraper(monkeypatch, "rename", "old_name", "new_name")
     assert "moved 1 post(s) from 'old_name' to 'new_name'" in capsys.readouterr().out

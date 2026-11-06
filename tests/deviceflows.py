@@ -287,6 +287,19 @@ def stop_after_first_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     return sleeps
 
 
+def sleeps_then(monkeypatch: pytest.MonkeyPatch, calls: int, then: Callable[[], object]) -> list[float]:
+    """time.sleep returns at once and runs `then` on its `calls`-th call; the list gets every call's seconds."""
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == calls:
+            then()
+
+    monkeypatch.setattr(time, "sleep", sleep)
+    return sleeps
+
+
 def stop_at_first_run(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """main() skips its startup wait and raises StopLoop as its first run starts; the list gets one
     entry per run started."""

@@ -2,7 +2,8 @@ name: Measure coverage
 # ci.yml's test command (scripts/check.sh test, floor included), plus what the badges and a reader of a
 # gap need from it: coverage-badge/ (.github/scripts/coverage_badges.sh) and coverage-html/, both written
 # from whatever the suite managed to measure, even when a test or the floor failed. A failed run is never
-# the one coverage.yml or pages.yml picks up. Run from the repository root in the dev environment.
+# the one the badges are taken from, though coverage.yml's pull request comment shows its figures. Run from
+# the repository root in the dev environment.
 description: Run the test suite with coverage, and write the badge endpoints and the HTML report
 
 runs:

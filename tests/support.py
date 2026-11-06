@@ -91,27 +91,34 @@ def insert_post(
     post_id: str,
     *,
     username: str = "u",
-    caption: str = "cap",
+    kind: str = "photo",
+    caption: str | None = "cap",
+    posted_date: str | None = "x",
+    place: str | None = None,
     days_old: float = 1,
     now: datetime | None = None,
     dated: bool = True,
     media_file: str | None = None,
+    media: bytes | None = b"x",
     h: str | None = None,
     url: str | None = None,
     permalink_attempts: int = 0,
 ) -> None:
-    """A photo post scraped and last updated `days_old` days before `now` (default: the current time), with
-    hash `h` (default: `post_id`) and its media file written when given. `dated=False` leaves its posted date
-    and time empty, as for a card that showed none; otherwise it was posted when it was scraped."""
+    """A post scraped and last updated `days_old` days before `now` (default: the current time), with hash
+    `h` (default: `post_id`). A `media_file` is written with the bytes `media`, parent directories included;
+    `media=None` leaves the file to the caller. `dated=False` leaves its posted date and time empty, as for a
+    card that showed none; otherwise it was posted when it was scraped."""
     ts: str = ((now or datetime.now(UTC)) - timedelta(days=days_old)).isoformat()
-    if media_file:
-        (config.MEDIA_DIR / media_file).write_bytes(b"x")
+    if media_file and media is not None:
+        path: Path = config.MEDIA_DIR / media_file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(media)
     con.execute(
-        "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash, url,"
-        " posted_at, updated_at, permalink_attempts) VALUES (?,?,'photo',?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO posts (id, username, kind, posted_date, caption, media_file, scraped_at, hash, url, place,"
+        " posted_at, updated_at, permalink_attempts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
-            post_id, username, "x" if dated else None, caption, media_file, ts, h or post_id, url,
-            ts if dated else None, ts, permalink_attempts,
+            post_id, username, kind, posted_date if dated else None, caption, media_file, ts, h or post_id, url,
+            place, ts if dated else None, ts, permalink_attempts,
         ),
     )  # fmt: skip
     con.commit()

@@ -4,6 +4,7 @@ import os
 import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import NoReturn
 
@@ -14,7 +15,7 @@ from instadroid import config, control, device, scrape
 from shared import control as files
 from shared.jsonvalues import JSON
 
-from tests.deviceflows import StopLoop, stop_at_first_run
+from tests.deviceflows import StopLoop, sleeps_then, stop_at_first_run
 from tests.feedclient import add_runs, make_app
 from tests.support import json_body, json_object, record_run_ago
 
@@ -89,14 +90,7 @@ def test_the_poll_loop_holds_while_held(
     con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     control.set_hold("RuntimeError('still on login screen after submit (wrong password?)')")
-    held: list[float] = []
-
-    def sleep(seconds: float) -> None:
-        held.append(seconds)
-        if len(held) == 2:
-            control.set_lock(False)
-
-    monkeypatch.setattr(time, "sleep", sleep)
+    held: list[float] = sleeps_then(monkeypatch, 2, partial(control.set_lock, False))
     stop_at_first_run(monkeypatch)
     with pytest.raises(StopLoop):
         scrape.main()
@@ -118,14 +112,7 @@ def test_scrape_now_waits_for_the_rate_limit(con: sqlite3.Connection, tmp_path: 
 def test_wait_sleeps_in_steps_and_ends_early_for_scrape_now(
     con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    sleeps: list[float] = []
-
-    def sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        if len(sleeps) == 2:
-            control.request_run_now()
-
-    monkeypatch.setattr(time, "sleep", sleep)
+    sleeps: list[float] = sleeps_then(monkeypatch, 2, control.request_run_now)
     control.wait(con, 100)
     assert sleeps == [30, 30]  # the third check found the request (no runs yet, so it's due)
     sleeps.clear()
@@ -163,14 +150,7 @@ def test_the_poll_loop_holds_while_locked(
     con: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     control.set_lock(True)
-    held: list[float] = []
-
-    def sleep(seconds: float) -> None:
-        held.append(seconds)
-        if len(held) == 3:
-            control.set_lock(False)
-
-    monkeypatch.setattr(time, "sleep", sleep)
+    held: list[float] = sleeps_then(monkeypatch, 3, partial(control.set_lock, False))
     started: list[int] = stop_at_first_run(monkeypatch)
     with pytest.raises(StopLoop):
         scrape.main()

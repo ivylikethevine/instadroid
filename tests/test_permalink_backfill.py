@@ -118,12 +118,10 @@ def test_a_failed_copy_counts_and_a_post_is_not_retried_forever(
 def test_a_shortcode_already_stored_elsewhere_is_not_taken(quiet_run: QuietRun) -> None:
     con: sqlite3.Connection = quiet_run.con
     _seed_hash_post(con, quiet_run.top, "someone_nice")
-    con.execute(
-        "INSERT INTO posts (id, username, kind, posted_date, caption, scraped_at, hash, url, updated_at)"
-        " VALUES ('TOP123', 'someone_nice', 'video', 'x', 'c', ?, 'otherhash', ?, ?)",
-        (OLD, "https://www.instagram.com/reel/TOP123/", OLD),
-    )
-    con.commit()
+    insert_post(
+        con, "TOP123", username="someone_nice", kind="video", caption="c", now=NOW, h="otherhash",
+        url="https://www.instagram.com/reel/TOP123/",
+    )  # fmt: skip
     scrape.scrape_once(quiet_run.d, con)
     assert (
         _row(con, quiet_run.top)[1] is None

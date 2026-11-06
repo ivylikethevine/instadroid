@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw, ImageOps
 from shared import sqlrows
 
 from tests.deviceflows import feed_device, run_caps
-from tests.support import insert_story
+from tests.support import insert_post, insert_story
 
 WIDTH: int = 540
 HEIGHT: int = 828
@@ -129,10 +129,7 @@ def _store_story(con: sqlite3.Connection, story_id: str, frame: Image.Image | No
 def _store_post(con: sqlite3.Connection, post_id: str, img: Image.Image | None) -> None:
     if img:
         capture.save_media(img, config.MEDIA_DIR / f"{post_id}.webp")
-    con.execute(
-        "INSERT INTO posts (id, username, media_file, scraped_at) VALUES (?, 'bob', ?, ?)",
-        (post_id, f"{post_id}.webp", datetime.now(UTC).isoformat()),
-    )
+    insert_post(con, post_id, username="bob", media_file=f"{post_id}.webp", media=None, days_old=0)
 
 
 def test_only_a_bare_reshare_of_a_stored_post_is_deleted(

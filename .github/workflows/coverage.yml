@@ -12,43 +12,40 @@ name: Coverage
 # workflow_run is safe here: the job runs only for a green push to main or a dispatch, checks out the
 # default branch rather than anything from the triggering run, and holds nothing but read tokens.
 #
-# On same-repo, non-draft pull requests too, for the `comment` job: the PR's figures beside main's
-# latest, in one comment edited in place on every push. Never a fork's: its token can't comment, and
-# its run must never be a candidate for main's figures (fetch-latest-artifact also scopes pages.yml's
-# lookup to workflow_run runs on main). Markdown- and docs-only pull requests don't change either figure.
+# After CI on a same-repo pull request into main too, for the `comment` job: the figures that run's
+# test job measured beside main's latest, in one comment edited in place on every push. Nothing is
+# measured here for a pull request. Never a fork's: its token can't comment, and its run must never be a
+# candidate for main's figures (only the `coverage` job uploads, and fetch-latest-artifact also scopes
+# pages.yml's lookup to workflow_run runs on main). No branch filter on the trigger: a pull request run's
+# head_branch is its source branch, so each job's `if` scopes it instead.
 on:
   workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: [CI]
     types: [completed]
-    branches: [main]
-  # drafts skip, same as ci.yml; docs-only changes can't move either figure
-  pull_request:
-    branches: [main] # PRs into dev run only CI and CodeQL
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore: ["**/*.md", "docs/**"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer push to a pull request replaces its in-flight measurement; main's runs queue, since pages.yml
+# A newer CI run of a pull request replaces its in-flight comment; main's runs queue, since pages.yml
 # deploys from each one.
 concurrency:
-  group: coverage-${{ github.event.pull_request.number || 'main' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: >-
+    coverage-${{ github.event.workflow_run.event == 'pull_request' &&
+    format('pr-{0}-{1}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) ||
+    'main' }}
+  cancel-in-progress: ${{ github.event.workflow_run.event == 'pull_request' }}
 
 jobs:
   coverage:
     name: coverage (pytest)
-    # a dispatch; a green push to main; or a same-repo, non-draft pull request
+    # a dispatch, or a green push to main
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push') ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository &&
-       !github.event.pull_request.draft)
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -117,17 +114,20 @@ jobs:
 
   # The PR's figures beside main's newest, as one comment edited in place. Nothing here runs the PR's
   # code; the checkout is only for the local fetch-latest-artifact action. continue-on-error: a comment
-  # that can't be posted (a read-only token, e.g. Dependabot's) never fails the run.
+  # that can't be posted (a read-only token, e.g. Dependabot's) never fails the run. A failed CI run still
+  # has figures (measure-coverage writes them whatever the suite did); a cancelled one was superseded.
   comment:
     name: coverage (comment)
-    needs: coverage
-    if: always() && github.event_name == 'pull_request' && needs.coverage.result != 'skipped'
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.conclusion == 'success' ||
+       github.event.workflow_run.conclusion == 'failure') &&
+      contains(github.event.workflow_run.pull_requests.*.base.ref, 'main')
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     continue-on-error: true
-    concurrency:
-      group: coverage-comment-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
     permissions:
       contents: read
       actions: read # main's artifact, from another workflow run
@@ -139,14 +139,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Download this run's figures
+      # none when CI's test job skipped (a draft, or only Markdown, docs/ or workflow files changed):
+      # neither figure can have moved, so the comment stays as it is
+      - id: figures
+        name: Download the CI run's figures
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: coverage-badge
           path: ${{ runner.temp }}/pr
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - if: steps.figures.outcome != 'success'
+        run: echo "CI's test job didn't run on this commit - nothing new to comment." | tee -a "$GITHUB_STEP_SUMMARY"
       # main's runs of this workflow are workflow_run-triggered, hence `event`
       - name: Fetch main's figures
+        if: steps.figures.outcome == 'success'
         uses: ./.github/actions/fetch-latest-artifact
         with:
           workflow: coverage.yml
@@ -157,12 +165,19 @@ jobs:
           missing-message: no successful coverage run on main - nothing to compare with
       # via env, never inline ${{ }} in the run block (zizmor: template-injection)
       - name: Post or update the comment
+        if: steps.figures.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           set -euo pipefail
+          # the CI run's pull request into main; a number, so safe to interpolate below
+          PR="$(jq -r '[.workflow_run.pull_requests[] | select(.base.ref == "main") | .number][0] // ""' "$GITHUB_EVENT_PATH")"
+          [[ "$PR" =~ ^[0-9]+$ ]] || {
+            echo "::warning title=coverage comment::no pull request into main on CI run $RUN_URL"
+            exit 0
+          }
           marker='<!-- coverage-comment -->'
           # fig <dir> <file> - the number in a badge's message, or nothing: an artifact is data, and
           # nothing but digits read from one reaches the comment
@@ -185,8 +200,8 @@ jobs:
             printf '%s\n### Coverage\n\n| | This PR | main | Change |\n| --- | ---: | ---: | ---: |\n' "$marker"
             row coverage % "$(fig "$pr" coverage.json)" "$(fig "$main" coverage.json)"
             row "tests passed" "" "$(fig "$pr" tests.json)" "$(fig "$main" tests.json)"
-            printf '\nMeasured at %s by [this run](%s). %s\n' \
-              "$HEAD_SHA" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            printf '\nMeasured at %s by [this CI run](%s). %s\n' \
+              "$HEAD_SHA" "$RUN_URL" \
               "The floor is \`fail_under\` in \`pyproject.toml\`; ci.yml enforces it."
           )"
           printf '%s\n' "$body" >>"$GITHUB_STEP_SUMMARY"
