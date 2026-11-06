@@ -518,8 +518,9 @@ jobs:
           cat "$RUNNER_TEMP/release-notes.md" >>"$GITHUB_STEP_SUMMARY"
       # gh, which the runner already has, rather than a release action (zizmor: superfluous-actions). A
       # prerelease (gate's output: a hyphen in the tag) is marked as one and never made the latest release,
-      # matching the images, where it never moves `latest`. A re-run edits the release an earlier attempt
-      # created instead of failing on it.
+      # matching the images, where it never moves `latest`. A draft until the bundle is on: with immutable
+      # releases on, a published release takes no asset. A re-run edits the release an earlier attempt
+      # created instead of failing on it, and against one already published edits only its notes.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -534,9 +535,15 @@ jobs:
           flags=(--prerelease=false)
           [ "$PRERELEASE" != true ] || flags=(--prerelease --latest=false)
           notes="$RUNNER_TEMP/release-notes.md"
-          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            gh release edit "$TAG" --repo "$REPO" --title "$TAG" --notes-file "$notes" "${flags[@]}"
-          else
-            gh release create "$TAG" --repo "$REPO" --verify-tag --title "$TAG" --notes-file "$notes" "${flags[@]}"
-          fi
+          draft="$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null)" || draft=""
+          case "$draft" in
+            false)
+              gh release edit "$TAG" --repo "$REPO" --title "$TAG" --notes-file "$notes" "${flags[@]}"
+              echo "::notice title=release::$TAG is already published; its notes were updated, its assets left as they are"
+              exit 0
+              ;;
+            true) gh release edit "$TAG" --repo "$REPO" --title "$TAG" --notes-file "$notes" "${flags[@]}" ;;
+            *) gh release create "$TAG" --repo "$REPO" --draft --verify-tag --title "$TAG" --notes-file "$notes" "${flags[@]}" ;;
+          esac
           gh release upload "$TAG" "$BUNDLE" --repo "$REPO" --clobber
+          gh release edit "$TAG" --repo "$REPO" --draft=false "${flags[@]}"

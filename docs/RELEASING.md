@@ -91,14 +91,17 @@ jobs themselves:
    which has no required reviewer. It tags the already-scanned digest with `vX.Y.Z`, `vX.Y` and
    `latest` (no rebuild), and pushes two signed attestations to the registry beside it: build
    provenance, and the SBOM from the build (SPDX), attested as the image already carries it.
-5. **`release`** creates the GitHub Release with `gh release` and uploads the deploy bundle,
-   timestamped with the tagged commit so a re-run builds the same archive. Its "What changed" is the
+5. **`release`** creates the GitHub Release with `gh release` as a draft, uploads the deploy bundle,
+   timestamped with the tagged commit so a re-run builds the same archive, and then publishes it: with
+   immutable releases on (_Settings → General → Releases_), a published release's tag and assets are
+   locked, so nothing is attached after the publish. Its "What changed" is the
    `## Release note` section of each pull request merged since the previous non-prerelease tag
    (`.github/scripts/release_notes.sh`), skipping `none`; only when no pull request wrote a note does
    GitHub's generated list of merged pull requests stand in, and a failure working either out is a
    warning, never a stopped release. Below that: any scan findings, the image digest and tags, the
    pull command, how to run the deploy bundle, and the commands to verify the provenance and the
-   SBOM. A re-run edits the release an earlier attempt created.
+   SBOM. A re-run edits the release an earlier attempt created; one already published gets only its
+   notes edited.
 
 [CONTRIBUTING.md](CONTRIBUTING.md#what-ci-runs) covers the network egress limits on these jobs.
 
