@@ -11,8 +11,11 @@ name: ClusterFuzzLite
 # pinned by digest; the env below is what the actions would map their inputs to. ClusterFuzzLite
 # clones the repository itself, so there's no checkout step.
 on:
+  # Drafts fuzz nothing (the job's `if`); ready_for_review isn't a default type, and converted_to_draft
+  # starts a run that cancels the draft's in-flight one.
   pull_request:
     branches: [main, dev]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     paths:
       # parsing.py and what it imports from this repository
       - "app/instadroid/parsing.py"
@@ -38,6 +41,7 @@ concurrency:
 jobs:
   fuzz:
     name: Fuzz (${{ github.event_name == 'pull_request' && 'code-change' || 'batch' }})
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     permissions:
