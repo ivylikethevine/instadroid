@@ -220,7 +220,7 @@ The other workflows:
 - `codeql.yml`: CodeQL for Python and GitHub Actions, on pushes to `main`, pull requests and weekly on
   Tuesday.
 - `cflite.yml`: ClusterFuzzLite over `tests/fuzz/` ([TESTING.md](TESTING.md#fuzzing)): five minutes
-  of code-change fuzzing on a pull request that touches the parsers and what they import, the app's
+  of code-change fuzzing on a non-draft pull request that touches the parsers and what they import, the app's
   lock, the fuzzers or their build, and a 30-minute batch run weekly that grows the corpus. ClusterFuzzLite's images are called directly,
   pinned by digest, since its actions carry only a `v1` tag. A crash fails the job.
 - `advisories.yml`: `pip-audit` over both Python locks and `npm audit` over
