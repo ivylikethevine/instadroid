@@ -210,7 +210,7 @@ jobs:
     outputs:
       found: ${{ steps.scan.outputs.found }}
     permissions:
-      contents: read # checkout: setup-tool, trivy_scan.sh and .trivyignore
+      contents: read # checkout: setup-tools, trivy_scan.sh and .trivyignore
       packages: read # pull the pushed digest
       security-events: write # upload the SARIF to code scanning
     steps:
@@ -226,9 +226,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # The tools.txt pin, sha256-verified; the vulnerability database is downloaded fresh on every scan.
-      - uses: ./.github/actions/setup-tool
+      - uses: ./.github/actions/setup-tools
         with:
-          tool: trivy
+          tools: trivy
       # One scan as JSON, converted to the table and the SARIF in $RUNNER_TEMP; a scan that didn't run fails
       # the step, a finding only sets `found` (.github/scripts/trivy_scan.sh, which image-scan.yml shares).
       - id: scan
