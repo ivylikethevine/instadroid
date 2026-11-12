@@ -375,10 +375,12 @@ containers and the device. The ones worth knowing about first:
 
 ### FreshRSS
 
-Subscribe to `http://<host>:8000/instagram.xml` (per account: `?user=somebody`; stories:
-`/stories.xml`), or import `/opml` to subscribe to everything at once. Set `FEED_TOKEN` before exposing
-the feed beyond loopback. [docs/FRESHRSS.md](docs/FRESHRSS.md) covers feed auth, OPML, the
-`kind`/`since`/`q` filters, JSON Feed, push refresh and running FreshRSS on the same host.
+Open `http://<host>:8000/subscribe` for the URLs to paste into a reader: `/instagram.xml` as one feed
+of everything (per account: `?user=somebody`; stories: `/stories.xml`), or `/opml` as a FreshRSS
+Dynamic OPML category with one feed per account. For the compose file's own FreshRSS,
+`scripts/freshrss-setup.sh <user>` does the whole setup. Set `FEED_TOKEN` before exposing
+the feed beyond loopback. [docs/FRESHRSS.md](docs/FRESHRSS.md) has the quick start, feed auth, the
+`kind`/`since`/`q` filters, JSON Feed, push refresh and troubleshooting.
 
 ### Health and restarts
 

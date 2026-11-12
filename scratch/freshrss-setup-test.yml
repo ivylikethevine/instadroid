@@ -1,0 +1,53 @@
+# Stand-ins for the `app` and `freshrss` compose services, to run scripts/freshrss-setup.sh against
+# without the scraper, a device or a real FreshRSS: the feed server alone over a two-account database
+# under local/frss-test, and a FreshRSS that keeps its data in the container. Ports 18000 and 18080.
+#
+#   mkdir -p local/frss-test
+#   export COMPOSE_FILE=scratch/freshrss-setup-test.yml
+#   docker compose up -d app
+#   FRESHRSS_PASSWORD=test-password-1 scripts/freshrss-setup.sh tester   # twice: the second changes nothing
+#   docker compose --profile freshrss exec -T freshrss ./cli/export-opml-for-user.php --user tester
+#   docker compose --profile freshrss down --volumes
+#
+# The export should list the stories feed and both accounts under a category with frss:opmlUrl.
+# Needs the dev venv (local/.venv) for the feed server's dependencies.
+name: igfrsstest
+services:
+  app:
+    image: python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
+    network_mode: host
+    user: "${UID:-1000}"
+    working_dir: /app
+    volumes:
+      - ../app:/app:ro
+      - ../local/.venv/lib/python3.14/site-packages:/site:ro
+      - ../local/frss-test:/data
+    environment:
+      PYTHONPATH: /site
+      PYTHONDONTWRITEBYTECODE: "1"
+      DB_PATH: /data/posts.sqlite
+      MEDIA_DIR: /data/media
+      FEED_PORT: "18000"
+      FEED_TOKEN: test-token
+      SEED: |
+        CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, username TEXT, kind TEXT, posted_date TEXT,
+            caption TEXT, media_file TEXT, scraped_at TEXT, hash TEXT, url TEXT, place TEXT, posted_at TEXT);
+        INSERT OR IGNORE INTO posts VALUES ('ABC', 'someone', 'photo', '2 days ago', 'Hi', NULL,
+            '2026-09-08T08:00:00+00:00', 'h1', 'https://www.instagram.com/p/ABC/', 'Anytown',
+            '2026-09-08T09:00:00+00:00');
+        INSERT OR IGNORE INTO posts VALUES ('h2', 'other', 'video', 'August 1', '', NULL,
+            '2026-09-08T10:00:00+00:00', 'h2', NULL, NULL, '2026-09-07T09:00:00+00:00');
+    command:
+      - sh
+      - -c
+      - >-
+        python -c "import os, sqlite3; sqlite3.connect(os.environ['DB_PATH']).executescript(os.environ['SEED'])"
+        && exec python -m uvicorn feedserver:app --host 127.0.0.1 --port 18000
+  freshrss:
+    image: freshrss/freshrss:1.30.0-alpine@sha256:fcff0b573f2bf3aff375c7de08e26588d752a63094e161b3276ec26736ce17fd
+    profiles: [freshrss]
+    network_mode: host
+    environment:
+      LISTEN: 127.0.0.1:18080
+      CRON_MIN: ""
+      INTERNAL_HOST_ALLOWLIST: 127.0.0.1:18000

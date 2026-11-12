@@ -333,7 +333,7 @@
     "/opml": {
       "get": {
         "summary": "Subscription list",
-        "description": "One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed\nper username in /users — a single FreshRSS import subscribes to everything this instance\nserves instead of pasting ?user= URLs in one at a time. `aggregate=0` leaves the aggregate feed\nout: a reader dedupes entries within a feed, so beside the per-account feeds it shows every post twice.\nBefore the scraper's first start there is no posts table, and the answer is a 503 rather than an\noutline without accounts: a reader re-reading it as a Dynamic OPML would mute every account feed.",
+        "description": "One OPML outline nesting the stories feed and one per-account feed per username in /users — a\nsingle FreshRSS import subscribes to every account instead of pasting ?user= URLs in one at a time.\n`aggregate=1` adds the aggregate feed too; a reader dedupes entries within a feed, so beside the\nper-account feeds it shows every post twice. The feed URLs start with PUBLIC_URL when that is set,\nelse with the address this request came in on. The category names this URL as its FreshRSS Dynamic\nOPML URL, so a FreshRSS that imports the saved file keeps following it.\nBefore the scraper's first start there is no posts table, and the answer is a 503 rather than an\noutline without accounts: a reader re-reading it as a Dynamic OPML would mute every account feed.",
         "operationId": "opml_opml_get",
         "parameters": [
           {
@@ -342,7 +342,7 @@
             "required": false,
             "schema": {
               "type": "boolean",
-              "default": true,
+              "default": false,
               "title": "Aggregate"
             }
           }
@@ -358,7 +358,7 @@
             "description": "Not Modified"
           },
           "503": {
-            "description": "The scraper hasn't created the database yet; the outline would be empty."
+            "description": "The scraper hasn't created the database yet; the outline would be empty. Carries `Retry-After`."
           },
           "422": {
             "description": "Validation Error",
@@ -520,6 +520,25 @@
         "summary": "Status page",
         "description": "A plain-HTML page of recent runs, the device, and per-account totals.",
         "operationId": "status_page_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/subscribe": {
+      "get": {
+        "summary": "How to subscribe a reader",
+        "description": "A plain-HTML page of the feed URLs and the subscription list's URL, with the token when auth is\non, and where each goes in FreshRSS. They start with PUBLIC_URL when that is set, else with the\naddress this request came in on.",
+        "operationId": "subscribe_subscribe_get",
         "responses": {
           "200": {
             "description": "Successful Response",

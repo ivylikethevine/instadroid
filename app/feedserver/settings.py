@@ -11,11 +11,15 @@ from shared.fileenv import env_secret
 DB_PATH: str = env.env_db_path()
 MEDIA_DIR: Path = env.env_media_dir()
 PUBLIC_URL: str = os.environ.get("PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/")
+# Unset, media URLs still start with the loopback default above, while the subscription URLs in /opml
+# and on /subscribe start with the address the request came in on (render.feed_base).
+PUBLIC_URL_SET: bool = bool(os.environ.get("PUBLIC_URL"))
 POLL_MAX_HOURS: float = env.env_poll_max_hours()
 MAX_RUNS_PER_DAY: int = env.env_max_runs_per_day()
 TIMEZONE: str = env.env_timezone()  # TZ: the zone the feeds spell times out in; "" = UTC
 ZONE: tzinfo = env.zone(TIMEZONE)
 FEED_HOST: str = os.environ.get("FEED_HOST", "127.0.0.1")
+FEED_PORT: str = os.environ.get("FEED_PORT") or "8000"  # what entrypoint.sh starts the server on
 # Required on every request except /health once set: as a bearer token, as the password of HTTP
 # basic auth (any username), or as ?token=. Media URLs in the feeds are signed with it instead of
 # carrying it, so a reader's image loads work without exposing the token itself. Empty = no auth.

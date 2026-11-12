@@ -28,10 +28,15 @@ KINDS: dict[str, str] = {
 }
 JSON_FEED: str = "application/feed+json"
 INSTAGRAM_HOME: str = "https://www.instagram.com/"
-# FreshRSS's OPML extension namespace, which its importer reads per-feed settings from (frss:ttl, the
-# refresh interval). The prefix has to be literally "frss": the importer matches the qualified name.
+# FreshRSS's OPML extension namespace, which its importer reads per-feed settings (frss:ttl, the
+# refresh interval) and a category's Dynamic OPML URL (frss:opmlUrl) from. The prefix has to be
+# literally "frss": the importer matches the qualified name.
 FRSS_NS: str = "https://freshrss.org/opml"
 register_namespace("frss", FRSS_NS)
+# Seconds, sent with /opml's 503. FreshRSS stops fetching a URL that answered 503 (on a public
+# hostname, every URL on that host and port) for the Retry-After it was given, and for 25 minutes by
+# default when it was given none.
+NOT_READY_RETRY_AFTER: str = "60"
 
 
 def _kinds(kind: str | None) -> tuple[str, ...]:
@@ -146,7 +151,9 @@ def _posts_feed(
         if not_modified:
             return not_modified
         entries: list[Entry] = alert_entries(alerts) + post_entries(con, queries.posts(con, where, limit))
-    feed_url: str = render.feed_url(f"/instagram.{fmt}", token=False, user=user, kind=kind, since=since, q=q)
+    feed_url: str = render.feed_url(
+        settings.PUBLIC_URL, f"/instagram.{fmt}", token=False, user=user, kind=kind, since=since, q=q
+    )
     title: str = f"Instagram — {user}" if user else "Instagram — Following"
     home: str = profile_url(user) if user else INSTAGRAM_HOME
     return _respond(fmt, feed_url, title, home, entries, etag)
@@ -245,11 +252,22 @@ def users() -> list[str]:
         return queries.usernames(con)
 
 
-def _feed_outline(text: str, xml_url: str, html_url: str) -> Element:
+def feed_outline(text: str, xml_url: str, html_url: str) -> Element:
+    """One feed of a subscription list, with the FreshRSS refresh interval when OPML_FEED_TTL sets one."""
     outline: Element = Element("outline", type="rss", text=text, title=text, xmlUrl=xml_url, htmlUrl=html_url)
     if settings.OPML_FEED_TTL > 0:
         outline.set(f"{{{FRSS_NS}}}ttl", str(settings.OPML_FEED_TTL))
     return outline
+
+
+def category_outline(base: str, aggregate: bool = False) -> Element:
+    """The "Instagram" category a subscription list nests its feeds under. Its `frss:opmlUrl` is the
+    list's own URL: FreshRSS makes a category imported from a file with it a Dynamic OPML one, which it
+    then keeps in step with /opml, and ignores it in an outline it fetched itself."""
+    category: Element = Element("outline", text="Instagram", title="Instagram")
+    own_url: str = render.feed_url(base, "/opml", aggregate="1" if aggregate else None)
+    category.set(f"{{{FRSS_NS}}}opmlUrl", own_url)
+    return category
 
 
 @router.get(
@@ -258,15 +276,20 @@ def _feed_outline(text: str, xml_url: str, html_url: str) -> Element:
     responses={
         200: {"content": {"text/x-opml": {}}, "description": "An OPML outline."},
         304: {},
-        503: {"description": "The scraper hasn't created the database yet; the outline would be empty."},
+        503: {
+            "description": "The scraper hasn't created the database yet; the outline would be empty."
+            " Carries `Retry-After`."
+        },
     },
     summary="Subscription list",
 )
-def opml(request: Request, aggregate: bool = True) -> Response:
-    """One OPML outline nesting the aggregate feed, the stories feed, and one per-account feed
-    per username in /users — a single FreshRSS import subscribes to everything this instance
-    serves instead of pasting ?user= URLs in one at a time. `aggregate=0` leaves the aggregate feed
-    out: a reader dedupes entries within a feed, so beside the per-account feeds it shows every post twice.
+def opml(request: Request, aggregate: bool = False) -> Response:
+    """One OPML outline nesting the stories feed and one per-account feed per username in /users — a
+    single FreshRSS import subscribes to every account instead of pasting ?user= URLs in one at a time.
+    `aggregate=1` adds the aggregate feed too; a reader dedupes entries within a feed, so beside the
+    per-account feeds it shows every post twice. The feed URLs start with PUBLIC_URL when that is set,
+    else with the address this request came in on. The category names this URL as its FreshRSS Dynamic
+    OPML URL, so a FreshRSS that imports the saved file keeps following it.
     Before the scraper's first start there is no posts table, and the answer is a 503 rather than an
     outline without accounts: a reader re-reading it as a Dynamic OPML would mute every account feed."""
     con: sqlite3.Connection
@@ -274,13 +297,16 @@ def opml(request: Request, aggregate: bool = True) -> Response:
     with queries.connection() as con:
         if not queries.has_posts_table(con):
             raise HTTPException(
-                503, "the scraper hasn't created the database yet; try again after its first run"
+                503,
+                "the scraper hasn't created the database yet; try again after its first run",
+                headers={"Retry-After": NOT_READY_RETRY_AFTER},
             )
         usernames = queries.usernames(con)
+    base: str = render.feed_base(request)
     etag: str
     not_modified: Response | None
     etag, not_modified = render.cached(
-        request, settings.PUBLIC_URL, settings.FEED_TOKEN, settings.OPML_FEED_TTL, aggregate, *usernames
+        request, base, settings.FEED_TOKEN, settings.OPML_FEED_TTL, aggregate, *usernames
     )
     if not_modified:
         return not_modified
@@ -290,15 +316,18 @@ def opml(request: Request, aggregate: bool = True) -> Response:
     SubElement(head, "title").text = "Instadroid"
     SubElement(head, "dateCreated").text = datetime.now(UTC).strftime("%a, %d %b %Y %H:%M:%S GMT")
     body: Element = SubElement(root, "body")
-    category: Element = SubElement(body, "outline", text="Instagram", title="Instagram")
+    category: Element = category_outline(base, aggregate)
+    body.append(category)
     if aggregate:
         category.append(
-            _feed_outline("Instagram — Following", render.feed_url("/instagram.xml"), INSTAGRAM_HOME)
+            feed_outline("Instagram — Following", render.feed_url(base, "/instagram.xml"), INSTAGRAM_HOME)
         )
-    category.append(_feed_outline("Instagram — Stories", render.feed_url("/stories.xml"), INSTAGRAM_HOME))
+    category.append(
+        feed_outline("Instagram — Stories", render.feed_url(base, "/stories.xml"), INSTAGRAM_HOME)
+    )
     u: str
     for u in usernames:
-        category.append(_feed_outline(u, render.feed_url("/instagram.xml", user=u), profile_url(u)))
+        category.append(feed_outline(u, render.feed_url(base, "/instagram.xml", user=u), profile_url(u)))
 
     xml_bytes: bytes = (
         b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="unicode").encode()

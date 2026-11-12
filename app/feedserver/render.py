@@ -11,6 +11,7 @@ from fastapi import Request, Response
 from feedgen.entry import FeedEntry
 from feedgen.feed import FeedGenerator
 from PIL import Image, ImageFile
+from starlette.datastructures import URL
 
 from . import auth, settings
 from .queries import EtagPart
@@ -34,13 +35,25 @@ def media_url(file: str) -> str:
     return f"{url}?sig={auth.media_sig(file)}" if settings.FEED_TOKEN else url
 
 
-def feed_url(path: str, *, token: bool = True, **params: str | None) -> str:
-    """A feed URL for a subscription list (/opml), carrying the token when auth is on: whoever
-    fetched the list already presented it, and the reader will need it for each feed. `token=False`
-    leaves it out, for a feed's link to itself."""
+def feed_base(request: Request) -> str:
+    """What a subscription URL starts with: PUBLIC_URL when it is set, else the address this request
+    came in on, which whoever asked has just reached. `localhost` is written as 127.0.0.1: a reader in a
+    container can resolve the name to ::1, which FEED_HOST's default doesn't bind."""
+    if settings.PUBLIC_URL_SET:
+        return settings.PUBLIC_URL
+    url: URL = request.url
+    if url.hostname == "localhost":
+        url = url.replace(hostname="127.0.0.1")
+    return f"{url.scheme}://{url.netloc}"
+
+
+def feed_url(base: str, path: str, *, token: bool = True, **params: str | None) -> str:
+    """`base` + `path` as a feed URL for a subscription list (/opml, /subscribe), carrying the token
+    when auth is on: whoever fetched the list already presented it, and the reader will need it for
+    each feed. `token=False` leaves it out, for a feed's link to itself."""
     secret: str = settings.FEED_TOKEN if token else ""
     query: dict[str, str] = {k: v for k, v in params.items() if v} | ({"token": secret} if secret else {})
-    return f"{settings.PUBLIC_URL}{path}" + (f"?{urlencode(query, quote_via=quote)}" if query else "")
+    return f"{base}{path}" + (f"?{urlencode(query, quote_via=quote)}" if query else "")
 
 
 def new_feed(feed_id: str, title: str) -> FeedGenerator:

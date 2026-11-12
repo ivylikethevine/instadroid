@@ -5,9 +5,10 @@ and imports nothing from the scraper: the database is the only thing the two sha
 /instagram.xml?user=NAME  -> one account (also ?kind=, ?since=, ?q=)
 /stories.xml              -> stored stories
 /instagram.json, /stories.json -> the same, as JSON Feed 1.1
-/opml                     -> one-step bulk subscribe: every feed above, as an OPML outline
+/opml                     -> one-step bulk subscribe: the per-account feeds, as an OPML outline
 /media/<file>             -> cropped post images
 /status                   -> plain-HTML health/status page
+/subscribe                -> plain-HTML page of the URLs to give a reader
 /browse                   -> plain-HTML account list, timelines (?user=) and caption search (?q=)
 /health, /users           -> JSON (docs/openapi.json is the committed spec)
 /control                  -> the manual lock and scrape-now requests
@@ -23,6 +24,8 @@ FEED_TOKEN (or FEED_TOKEN_FILE) turns on auth for everything except /health, see
     browse     /browse
     control    /control
     status     /health, /status
+    subscribe  /subscribe
+    freshrss   `python -m feedserver.freshrss`: the file a FreshRSS import follows /opml from
 """
 
 import logging
@@ -31,7 +34,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, browse, control, feeds, settings, status
+from . import auth, browse, control, feeds, settings, status, subscribe
 
 # uvicorn configures its loggers before importing this module, so a filter added here sticks.
 logging.getLogger("uvicorn.access").addFilter(auth.SkipHealthcheck())
@@ -42,8 +45,9 @@ if not settings.FEED_TOKEN and settings.FEED_HOST not in ("127.0.0.1", "localhos
         settings.FEED_HOST,
     )
 if not settings.PUBLIC_URL.startswith(("http://", "https://")):
-    # A reader keeps the feed URLs /opml writes; FreshRSS's OPML parser drops an outline whose
-    # xmlUrl has no scheme, and its fetcher refuses any URL that isn't http(s).
+    # A reader keeps the feed URLs /opml writes, which start with a PUBLIC_URL that is set; FreshRSS's
+    # OPML parser drops an outline whose xmlUrl has no scheme, and its fetcher refuses any URL that
+    # isn't http(s).
     logging.getLogger("uvicorn.error").warning(
         "PUBLIC_URL=%s has no http:// or https:// scheme: readers will reject the feed URLs in /opml",
         settings.PUBLIC_URL,
@@ -71,4 +75,5 @@ app.middleware("http")(auth.require_token)
 app.include_router(feeds.router)
 app.include_router(browse.router)
 app.include_router(status.router)
+app.include_router(subscribe.router)
 app.include_router(control.router)

@@ -279,7 +279,12 @@ def test_stories_feed_etag_changes_when_a_story_is_removed(
     assert "alice" not in second.text
 
 
-def test_opml_lists_every_account_plus_the_aggregate_and_stories_feeds(
+def _opml_urls(r: Response) -> list[str | None]:
+    """The feed URLs of an /opml answer, in outline order."""
+    return [o.get("xmlUrl") for o in ET.fromstring(r.text).findall("./body/outline/outline")]
+
+
+def test_opml_lists_every_account_plus_the_stories_feed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
@@ -293,17 +298,20 @@ def test_opml_lists_every_account_plus_the_aggregate_and_stories_feeds(
     assert category is not None
     assert category.get("text") == "Instagram"
     outlines: list[ET.Element] = category.findall("outline")
-    xml_urls: list[str | None] = [o.get("xmlUrl") for o in outlines]
-    assert "http://feed.test/instagram.xml" in xml_urls
-    assert "http://feed.test/stories.xml" in xml_urls
-    assert "http://feed.test/instagram.xml?user=other" in xml_urls
-    assert "http://feed.test/instagram.xml?user=someone" in xml_urls
-    assert len(outlines) == 4  # aggregate + stories + 2 accounts
+    # Not the aggregate feed: beside the per-account feeds it would show every post twice.
+    assert _opml_urls(r) == [
+        "http://feed.test/stories.xml",
+        "http://feed.test/instagram.xml?user=other",
+        "http://feed.test/instagram.xml?user=someone",
+    ]
     assert all(o.get("type") == "rss" for o in outlines)
     assert all(o.get("text") and o.get("htmlUrl") for o in outlines)
     assert r.headers["content-disposition"] == 'inline; filename="instadroid.opml"'
-    # Without OPML_FEED_TTL, no FreshRSS attribute (and no namespace) is written.
-    assert "frss" not in r.text
+    # The category names the list itself as its Dynamic OPML URL, under the literal `frss` prefix
+    # FreshRSS's importer matches, so a FreshRSS that imports the saved file keeps following it.
+    assert 'xmlns:frss="https://freshrss.org/opml"' in r.text
+    assert '<outline text="Instagram" title="Instagram" frss:opmlUrl="http://feed.test/opml">' in r.text
+    assert "frss:ttl" not in r.text  # no OPML_FEED_TTL, no refresh interval
 
 
 def test_opml_feed_ttl_is_written_as_freshrss_s_namespaced_attribute(
@@ -316,7 +324,7 @@ def test_opml_feed_ttl_is_written_as_freshrss_s_namespaced_attribute(
     r: Response = client.get("/opml")
     assert r.status_code == 200
     assert 'xmlns:frss="https://freshrss.org/opml"' in r.text
-    assert r.text.count('frss:ttl="300"') == 4  # every feed outline, not the category
+    assert r.text.count('frss:ttl="300"') == 3  # every feed outline, not the category
     root: ET.Element = ET.fromstring(r.text)
     outlines: list[ET.Element] = root.findall("./body/outline/outline")
     assert all(o.get("{https://freshrss.org/opml}ttl") == "300" for o in outlines)
@@ -324,17 +332,57 @@ def test_opml_feed_ttl_is_written_as_freshrss_s_namespaced_attribute(
     assert category is not None and category.get("{https://freshrss.org/opml}ttl") is None
 
     monkeypatch.setenv("OPML_FEED_TTL", "0")
-    assert "frss" not in make_app(tmp_path, monkeypatch, seed="").get("/opml").text  # already seeded
+    assert "frss:ttl" not in make_app(tmp_path, monkeypatch, seed="").get("/opml").text  # already seeded
 
 
-def test_opml_can_leave_the_aggregate_feed_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_opml_adds_the_aggregate_feed_when_asked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
-    whole: Response = client.get("/opml")
-    r: Response = client.get("/opml", params={"aggregate": "0"})
-    assert r.status_code == 200 and r.headers["etag"] != whole.headers["etag"]
-    assert 'xmlUrl="http://feed.test/instagram.xml"' not in r.text
-    assert 'xmlUrl="http://feed.test/stories.xml"' in r.text
-    assert 'xmlUrl="http://feed.test/instagram.xml?user=someone"' in r.text
+    default: Response = client.get("/opml")
+    r: Response = client.get("/opml", params={"aggregate": "1"})
+    assert r.status_code == 200 and r.headers["etag"] != default.headers["etag"]
+    assert _opml_urls(r) == ["http://feed.test/instagram.xml", *_opml_urls(default)]
+    assert 'frss:opmlUrl="http://feed.test/opml?aggregate=1"' in r.text  # the list it was asked as
+    # The URL a reader subscribed with before the aggregate feed left the default.
+    without: Response = client.get("/opml", params={"aggregate": "0"})
+    assert _opml_urls(without) == _opml_urls(default)
+    assert without.headers["etag"] == default.headers["etag"]
+
+
+@pytest.mark.parametrize(
+    ("host", "base"),
+    [
+        ("nas.lan:8000", "http://nas.lan:8000"),
+        ("192.168.1.20:9000", "http://192.168.1.20:9000"),
+        # A reader in a container can resolve localhost to ::1, which the server doesn't bind.
+        ("localhost:8000", "http://127.0.0.1:8000"),
+        ("localhost", "http://127.0.0.1"),
+    ],
+)
+def test_opml_without_public_url_starts_feed_urls_with_the_address_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str, base: str
+) -> None:
+    """A reader that reached /opml at an address can reach the feeds there too, with nothing configured."""
+    client: TestClient = make_app(tmp_path, monkeypatch, public_url=None)
+    r: Response = client.get("/opml", headers={"host": host})
+    assert _opml_urls(r) == [
+        f"{base}/stories.xml",
+        f"{base}/instagram.xml?user=other",
+        f"{base}/instagram.xml?user=someone",
+    ]
+    assert f'frss:opmlUrl="{base}/opml"' in r.text
+    # One address's outline is never served as another's 304.
+    other: Response = client.get("/opml", headers={"host": "other.lan", "if-none-match": r.headers["etag"]})
+    assert other.status_code == 200
+    # Images are loaded by the person's browser, not the reader: they stay on PUBLIC_URL's default.
+    assert "http://127.0.0.1:8000/media/ABC.jpg" in client.get("/instagram.xml", headers={"host": host}).text
+
+
+def test_opml_with_public_url_ignores_the_address_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client: TestClient = make_app(tmp_path, monkeypatch)
+    r: Response = client.get("/opml", headers={"host": "nas.lan:8000"})
+    assert all((url or "").startswith("http://feed.test/") for url in _opml_urls(r))
 
 
 def test_opml_escapes_and_quotes_unusual_usernames(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -362,6 +410,8 @@ def test_opml_without_a_posts_table_is_a_503_not_an_outline_without_accounts(
     r: Response = client.get("/opml")
     assert r.status_code == 503
     assert "etag" not in r.headers
+    # FreshRSS stops fetching the URL for 25 minutes by default after a 503 that names no delay.
+    assert r.headers["retry-after"] == "60"
     assert json_body(r) == {
         "detail": "the scraper hasn't created the database yet; try again after its first run"
     }
@@ -370,9 +420,7 @@ def test_opml_without_a_posts_table_is_a_503_not_an_outline_without_accounts(
     feed_sql(tmp_path, "CREATE TABLE posts (id TEXT PRIMARY KEY, username TEXT)")
     r = client.get("/opml")
     assert r.status_code == 200
-    root: ET.Element = ET.fromstring(r.text)
-    xml_urls: set[str | None] = {o.get("xmlUrl") for o in root.findall("./body/outline/outline")}
-    assert xml_urls == {"http://feed.test/instagram.xml", "http://feed.test/stories.xml"}
+    assert _opml_urls(r) == ["http://feed.test/stories.xml"]
 
 
 def test_parse_iso_handles_naive_and_malformed_timestamps() -> None:
