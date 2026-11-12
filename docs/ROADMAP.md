@@ -68,7 +68,7 @@ Open investigations, new capture mechanisms, or changes to the container/process
   `instagram://mainfeed` and `instagram://peoplefeed` open, alone or with a `feed_type=following` or
   `variant=following` query, and so does `https://www.instagram.com/?variant=following`, and each
   lands on Home; `instagram://feed_favorites_list`, `instagram://self_following` and
-  `instagram://pandroid_mainfeed` don't resolve from outside the app (`scratch/try_deeplinks.py`
+  `instagram://pandroid_mainfeed` don't resolve from outside the app (`scripts/scratch/try_deeplinks.py`
   repeats the check). What's left is an explicit activity or fragment intent, unconfirmed to exist.
   (A followed-accounts allowlist now filters the fallback's suggested posts after the fact — see
   README.md's "Followed-accounts allowlist" — but reaching the real feed directly would still be

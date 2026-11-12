@@ -4,7 +4,7 @@ For each URI: force-stop Instagram, `am start -a VIEW -d <uri>`, wait, dump the 
 DEBUG_DIR/deeplinks/, and print the action bar's title and which of the feed markers are on screen.
 Looks only; taps nothing. Device-driving, so not while a scrape runs. Run it in the app image:
 
-    docker compose run --rm --no-deps -v "$PWD/app:/app:ro" -v "$PWD/scratch:/scratch:ro" \
+    docker compose run --rm --no-deps -v "$PWD/app:/app:ro" -v "$PWD/scripts/scratch:/scratch:ro" \
         app python /scratch/try_deeplinks.py [URI...]
 
 With no URI it tries the candidates found in the 450 manifest and dex strings for reaching the

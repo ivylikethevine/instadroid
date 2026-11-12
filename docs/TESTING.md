@@ -103,7 +103,7 @@ A whole run can be recorded and replayed too. With `RECORD_DIR` set, the scraper
 led from one to the next. `tests/replaydevice.py` plays a tape back as a device: the navigation code
 runs against the recorded screens, an action that matches the tape moves to the screen it led to, and
 any other action is kept as a divergence for the test to assert on. `tests/test_recording.py` records
-a `fakedevice` run and replays it; `scratch/replay_tape.py` replays a tape of a real run offline. No
+a `fakedevice` run and replays it; `scripts/scratch/replay_tape.py` replays a tape of a real run offline. No
 real tape is committed: one holds real accounts, captions and links, and has no pseudonymizer yet
 ([ROADMAP.md](ROADMAP.md)).
 
