@@ -3,7 +3,7 @@
 # under local/frss-test, and a FreshRSS that keeps its data in the container. Ports 18000 and 18080.
 #
 #   mkdir -p local/frss-test
-#   export COMPOSE_FILE=scratch/freshrss-setup-test.yml
+#   export COMPOSE_FILE=scripts/scratch/freshrss-setup-test.yml
 #   docker compose up -d app
 #   FRESHRSS_PASSWORD=test-password-1 scripts/freshrss-setup.sh tester   # twice: the second changes nothing
 #   docker compose --profile freshrss exec -T freshrss ./cli/export-opml-for-user.php --user tester
@@ -19,9 +19,9 @@ services:
     user: "${UID:-1000}"
     working_dir: /app
     volumes:
-      - ../app:/app:ro
-      - ../local/.venv/lib/python3.14/site-packages:/site:ro
-      - ../local/frss-test:/data
+      - ../../app:/app:ro
+      - ../../local/.venv/lib/python3.14/site-packages:/site:ro
+      - ../../local/frss-test:/data
     environment:
       PYTHONPATH: /site
       PYTHONDONTWRITEBYTECODE: "1"

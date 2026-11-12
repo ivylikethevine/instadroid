@@ -215,8 +215,6 @@ The other workflows:
   from the repository root (`_config.yml`), fetches the newest `coverage-badge` artifact from `main`
   and serves it as `badges/coverage.json` and `badges/tests.json`, so no coverage service, token or
   badge branch is involved. Runs when Coverage finishes on `main`, and on dispatch.
-- `cancel-closed-pr.yml`: when a same-repository pull request is merged or closed, cancels its runs
-  still queued or in progress, so they don't hold runners after the merge.
 - `codeql.yml`: CodeQL for Python and GitHub Actions, on pushes to `main`, pull requests and weekly on
   Tuesday.
 - `cflite.yml`: ClusterFuzzLite over `tests/fuzz/` ([TESTING.md](TESTING.md#fuzzing)): five minutes

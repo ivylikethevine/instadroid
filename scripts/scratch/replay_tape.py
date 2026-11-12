@@ -4,7 +4,7 @@ Runs scrape_once() against tests/replaydevice.py's ReplayDevice with a throwaway
 directory and no pauses, then prints how far through the tape it got, every action that diverged from
 the recording, and what it stored. A real tape holds real accounts and captions: keep it under local/.
 
-    local/.venv/bin/python scratch/replay_tape.py local/data/debug/<run>/tape/<timestamp> [DATABASE]
+    local/.venv/bin/python scripts/scratch/replay_tape.py local/data/debug/<run>/tape/<timestamp> [DATABASE]
 
 DATABASE is copied and used as the run's starting point: without the posts the recorded run already had
 stored, the replay tries to capture them and diverges from the tape at the first one.
@@ -16,7 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))  # for tests/, which the editable install leaves out
 
 from instadroid import capture, config, db, device, scrape, versioning  # noqa: E402
