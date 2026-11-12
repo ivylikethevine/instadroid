@@ -312,6 +312,7 @@ async function control(method, path) {{
 }}
 </script></head>
 <body>
+<p><a href="/browse">All accounts</a> · <a href="/subscribe">Subscribe a reader</a></p>
 <h1>Instadroid status</h1>
 <p>{device_line}</p>
 <h2>Last scrape</h2>

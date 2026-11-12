@@ -77,13 +77,14 @@ def test_a_public_url_a_reader_cannot_use_is_warned_about(
 def test_without_a_token_everything_stays_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client: TestClient = make_app(tmp_path, monkeypatch)
     path: str
-    for path in ("/instagram.xml", "/stories.xml", "/opml", "/users", "/status", "/health"):
+    for path in ("/instagram.xml", "/stories.xml", "/opml", "/users", "/status", "/subscribe", "/health"):
         assert client.get(path).status_code == 200, path
     assert "sig=" not in client.get("/instagram.xml").text
 
 
 @pytest.mark.parametrize(
-    "path", ["/instagram.xml", "/stories.xml", "/opml", "/users", "/status", "/openapi.json"]
+    "path",
+    ["/instagram.xml", "/stories.xml", "/opml", "/users", "/status", "/subscribe", "/openapi.json"],
 )
 def test_every_path_needs_the_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str) -> None:
     client: TestClient = _auth_app(tmp_path, monkeypatch)
@@ -159,9 +160,11 @@ def test_opml_feed_urls_carry_the_token(tmp_path: Path, monkeypatch: pytest.Monk
     root: ET.Element[str] = ET.fromstring(
         client.get("/opml", headers={"Authorization": f"Bearer {TOKEN}"}).text
     )
+    category: ET.Element[str] | None = root.find("./body/outline")
+    assert category is not None
+    assert category.get("{https://freshrss.org/opml}opmlUrl") == f"http://feed.test/opml?token={TOKEN}"
     xml_urls: set[str | None] = {o.get("xmlUrl") for o in root.findall("./body/outline/outline")}
     assert xml_urls == {
-        f"http://feed.test/instagram.xml?token={TOKEN}",
         f"http://feed.test/stories.xml?token={TOKEN}",
         f"http://feed.test/instagram.xml?user=someone&token={TOKEN}",
         f"http://feed.test/instagram.xml?user=other&token={TOKEN}",

@@ -36,7 +36,7 @@ track those). They are:
   variables, or from files (`IG_PASSWORD_FILE`, e.g. a Docker secret). Any way they can leak (into
   logs, `/status`, debug dumps, the feeds, or the published image) is in scope.
 - **The feed server** (`app/feedserver/`: `/instagram.xml`, `/stories.xml`, `/opml`, `/users`, `/media`,
-  `/browse`, `/status`, `/control`, `/health`). It's unauthenticated unless `FEED_TOKEN` is set. Anything that reaches beyond what it's
+  `/browse`, `/status`, `/subscribe`, `/control`, `/health`). It's unauthenticated unless `FEED_TOKEN` is set. Anything that reaches beyond what it's
   meant to serve is in scope: getting past the token, triggering `/control` changes from another
   site (cross-site POST/DELETE requests are refused), a media signature that opens a file it wasn't
   issued for, path traversal out of the media directory, injection through captions or usernames
@@ -56,7 +56,9 @@ These are known and documented, not vulnerabilities in themselves:
   Setting `FEED_HOST=0.0.0.0` without `FEED_TOKEN` serves everything scraped, including media from
   private accounts you follow, to anyone who can reach the port. With `FEED_TOKEN`, the token travels
   in plain HTTP unless a TLS reverse proxy sits in front, and it's embedded in `/opml`'s feed URLs
-  (so in whatever reader imports them). `/health` stays open and reveals the post count.
+  (so in whatever reader imports them) and shown on `/subscribe`, which needs the token to open.
+  Without `PUBLIC_URL`, those two write the request's own `Host` into the URLs they answer with,
+  escaped, and into nothing another request sees. `/health` stays open and reveals the post count.
 - **ADB is unauthenticated.** redroid's adbd runs with `ro.adb.secure=0`, and compose publishes it
   on `127.0.0.1:5555`. Anyone who can reach that port can fully control the device, including the
   logged-in Instagram session. Never publish it beyond loopback.

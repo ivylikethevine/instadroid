@@ -67,7 +67,8 @@ def _page(heading: str, body: str) -> HTMLResponse:
         f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>{escape(heading)}</title><style>{_STYLE}</style></head>
-<body><p><a href="/browse">All accounts</a> · <a href="/status">Status</a></p>
+<body><p><a href="/browse">All accounts</a> · <a href="/status">Status</a> ·
+<a href="/subscribe">Subscribe a reader</a></p>
 <h1>{escape(heading)}</h1>
 {body}
 </body></html>"""
