@@ -16,7 +16,10 @@ sites or time saved comes first, and medium items come last.
 
 A config flag, one function, a CI tweak, or docs.
 
-Nothing open.
+- **Confirm `scraper.py tune` on a device**: the batched selectors and shells are confirmed on 450
+  (scrapes, login, story capture, doctor, and the `getprop` snapshot), except `tune`'s, which has
+  run only against `tests/fakedevice.py`. One run on a booted redroid has to show it behaves as
+  before.
 
 Not doing: rewriting git history to remove leaked identifiers. The working tree was scrubbed (the
 list is in [PROFILES.md](PROFILES.md)'s leak scan), but older commits keep real usernames, captions
@@ -45,11 +48,6 @@ A feature across several parts of the scraper, compose or CI, or repeated real-d
   categories.
 - **Readable text-only stories**: OCR of story frames into the entry text, searchable on `/browse`.
   Opt-in, and measured first against the app container's 256m limit.
-- **Confirm the batched selectors and shells on a device**: tested only against `tests/fakedevice.py`.
-  A run has to show that `textMatches` and `descriptionMatches` accept escaped candidates with `(?is)`
-  on Android's regex, that `textContains` ignores case as the fake now does, that a batched `getprop`
-  keeps a blank line for an unset property, that doctor's single marker-split shell reads correctly,
-  and that `scraper.py tune` and the split `ensure_logged_in` and story capture behave as before.
 - **Confirm the forced-update and restriction screens**: two screens are recognised by wording no
   device run has shown yet, both in `app/igprofiles/v424/selectors.py`. An installed build that
   Instagram refuses to run until it's updated is replaced in place with a newer validated one
