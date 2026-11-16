@@ -3,6 +3,8 @@ FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Debian's security fixes land before the python image is rebuilt with them (Trivy flagged sqlite, pcre2,
 # gzip and perl-base), and the scraper and feed server both use the system libsqlite3.
+# A new APT_REFRESH value (CI passes the date) misses the layer cache so the upgrade runs again.
+ARG APT_REFRESH=
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
