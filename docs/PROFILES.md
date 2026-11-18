@@ -212,7 +212,7 @@ intentional.
 `app/igprofiles/v445.py`, `app/tests/test_parser.py`, `NEXT.md`/`docs/NEXT.md`): the same identifiers.
 Removing them means rewriting published history, e.g. `git filter-repo --replace-text` with a
 replacements file, then a force-push and re-cloning everywhere. The repository owner decided against
-it, so they stay ([ROADMAP.md](ROADMAP.md#small)).
+it, so they stay ([ROADMAP.md](ROADMAP.md#decisions)).
 
 ### Repeating the scan
 
