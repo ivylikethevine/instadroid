@@ -40,6 +40,7 @@ CLAUDE.local.md
 # values, so it stays tracked.
 .env
 .env.*
+*.env
 !.env.example
 .envrc
 .direnv/
@@ -82,6 +83,15 @@ __pycache__/
 # A local Jekyll build of the docs site; CI builds the real one.
 _site/
 .jekyll-cache/
+# `nix build`'s links to what it built.
+/result
+/result-*
+# OpenTofu and Terraform working state, which can hold addresses, key names
+# and secrets.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
 # Screenshots and images: none ships, and one can hold real account content.
 *.png
 *.jpg
@@ -100,15 +110,6 @@ _site/
 *.doc
 *.docx
 *.id
-# Build and scratch output.
-target/
-output/
-tmp/
-temp/
-
-# Any other env file.
-*.env
-
 # Instagram APKs (fixtures are pseudonymized XML, never captures).
 *.apk
 *.xapk

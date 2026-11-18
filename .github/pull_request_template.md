@@ -24,10 +24,10 @@ Link any relevant issues or discussions here.
 
 If one of these cannot be completed, give a justification.
 
-- [ ] The checks in [docs/CONTRIBUTING.md](https://github.com/ivylikethevine/instadroid/blob/main/docs/CONTRIBUTING.md#development-setup) pass locally
-- [ ] New behavior or a bug fix comes with a test in `tests/`
-- [ ] Coverage stays at or above the `fail_under` floor in [pyproject.toml](https://github.com/ivylikethevine/instadroid/blob/main/pyproject.toml)
-- [ ] Affected docs are updated ([which docs change with what](https://github.com/ivylikethevine/instadroid/blob/main/docs/CONTRIBUTING.md#which-docs-change-with-what))
+- [ ] The checks in [docs/CONTRIBUTING.md](https://github.com/ivylikethevine/instadroid/blob/main/docs/CONTRIBUTING.md) pass locally, and the change keeps the rules it sets
+- [ ] A new feature or a bug fix comes with a test
+- [ ] Any disabled linter or code-style rule is explained
+- [ ] Affected docs are updated
 
 ## AI disclosure
 
