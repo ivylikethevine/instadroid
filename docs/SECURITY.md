@@ -164,7 +164,7 @@ fresh APK install trusting APKPure. They're listed under
 - **Scrubbed fixtures.** Fixtures from real dumps go through `promote-dump`'s scrubbing. Older
   commits still carry real identifiers from before that
   ([PROFILES.md](PROFILES.md#leak-scan-2026-09-14)), and that history won't be rewritten
-  ([ROADMAP.md](ROADMAP.md#small)).
+  ([ROADMAP.md](ROADMAP.md#decisions)).
 
 [OPENSSF-IMPROVEMENTS.md](OPENSSF-IMPROVEMENTS.md) tracks what's still open against OpenSSF
 Scorecard.
