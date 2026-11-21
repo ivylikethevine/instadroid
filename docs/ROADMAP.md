@@ -19,17 +19,17 @@ container/process topology. A finished item is deleted; git history has it.
 
 As of 2026-11-20, branch `dev`.
 
-- 11 items are open: 1 ready to start, 6 waiting on a device run, a real dump, a real rename, an
+- 10 items are open: 1 ready to start, 5 waiting on a device run, a real dump, a real rename, an
   arm64 host or the owner's call, and 4 large ones for later.
 - Account groups, story OCR and the login backup are in the tree, with tests; story OCR's memory was
-  measured in the image (`docs/OPERATIONS.md`). Not run: any device run, so neither login command
-  has touched a device, and CI.
+  measured in the image (`docs/OPERATIONS.md`). The login backup and restore held a session on the
+  same install ([RUNS.md](RUNS.md#2026-11-20)); not run: a restore onto a fresh `/data`, and CI.
 - Open question: whether a routine 2FA prompt may be answered without a person (4).
 
 ## Order of work
 
 - 3, the one ready to start.
-- 1 and 2 together on the next device run; 7 and 13 once a real dump or a real rename allows.
+- 14 on the next device run; 7 and 13 once a real dump or a real rename allows.
 - 8, 9, 10 and 12 when one is taken up; 11 once an arm64 host is at hand.
 
 ## Now
@@ -40,21 +40,6 @@ An optional compose profile running ws-scrcpy on loopback, so a "confirm it's yo
 headless server needs only an SSH tunnel, not adb and scrcpy on a desktop.
 
 ## On hold
-
-### 2. Confirm the login backup on a device (S)
-
-`scraper.py login-backup` and `login-restore` ([OPERATIONS.md](OPERATIONS.md#storage-and-retention))
-have run only against a fake adb. One device run has to show the toybox `tar` excludes, the restore's
-chown and `restorecon`, and that Instagram keeps the copied session rather than asking for a new login
-(it may tie it to Android's keystore or device id): back up, restore onto the same install, then
-`scraper.py login`. `scripts/scratch/check_login_backup.sh` runs the whole check, a `/data` snapshot
-first. Waits on a device run on the deployment host.
-
-### 1. Confirm `scraper.py tune` on a device (S)
-
-The batched selectors and shells are confirmed on 450 (scrapes, login, story capture, doctor, and the
-`getprop` snapshot), except `tune`'s, which has run only against `tests/fakedevice.py`. One run on a
-booted redroid has to show it behaves as before. Waits on a device run.
 
 ### 4. Type authenticator codes at login (M)
 
@@ -88,6 +73,14 @@ only with `RENAME_AUTO_APPLY=1`. It stays off until a real rename has gone throu
 seen on a device yet, and a wrong merge joins two accounts' histories for good. Still open either
 way: an account none of whose stored posts are still in the feed, which only a visit to its profile
 would catch.
+
+### 14. Restore the login onto a fresh `/data` (M)
+
+`scraper.py login-restore` kept the session on the same install ([RUNS.md](RUNS.md#2026-11-20)), but
+the case it exists for is a fresh `/data` volume or a reset `/data/system`
+([OPERATIONS.md](OPERATIONS.md#storage-and-retention)), where Android's keystore and device id are
+new and Instagram may ask for a new login. One run: back up, start redroid on a new volume path,
+install the same build, restore, then `scraper.py login`. Waits on a device run.
 
 ## Later
 

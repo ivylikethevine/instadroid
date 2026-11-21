@@ -46,7 +46,7 @@ def test_tune_device_runs_once_per_process_in_one_round_trip(
     d: FakeDevice = feed_device()
     assert tune.tune_device(d)
     calls: list[str] = [c for c in d.shell_calls if "pm disable-user" in c or "settings put" in c]
-    assert len(calls) == 6 + 42 and calls[0].startswith("(settings put global window_animation_scale 0")
+    assert len(calls) == 6 + 42 and calls[0].startswith("o=$(settings put global window_animation_scale 0")
     assert "device tuned" in capsys.readouterr().out
     before: int = len(d.shell_calls)
     assert not tune.tune_device(d) and len(d.shell_calls) == before  # already done this process
@@ -102,10 +102,29 @@ def test_a_tuning_failure_is_logged_and_left_for_the_next_connect(
 def test_tune_device_names_the_commands_the_device_rejected(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The second command's exit status was non-zero.
-    assert tune.tune_device(FakeDevice({}, "launcher", shell_replies={"": "+ - +"}))
-    out: str = capsys.readouterr().out
-    assert "device tuned: 2 of 48 commands applied" in out
-    assert (
-        "tuning commands that failed on the device: settings put global transition_animation_scale 0" in out
+    # The second command failed with an exception and its stack trace, the third silently, the fourth on
+    # a package the image doesn't ship; the rest never answered.
+    reply: str = (
+        "+\n-255 Exception occurred: java.lang.IllegalStateException: no \tat com.android.server.Pm.run(Pm.java:1)\n"
+        "-1 \n-255 Exception occurred: java.lang.IllegalArgumentException: Unknown package: x \tat a.b\n+\n"
     )
+    assert tune.tune_device(FakeDevice({}, "launcher", shell_replies={"": reply}))
+    out: str = capsys.readouterr().out
+    assert "device tuned: 2 of 48 commands applied, 1 for packages not installed, 2 failed" in out
+    assert "tuning got 5 answers for 48 commands" in out
+    assert (
+        "tuning command failed, exit 255: settings put global transition_animation_scale 0:"
+        " Exception occurred: java.lang.IllegalStateException: no\n" in out
+    )
+    assert "tuning command failed, exit 1: settings put global animator_duration_scale 0: (no output)" in out
+    assert "auto_sync" not in out  # the absent package's command isn't warned about
+
+
+def test_reported_answers_on_one_line_per_command() -> None:
+    """The wrapper run through a real sh: a success, a failure with multi-line output, a silent one."""
+    script: str = "; ".join(
+        [tune.reported("true"), tune.reported("printf 'a\\nb\\n'; exit 3"), tune.reported("false")]
+    )
+    assert "; " not in tune.reported("true")
+    out: str = subprocess.run(["sh", "-c", script], capture_output=True, text=True, check=True).stdout
+    assert [line.strip() for line in out.splitlines()] == ["+", "-3 a b", "-1"]

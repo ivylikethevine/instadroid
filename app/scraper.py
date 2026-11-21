@@ -162,7 +162,8 @@ def main(argv: list[str]) -> None:
             )
             sys.exit(1)
         case ["tune", *_]:
-            if not tune.tune_device(device.connect_device(), force=True):
+            d = device.connect_device()  # tunes once per process, unless TUNE_ON_CONNECT is off
+            if not (tune.tuned() or tune.tune_device(d, force=True)):
                 sys.exit("tuning failed; see the log above")
         case ["dump", *_]:
             d = device.connect_device()

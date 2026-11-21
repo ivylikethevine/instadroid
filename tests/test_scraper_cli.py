@@ -220,6 +220,9 @@ def test_tune_forces_the_tuning_and_exits_non_zero_when_it_failed(
 
     monkeypatch.setattr(tune, "tune_device", tune_device)
     run_scraper(monkeypatch, "tune")
+    assert forced == []  # the connect tuned already: not a second time
+    monkeypatch.setattr(tune, "_tuned", False)  # TUNE_ON_CONNECT off, or the connect's tuning failed
+    run_scraper(monkeypatch, "tune")
     assert forced == [(scraper_cli, True)]
     result[0] = False
     with pytest.raises(SystemExit, match="tuning failed"):

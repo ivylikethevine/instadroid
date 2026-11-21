@@ -193,8 +193,9 @@ newer, since an older build can't open a newer one's databases. The restore move
 `/data/local/tmp/instadroid-login-before-<time>` on the device, then hands the files to the new
 install's uid and relabels them; `scraper.py login` then shows whether the session held. Both go
 over `adb root` with Instagram stopped, and refuse unless `scraper.py lock` holds runs back. Nothing
-prunes these files. Whether Instagram accepts a copied session at all, rather than asking for a new
-login because it is tied to the keystore or a device id, has not been shown on a device yet.
+prunes these files. A restore onto the same install keeps the session
+([RUNS.md](RUNS.md#2026-11-20)); onto a fresh `/data` volume, where the keystore and device id are
+new, it has not been tried.
 
 Stories live in their own `stories` table and `media/stories` subdirectory, but share `RETAIN_DAYS`
 with posts (`MEDIA_MAX_MB`'s size cap only ever considers posts, not stories) — see the README's

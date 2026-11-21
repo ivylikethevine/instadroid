@@ -44,6 +44,17 @@ def tune_commands(timezone: str, packages: list[str]) -> list[str]:
 _tuned: bool = False  # once per process: the app's first connect after a start
 
 
+def reported(command: str) -> str:
+    """`command` wrapped to answer on one line: `+` when it worked, else `-<exit status> <its output>`
+    (newlines flattened, cut to 300 characters), so the device's reasons come back in the same round
+    trip. No "; " inside, so the commands stay "; "-separated."""
+    return (
+        f"o=$({command} 2>&1);r=$?;"
+        "if [ $r -eq 0 ];then echo +;"
+        "else echo \"-$r $(echo \"$o\"|tr '\\n' ' '|cut -c1-300)\";fi"
+    )
+
+
 def tune_device(d: uidevice.Device, *, force: bool = False) -> bool:
     """Apply tune_commands() in one shell round trip, once per process unless `force`. Best-effort: a
     failure is logged, never raised, since an untuned device still scrapes. True when it ran."""
@@ -54,21 +65,42 @@ def tune_device(d: uidevice.Device, *, force: bool = False) -> bool:
         return False
     packages: list[str] = load_packages()
     commands: list[str] = tune_commands(config.DEVICE_TIMEZONE, packages)
-    # Each command echoes + or - so the device's own exit statuses come back in one round trip.
-    script: str = "; ".join(f"({c} >/dev/null 2>&1 && echo +) || echo -" for c in commands)
+    script: str = "; ".join(reported(c) for c in commands)
     try:
         out: str = d.shell(script, timeout=120).output or ""
     except Exception as e:
         log("WARN: device tuning failed (`scraper.py tune` runs it again by hand):", repr(e))
         return False
     _tuned = True
-    marks: list[str] = out.split()
-    applied: int = marks.count("+")
-    failed: list[str] = [c for c, mark in zip(commands, marks, strict=False) if mark == "-"]
-    log(f"device tuned: {applied} of {len(commands)} commands applied ({len(packages)} packages in the list)")
-    if failed:
-        log("WARN: tuning commands that failed on the device:", "; ".join(failed[:8]))
+    answers: list[str] = [line.strip() for line in out.splitlines() if line.strip()]
+    applied: int = answers.count("+")
+    rejected: list[tuple[str, str]] = [
+        (c, a[1:]) for c, a in zip(commands, answers, strict=False) if a.startswith("-")
+    ]
+    # A listed package the image doesn't ship (the Google apps on an AOSP image) is nothing to disable.
+    absent: int = sum(1 for _, a in rejected if "Unknown package:" in a)
+    failed: list[tuple[str, str]] = [(c, a) for c, a in rejected if "Unknown package:" not in a]
+    log(
+        f"device tuned: {applied} of {len(commands)} commands applied, {absent} for packages not"
+        f" installed, {len(failed)} failed ({len(packages)} packages in the list)"
+    )
+    if len(answers) != len(commands):
+        log(f"WARN: tuning got {len(answers)} answers for {len(commands)} commands:", repr(out[-300:]))
+    command: str
+    answer: str
+    for command, answer in failed:
+        status: str
+        reason: str
+        status, _, reason = answer.partition(" ")
+        reason = reason.split("\tat ")[0].strip()  # the Java stack trace adds nothing to the exception
+        log(f"WARN: tuning command failed, exit {status}: {command}: {reason or '(no output)'}")
     return True
+
+
+def tuned() -> bool:
+    """Whether this process has tuned the device already (connect_device() does, unless
+    TUNE_ON_CONNECT is off)."""
+    return _tuned
 
 
 def wait_for_boot(addr: str, timeout: float) -> bool:
