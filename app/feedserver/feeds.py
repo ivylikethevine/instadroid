@@ -13,7 +13,7 @@ from feedgen.feed import FeedGenerator
 from shared.captions import profile_url
 from shared.jsonvalues import JSON
 
-from . import queries, render, settings
+from . import groups, queries, render, settings
 from .entries import Entry, alert_entries, post_entries, story_entries
 
 router: APIRouter = APIRouter()
@@ -126,35 +126,47 @@ def _posts_feed(
     request: Request,
     fmt: str,
     user: str | None,
+    group: str | None,
     kind: str | None,
     since: str | None,
     q: str | None,
     limit: int,
 ) -> Response:
-    where: queries.PostFilter = queries.PostFilter(user, _kinds(kind), _since(since), q or None)
+    members: tuple[str, ...] | None = groups.members(groups.load(), group) if group else None
+    where: queries.PostFilter = queries.PostFilter(user, _kinds(kind), _since(since), q or None, members)
+    scope: tuple[str, ...] | None = (user,) if user else members
     con: sqlite3.Connection
     etag: str
     not_modified: Response | None
     with queries.connection() as con:
         # Open failure alerts go first in the aggregate feed, where a reader is already looking.
-        alerts: list[sqlite3.Row] = [] if user else queries.open_alerts(con)
+        alerts: list[sqlite3.Row] = [] if scope is not None else queries.open_alerts(con)
         etag, not_modified = render.cached(
             request,
             fmt,
             user,
+            group,
+            members,
             where.kinds,
             where.since,
             where.q,
             limit,
-            *queries.feed_signal(con, user, alerts),
+            *queries.feed_signal(con, scope, alerts),
         )
         if not_modified:
             return not_modified
         entries: list[Entry] = alert_entries(alerts) + post_entries(con, queries.posts(con, where, limit))
     feed_url: str = render.feed_url(
-        settings.PUBLIC_URL, f"/instagram.{fmt}", token=False, user=user, kind=kind, since=since, q=q
+        settings.PUBLIC_URL,
+        f"/instagram.{fmt}",
+        token=False,
+        user=user,
+        group=group,
+        kind=kind,
+        since=since,
+        q=q,
     )
-    title: str = f"Instagram — {user}" if user else "Instagram — Following"
+    title: str = f"Instagram — {user or group}" if user or group else "Instagram — Following"
     home: str = profile_url(user) if user else INSTAGRAM_HOME
     return _respond(fmt, feed_url, title, home, entries, etag)
 
@@ -175,6 +187,7 @@ def _stories_feed(request: Request, fmt: str, limit: int) -> Response:
 _KIND_HELP: str = "Comma-separated: photo, carousel, reel (or video), post."
 _SINCE_HELP: str = "Posts from this ISO date or time on; without an offset, in the TZ setting's zone."
 _Q_HELP: str = "Posts whose caption contains this text (case-insensitive for ASCII)."
+_GROUP_HELP: str = "The accounts of one group in GROUPS_FILE; 404 for a group it doesn't name."
 
 
 # responses= for each feed route, written out on each: FastAPI types that parameter as
@@ -188,14 +201,15 @@ _Q_HELP: str = "Posts whose caption contains this text (case-insensitive for ASC
 def feed(
     request: Request,
     user: str | None = None,
+    group: Annotated[str | None, Query(description=_GROUP_HELP)] = None,
     kind: Annotated[str | None, Query(description=_KIND_HELP)] = None,
     since: Annotated[str | None, Query(description=_SINCE_HELP)] = None,
     q: Annotated[str | None, Query(description=_Q_HELP)] = None,
     limit: int = 200,
 ) -> Response:
-    """Stored posts as Atom, newest first. `user` narrows it to one account, and `kind`, `since` and
-    `q` narrow it further; `limit` is capped at 500."""
-    return _posts_feed(request, "xml", user, kind, since, q, limit)
+    """Stored posts as Atom, newest first. `user` narrows it to one account and `group` to one group's,
+    and `kind`, `since` and `q` narrow it further; `limit` is capped at 500."""
+    return _posts_feed(request, "xml", user, group, kind, since, q, limit)
 
 
 @router.get(
@@ -210,13 +224,14 @@ def feed(
 def json_feed(
     request: Request,
     user: str | None = None,
+    group: Annotated[str | None, Query(description=_GROUP_HELP)] = None,
     kind: Annotated[str | None, Query(description=_KIND_HELP)] = None,
     since: Annotated[str | None, Query(description=_SINCE_HELP)] = None,
     q: Annotated[str | None, Query(description=_Q_HELP)] = None,
     limit: int = 200,
 ) -> Response:
     """/instagram.xml's entries, with the same parameters, as JSON Feed 1.1."""
-    return _posts_feed(request, "json", user, kind, since, q, limit)
+    return _posts_feed(request, "json", user, group, kind, since, q, limit)
 
 
 @router.get(
@@ -260,14 +275,78 @@ def feed_outline(text: str, xml_url: str, html_url: str) -> Element:
     return outline
 
 
-def category_outline(base: str, aggregate: bool = False) -> Element:
-    """The "Instagram" category a subscription list nests its feeds under. Its `frss:opmlUrl` is the
-    list's own URL: FreshRSS makes a category imported from a file with it a Dynamic OPML one, which it
-    then keeps in step with /opml, and ignores it in an outline it fetched itself."""
-    category: Element = Element("outline", text="Instagram", title="Instagram")
-    own_url: str = render.feed_url(base, "/opml", aggregate="1" if aggregate else None)
+def category_outline(
+    base: str,
+    title: str = "Instagram",
+    *,
+    group: str | None = None,
+    ungrouped: bool = False,
+    aggregate: bool = False,
+) -> Element:
+    """A category a subscription list nests its feeds under. Its `frss:opmlUrl` is the list of that
+    category alone (/opml with `group`, `ungrouped` and `aggregate`): FreshRSS makes a category imported from a file
+    with it a Dynamic OPML one, which it then keeps in step with that URL, and ignores it in an outline
+    it fetched itself, whose feeds it all puts in the one category that follows it."""
+    category: Element = Element("outline", text=title, title=title)
+    own_url: str = render.feed_url(
+        base, "/opml", group=group, ungrouped="1" if ungrouped else None, aggregate="1" if aggregate else None
+    )
     category.set(f"{{{FRSS_NS}}}opmlUrl", own_url)
     return category
+
+
+def _instagram_category(base: str, aggregate: bool, accounts: list[str], ungrouped: bool) -> Element:
+    """The "Instagram" category: the aggregate feed when asked, the stories feed, and `accounts`."""
+    category: Element = category_outline(base, ungrouped=ungrouped, aggregate=aggregate)
+    if aggregate:
+        category.append(
+            feed_outline("Instagram — Following", render.feed_url(base, "/instagram.xml"), INSTAGRAM_HOME)
+        )
+    category.append(
+        feed_outline("Instagram — Stories", render.feed_url(base, "/stories.xml"), INSTAGRAM_HOME)
+    )
+    _add_accounts(category, base, accounts)
+    return category
+
+
+def _add_accounts(category: Element, base: str, accounts: list[str]) -> None:
+    u: str
+    for u in accounts:
+        category.append(feed_outline(u, render.feed_url(base, "/instagram.xml", user=u), profile_url(u)))
+
+
+def _categories(
+    base: str,
+    configured: groups.Groups,
+    usernames: list[str],
+    aggregate: bool,
+    group: str | None,
+    ungrouped: bool,
+) -> list[Element]:
+    """The categories of one /opml answer. Without groups, one "Instagram" category of everything. With
+    them, a category per group that lists an account (each account under its first group), then
+    "Instagram" with the rest; `group` or `ungrouped` asks for just one of those, the list each
+    category names as its Dynamic OPML URL."""
+    first: dict[str, str] = configured.first_group()
+    if group is not None:
+        groups.members(configured, group)  # 404 for a group the file doesn't name
+        category: Element = category_outline(base, group, group=group)
+        _add_accounts(category, base, [u for u in usernames if first.get(u) == group])
+        return [category]
+    rest: list[str] = [u for u in usernames if u not in first]
+    if not configured.members and not ungrouped:
+        return [_instagram_category(base, aggregate, rest, ungrouped=False)]
+    if ungrouped:
+        return [_instagram_category(base, aggregate, rest, ungrouped=True)]
+    out: list[Element] = []
+    name: str
+    for name in configured.members:
+        accounts: list[str] = [u for u in usernames if first.get(u) == name]
+        if accounts:
+            category = category_outline(base, name, group=name)
+            _add_accounts(category, base, accounts)
+            out.append(category)
+    return [*out, _instagram_category(base, aggregate, rest, ungrouped=True)]
 
 
 @router.get(
@@ -276,22 +355,31 @@ def category_outline(base: str, aggregate: bool = False) -> Element:
     responses={
         200: {"content": {"text/x-opml": {}}, "description": "An OPML outline."},
         304: {},
+        404: {"description": "`group` names a group GROUPS_FILE doesn't."},
         503: {
-            "description": "The scraper hasn't created the database yet; the outline would be empty."
-            " Carries `Retry-After`."
+            "description": "The scraper hasn't created the database yet, so the outline would be empty, or"
+            " GROUPS_FILE can't be read. Carries `Retry-After`."
         },
     },
     summary="Subscription list",
 )
-def opml(request: Request, aggregate: bool = False) -> Response:
+def opml(
+    request: Request,
+    aggregate: bool = False,
+    group: Annotated[str | None, Query(description="Only this group's category.")] = None,
+    ungrouped: Annotated[bool, Query(description="Only the category of accounts in no group.")] = False,
+) -> Response:
     """One OPML outline nesting the stories feed and one per-account feed per username in /users — a
     single FreshRSS import subscribes to every account instead of pasting ?user= URLs in one at a time.
     `aggregate=1` adds the aggregate feed too; a reader dedupes entries within a feed, so beside the
     per-account feeds it shows every post twice. The feed URLs start with PUBLIC_URL when that is set,
-    else with the address this request came in on. The category names this URL as its FreshRSS Dynamic
-    OPML URL, so a FreshRSS that imports the saved file keeps following it.
+    else with the address this request came in on. Each category names its own list as its FreshRSS
+    Dynamic OPML URL, so a FreshRSS that imports the saved file keeps following it.
+    With GROUPS_FILE, each group is a category of its own, and the "Instagram" category holds the
+    stories feed and the accounts in no group; `group=` or `ungrouped=1` answers one category alone.
     Before the scraper's first start there is no posts table, and the answer is a 503 rather than an
     outline without accounts: a reader re-reading it as a Dynamic OPML would mute every account feed."""
+    configured: groups.Groups = groups.load()
     con: sqlite3.Connection
     usernames: list[str]
     with queries.connection() as con:
@@ -303,10 +391,19 @@ def opml(request: Request, aggregate: bool = False) -> Response:
             )
         usernames = queries.usernames(con)
     base: str = render.feed_base(request)
+    categories: list[Element] = _categories(base, configured, usernames, aggregate, group, ungrouped)
     etag: str
     not_modified: Response | None
     etag, not_modified = render.cached(
-        request, base, settings.FEED_TOKEN, settings.OPML_FEED_TTL, aggregate, *usernames
+        request,
+        base,
+        settings.FEED_TOKEN,
+        settings.OPML_FEED_TTL,
+        aggregate,
+        group,
+        ungrouped,
+        repr(configured.members),
+        *usernames,
     )
     if not_modified:
         return not_modified
@@ -315,19 +412,7 @@ def opml(request: Request, aggregate: bool = False) -> Response:
     head: Element = SubElement(root, "head")
     SubElement(head, "title").text = "Instadroid"
     SubElement(head, "dateCreated").text = datetime.now(UTC).strftime("%a, %d %b %Y %H:%M:%S GMT")
-    body: Element = SubElement(root, "body")
-    category: Element = category_outline(base, aggregate)
-    body.append(category)
-    if aggregate:
-        category.append(
-            feed_outline("Instagram — Following", render.feed_url(base, "/instagram.xml"), INSTAGRAM_HOME)
-        )
-    category.append(
-        feed_outline("Instagram — Stories", render.feed_url(base, "/stories.xml"), INSTAGRAM_HOME)
-    )
-    u: str
-    for u in usernames:
-        category.append(feed_outline(u, render.feed_url(base, "/instagram.xml", user=u), profile_url(u)))
+    SubElement(root, "body").extend(categories)
 
     xml_bytes: bytes = (
         b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="unicode").encode()

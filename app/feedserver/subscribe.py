@@ -1,6 +1,7 @@
 """/subscribe: the URLs to hand a feed reader, spelled for the address this request came in on, and
 where each one goes in FreshRSS."""
 
+import logging
 import sqlite3
 from html import escape
 from ipaddress import ip_address
@@ -10,7 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from shared.pagestyle import PAGE_STYLE
 
-from . import queries, render, settings
+from . import groups, queries, render, settings
 
 router: APIRouter = APIRouter()
 
@@ -69,6 +70,36 @@ def _warnings(base: str, ready: bool) -> str:
     return html
 
 
+def _groups(base: str) -> str:
+    """The section of group feeds and lists, when GROUPS_FILE names any, or a warning that it is broken.
+    The error itself goes to the log, not the page: its text can carry an OS or parser message."""
+    configured: groups.Groups
+    try:
+        configured = groups.read(settings.GROUPS_FILE)
+    except groups.GroupsError as e:
+        logging.getLogger("uvicorn.error").warning("GROUPS_FILE %s: %s", settings.GROUPS_FILE, e)
+        return (
+            f'<p class="warn"><code>{escape(str(settings.GROUPS_FILE))}</code> is unreadable or not a list'
+            " of groups, so the group feeds answer 503; the app's log says what is wrong with it.</p>"
+        )
+    if not configured.members:
+        return ""
+    rows: str = "".join(
+        f"<li>{escape(name)}: <code>{escape(render.feed_url(base, '/instagram.xml', group=name))}</code>"
+        f" or, one feed per account, <code>{escape(render.feed_url(base, '/opml', group=name))}</code></li>"
+        for name in configured.members
+    )
+    return (
+        "<h2>By group</h2>"
+        "<p>Each group of the groups file is a feed of its own and, in the list of feeds above, a category"
+        " of its own; the <em>Instagram</em> category keeps the stories feed and the accounts in no group."
+        " A FreshRSS category that follows the whole list puts every feed in itself; to get a category per"
+        " group, import the downloaded list as a file, or add each group's list below as a Dynamic OPML"
+        f" category and the rest as <code>{escape(render.feed_url(base, '/opml', ungrouped='1'))}</code>.</p>"
+        f"<ul>{rows}</ul>"
+    )
+
+
 @router.get("/subscribe", response_class=HTMLResponse, summary="How to subscribe a reader")
 def subscribe(request: Request) -> HTMLResponse:
     """A plain-HTML page of the feed URLs and the subscription list's URL, with the token when auth is
@@ -113,6 +144,7 @@ It holds the stories feed too.</p>
 <p><code>{opml}</code></p>
 <p>Or <a href="{download}" download="instadroid.opml">download the list</a> and import the file.
 FreshRSS keeps following a list it imported; another reader needs a new import when accounts change.</p>
+{_groups(base)}
 {allow}
 </body></html>"""
     )

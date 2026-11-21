@@ -30,12 +30,14 @@ if [ ! -d local/data/android ]; then
 fi
 
 name="android-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
-mkdir -p local/data/backups
 echo "writing local/data/backups/$name (this can take a few minutes)"
 parts=(android)
 [ ! -e local/data/android.image ] || parts+=(android.image)
-docker compose run --rm --no-deps --user 0:0 --entrypoint tar \
-  -v "$root/local/data:/data" init -czf "/data/backups/$name" -C /data "${parts[@]}"
+# local/data is root-owned (the init service creates it), so backups/ is made in the container too.
+# shellcheck disable=SC2016 # expanded by the container's sh, from its arguments
+docker compose run --rm --no-deps --user 0:0 --entrypoint sh -v "$root/local/data:/data" init \
+  -c 'n="$1"; shift; mkdir -p /data/backups && exec tar -czf "/data/backups/$n" -C /data "$@"' \
+  sh "$name" "${parts[@]}"
 ls -lh "local/data/backups/$name"
 
 if [ "$keep" -gt 0 ]; then

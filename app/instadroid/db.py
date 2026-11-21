@@ -172,8 +172,9 @@ def db_init() -> sqlite3.Connection:
             scraped_at TEXT NOT NULL
         )"""
     )
-    # phash: stories._dhash() of the crop, for catching a re-capture of a story already stored.
-    _add_columns(con, "stories", {"phash": "TEXT"})
+    # phash: stories._dhash() of the crop, for catching a re-capture of a story already stored. text:
+    # what STORY_OCR read off the frame (ocr.py); NULL until it has been read, "" when it found none.
+    _add_columns(con, "stories", {"phash": "TEXT", "text": "TEXT"})
     con.execute("CREATE INDEX IF NOT EXISTS stories_username ON stories(username)")
     con.execute("CREATE INDEX IF NOT EXISTS stories_scraped_at ON stories(scraped_at)")
     con.execute(
@@ -810,6 +811,21 @@ def _migrate_search_index(con: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_story_search(con: sqlite3.Connection) -> None:
+    """Add the story text search index, kept in step by triggers. A story's id is its only key, so it is
+    an UNINDEXED column here; the few stories RETAIN_DAYS keeps make deleting by it cheap."""
+    con.execute("CREATE VIRTUAL TABLE IF NOT EXISTS stories_fts USING fts5(text, story_id UNINDEXED)")
+    add: str = "INSERT INTO stories_fts (text, story_id) SELECT NEW.text, NEW.id WHERE NEW.text <> '';"
+    drop: str = "DELETE FROM stories_fts WHERE story_id = OLD.id;"
+    con.execute(f"CREATE TRIGGER IF NOT EXISTS stories_fts_insert AFTER INSERT ON stories BEGIN {add} END")
+    con.execute(
+        f"CREATE TRIGGER IF NOT EXISTS stories_fts_update AFTER UPDATE OF id, text ON stories BEGIN {drop} {add} END"
+    )
+    con.execute(f"CREATE TRIGGER IF NOT EXISTS stories_fts_delete AFTER DELETE ON stories BEGIN {drop} END")
+    con.execute("DELETE FROM stories_fts")
+    con.execute("INSERT INTO stories_fts (text, story_id) SELECT text, id FROM stories WHERE text <> ''")
+
+
 def _migrate_updated_at(con: sqlite3.Connection) -> None:
     """Give rows from before posts.updated_at existed the time they were first seen."""
     con.execute("UPDATE posts SET updated_at = scraped_at WHERE updated_at IS NULL")
@@ -825,6 +841,7 @@ MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_merge_twins,
     _migrate_search_index,
     _migrate_updated_at,
+    _migrate_story_search,
 )
 
 

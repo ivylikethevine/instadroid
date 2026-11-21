@@ -9,6 +9,7 @@ were at the time: the root profile was `v440` until 2026-09-15, when it became `
 - [2026-09-14](#2026-09-14)
 - [2026-09-15](#2026-09-15)
 - [2026-10-07](#2026-10-07)
+- [2026-11-20](#2026-11-20)
 
 ## 2026-09-14
 
@@ -203,3 +204,28 @@ login) each had every required key under `v424`; none had been captured before.
   and "Message `<name>`" button), the own username in the title bar and the account's own counts.
   `promote_dump.pseudonymize()` now catches them; the fixture written before that was deleted, and
   `following_list_450` is the scrubbed one.
+
+## 2026-11-20
+
+**Login backup and restore on the same install, 16:55-16:58 PST** (450.0.0.50.77, the device left on
+450 on 2026-10-07; `scripts/scratch/check_login_backup.sh`). With the manual lock held and a `/data`
+snapshot taken, redroid booted in 44 s (952 MiB of 3 GiB once booted). `scraper.py login-backup`
+wrote a 66 MiB archive in 21 s; `login-restore` put it back in 3 s, moving the replaced data aside
+on the device, with no error from the toybox `tar` excludes, the chown or `restorecon`.
+`scraper.py login` then found the session logged in, with no new login asked for. Not shown: a
+restore onto a fresh `/data` volume, where the keystore and device id differ.
+
+- **The `/data` snapshot failed on its first try**: `local/data` is root-owned (the `init` service
+  creates it), so the host user couldn't make `backups/` in it. `snapshot-android-data.sh` now makes
+  it from the root container that writes the archive.
+- **Tuning at login applied 23 of 48 commands.** The log named only the first 8 of the 25 that
+  failed, `pm disable-user` for Google apps (Play Store, Chrome, YouTube, Maps, Gmail, Photos,
+  Messages, the Google app), and no reason. Tuning now logs each failed command with its exit status
+  and output.
+
+**`scraper.py tune` on the same device, 17:06 PST**, with that logging. Every command this image could
+take applied: the 6 settings and the 17 listed AOSP packages it ships. All 25 others failed with
+`IllegalArgumentException: Unknown package`, Google apps an AOSP image doesn't have. Tuning now
+counts those as "not installed" rather than warning about each, and cuts the Java stack trace from a
+real failure's reason. The run also showed `tune` tuning twice, once in `connect_device()` and once
+forced; it now skips the second when the connect has tuned.

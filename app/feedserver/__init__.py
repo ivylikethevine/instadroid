@@ -2,7 +2,7 @@
 and imports nothing from the scraper: the database is the only thing the two share.
 
 /instagram.xml            -> everything
-/instagram.xml?user=NAME  -> one account (also ?kind=, ?since=, ?q=)
+/instagram.xml?user=NAME  -> one account (also ?group=, ?kind=, ?since=, ?q=)
 /stories.xml              -> stored stories
 /instagram.json, /stories.json -> the same, as JSON Feed 1.1
 /opml                     -> one-step bulk subscribe: the per-account feeds, as an OPML outline
@@ -21,6 +21,7 @@ FEED_TOKEN (or FEED_TOKEN_FILE) turns on auth for everything except /health, see
     render     timestamps, ETags, media URLs and images, captions
     entries    what each post, story and alert says, for either feed format
     feeds      /instagram.xml and .json, /stories.xml and .json, /users, /opml
+    groups     the account groups file behind ?group= and /opml's categories
     browse     /browse
     control    /control
     status     /health, /status

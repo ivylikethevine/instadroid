@@ -131,6 +131,13 @@ also a run warning), shown in `/status`'s "Peak mem" column. A run also stops ea
 kind of warning, once it has been going `RUN_MAX_MINUTES` (default 30; a normal run takes 5-15), so a
 degraded device can't stretch one run across hours of Instagram use.
 
+The app container's 256m holds the scraper (peak ~125MiB while scraping) and, with `STORY_OCR=1`,
+tesseract as its child at the end of a run: 57MiB on a blank full-screen frame and 72MiB on text over
+photo-like noise, measured in the image under `--memory 256m` with `scripts/scratch/ocr_memory.py`
+(tesseract 5.5.0, one thread, about a second a frame). That leaves roughly 60MiB, so raise the app's
+`mem_limit` before adding a second language model. Turning it on also adds tesseract to the image,
+240MB to 341MB.
+
 Docker keeps at most 3 × 10MB of log per container (the `x-logging` block
 in `docker-compose.yml`), and the healthcheck's own `GET /health` every 30s is left out of the
 access log.
@@ -176,6 +183,19 @@ redroid and run `scripts/snapshot-android-data.sh [--keep N]` before changing th
 Instagram build, or a risky recovery step. It writes `local/data/backups/android-<time>.tar.gz`. The app
 container sees that folder read-only at `SNAPSHOT_DIR`, so `scraper.py install` can refuse while the
 newest snapshot is more than `SNAPSHOT_MAX_DAYS` old.
+
+**The login alone**: `scraper.py login-backup` copies Instagram's app data off the running device,
+caches left out, to `BACKUP_DIR/login-<time>.tar.gz` (owner-only), with a `.json` naming the
+Instagram build and Android release it came from. `scraper.py login-restore [FILE]` puts the newest
+one, or `FILE`, into the installed Instagram, so a fresh `/data` volume (another Android version's
+included) or a reset `/data/system` skips the login. Install Instagram first, the backup's build or
+newer, since an older build can't open a newer one's databases. The restore moves the app's current data aside to
+`/data/local/tmp/instadroid-login-before-<time>` on the device, then hands the files to the new
+install's uid and relabels them; `scraper.py login` then shows whether the session held. Both go
+over `adb root` with Instagram stopped, and refuse unless `scraper.py lock` holds runs back. Nothing
+prunes these files. A restore onto the same install keeps the session
+([RUNS.md](RUNS.md#2026-11-20)); onto a fresh `/data` volume, where the keystore and device id are
+new, it has not been tried.
 
 Stories live in their own `stories` table and `media/stories` subdirectory, but share `RETAIN_DAYS`
 with posts (`MEDIA_MAX_MB`'s size cap only ever considers posts, not stories) — see the README's

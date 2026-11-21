@@ -3,10 +3,11 @@ the installer replaced so nothing reaches a real device."""
 
 import sqlite3
 from pathlib import Path
+from typing import NoReturn
 
 import igprofiles
 import pytest
-from instadroid import config, db, device, diagnostics, install, navigation, scrape, tune
+from instadroid import config, db, device, diagnostics, install, loginbackup, navigation, scrape, tune
 
 from tests.fakedevice import FakeDevice
 from tests.support import fake_run, insert_post, record_run_ago, run_scraper
@@ -167,6 +168,43 @@ def test_backup_writes_a_copy_now(
     assert "wrote" in capsys.readouterr().out
 
 
+def test_login_backup_and_restore_print_where_the_data_went_and_exit_non_zero_on_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    restored: list[Path | None] = []
+
+    def backup_login() -> Path:
+        return Path("/backups/login-20261120T120000Z.tar.gz")
+
+    def restore_login(path: Path | None = None) -> str:
+        restored.append(path)
+        return "/data/local/tmp/ig-aside"
+
+    def refuse(*args: Path | None) -> NoReturn:
+        raise loginbackup.LoginBackupError("the manual lock isn't held")
+
+    monkeypatch.setattr(loginbackup, "backup_login", backup_login)
+    monkeypatch.setattr(loginbackup, "restore_login", restore_login)
+    run_scraper(monkeypatch, "login-backup")
+    run_scraper(monkeypatch, "login-restore")
+    run_scraper(monkeypatch, "login-restore", "old.tar.gz")
+    out: str = capsys.readouterr().out
+    assert "wrote /backups/login-20261120T120000Z.tar.gz" in out
+    assert "restored; the data it replaced is in /data/local/tmp/ig-aside on the device" in out
+    assert restored == [None, Path("old.tar.gz")]
+    monkeypatch.setattr(loginbackup, "backup_login", refuse)
+    monkeypatch.setattr(loginbackup, "restore_login", refuse)
+    with pytest.raises(SystemExit, match="login backup failed: the manual lock isn't held"):
+        run_scraper(monkeypatch, "login-backup")
+    with pytest.raises(SystemExit, match="login restore failed: the manual lock isn't held"):
+        run_scraper(monkeypatch, "login-restore")
+    usage: list[str]
+    for usage in (["login-backup", "extra"], ["login-restore", "a", "b"], ["login-restore", "--force"]):
+        with pytest.raises(SystemExit):
+            run_scraper(monkeypatch, *usage)
+        assert "usage: scraper.py login-backup | scraper.py login-restore [FILE]" in capsys.readouterr().out
+
+
 def test_rename_moves_history_and_checks_its_arguments(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -219,6 +257,9 @@ def test_tune_forces_the_tuning_and_exits_non_zero_when_it_failed(
         return result[0]
 
     monkeypatch.setattr(tune, "tune_device", tune_device)
+    run_scraper(monkeypatch, "tune")
+    assert forced == []  # the connect tuned already: not a second time
+    monkeypatch.setattr(tune, "_tuned", False)  # TUNE_ON_CONNECT off, or the connect's tuning failed
     run_scraper(monkeypatch, "tune")
     assert forced == [(scraper_cli, True)]
     result[0] = False

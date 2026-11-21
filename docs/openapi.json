@@ -10,7 +10,7 @@
     "/instagram.xml": {
       "get": {
         "summary": "Posts feed",
-        "description": "Stored posts as Atom, newest first. `user` narrows it to one account, and `kind`, `since` and\n`q` narrow it further; `limit` is capped at 500.",
+        "description": "Stored posts as Atom, newest first. `user` narrows it to one account and `group` to one group's,\nand `kind`, `since` and `q` narrow it further; `limit` is capped at 500.",
         "operationId": "feed_instagram_xml_get",
         "parameters": [
           {
@@ -28,6 +28,24 @@
               ],
               "title": "User"
             }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The accounts of one group in GROUPS_FILE; 404 for a group it doesn't name.",
+              "title": "Group"
+            },
+            "description": "The accounts of one group in GROUPS_FILE; 404 for a group it doesn't name."
           },
           {
             "name": "kind",
@@ -138,6 +156,24 @@
               ],
               "title": "User"
             }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The accounts of one group in GROUPS_FILE; 404 for a group it doesn't name.",
+              "title": "Group"
+            },
+            "description": "The accounts of one group in GROUPS_FILE; 404 for a group it doesn't name."
           },
           {
             "name": "kind",
@@ -333,7 +369,7 @@
     "/opml": {
       "get": {
         "summary": "Subscription list",
-        "description": "One OPML outline nesting the stories feed and one per-account feed per username in /users — a\nsingle FreshRSS import subscribes to every account instead of pasting ?user= URLs in one at a time.\n`aggregate=1` adds the aggregate feed too; a reader dedupes entries within a feed, so beside the\nper-account feeds it shows every post twice. The feed URLs start with PUBLIC_URL when that is set,\nelse with the address this request came in on. The category names this URL as its FreshRSS Dynamic\nOPML URL, so a FreshRSS that imports the saved file keeps following it.\nBefore the scraper's first start there is no posts table, and the answer is a 503 rather than an\noutline without accounts: a reader re-reading it as a Dynamic OPML would mute every account feed.",
+        "description": "One OPML outline nesting the stories feed and one per-account feed per username in /users — a\nsingle FreshRSS import subscribes to every account instead of pasting ?user= URLs in one at a time.\n`aggregate=1` adds the aggregate feed too; a reader dedupes entries within a feed, so beside the\nper-account feeds it shows every post twice. The feed URLs start with PUBLIC_URL when that is set,\nelse with the address this request came in on. Each category names its own list as its FreshRSS\nDynamic OPML URL, so a FreshRSS that imports the saved file keeps following it.\nWith GROUPS_FILE, each group is a category of its own, and the \"Instagram\" category holds the\nstories feed and the accounts in no group; `group=` or `ungrouped=1` answers one category alone.\nBefore the scraper's first start there is no posts table, and the answer is a 503 rather than an\noutline without accounts: a reader re-reading it as a Dynamic OPML would mute every account feed.",
         "operationId": "opml_opml_get",
         "parameters": [
           {
@@ -345,6 +381,36 @@
               "default": false,
               "title": "Aggregate"
             }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this group's category.",
+              "title": "Group"
+            },
+            "description": "Only this group's category."
+          },
+          {
+            "name": "ungrouped",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Only the category of accounts in no group.",
+              "default": false,
+              "title": "Ungrouped"
+            },
+            "description": "Only the category of accounts in no group."
           }
         ],
         "responses": {
@@ -357,8 +423,11 @@
           "304": {
             "description": "Not Modified"
           },
+          "404": {
+            "description": "`group` names a group GROUPS_FILE doesn't."
+          },
           "503": {
-            "description": "The scraper hasn't created the database yet; the outline would be empty. Carries `Retry-After`."
+            "description": "The scraper hasn't created the database yet, so the outline would be empty, or GROUPS_FILE can't be read. Carries `Retry-After`."
           },
           "422": {
             "description": "Validation Error",
@@ -410,10 +479,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Caption search: every word must match, each as a prefix of a caption word.",
+              "description": "Caption search: every word must match, each as a prefix of a caption word. The first page also lists stories whose text (STORY_OCR) matches.",
               "title": "Q"
             },
-            "description": "Caption search: every word must match, each as a prefix of a caption word."
+            "description": "Caption search: every word must match, each as a prefix of a caption word. The first page also lists stories whose text (STORY_OCR) matches."
           },
           {
             "name": "before",

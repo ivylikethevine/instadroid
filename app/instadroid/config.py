@@ -148,6 +148,11 @@ BACKUP_KEEP: int = int(os.environ.get("BACKUP_KEEP", "7"))
 # histories for good, and no rename has been seen on a device yet. Needs FOLLOWING_REFRESH_DAYS.
 RENAME_AUTO_APPLY: bool = _flag("RENAME_AUTO_APPLY", False)
 MAX_STORIES_PER_RUN: int = int(os.environ.get("MAX_STORIES_PER_RUN", "10"))
+# Read each stored story frame's text with tesseract at the end of a run (ocr.py), into the stories feed
+# and /browse's search. Off by default: tesseract peaks near 72MiB beside the scraper in the app
+# container's 256m, and needs the image built with it. STORY_OCR_LANG is tesseract's -l, e.g. "eng+deu" (each needs its traineddata).
+STORY_OCR: bool = _flag("STORY_OCR", False)
+STORY_OCR_LANG: str = os.environ.get("STORY_OCR_LANG", "eng")
 TIME_DISTRIBUTION: str = _choice("TIME_DISTRIBUTION", "uniform", ("uniform", "lognormal", "daynight"))
 # The device's timezone: DEVICE_TIMEZONE, else TZ (the zone the feeds show times in). Tuning applies it
 # to the device (tune.py), bare dates Instagram shows are read in it, and it's "local"

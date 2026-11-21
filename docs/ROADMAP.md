@@ -17,49 +17,29 @@ container/process topology. A finished item is deleted; git history has it.
 
 ## Where it stands
 
-As of 2026-11-17, branch `dev`.
+As of 2026-11-20, branch `dev`.
 
-- 13 items are open: 4 ready to start, 5 waiting on a device run, a real dump, a real rename, an
+- 10 items are open: 1 ready to start, 5 waiting on a device run, a real dump, a real rename, an
   arm64 host or the owner's call, and 4 large ones for later.
-- Not run for this update: any device run or CI.
+- Account groups, story OCR and the login backup are in the tree, with tests; story OCR's memory was
+  measured in the image (`docs/OPERATIONS.md`). The login backup and restore held a session on the
+  same install ([RUNS.md](RUNS.md#2026-11-20)); not run: a restore onto a fresh `/data`, and CI.
 - Open question: whether a routine 2FA prompt may be answered without a person (4).
 
 ## Order of work
 
-- 2, 3, 5 and 6, most value for the size first.
-- 1, 7 and 13 as soon as a device run, a real dump or a real rename allows.
+- 3, the one ready to start.
+- 14 on the next device run; 7 and 13 once a real dump or a real rename allows.
 - 8, 9, 10 and 12 when one is taken up; 11 once an arm64 host is at hand.
 
 ## Now
-
-### 2. Back up and restore the login alone (M)
-
-Save `/data/data/com.instagram.android` (with `adb root`) so a fresh `/data` volume, another Android
-version's included, or a `/data/system` reset gets a working login without a new challenge. A device
-run has to show the session survives the copy: Instagram may tie it to Android's keystore or device
-id.
 
 ### 3. Solve challenges from a browser (M)
 
 An optional compose profile running ws-scrcpy on loopback, so a "confirm it's you" challenge on a
 headless server needs only an SSH tunnel, not adb and scrcpy on a desktop.
 
-### 5. Account groups (M)
-
-A config file mapping accounts to groups, served as `?group=` feeds and OPML categories.
-
-### 6. Readable text-only stories (M)
-
-OCR of story frames into the entry text, searchable on `/browse`. Opt-in, and measured first against
-the app container's 256m limit.
-
 ## On hold
-
-### 1. Confirm `scraper.py tune` on a device (S)
-
-The batched selectors and shells are confirmed on 450 (scrapes, login, story capture, doctor, and the
-`getprop` snapshot), except `tune`'s, which has run only against `tests/fakedevice.py`. One run on a
-booted redroid has to show it behaves as before. Waits on a device run.
 
 ### 4. Type authenticator codes at login (M)
 
@@ -93,6 +73,14 @@ only with `RENAME_AUTO_APPLY=1`. It stays off until a real rename has gone throu
 seen on a device yet, and a wrong merge joins two accounts' histories for good. Still open either
 way: an account none of whose stored posts are still in the feed, which only a visit to its profile
 would catch.
+
+### 14. Restore the login onto a fresh `/data` (M)
+
+`scraper.py login-restore` kept the session on the same install ([RUNS.md](RUNS.md#2026-11-20)), but
+the case it exists for is a fresh `/data` volume or a reset `/data/system`
+([OPERATIONS.md](OPERATIONS.md#storage-and-retention)), where Android's keystore and device id are
+new and Instagram may ask for a new login. One run: back up, start redroid on a new volume path,
+install the same build, restore, then `scraper.py login`. Waits on a device run.
 
 ## Later
 

@@ -1,3 +1,4 @@
-# Nothing ignored: app/Dockerfile installs no apt packages (only `apt-get upgrade`; adb comes from the
-# adbutils wheel), so DL3008's version-pinning rule has nothing to flag. Give any future ignore a reason.
+# Nothing ignored: app/Dockerfile's only apt package is tesseract-ocr behind the STORY_OCR build argument,
+# pinned to a version (adb comes from the adbutils wheel), so DL3008's version-pinning rule passes. Give
+# any future ignore a reason.
 ignored: []

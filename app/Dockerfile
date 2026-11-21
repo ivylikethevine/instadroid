@@ -8,6 +8,17 @@ ARG APT_REFRESH=
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
+# STORY_OCR (compose passes .env's) adds tesseract, which reads story text (instadroid/ocr.py); without
+# it the image carries no apt package of its own. Pinned to the base image's Debian (trixie) build; it
+# brings the English model.
+ARG STORY_OCR=0
+RUN case "$STORY_OCR" in \
+      1 | [Tt]rue | TRUE | [Yy]es | YES | [Oo]n | ON) \
+        apt-get update \
+        && apt-get install -y --no-install-recommends tesseract-ocr=5.5.0-1+b1 \
+        && rm -rf /var/lib/apt/lists/* \
+        && tesseract --version ;; \
+    esac
 # apkeep fetches the Instagram APK from APKPure when the device doesn't have it installed (see
 # instadroid/install.py) — pinned to a specific release + checksum rather than trusting whatever
 # "latest" resolves to at build time. ADD verifies the checksum itself, so no curl in the image.

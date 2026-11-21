@@ -78,11 +78,11 @@ reaches every caller.
 
 ## Typing and coverage
 
-> **Rule: all Python code must be 100% type annotated and at least 95% covered by tests.** That means
+> **Rule: all Python code must be 100% type annotated and 100% covered by tests.** That means
 > app code, scripts and tests alike, every function signature and every variable, with no
 > `Any`, `cast()` or type-checker suppressions. CI enforces both: basedpyright strict (with
 > `reportAny`), ruff's annotation rules and constricter for the first, and coverage's
-> `fail_under = 95` over `app/` (`pyproject.toml`) for the second. A change that lowers either
+> `fail_under = 100` over `app/` (`pyproject.toml`) for the second. A change that lowers either
 > doesn't merge.
 
 - ruff's `ANN` rules require an annotation on every function and ban an explicit `Any`;
@@ -278,7 +278,7 @@ rather than restating it elsewhere.
 
 - Branch from `dev` and open the pull request against `dev`; `main` is what releases are cut from.
 - Keep each pull request to one change, and explain the why, not just the what.
-- **All Python code must be 100% type annotated and at least 95% covered by tests**
+- **All Python code must be 100% type annotated and 100% covered by tests**
   ([Typing and coverage](#typing-and-coverage)). New code comes with its tests, and CI fails below
   either bar.
 - Update the docs your change affects in the same pull request, per
