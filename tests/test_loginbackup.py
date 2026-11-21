@@ -3,6 +3,7 @@
 import gzip
 import io
 import json
+import os
 import stat
 import tarfile
 from datetime import UTC, datetime
@@ -203,3 +204,74 @@ def test_root_is_retried_while_adbd_restarts(adb: FakeAdb, monkeypatch: pytest.M
     monkeypatch.setattr(loginbackup, "_adb", restarting)
     assert loginbackup.backup_login(now=NOW).exists()
     assert answers == []
+
+
+def test_root_is_retried_while_the_shell_is_unreachable(
+    adb: FakeAdb, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    offline: list[bool] = [True]
+    real: FakeAdb = adb
+
+    def reconnecting(args: list[str], *, out: IO[bytes] | None = None, timeout: float = 60.0) -> str:
+        if args == ["shell", "id -u"] and offline:
+            offline.pop()
+            raise loginbackup.LoginBackupError("adb shell id -u exited 1: error: device offline")
+        return real(args, out=out, timeout=timeout)
+
+    monkeypatch.setattr(loginbackup, "_adb", reconnecting)
+    assert loginbackup.backup_login(now=NOW).exists()
+    assert offline == []
+
+
+FAKE_ADB: str = """#!/bin/sh
+echo "$*" >> "{calls}"
+case "$3" in
+  fail) echo "error: device offline" >&2; exit 1 ;;
+  hang) exec sleep 5 ;;
+esac
+printf 'out of %s' "$3"
+"""
+
+
+@pytest.fixture
+def adb_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An adb first on PATH, ahead of any real one, that logs its arguments to the returned file, fails on
+    `fail` and hangs on `hang`."""
+    bin_dir: Path = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls: Path = tmp_path / "calls"
+    script: Path = bin_dir / "adb"
+    _ = script.write_text(FAKE_ADB.replace("{calls}", str(calls)))
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.defpath}")
+    monkeypatch.setattr(config, "ADB_ADDR", "127.0.0.1:5555")
+    return calls
+
+
+def test_adb_runs_the_cli_against_the_device_and_returns_or_writes_its_output(
+    adb_cli: Path, tmp_path: Path
+) -> None:
+    assert loginbackup._adb(["shell", "id -u"]) == "out of shell"
+    archive: Path = tmp_path / "out.bin"
+    f: IO[bytes]
+    with archive.open("wb") as f:
+        assert loginbackup._adb(["exec-out", "tar"], out=f) == ""
+    assert archive.read_bytes() == b"out of exec-out"
+    loginbackup._connect()
+    assert adb_cli.read_text().splitlines() == [
+        "-s 127.0.0.1:5555 shell id -u",
+        "-s 127.0.0.1:5555 exec-out tar",
+        "connect 127.0.0.1:5555",
+    ]
+
+
+def test_adb_that_fails_hangs_or_is_missing_is_a_login_backup_error(
+    adb_cli: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(loginbackup.LoginBackupError, match="adb fail now exited 1: error: device offline"):
+        _ = loginbackup._adb(["fail", "now"])
+    with pytest.raises(loginbackup.LoginBackupError, match="adb hang: .*timed out"):
+        _ = loginbackup._adb(["hang"], timeout=0.2)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))  # no adb at all, the host's included
+    with pytest.raises(loginbackup.LoginBackupError, match="adb root: .*No such file"):
+        _ = loginbackup._adb(["root"])

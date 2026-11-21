@@ -433,7 +433,7 @@ covers these, duplicate merging, `MEDIA_MAX_MB`, debug-dump retention, and snaps
 
 ## Building and testing
 
-All Python code is 100% type annotated and at least 95% covered by tests, and CI enforces both.
+All Python code is 100% type annotated and 100% covered by tests, and CI enforces both.
 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) has the development setup, the checks to run before a
 pull request (`scripts/check.sh`, the same commands CI runs) and what CI runs; [docs/TESTING.md](docs/TESTING.md) has the test tiers, fixtures and
 coverage. The device-driving code is tested against a scripted fake device, so the suite needs no

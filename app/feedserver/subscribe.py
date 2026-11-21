@@ -1,6 +1,7 @@
 """/subscribe: the URLs to hand a feed reader, spelled for the address this request came in on, and
 where each one goes in FreshRSS."""
 
+import logging
 import sqlite3
 from html import escape
 from ipaddress import ip_address
@@ -70,12 +71,17 @@ def _warnings(base: str, ready: bool) -> str:
 
 
 def _groups(base: str) -> str:
-    """The section of group feeds and lists, when GROUPS_FILE names any, or what's wrong with it."""
+    """The section of group feeds and lists, when GROUPS_FILE names any, or a warning that it is broken.
+    The error itself goes to the log, not the page: its text can carry an OS or parser message."""
     configured: groups.Groups
     try:
         configured = groups.read(settings.GROUPS_FILE)
     except groups.GroupsError as e:
-        return f'<p class="warn"><code>{escape(str(settings.GROUPS_FILE))}</code>: {escape(str(e))}</p>'
+        logging.getLogger("uvicorn.error").warning("GROUPS_FILE %s: %s", settings.GROUPS_FILE, e)
+        return (
+            f'<p class="warn"><code>{escape(str(settings.GROUPS_FILE))}</code> is unreadable or not a list'
+            " of groups, so the group feeds answer 503; the app's log says what is wrong with it.</p>"
+        )
     if not configured.members:
         return ""
     rows: str = "".join(

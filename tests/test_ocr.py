@@ -2,6 +2,7 @@
 
 import shutil
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ from shared import sqlrows
 from shared.sqlrows import SqlValue
 
 from tests.feedclient import make_app
-from tests.support import insert_story
+from tests.support import fake_run, insert_story
 
 
 def _story(con: sqlite3.Connection, story_id: str, scraped_at: str, username: str = "alice") -> Path:
@@ -91,6 +92,35 @@ def test_a_failing_tesseract_stops_the_pass_and_leaves_stories_unread(
 def test_read_text_without_tesseract_is_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))  # no tesseract on it
     assert ocr.read_text(tmp_path / "frame.png") is None
+
+
+def test_read_text_cleans_tesseract_s_output_with_one_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = fake_run(monkeypatch, stdout="  Doors   open \n| ~\n")
+    monkeypatch.setattr(config, "STORY_OCR_LANG", "eng+deu")
+    assert ocr.read_text(tmp_path / "frame.png") == "Doors open"
+    assert commands == [["tesseract", str(tmp_path / "frame.png"), "stdout", "-l", "eng+deu"]]
+
+
+@pytest.mark.parametrize(
+    "raises",
+    [PermissionError("tesseract: Permission denied"), subprocess.TimeoutExpired("tesseract", ocr.TIMEOUT)],
+)
+def test_read_text_that_can_t_run_or_hangs_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], raises: Exception
+) -> None:
+    _ = fake_run(monkeypatch, raises=raises)
+    assert ocr.read_text(tmp_path / "frame.png") is None
+    assert "story OCR could not run" in capsys.readouterr().out
+
+
+def test_read_text_that_tesseract_fails_on_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _ = fake_run(monkeypatch, returncode=1, stderr="Error, cannot read input file\n")
+    assert ocr.read_text(tmp_path / "frame.png") is None
+    assert "story OCR failed on frame.png: Error, cannot read input file" in capsys.readouterr().out
 
 
 @pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract isn't installed")

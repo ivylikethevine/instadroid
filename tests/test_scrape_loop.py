@@ -19,6 +19,7 @@ from instadroid import (
     db,
     device,
     navigation,
+    ocr,
     parsing,
     scrape,
     stories,
@@ -444,6 +445,19 @@ def test_a_failed_backup_is_a_warning_not_a_failed_run(monkeypatch: pytest.Monke
     monkeypatch.setattr(backup, "backup_database", disk_full)
     warning: str | None = scrape.scrape_once(feed_device(), db.db_init())["metrics"].get("warning")
     assert warning is not None and "database backup failed: No space left on device" in warning
+
+
+def test_a_failed_story_ocr_pass_is_a_warning_not_a_failed_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_caps(monkeypatch, stories=0, slides=1, scrolls=1)
+
+    def locked(con: sqlite3.Connection, limit: int = ocr.MAX_PER_RUN) -> NoReturn:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ocr, "read_stories", locked)
+    stats: scrape.RunStats = scrape.scrape_once(feed_device(), db.db_init())
+    warning: str | None = stats["metrics"].get("warning")
+    assert stats["new"] == 2
+    assert warning is not None and "story OCR failed: database is locked" in warning
 
 
 def test_an_unreachable_reader_is_a_warning_not_a_failed_run(monkeypatch: pytest.MonkeyPatch) -> None:

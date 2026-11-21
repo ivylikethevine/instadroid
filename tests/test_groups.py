@@ -1,6 +1,7 @@
 """Account groups: GROUPS_FILE served as ?group= feeds, /opml categories and /subscribe's group section."""
 
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -162,7 +163,11 @@ def test_opml_etag_moves_when_the_groups_file_changes(
     ],
 )
 def test_broken_groups_file_is_a_503_on_group_routes_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, problem: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    text: str,
+    problem: str,
 ) -> None:
     """A Dynamic OPML re-read that gets a 503 keeps its category as it was instead of muting feeds."""
     client: TestClient = _app(tmp_path, monkeypatch, text)
@@ -173,7 +178,42 @@ def test_broken_groups_file_is_a_503_on_group_routes_only(
     assert client.get("/instagram.xml", params={"group": "pals"}).status_code == 503
     assert client.get("/instagram.xml").status_code == 200
     page: Response = client.get("/subscribe")
-    assert page.status_code == 200 and problem in page.text
+    assert page.status_code == 200
+    assert f"<code>{tmp_path / 'groups.toml'}</code> is unreadable or not a list of groups" in page.text
+    assert problem not in page.text  # the error's own text goes to the log only
+    assert problem in caplog.text
+
+
+def _not_utf8(path: Path) -> None:
+    _ = path.write_bytes(b'pals = ["\xff"]\n')
+
+
+def _a_directory(path: Path) -> None:
+    path.mkdir()
+
+
+@pytest.mark.parametrize(
+    ("make", "problem"),
+    [
+        (_not_utf8, "unreadable: 'utf-8' codec can't decode"),
+        (_a_directory, "unreadable: [Errno 21] Is a directory"),
+    ],
+)
+def test_groups_file_that_can_t_be_read_is_a_503(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make: Callable[[Path], None], problem: str
+) -> None:
+    client: TestClient = _app(tmp_path, monkeypatch, None)
+    make(tmp_path / "groups.toml")
+    r: Response = client.get("/opml")
+    assert r.status_code == 503 and problem in r.json()["detail"]
+
+
+def test_groups_file_under_a_file_is_a_503(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "not-a-dir").write_text("")
+    monkeypatch.setenv("GROUPS_FILE", str(tmp_path / "not-a-dir" / "groups.toml"))
+    client: TestClient = make_app(tmp_path, monkeypatch, seed=THREE_POSTS)
+    r: Response = client.get("/opml")
+    assert r.status_code == 503 and "unreadable: [Errno 20] Not a directory" in r.json()["detail"]
 
 
 def test_groups_file_setting_overrides_the_default_path(
