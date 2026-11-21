@@ -86,13 +86,15 @@ def limit(requested: int) -> int:
 
 @dataclass(frozen=True)
 class PostFilter:
-    """What a posts feed is narrowed to: one account, stored kinds, a start time (an ISO timestamp in
-    UTC, compared with the posted time, else the saved time) and caption text."""
+    """What a posts feed is narrowed to: one account, a group's accounts (None = not narrowed, () = no
+    account at all), stored kinds, a start time (an ISO timestamp in UTC, compared with the posted time,
+    else the saved time) and caption text."""
 
     user: str | None = None
     kinds: tuple[str, ...] = ()
     since: str | None = None
     q: str | None = None
+    group: tuple[str, ...] | None = None
 
     def where(self) -> tuple[str, list[SqlValue]]:
         """(" WHERE ..." or "", its arguments)."""
@@ -101,6 +103,9 @@ class PostFilter:
         if self.user:
             clauses.append("username = ?")
             args.append(self.user)
+        if self.group is not None:
+            clauses.append(f"username IN ({','.join('?' * len(self.group))})")
+            args.extend(self.group)
         if self.kinds:
             clauses.append(f"kind IN ({','.join('?' * len(self.kinds))})")
             args.extend(self.kinds)
@@ -184,15 +189,19 @@ def avatar_files(con: sqlite3.Connection, usernames: list[str]) -> dict[str, str
     return {string(row, 0): string(row, 1) for row in all_rows(con, sql, usernames)}
 
 
-def feed_signal(con: sqlite3.Connection, user: str | None, alerts: list[sqlite3.Row]) -> tuple[EtagPart, ...]:
+def feed_signal(
+    con: sqlite3.Connection, users: tuple[str, ...] | None, alerts: list[sqlite3.Row]
+) -> tuple[EtagPart, ...]:
     """Cheap ETag input for /instagram.xml: post count and latest change (updated_at also moves when
     a row is merged in place), extra-slide count, latest avatar refresh and the `alerts` the feed
-    shows, scoped to `user` when given so one account's new post doesn't invalidate every other
-    per-account feed."""
-    where: str
-    args: tuple[str, ...]
-    where, args = (" WHERE username = ?", (user,)) if user else ("", ())
-    slides: str = f" WHERE post_id IN (SELECT id FROM posts{where})" if user else ""
+    shows, scoped to `users` when given (None = every account) so one account's new post doesn't
+    invalidate every other per-account or group feed."""
+    where: str = ""
+    args: tuple[str, ...] = ()
+    slides: str = ""
+    if users is not None:
+        where, args = f" WHERE username IN ({','.join('?' * len(users))})", users
+        slides = f" WHERE post_id IN (SELECT id FROM posts{where})"
     counts: sqlite3.Row | None = one_row(
         con, f"SELECT COUNT(*), COALESCE(MAX(COALESCE(updated_at, scraped_at)), '') FROM posts{where}", args
     )
@@ -221,10 +230,31 @@ def stories(con: sqlite3.Connection, requested: int) -> list[sqlite3.Row]:
     return all_rows(con, "SELECT * FROM stories ORDER BY scraped_at DESC LIMIT ?", (limit(requested),))
 
 
-def stories_stats(con: sqlite3.Connection) -> tuple[int, str]:
-    """(count, latest scraped_at) - the ETag input for /stories.xml."""
+def stories_stats(con: sqlite3.Connection) -> tuple[int, str, int]:
+    """(count, latest scraped_at, stories whose text has been read) - the ETag input for /stories.xml.
+    The last moves when STORY_OCR reads a story after the run that stored it."""
     row: sqlite3.Row | None = one_row(con, "SELECT COUNT(*), COALESCE(MAX(scraped_at), '') FROM stories")
-    return (sqlrows.cell_int(row, 0) or 0, string(row, 1)) if row else (0, "")
+    read: int = count(con, "SELECT COUNT(text) FROM stories")  # 0 before stories.text exists
+    return (sqlrows.cell_int(row, 0) or 0, string(row, 1), read) if row else (0, "", 0)
+
+
+def story_search(con: sqlite3.Connection, user: str | None, q: str, requested: int) -> list[sqlite3.Row]:
+    """Stories whose text (STORY_OCR's reading) matches `q` as /browse's caption search does, newest
+    first; none before the story search index exists."""
+    match: str = fts_query(q)
+    if not match:
+        return []
+    args: list[SqlValue] = [match]
+    scope: str = ""
+    if user:
+        scope = " AND username = ?"
+        args.append(user)
+    return all_rows(
+        con,
+        "SELECT stories.* FROM stories_fts JOIN stories ON stories.id = story_id"
+        f" WHERE stories_fts MATCH ?{scope} ORDER BY scraped_at DESC LIMIT ?",
+        (*args, limit(requested)),
+    )
 
 
 def usernames(con: sqlite3.Connection) -> list[str]:

@@ -17,43 +17,38 @@ container/process topology. A finished item is deleted; git history has it.
 
 ## Where it stands
 
-As of 2026-11-17, branch `dev`.
+As of 2026-11-20, branch `dev`.
 
-- 13 items are open: 4 ready to start, 5 waiting on a device run, a real dump, a real rename, an
+- 11 items are open: 1 ready to start, 6 waiting on a device run, a real dump, a real rename, an
   arm64 host or the owner's call, and 4 large ones for later.
-- Not run for this update: any device run or CI.
+- Account groups, story OCR and the login backup are in the tree, with tests; story OCR's memory was
+  measured in the image (`docs/OPERATIONS.md`). Not run: any device run, so neither login command
+  has touched a device, and CI.
 - Open question: whether a routine 2FA prompt may be answered without a person (4).
 
 ## Order of work
 
-- 2, 3, 5 and 6, most value for the size first.
-- 1, 7 and 13 as soon as a device run, a real dump or a real rename allows.
+- 3, the one ready to start.
+- 1 and 2 together on the next device run; 7 and 13 once a real dump or a real rename allows.
 - 8, 9, 10 and 12 when one is taken up; 11 once an arm64 host is at hand.
 
 ## Now
-
-### 2. Back up and restore the login alone (M)
-
-Save `/data/data/com.instagram.android` (with `adb root`) so a fresh `/data` volume, another Android
-version's included, or a `/data/system` reset gets a working login without a new challenge. A device
-run has to show the session survives the copy: Instagram may tie it to Android's keystore or device
-id.
 
 ### 3. Solve challenges from a browser (M)
 
 An optional compose profile running ws-scrcpy on loopback, so a "confirm it's you" challenge on a
 headless server needs only an SSH tunnel, not adb and scrcpy on a desktop.
 
-### 5. Account groups (M)
-
-A config file mapping accounts to groups, served as `?group=` feeds and OPML categories.
-
-### 6. Readable text-only stories (M)
-
-OCR of story frames into the entry text, searchable on `/browse`. Opt-in, and measured first against
-the app container's 256m limit.
-
 ## On hold
+
+### 2. Confirm the login backup on a device (S)
+
+`scraper.py login-backup` and `login-restore` ([OPERATIONS.md](OPERATIONS.md#storage-and-retention))
+have run only against a fake adb. One device run has to show the toybox `tar` excludes, the restore's
+chown and `restorecon`, and that Instagram keeps the copied session rather than asking for a new login
+(it may tie it to Android's keystore or device id): back up, restore onto the same install, then
+`scraper.py login`. `scripts/scratch/check_login_backup.sh` runs the whole check, a `/data` snapshot
+first. Waits on a device run on the deployment host.
 
 ### 1. Confirm `scraper.py tune` on a device (S)
 

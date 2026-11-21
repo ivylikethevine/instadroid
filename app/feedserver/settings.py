@@ -29,6 +29,8 @@ FEED_TOKEN: str = env_secret("FEED_TOKEN")
 # its default is an hour; a short value here makes every ping fetch. 0 = leave FreshRSS's default.
 OPML_FEED_TTL: int = int(os.environ.get("OPML_FEED_TTL") or "0")
 MAX_LIMIT: int = 500
+# The account groups the feeds serve as ?group= and /opml as categories (groups.py); no file, no groups.
+GROUPS_FILE: Path = Path(os.environ.get("GROUPS_FILE") or Path(DB_PATH).parent / "groups.toml")
 # The scraper's manual-control files (shared/control.py), read from the same environment the same way.
 CONTROL_DIR: Path = control.env_control_dir(DB_PATH)
 LOCK_MAX_HOURS: float = control.env_lock_max_hours()

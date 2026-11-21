@@ -45,7 +45,7 @@ The rules and the incidents behind them are in
   redroid images at the same volume; give another version its own path (e.g.
   `./local/data/android-15`). The `init` service's guard (`scripts/guard-android-data.sh`) refuses
   a mismatch; don't route around it by deleting `local/data/android.image`.
-- **Ask the user before any device-driving run**: `scraper.py login`, `once`, `scrape-now`, `install`, `tune`, a manual
+- **Ask the user before any device-driving run**: `scraper.py login`, `login-backup`, `login-restore`, `once`, `scrape-now`, `install`, `tune`, a manual
   scrape, `new-profile baseline` and `new-profile restore` (`.claude/settings.json` asks for these).
   First check `docker stats` headroom and force-stop Instagram. `new-profile baseline` checks headroom
   and refuses while the `app` service runs, but that doesn't replace asking; its other subcommands

@@ -119,6 +119,9 @@ def story_entries(stories: list[sqlite3.Row]) -> list[Entry]:
         username, media_file = string(r, "username"), text(r, "media_file")
         scraped: datetime = parse_iso(text(r, "scraped_at")) or datetime.now(UTC)
         html: str = f"<p>{render.img(media_file)}</p>" if media_file else ""
+        words: str | None = opt_str(r, "text")  # STORY_OCR's reading, on a database that has it
+        if words:
+            html += "<p>" + "<br>".join(escape(line) for line in words.splitlines()) + "</p>"
         html += f"<p><small>saved {render.local(scraped)}</small></p>"
         out.append(
             Entry(

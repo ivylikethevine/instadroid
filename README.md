@@ -306,6 +306,12 @@ missed these, since every capture re-encodes a fresh screenshot.) The whole fram
 avatar, username, age and attribution painted over; the hash reads only the part below the header
 overlay, so the relative timestamp ticking over between runs doesn't change it.
 
+With `STORY_OCR=1`, tesseract reads each stored frame's text at the end of a run, newest first and at
+most 20 a run. The text shows under the frame in the stories feed, and a `/browse` search lists the
+stories it matches above the posts. The setting is also a build argument that adds tesseract to the
+image, so run `docker compose build` after turning it on; the published release image leaves it out.
+[docs/OPERATIONS.md](docs/OPERATIONS.md) has its memory cost.
+
 A story that only reshares a stored post repeats an entry the posts feed already has, so at the end
 of a run each story the run stored is searched for every stored post image (covers and carousel
 slides), shown as the reshare sticker shows it: a card centred across the frame, at any size and
@@ -377,10 +383,11 @@ containers and the device. The ones worth knowing about first:
 
 Open `http://<host>:8000/subscribe` for the URLs to paste into a reader: `/instagram.xml` as one feed
 of everything (per account: `?user=somebody`; stories: `/stories.xml`), or `/opml` as a FreshRSS
-Dynamic OPML category with one feed per account. For the compose file's own FreshRSS,
+Dynamic OPML category with one feed per account. A groups file (`GROUPS_FILE`) adds `?group=` feeds
+and an OPML category per group. For the compose file's own FreshRSS,
 `scripts/freshrss-setup.sh <user>` does the whole setup. Set `FEED_TOKEN` before exposing
 the feed beyond loopback. [docs/FRESHRSS.md](docs/FRESHRSS.md) has the quick start, feed auth, the
-`kind`/`since`/`q` filters, JSON Feed, push refresh and troubleshooting.
+`kind`/`since`/`q` filters, account groups, JSON Feed, push refresh and troubleshooting.
 
 ### Health and restarts
 

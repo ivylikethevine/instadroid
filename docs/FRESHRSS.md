@@ -7,6 +7,7 @@ Subscribing FreshRSS, or another reader, to the feeds this instance serves.
 - [Quick start](#quick-start)
 - [Feeds](#feeds)
 - [The account list](#the-account-list)
+- [Account groups](#account-groups)
 - [Push instead of poll](#push-instead-of-poll)
 - [Running FreshRSS on this host](#running-freshrss-on-this-host)
 - [Troubleshooting](#troubleshooting)
@@ -104,6 +105,31 @@ interval (`frss:ttl`), so a ping fetches it however recently it was last fetched
 feed whose interval hasn't passed, and its default is an hour. It applies when the OPML is imported
 or re-read, not to feeds already subscribed; edit those in FreshRSS, or set the user's default
 interval there instead.
+
+## Account groups
+
+A groups file names groups of accounts, one TOML line each. It lives at `local/data/db/groups.toml`
+(`GROUPS_FILE` moves it) and is read again whenever it changes, with no restart:
+
+```toml
+friends = ["alice", "bob"]
+"news and media" = ["somepaper", "@othersite"]
+```
+
+- **A feed per group**: `/instagram.xml?group=friends` (and `.json`) holds every member's posts, and
+  takes `kind`, `since` and `q` like the aggregate feed. An unknown group is a 404.
+- **A category per group**: `/opml` lists each group as a category of its own, then "Instagram" with
+  the stories feed and the accounts in no group. An account in several groups is listed under the
+  first, since a reader keeps a feed in one category. Each category names its own list as its
+  Dynamic OPML URL: `/opml?group=friends`, and `/opml?ungrouped=1` for "Instagram".
+
+FreshRSS puts every feed of a Dynamic OPML list into the one category that follows it, so a
+category already following `/opml` keeps every account and shows no groups. To get the groups, import
+the downloaded `/opml` as a file, which makes one Dynamic OPML category per group, or add each group's
+list under _Add dynamic OPML_ by hand and change the old category's URL to `/opml?ungrouped=1`.
+`/subscribe` lists these URLs. A groups file that isn't valid TOML of name = list of usernames makes
+`/opml` and the group feeds answer 503 with the reason (shown on `/subscribe` too), so a Dynamic OPML
+re-read keeps its categories as they were; the other feeds are unaffected.
 
 ## Push instead of poll
 

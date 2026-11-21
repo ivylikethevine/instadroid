@@ -12,6 +12,9 @@
                              crash signatures with their fixes (never drives the device)
     compat                   redroid image / Instagram build pairs this database has run
     backup                   copy the database to BACKUP_DIR now
+    login-backup             copy Instagram's app data (the login) to BACKUP_DIR; needs `lock`
+    login-restore [FILE]     put the newest login backup, or FILE, into the installed Instagram;
+                             needs `lock`, and an install no older than the backup's
     export DIR [--format html|json]
                              write every stored post and its media under DIR, to keep past
                              RETAIN_DAYS; a rerun adds to it (default html: JSON plus static pages)
@@ -30,6 +33,7 @@ import sqlite3
 import sys
 from collections.abc import Callable
 from contextlib import closing
+from pathlib import Path
 from typing import Concatenate
 
 from igprofiles import BaseProfile, default_build, version_key
@@ -45,6 +49,7 @@ from instadroid import (
     doctor,
     export,
     install,
+    loginbackup,
     navigation,
     scrape,
     tune,
@@ -179,6 +184,20 @@ def main(argv: list[str]) -> None:
             )
         case ["backup", *_]:
             print("wrote", _with_db(backup.backup_database, force=True))
+        case ["login-backup"]:
+            try:
+                print("wrote", loginbackup.backup_login())
+            except loginbackup.LoginBackupError as e:
+                sys.exit(f"login backup failed: {e}")
+        case ["login-restore", *args] if len(args) <= 1 and not any(a.startswith("-") for a in args):
+            try:
+                aside: str = loginbackup.restore_login(Path(args[0]) if args else None)
+            except loginbackup.LoginBackupError as e:
+                sys.exit(f"login restore failed: {e}")
+            print(f"restored; the data it replaced is in {aside} on the device. `scraper.py login` checks it")
+        case ["login-backup" | "login-restore", *_]:
+            print("usage: scraper.py login-backup | scraper.py login-restore [FILE]")
+            sys.exit(1)
         case ["export", directory, *args] if not directory.startswith("-") and args in (
             [],
             ["--format", "html"],

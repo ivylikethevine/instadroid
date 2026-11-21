@@ -13,7 +13,7 @@ from shared.pagestyle import PAGE_STYLE
 from shared.timestamps import parse_iso
 
 from . import queries, render
-from .entries import Entry, post_entries
+from .entries import Entry, post_entries, story_entries
 from .queries import string, text
 
 router: APIRouter = APIRouter()
@@ -80,7 +80,10 @@ def browse(
     user: Annotated[str | None, Query(description="One account's timeline.")] = None,
     q: Annotated[
         str | None,
-        Query(description="Caption search: every word must match, each as a prefix of a caption word."),
+        Query(
+            description="Caption search: every word must match, each as a prefix of a caption word."
+            " The first page also lists stories whose text (STORY_OCR) matches."
+        ),
     ] = None,
     before: Annotated[str | None, Query(description="The paging cursor's time, from the Older link.")] = None,
     before_id: Annotated[
@@ -100,6 +103,11 @@ def browse(
         rows: list[sqlite3.Row] = queries.archive_page(con, user, q, cursor, size)
         shown: list[sqlite3.Row] = rows[:size]
         entries: list[Entry] = post_entries(con, shown)
+        # Stories whose text matches, above the posts on a search's first page only: they are few
+        # (RETAIN_DAYS), and paging two lists by one cursor would skip some of either.
+        found: list[Entry] = (
+            story_entries(queries.story_search(con, user, q, size)) if q and not cursor else []
+        )
     older: str = ""
     if len(rows) > size:
         href: str = _link(
@@ -112,4 +120,6 @@ def browse(
         older = f'<p><a href="{href}" rel="next">Older</a></p>'
     heading: str = (f'Search: "{q}"' if q else "Posts") + (f" in {user}" if user else "")
     body: str = "".join(_article(e) for e in entries) or "<p>No posts.</p>"
+    if found:
+        body = "<h2>Stories</h2>" + "".join(_article(e) for e in found) + "<h2>Posts</h2>" + body
     return _page(heading, _search_form(user, q) + body + older)

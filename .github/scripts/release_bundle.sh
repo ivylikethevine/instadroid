@@ -39,7 +39,11 @@ mkdir -p "$dir/scripts" "$dir/app/instadroid"
 # The one block that builds the image locally, matched whole so a reworded compose file fails here.
 build_block='# init and app run the same locally built image, so it'"'"'s built once.
 x-app-image: &app_image
-  build: ./app
+  build:
+    context: ./app
+    # STORY_OCR=1 in .env adds tesseract for story text; run `docker compose build` after changing it.
+    args:
+      STORY_OCR: ${STORY_OCR:-0}
   image: instadroid-app'
 pull_block="# init and app run the published release image, pinned by digest.
 x-app-image: &app_image

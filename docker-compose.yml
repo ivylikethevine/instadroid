@@ -21,7 +21,11 @@ x-redroid-image: &redroid_image erstt/redroid:13.0.0_ndk_ChromeOS
 
 # init and app run the same locally built image, so it's built once.
 x-app-image: &app_image
-  build: ./app
+  build:
+    context: ./app
+    # STORY_OCR=1 in .env adds tesseract for story text; run `docker compose build` after changing it.
+    args:
+      STORY_OCR: ${STORY_OCR:-0}
   image: instadroid-app
 
 x-logging: &logging # json-file, capped at 3 x 10MB per container

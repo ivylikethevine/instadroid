@@ -27,6 +27,7 @@ from . import (
     diagnostics,
     install,
     navigation,
+    ocr,
     parsing,
     reshare,
     retention,
@@ -637,6 +638,11 @@ def _finish_run(
     retention.prune_old_posts(con)
     retention.prune_expired_stories(con)
     diagnostics.prune_debug_dumps()  # age-based pruning shouldn't depend on a new dump happening to be taken
+    try:  # before the pings, so a reader's fetch already has the text
+        ocr.read_stories(con)
+    except (OSError, sqlite3.Error) as e:  # optional text must never fail the scrape
+        log("WARN: story OCR failed:", repr(e))
+        run.warnings.append(f"story OCR failed: {e}")
     try:
         backup.backup_database(con)
     except (OSError, sqlite3.Error) as e:  # a full or read-only backup disk mustn't fail the scrape
