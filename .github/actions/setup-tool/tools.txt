@@ -72,3 +72,6 @@ trivy|0.76.2|tar.gz|https://github.com/aquasecurity/trivy/releases/download/v%v/
 # Tags are "lychee-v<version>"; the tag-prefix column strips that so the drift
 # check compares versions, not strings.
 lychee|0.24.2|tar.gz|https://github.com/lycheeverse/lychee/releases/download/lychee-v%v/lychee-x86_64-unknown-linux-gnu.tar.gz|--version|github:lycheeverse/lychee|lychee-v|1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a
+# For .claude/plan-scan, whose patterns need PCRE2: the musl release is built
+# with it, where the runner image's apt ripgrep may not be.
+rg|15.2.0|tar.gz|https://github.com/BurntSushi/ripgrep/releases/download/%v/ripgrep-%v-x86_64-unknown-linux-musl.tar.gz|--pcre2-version|github:BurntSushi/ripgrep||33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
